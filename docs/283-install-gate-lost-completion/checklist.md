@@ -36,3 +36,21 @@
 - [x] `npm run test:dev`, `npm run lint:dev`, `npm run typecheck`.
 - [x] Independent review.
 - [x] Comment on planning#479.
+
+### Second review round — findings on the follow-up itself
+
+- [x] Derive the teardown bound from each service's `stop_grace_period` instead
+      of a fixed 60s, which encoded Compose's default as though it were the rule
+      and would have broken docs/239 for any repo declaring a longer one.
+- [x] Carry `stop_grace_period` through the compose parse to `ManagedService`,
+      with a duration parser that fails LONG on an unrecognized value.
+- [x] Re-check the gate generation inside `startGatedBatch` — the queued batch
+      can go stale while the stack queue holds it (req 6, one layer down).
+- [x] Bump the generation before `start()`'s first await, not after several.
+- [x] Correct the plan's late-landing-stop recovery claim: verified against
+      `service-poller.ts` / `service-retry-manager.ts`, a clean exit is NOT
+      retried, so "self-correcting" was wrong.
+- [x] Resolve the req 1 / req 4 contradiction review found, in requirements.md.
+- [x] Record the stack-op queue as a third, separate route (not fixed).
+- [x] Regression tests for the derived bound and the stale queued batch, each
+      verified to fail without its own fix.

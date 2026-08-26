@@ -13,7 +13,49 @@ import {
   validateDevices,
   isDevKvmAllowed,
   ALLOWED_DEVICE,
+  parseStopGracePeriodMs,
+  UNKNOWN_STOP_GRACE_PERIOD_MS,
 } from "./compose-generator.js";
+
+describe("parseStopGracePeriodMs (docs/283)", () => {
+  // The install-gate teardown bounds its wait on this value, so reading it too
+  // SHORT reopens the gate into a container still shutting down — the docs/239
+  // race. Every case below is about which direction an error goes in.
+
+  it("reads a bare number as seconds, per Compose", () => {
+    expect(parseStopGracePeriodMs(30)).toBe(30_000);
+    expect(parseStopGracePeriodMs("30")).toBe(30_000);
+    expect(parseStopGracePeriodMs("1.5")).toBe(1_500);
+  });
+
+  it("reads Go-style durations, including compound ones", () => {
+    expect(parseStopGracePeriodMs("10s")).toBe(10_000);
+    expect(parseStopGracePeriodMs("1m30s")).toBe(90_000);
+    expect(parseStopGracePeriodMs("500ms")).toBe(500);
+    expect(parseStopGracePeriodMs("2h")).toBe(7_200_000);
+    expect(parseStopGracePeriodMs("1h2m3s")).toBe(3_723_000);
+  });
+
+  it("distinguishes absent from unreadable", () => {
+    // Absent means "the service declared nothing" — the caller applies
+    // Compose's default. It must NOT be conflated with a value we failed to
+    // read, which could be far longer than that default.
+    expect(parseStopGracePeriodMs(undefined)).toBeUndefined();
+    expect(parseStopGracePeriodMs(null)).toBeUndefined();
+  });
+
+  it("fails LONG on anything it cannot read", () => {
+    // The asymmetry is the whole point: over-waiting delays a rare recovery,
+    // under-waiting causes the bug this feature exists to prevent.
+    expect(parseStopGracePeriodMs("about a minute")).toBe(UNKNOWN_STOP_GRACE_PERIOD_MS);
+    expect(parseStopGracePeriodMs("1m30")).toBe(UNKNOWN_STOP_GRACE_PERIOD_MS);   // trailing unitless
+    expect(parseStopGracePeriodMs("30d")).toBe(UNKNOWN_STOP_GRACE_PERIOD_MS);    // unit we don't handle
+    expect(parseStopGracePeriodMs("")).toBe(UNKNOWN_STOP_GRACE_PERIOD_MS);
+    expect(parseStopGracePeriodMs({})).toBe(UNKNOWN_STOP_GRACE_PERIOD_MS);
+    expect(parseStopGracePeriodMs(-5)).toBe(UNKNOWN_STOP_GRACE_PERIOD_MS);
+    expect(parseStopGracePeriodMs(Number.NaN)).toBe(UNKNOWN_STOP_GRACE_PERIOD_MS);
+  });
+});
 
 describe("parseComposeFile", () => {
   let tmpDir: string;

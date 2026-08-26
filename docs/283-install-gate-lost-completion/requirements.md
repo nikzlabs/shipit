@@ -15,9 +15,11 @@ description: A mid-session reinstall must always reopen the service gate — whe
 3. A genuinely slow install must not be cut short, and must never be reported
    as failed because it took a long time.
 4. The behaviour that stops ShipIt's own teardown from being reported to the
-   user as a service crash (docs/239) must be unchanged: the gate still waits
-   for the teardown before it reopens, and held services stay exempt from
-   crash reporting while it is in progress.
+   user as a service crash (docs/239) must hold for every teardown that is
+   working: the gate waits for it to land, however long the service's own
+   `stop_grace_period` says that may take, and held services stay exempt from
+   crash reporting while it is in progress. Only a teardown that has exceeded
+   what the compose file says is possible may be given up on.
 5. Recovering a lost completion must not open a gate early. An install that is
    still running must keep its services held, whatever ShipIt learns about any
    *other* install.
@@ -45,3 +47,11 @@ description: A mid-session reinstall must always reopen the service gate — whe
   a teardown that never reports back, and req 6 records the ordering hazard
   review found alongside it. Both are implemented; see
   [plan.md](./plan.md) → "Bounding the teardown".
+- 2026-08-26 — Do reqs 1 and 4 contradict each other? Review flagged that they
+  did: req 1 demanded the gate always reopen, req 4 demanded it always wait for
+  the teardown, and nothing said which wins when a teardown never settles.
+  Resolved by making req 4 say what "waiting" is measured against — the
+  service's declared `stop_grace_period`, read from the compose file rather
+  than assumed. A teardown inside that budget is working and is waited for; one
+  past it has exceeded what its own file says is possible. The requirements no
+  longer disagree, and neither was weakened to achieve it.

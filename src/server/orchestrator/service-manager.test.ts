@@ -8,7 +8,7 @@ import {
   NETWORK_JOIN_TIMEOUT_MS,
   STARTING_WATCHDOG_MS,
   STARTING_TIMEOUT_MESSAGE,
-  GATED_TEARDOWN_STOP_TIMEOUT_MS,
+  GATED_TEARDOWN_GRACE_MARGIN_MS,
   UP_SILENCE_TIMEOUT_MS,
   UP_STALLED_MESSAGE,
   COMPOSE_LOG_PREFIX,
@@ -17,6 +17,7 @@ import {
   type ComposeQuery,
   type SecretsStatusInternalSnapshot,
 } from "./service-manager.js";
+import { DEFAULT_STOP_GRACE_PERIOD_MS } from "./compose-generator.js";
 import { SESSION_WORKSPACE_SUBDIR, SESSION_STATE_SUBDIR } from "./session-state-dir.js";
 import { serializeStackOp } from "./stack-op-queue.js";
 
@@ -2951,7 +2952,146 @@ services:
     expect(mgr.getService("web")?.status).toBe("starting");
 
     // Past the bound the teardown is abandoned and the gate opens anyway.
-    await vi.advanceTimersByTimeAsync(GATED_TEARDOWN_STOP_TIMEOUT_MS);
+    await vi.advanceTimersByTimeAsync(DEFAULT_STOP_GRACE_PERIOD_MS + GATED_TEARDOWN_GRACE_MARGIN_MS);
+    expect(webUps()).toBe(upsBefore + 1);
+
+    await mgr.stop();
+  });
+
+  it("waits out a long declared stop_grace_period before abandoning the teardown (docs/283)", async () => {
+    // The bound started life as a fixed 60s, which silently encoded Compose's
+    // DEFAULT grace period as though it were the rule. `stop_grace_period` is a
+    // per-service key with no upper bound — and one ShipIt passes through — so
+    // a repo declaring `1m30s` had its perfectly healthy teardown declared
+    // wedged, reopening the gate into a container still shutting down: the
+    // docs/239 bug, caused by its own fix. Review finding.
+    const dir = setup();
+    writeCompose(dir,
+      "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n    stop_grace_period: 1m30s\n");
+
+    const upCalls: string[][] = [];
+    let releaseStop = (): void => {};
+    const stopLanded = new Promise<void>((resolve) => { releaseStop = resolve; });
+    const composeRunner: ComposeRunner = async (args) => {
+      const upIdx = args.indexOf("up");
+      if (upIdx >= 0) upCalls.push(args.slice(upIdx));
+      // A SLOW but entirely healthy stop: it lands when the test says so.
+      if (args.includes("stop")) await stopLanded;
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
+      if (key === "ps") return Promise.resolve(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+      if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "gate-long-grace",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+    const webUps = () => upNames(upCalls).filter(n => n === "web").length;
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    mgr.setInstallRunning(false);
+    await flushMicrotasks();
+    const upsBefore = webUps();
+
+    vi.useFakeTimers();
+    mgr.setInstallRunning(true);
+    mgr.setInstallRunning(false);
+
+    // Past the old fixed 60s bound, but well inside this service's declared
+    // 90s grace period — the gate must still be waiting.
+    await vi.advanceTimersByTimeAsync(75_000);
+    expect(webUps()).toBe(upsBefore);
+    expect(mgr.getService("web")?.status).toBe("starting");
+
+    // The healthy stop lands on its own, and the gate opens for that reason
+    // rather than because we gave up on it.
+    releaseStop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(webUps()).toBe(upsBefore + 1);
+
+    await mgr.stop();
+  });
+
+  it("drops a queued gated start that a newer gate cycle has superseded (docs/283)", async () => {
+    // The generation check in `releaseInstallGate` proves the open was valid
+    // when it was SCHEDULED. `startGatedServices` then queues the batch on the
+    // stack-op queue, which can hold it for as long as the `compose up` ahead
+    // of it takes — long enough for a whole new reinstall cycle to re-gate
+    // these services and start stopping them. Without a recheck inside the
+    // batch, that queued start lands in the middle of the newer teardown.
+    // Review finding.
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+
+    const upCalls: string[][] = [];
+    let releaseQueueHolder = (): void => {};
+    const queueHeld = new Promise<void>((resolve) => { releaseQueueHolder = resolve; });
+    const composeRunner: ComposeRunner = (args) => {
+      const upIdx = args.indexOf("up");
+      if (upIdx >= 0) upCalls.push(args.slice(upIdx));
+      return Promise.resolve();
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
+      if (key === "ps") return Promise.resolve(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+      if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      return Promise.resolve("");
+    };
+
+    const sessionId = "gate-stale-queued-batch";
+    const mgr = new ServiceManager({
+      sessionId,
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+    const webUps = () => upNames(upCalls).filter(n => n === "web").length;
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    mgr.setInstallRunning(false);
+    await flushMicrotasks();
+    const upsBefore = webUps();
+
+    // Park the stack queue, exactly as an in-flight reconcile `compose up`
+    // would. Anything queued after this cannot run until we let go.
+    const holder = serializeStackOp(sessionId, () => queueHeld);
+    await flushMicrotasks();
+
+    // Cycle 1: hold + release. The release passes its generation check and
+    // queues the gated start — which is now stuck behind the holder.
+    mgr.setInstallRunning(true);
+    mgr.setInstallRunning(false);
+    await flushMicrotasks();
+    expect(webUps()).toBe(upsBefore);
+
+    // Cycle 2 begins while that batch is still queued: it re-gates the service
+    // and starts stopping it again.
+    mgr.setInstallRunning(true);
+    await flushMicrotasks();
+
+    // The queue drains. Cycle 1's batch must recognize it is stale and do
+    // nothing — starting `web` here would fight cycle 2's teardown.
+    releaseQueueHolder();
+    await holder;
+    await flushMicrotasks();
+    expect(webUps()).toBe(upsBefore);
+
+    // Cycle 2 finishes normally and owns the start.
+    mgr.setInstallRunning(false);
+    await flushMicrotasks();
     expect(webUps()).toBe(upsBefore + 1);
 
     await mgr.stop();

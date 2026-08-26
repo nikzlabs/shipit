@@ -38,6 +38,7 @@ import {
   classifyComposeFailure,
   extractContainerPort,
   parseComposeFile,
+  DEFAULT_STOP_GRACE_PERIOD_MS,
   parseUserNamedVolumes,
   generateComposeOverride,
   writeComposeOverride,
@@ -124,6 +125,13 @@ export interface ManagedService {
    * `auto`-preview services. See docs/137-depends-on-install.
    */
   dependsOnInstall: boolean;
+  /**
+   * The service's declared `stop_grace_period` in ms, when it has one. Carried
+   * from the parse so the re-install teardown can bound its wait on what THIS
+   * file says a stop may take rather than on Compose's default — see
+   * {@link gatedTeardownTimeoutMs}.
+   */
+  stopGracePeriodMs?: number;
   /** Container IP on the session network (populated by status polling). */
   containerIp?: string;
   /**
@@ -291,22 +299,30 @@ export const NETWORK_JOIN_TIMEOUT_MS = 30_000;
 export const STARTING_WATCHDOG_MS = 120_000;
 
 /**
- * How long the mid-session re-install teardown waits for one
- * `docker compose stop` before giving up on it.
+ * Slack added on top of a service's `stop_grace_period` before the mid-session
+ * re-install teardown gives up waiting for its `docker compose stop`.
  *
  * `releaseInstallGate` awaits that teardown, and the await is what makes the
  * teardown's own SIGKILL land while the service is still gated (docs/239). But
  * `docker compose stop` has no timeout of its own, so a wedged daemon turned
  * that deliberate wait into a permanent one: services stopped by our teardown,
- * never in `gatedServices`'s exit-reporting blind spot for a bounded window but
- * forever, and no recovery path able to see them. That is the second route to
- * the docs/283 symptom, found by review on that change.
+ * sitting in `gatedServices`'s exit-reporting blind spot not for a bounded
+ * window but forever, and no recovery path able to see them. That is the second
+ * route to the docs/283 symptom.
  *
- * 60s is far past the semantics being waited on — `compose stop` is SIGTERM,
- * a 10s grace period, then SIGKILL — so a stop still running at this point is
- * wedged, not slow, and the normal case never reaches the bound.
+ * A FIXED bound was the first attempt and was wrong: it encoded Compose's
+ * DEFAULT grace period (10s) as though it were the rule, but `stop_grace_period`
+ * is a per-service key with no upper bound — and one ShipIt explicitly passes
+ * through (`plugin-compose.ts`). A repo declaring `stop_grace_period: 1m30s`
+ * would have had its perfectly healthy teardown declared wedged, reopening the
+ * gate into a container still shutting down: precisely the docs/239 bug, now
+ * caused by its own fix. Review finding.
+ *
+ * So the bound is derived per teardown ({@link gatedTeardownTimeoutMs}) and this
+ * is only the margin on top, covering daemon round-trips and the CLI's own
+ * startup — the part that is genuinely ShipIt's to estimate.
  */
-export const GATED_TEARDOWN_STOP_TIMEOUT_MS = 60_000;
+export const GATED_TEARDOWN_GRACE_MARGIN_MS = 60_000;
 
 /**
  * Await `work`, or give up after `ms` and say which happened.
@@ -1664,6 +1680,13 @@ export class ServiceManager extends EventEmitter {
    */
   async start(opts: { sweepStaleContainers?: boolean } = {}): Promise<void> {
     this._disposed = false;
+    // Invalidate any in-flight gate release BEFORE the first await, not later
+    // alongside the `_gatedTeardown` reset. Clearing `_disposed` on the line
+    // above reopens the only guard such a callback has, and everything between
+    // here and the service-map rebuild is awaited — so a teardown settling in
+    // that window would find `_disposed === false` and its own generation still
+    // current, and act on a half-rebuilt gate. Review finding.
+    this._gateGeneration++;
     await this.ensureSessionNetworkModeFn?.(Boolean(this.containServicesFn));
     // Kill any stale compose containers left over from a previous orchestrator
     // run (e.g. ShipIt restart). Uses label filter — no compose files needed.
@@ -1733,6 +1756,7 @@ export class ServiceManager extends EventEmitter {
         preview,
         status: "stopped",
         dependsOnInstall: svc.dependsOnInstall ?? (preview === "auto"),
+        ...(svc.stopGracePeriodMs !== undefined ? { stopGracePeriodMs: svc.stopGracePeriodMs } : {}),
       });
     }
     const admittedPlugins = this.pluginServices.filter((svc) => {
@@ -1787,12 +1811,9 @@ export class ServiceManager extends EventEmitter {
     this.stoppedByUser.clear();
     // A full (re)start supersedes any pending mid-session teardown — the stack
     // is being brought up from scratch, so the gate must not wait on it. The
-    // generation bump is the other half: dropping the reference stops US from
-    // awaiting it, but an earlier `releaseInstallGate` may ALREADY be awaiting
-    // it, and that callback must not open a gate over the partition this
-    // restart is computing right now.
+    // matching generation bump already happened at the top of `start()`, before
+    // any await could let a pending release slip through.
     this._gatedTeardown = null;
-    this._gateGeneration++;
     const gateOpen = !this._installRunning && !this._installFailed;
     const startNow: ManagedService[] = [];
     for (const svc of autoServices) {
@@ -3020,7 +3041,15 @@ export class ServiceManager extends EventEmitter {
     // just-started container was force-removed (exit 137), and the service
     // walked to `stopped` 30s later when the poller gave up on it — a dead
     // preview on every activation. Diagnosed live against a841e147.
-    void serializeStackOp(this.sessionId, () => this.startGatedBatch(names));
+    // The generation travels WITH the queued batch. Checking it in
+    // `releaseInstallGate` only proves the open was valid when it was
+    // scheduled, and the queue can hold this op for as long as the `compose up`
+    // ahead of it takes — long enough for a whole new reinstall cycle to
+    // re-gate these services and start stopping them. Without the recheck
+    // inside the batch, that queued start lands in the middle of the newer
+    // teardown, which is req 6 again one layer down. Review finding.
+    const generation = this._gateGeneration;
+    void serializeStackOp(this.sessionId, () => this.startGatedBatch(names, generation));
   }
 
   /**
@@ -3033,8 +3062,17 @@ export class ServiceManager extends EventEmitter {
    * map here rather than handing compose a service it no longer knows — an
    * `up <gone>` fails the whole batch and would latch the survivors to `error`.
    */
-  private async startGatedBatch(requested: string[]): Promise<void> {
+  private async startGatedBatch(requested: string[], generation: number): Promise<void> {
     if (this._disposed) return;
+    // Stale by the time the queue reached us — a newer gate cycle owns these
+    // services now. Its own release will start them.
+    if (this._gateGeneration !== generation) {
+      console.log(
+        `[compose:${this.sessionId}] dropping stale gated start for ${requested.join(", ")} — ` +
+        `a newer install gate cycle owns them`,
+      );
+      return;
+    }
     const names = requested.filter(n => this.services.has(n));
     if (names.length === 0) return;
     try {
@@ -3119,6 +3157,22 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
+   * How long the teardown may wait for THIS service's `compose stop`: whatever
+   * the service says a stop may legitimately take, plus
+   * {@link GATED_TEARDOWN_GRACE_MARGIN_MS}.
+   *
+   * Reading the service's own `stop_grace_period` is the whole point — a fixed
+   * bound is a guess about the user's compose file, and guessing low turns a
+   * healthy slow teardown into the docs/239 race. A service that declares
+   * nothing gets Compose's default, which is then a fact about the file rather
+   * than an assumption.
+   */
+  private gatedTeardownTimeoutMs(name: string): number {
+    const declared = this.services.get(name)?.stopGracePeriodMs;
+    return (declared ?? DEFAULT_STOP_GRACE_PERIOD_MS) + GATED_TEARDOWN_GRACE_MARGIN_MS;
+  }
+
+  /**
    * Stop gated containers so they relaunch fresh after re-install completes.
    *
    * Concurrent, not sequential: `releaseInstallGate` now waits for this, and
@@ -3143,15 +3197,13 @@ export class ServiceManager extends EventEmitter {
   private async stopGatedForReinstall(names: string[]): Promise<void> {
     await Promise.all(names.map(async (name) => {
       if (this._disposed) return;
+      const timeoutMs = this.gatedTeardownTimeoutMs(name);
       try {
-        const outcome = await settleOrTimeout(
-          this.compose.stop(name),
-          GATED_TEARDOWN_STOP_TIMEOUT_MS,
-        );
+        const outcome = await settleOrTimeout(this.compose.stop(name), timeoutMs);
         if (outcome === "timeout") {
           console.warn(
             `[compose:${this.sessionId}] gated teardown: 'compose stop ${name}' still running after ` +
-            `${Math.round(GATED_TEARDOWN_STOP_TIMEOUT_MS / 1000)}s — abandoning the wait so the ` +
+            `${Math.round(timeoutMs / 1000)}s (grace period + margin) — abandoning the wait so the ` +
             `install gate can reopen`,
           );
         }

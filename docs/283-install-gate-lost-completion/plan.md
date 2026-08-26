@@ -133,17 +133,51 @@ to settle*, so the gate logic needs no timeout of its own. Bounding
 `defaultComposeRunner` globally would be wrong: `up --build` legitimately runs
 for minutes.
 
-`GATED_TEARDOWN_STOP_TIMEOUT_MS` is 60s — far past `compose stop`'s own
-semantics (SIGTERM, 10s grace, SIGKILL), so a stop still running at that point
-is wedged rather than slow, and the normal case never reaches the bound. The
-docs/239 wait is therefore unchanged in every case it was written for.
+#### The bound is derived, not fixed
+
+The first attempt was a flat 60s, and review caught that it silently encoded
+Compose's **default** grace period as though it were the rule. `stop_grace_period`
+is a per-service key with **no upper bound**, and one ShipIt explicitly passes
+through (`plugin-compose.ts`). A repo declaring `stop_grace_period: 1m30s` would
+have had a perfectly healthy teardown declared wedged, reopening the gate into a
+container still shutting down — the docs/239 bug, caused by its own fix.
+
+So the parse now carries `stop_grace_period` through to `ManagedService`, and
+`gatedTeardownTimeoutMs(name)` is that service's own grace period plus
+`GATED_TEARDOWN_GRACE_MARGIN_MS` (60s of daemon/CLI slack, the part that really
+is ShipIt's to estimate). A service that declares nothing gets Compose's
+default — now a fact read from the file rather than an assumption about it.
+
+`parseStopGracePeriodMs` handles Go durations (`1m30s`, `500ms`) and Compose's
+bare-number-means-seconds form. A present-but-unrecognized value yields
+`UNKNOWN_STOP_GRACE_PERIOD_MS` (10 min), **not** the default: the two error
+directions are not symmetric, and under-estimating is what causes the docs/239
+race.
+
+#### What an abandoned stop actually does
 
 Abandoning the wait does **not** cancel the stop, and cancellation would not
-help: the operation is happening daemon-side, so killing the CLI process would
-not stop it. If such a stop lands after the gate reopened, it kills a
-freshly-started container, which surfaces as an ordinary non-zero exit and goes
-through the normal retry path — visible and self-correcting, and strictly better
-than the invisible permanent stop it replaces.
+help: the operation is daemon-side, so killing the CLI process would not stop
+it.
+
+An earlier draft of this document claimed such a late stop "surfaces as an
+ordinary non-zero exit and goes through the normal retry path — visible and
+self-correcting". **That was asserted, not verified, and it is not true in
+general.** Traced through the code:
+
+- A service that handles SIGTERM and exits **0** goes to `onExitedCleanly` and
+  is marked `stopped` (`service-poller.ts`). It is **not** retried.
+- A **non-zero** exit is retried only while the service is still in
+  `postGateServices`, and that window clears after `POST_GATE_STABLE_MS` of
+  continuous uptime (`service-retry-manager.ts`). A stop landing later latches
+  the service to `error`.
+
+So the honest claim is narrower: a late-landing stop leaves the service
+**visibly** `stopped` or `error` rather than invisibly held by a gate no code
+can reopen — recoverable by the user or the next reinstall, not always
+self-recovering. That is still strictly better than the permanent invisible
+wedge, and it is now bounded by the derived timeout above, which a healthy
+teardown does not reach.
 
 ### An older teardown opening a newer cycle's gate (req 6)
 
@@ -155,11 +189,44 @@ gate, starting the very services the newer teardown was still stopping.
 
 `_gateGeneration` fixes it: `holdGatedServicesForReinstall` stamps each teardown
 with a fresh generation, and a release callback opens only if its generation is
-still current. `start()` bumps it too — dropping the `_gatedTeardown` reference
-stops *us* from awaiting it, but an earlier release may already be awaiting it,
-and that callback must not open a gate over the partition a full restart is
-computing. `stop()` needs no bump because it sets `_disposed`, which `open()`
-already checks first.
+still current.
+
+**The generation must travel with the queued batch too.** Checking it in
+`releaseInstallGate` only proves the open was valid when it was *scheduled*.
+`startGatedServices` then queues the work on the stack-op queue
+(`serializeStackOp`), which can hold it for as long as the `compose up` ahead of
+it takes — long enough for a whole new reinstall cycle to re-gate those services
+and start stopping them. `startGatedBatch` therefore re-checks the generation it
+was given, and drops a stale batch. Without that, req 6 is violated one layer
+down; review found this after the first version of the fix.
+
+**`start()` bumps the generation before its first `await`.** It clears
+`_disposed` on its opening line, which reopens the only other guard a pending
+release callback has, and everything from there to the service-map rebuild is
+awaited. Bumping alongside the later `_gatedTeardown = null` left that whole
+window open. In practice the batch re-check above masks most of the damage, so
+this is defence in depth rather than a second live bug — but `_disposed` is not
+the protection the earlier draft claimed it was, and the bump costs nothing
+where it now sits.
+
+`stop()` needs no bump: it sets `_disposed`, which `open()` checks first, and
+nothing clears it until `start()` — which bumps.
+
+## Known separate route — the stack-op queue (NOT fixed here)
+
+`serializeStackOp` waits for the preceding op with no deadline, and a preceding
+`compose up --build` has deliberately no total deadline (only a silence
+timeout). A queue held indefinitely means the gated start never runs, and
+`startGatedServices` has by then already cleared `gatedServices` and marked the
+services `starting` — so the services are not started and the gate machinery no
+longer considers them held. The starting-watchdog eventually reports an error,
+which is visible, but it does not advance the queue.
+
+This is a third, independent route to "services never come back", in a third
+subsystem, and bounding it has its own hazard: the thing most likely to be
+holding the queue is a legitimate long image build. Recorded rather than fixed,
+the same way this document recorded the teardown route before it was closed.
+Raised by review on the teardown change.
 
 ## Key files
 
@@ -223,9 +290,22 @@ fails a specific assertion:
 - **`reopens the gate when the teardown's compose stop never returns`** (req 1)
   — the stop hangs forever. The gate must still be closed at 30s (so the
   docs/239 wait is not shortened) and open after the bound.
+- **`waits out a long declared stop_grace_period before abandoning the
+  teardown`** (req 4) — the service declares `stop_grace_period: 1m30s` and its
+  stop is slow but healthy. At 75s — past the old fixed 60s bound — the gate
+  must still be waiting, and it must open because the stop *landed*, not
+  because we gave up. Fails against a fixed bound.
 - **`does not let an older teardown open a newer cycle's gate`** (req 6) — two
   holds, both stops parked, both releases waiting. Teardown 1 lands first and
   must not start anything; teardown 2 lands and the gate opens exactly once.
+- **`drops a queued gated start that a newer gate cycle has superseded`** (req
+  6) — the stack queue is parked, cycle 1's release queues its batch behind it,
+  cycle 2 re-gates the service, and only then does the queue drain. The stale
+  batch must start nothing.
+
+No test covers the `start()`-bump window: with the batch re-check in place it
+has no observable effect, so any test for it would be asserting on the
+re-check instead. Said here rather than left to look like coverage.
 
 ### A test that could not fail
 

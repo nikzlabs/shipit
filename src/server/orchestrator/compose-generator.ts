@@ -68,6 +68,17 @@ export interface ComposeService {
   dependsOnInstall?: boolean;
   /** User-defined profiles from the compose file. */
   profiles?: string[];
+  /**
+   * `stop_grace_period` in milliseconds, when the service declares one.
+   *
+   * Retained because ShipIt has to WAIT for its own `docker compose stop` to
+   * land (docs/239/docs/283) and therefore has to know how long that may
+   * legitimately take. Compose's default is 10s but the key has no upper bound,
+   * so a fixed wait is an assumption about the user's file rather than a fact
+   * about it. `undefined` means the service declared nothing — the caller
+   * applies {@link DEFAULT_STOP_GRACE_PERIOD_MS}.
+   */
+  stopGracePeriodMs?: number;
   /** Raw volume entries from the compose file (for rewriting in override). */
   volumes?: unknown[];
   /**
@@ -437,6 +448,55 @@ export function extractContainerPort(portMapping: string): number | undefined {
  * Parse a docker-compose.yml file and extract service definitions.
  * Validates security constraints and returns parsed service info.
  */
+/** Compose's own default when a service declares no `stop_grace_period`. */
+export const DEFAULT_STOP_GRACE_PERIOD_MS = 10_000;
+
+/**
+ * What to assume when `stop_grace_period` is present but in a shape this parser
+ * does not recognize.
+ *
+ * Deliberately LARGE, because the two error directions are not symmetric. The
+ * only consumer waits for a `docker compose stop` to land before reopening the
+ * install gate (docs/283), so under-estimating means declaring a healthy
+ * teardown wedged and racing a `compose up` against a container still shutting
+ * down — the exact bug docs/239 exists to prevent. Over-estimating only delays a
+ * recovery that is rare to begin with. An unrecognized shape is almost
+ * certainly a duration we failed to read, not a tiny one.
+ */
+export const UNKNOWN_STOP_GRACE_PERIOD_MS = 600_000;
+
+/**
+ * Read a Compose `stop_grace_period` into milliseconds.
+ *
+ * Compose accepts a Go-style duration (`1m30s`, `500ms`, `2h`) and a bare
+ * number, which it reads as SECONDS. Returns `undefined` only when the key is
+ * absent — a present-but-unreadable value yields
+ * {@link UNKNOWN_STOP_GRACE_PERIOD_MS} rather than the default, so a duration
+ * form we do not handle can never shorten the caller's wait.
+ *
+ * Exported for its own tests: the failure mode this guards against is silent
+ * and only visible under a user file nobody in this repo writes.
+ */
+export function parseStopGracePeriodMs(raw: unknown): number | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) && raw >= 0 ? raw * 1000 : UNKNOWN_STOP_GRACE_PERIOD_MS;
+  }
+  if (typeof raw !== "string") return UNKNOWN_STOP_GRACE_PERIOD_MS;
+  const text = raw.trim();
+  if (text === "") return UNKNOWN_STOP_GRACE_PERIOD_MS;
+  // A bare number is seconds, per Compose.
+  if (/^\d+(\.\d+)?$/.test(text)) return Number(text) * 1000;
+  const unitMs: Record<string, number> = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
+  // Whole string must be unit-suffixed segments, or we do not understand it.
+  if (!/^(\d+(\.\d+)?(ms|s|m|h))+$/.test(text)) return UNKNOWN_STOP_GRACE_PERIOD_MS;
+  let total = 0;
+  for (const [, value, , unit] of text.matchAll(/(\d+(\.\d+)?)(ms|s|m|h)/g)) {
+    total += Number(value) * unitMs[unit];
+  }
+  return total;
+}
+
 export function parseComposeFile(
   composePath: string,
   opts: { dockerSocket: boolean; containEgress?: boolean; trustedOpsProxy?: boolean },
@@ -593,6 +653,8 @@ export function parseComposeFile(
       ? svc.profiles.map((p: unknown) => String(p))
       : undefined;
 
+    const stopGracePeriodMs = parseStopGracePeriodMs(svc.stop_grace_period);
+
     // Preserve raw volumes for rewriting in override
     const volumes = Array.isArray(svc.volumes) ? (svc.volumes as unknown[]) : undefined;
 
@@ -627,6 +689,7 @@ export function parseComposeFile(
       shipitPreview,
       dependsOnInstall,
       profiles,
+      stopGracePeriodMs,
       volumes,
       secrets,
       secretRequirements: requirements,
