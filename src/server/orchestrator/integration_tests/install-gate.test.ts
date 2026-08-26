@@ -2,8 +2,8 @@
  * Regression tests for the install gate (docs/162).
  *
  * The orchestrator brackets `_startAgentViaProxy` behind `runInstall`, whose
- * completion promise (`_installComplete`) gates the first turn. Two ways it can
- * settle without hanging:
+ * completion promise (`_installComplete`) gates the first turn. Three ways it
+ * can settle without hanging:
  *
  *  1. POST /install returns `{ skipped: true }` (marker already present) — the
  *     gate resolves directly from the HTTP response.
@@ -12,6 +12,11 @@
  *     before the resolver is armed). The first-connect `/install/status`
  *     resync must probe the worker, see it settled, and resolve the gate. Before
  *     the fix the resync ran only on RECONNECT, so a headless session hung.
+ *  3. The event is lost while the install is still RUNNING, on a stream that
+ *     never reconnects (docs/283). Both probes above have already had their
+ *     turn, so only the periodic probe `awaitInstallCompletion` runs for the
+ *     whole wait can settle the gate. This is the shape that wedged the
+ *     ServiceManager install gate and left `preview: auto` services stopped.
  *
  * The docs/148 lockfile-keyed fast path that originally motivated a third,
  * synchronous `{ completed: true }` resolution was removed in docs/183 Phase 1,
@@ -55,6 +60,44 @@ interface StubOpts {
   statusAfterPost?: StubOpts["status"];
   /** When set, broadcast a real SSE `install_done` this many ms after POST /install is served. */
   installDoneAfterPostMs?: number;
+  /**
+   * Models a LOST `install_done` on a still-open SSE stream (docs/283): the
+   * first N post-POST `/install/status` probes report `running: true`, and
+   * every probe after that reports a settled successful install. Counting
+   * probes rather than waiting on the clock keeps the test timing-independent
+   * while still proving the recovery came from a probe the runner issued
+   * ITSELF, not from the single post-POST resync.
+   */
+  runningForStatusProbes?: number;
+  /**
+   * Hold the FIRST `/install/status` response open until the test releases it,
+   * then answer `{running: false, lastResult: {ok: true}}`. Every later probe
+   * answers `{running: true}` immediately. Lets a test park one probe in flight
+   * across an install-generation boundary.
+   */
+  holdFirstStatus?: boolean;
+}
+
+interface StubWorker {
+  app: FastifyInstance;
+  url: string;
+  agentStarted: () => boolean;
+  installPosted: () => boolean;
+  installDoneSent: () => boolean;
+  /** `/install/status` requests served since POST /install returned. */
+  postPostStatusProbes: () => number;
+  /** How many times the runner has opened the SSE stream. */
+  sseConnects: () => number;
+  /** Let the held first `/install/status` response through (`holdFirstStatus`). */
+  releaseHeldStatus: () => void;
+}
+
+/**
+ * Reach the runner's private probe cadence. Tests only: the production value
+ * is 30s, which no test can wait for.
+ */
+function setProbeInterval(runner: ContainerSessionRunner, ms: number): void {
+  (runner as unknown as { _installProbeIntervalMs: number })._installProbeIntervalMs = ms;
 }
 
 /**
@@ -64,11 +107,14 @@ interface StubOpts {
  * `install_done` — either from the HTTP response or the first-connect
  * `/install/status` resync.
  */
-async function startStubWorker(opts: StubOpts): Promise<{ app: FastifyInstance; url: string; agentStarted: () => boolean; installPosted: () => boolean; installDoneSent: () => boolean }> {
+async function startStubWorker(opts: StubOpts): Promise<StubWorker> {
   const app = Fastify();
   let agentStarted = false;
   let installPosted = false;
   let installDoneSent = false;
+  let postPostStatusProbes = 0;
+  let sseConnects = 0;
+  let releaseHeldStatus: () => void = () => {};
   const sseClients = new Set<NodeJS.WritableStream>();
 
   app.post("/install", async () => {
@@ -84,7 +130,21 @@ async function startStubWorker(opts: StubOpts): Promise<{ app: FastifyInstance; 
     }
     return opts.installResponse;
   });
-  app.get("/install/status", async () => (installPosted && opts.statusAfterPost ? opts.statusAfterPost : opts.status));
+  app.get("/install/status", async () => {
+    if (!installPosted) return opts.status;
+    postPostStatusProbes += 1;
+    if (opts.holdFirstStatus) {
+      if (postPostStatusProbes > 1) return { running: true, lastResult: null };
+      await new Promise<void>((r) => { releaseHeldStatus = r; });
+      return { running: false, lastResult: { ok: true } };
+    }
+    if (opts.runningForStatusProbes !== undefined) {
+      return postPostStatusProbes <= opts.runningForStatusProbes
+        ? { running: true, lastResult: null }
+        : { running: false, lastResult: { ok: true } };
+    }
+    return opts.statusAfterPost ?? opts.status;
+  });
   app.get("/agent/status", async () => ({ running: agentStarted }));
   app.post("/agent/start", async () => { agentStarted = true; return { started: true }; });
   app.post("/agent/kill", async () => ({ ok: true }));
@@ -92,6 +152,7 @@ async function startStubWorker(opts: StubOpts): Promise<{ app: FastifyInstance; 
   // (terminal/start, file-watcher, preview, secrets) so they don't 404-noise.
   app.post("/*", async () => ({ ok: true }));
   app.get("/events", (request, reply) => {
+    sseConnects += 1;
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -112,11 +173,29 @@ async function startStubWorker(opts: StubOpts): Promise<{ app: FastifyInstance; 
     agentStarted: () => agentStarted,
     installPosted: () => installPosted,
     installDoneSent: () => installDoneSent,
+    postPostStatusProbes: () => postPostStatusProbes,
+    sseConnects: () => sseConnects,
+    releaseHeldStatus: () => { releaseHeldStatus(); },
   };
 }
 
+/** Resolves to true if `p` is still pending after `ms`. */
+async function stillPending(p: Promise<unknown>, ms: number): Promise<boolean> {
+  const PENDING = "pending";
+  // A rejection is a settlement too — either way `p` is no longer pending.
+  const settle = async (): Promise<string> => {
+    try { await p; } catch { /* settled by rejecting */ }
+    return "settled";
+  };
+  const raced = await Promise.race([
+    settle(),
+    new Promise<string>((r) => setTimeout(() => r(PENDING), ms)),
+  ]);
+  return raced === PENDING;
+}
+
 describe("Integration: install gate — resolution without SSE install_done (docs/162)", () => {
-  let stub: { app: FastifyInstance; url: string; agentStarted: () => boolean; installPosted: () => boolean; installDoneSent: () => boolean } | null = null;
+  let stub: StubWorker | null = null;
 
   afterEach(async () => {
     if (stub) { await stub.app.close(); stub = null; }
@@ -214,6 +293,151 @@ describe("Integration: install gate — resolution without SSE install_done (doc
       // The gate must have stayed open until the worker actually finished —
       // resolving before install_done is exactly the early-resolve bug.
       expect(stub.installDoneSent()).toBe(true);
+    } finally {
+      runner.dispose({ force: true });
+    }
+  });
+
+  it("recovers an install_done lost MID-install, with no SSE reconnect (docs/283)", async () => {
+    // The production wedge. The post-POST resync fires while the install is
+    // genuinely running, correctly sees `running: true`, and waits for the real
+    // event — which is then lost. The SSE stream never drops, so `onSseOpen`
+    // never fires again and the old code had no third chance: `await completion`
+    // was unbounded, so `runInstall` never returned, `reinstallForDepChange`'s
+    // `finally` never ran, and the gated `preview: auto` services stayed held
+    // and stopped for the rest of the session.
+    stub = await startStubWorker({
+      installResponse: { started: true },
+      status: { running: false, lastResult: null },  // pre-POST: worker hasn't seen it
+      runningForStatusProbes: 2,                     // first two post-POST probes: still installing
+      // No `installDoneAfterPostMs` — the event is NEVER delivered.
+    });
+
+    const runner = new ContainerSessionRunner({
+      sessionId: "gate-lost-event-mid-install",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl: stub.url,
+    });
+    setProbeInterval(runner, 50);
+
+    try {
+      const result = await withTimeout(runner.runInstall(["npm install"]), 5000, "runInstall (lost mid-install event)");
+      expect(result.ok).toBe(true);
+      // Nothing but the runner's own periodic probe could have resolved this.
+      expect(stub.installDoneSent()).toBe(false);
+      expect(stub.sseConnects()).toBe(1);
+      // >= 3: the post-POST resync plus at least two more the poll issued. The
+      // stub reports `running: true` for the first two, so a single probe (the
+      // pre-fix behaviour) could not have settled the gate.
+      expect(stub.postPostStatusProbes()).toBeGreaterThanOrEqual(3);
+    } finally {
+      runner.dispose({ force: true });
+    }
+  });
+
+  it("releases the reinstall bracket's gate after an install_done lost mid-reinstall (docs/283)", async () => {
+    // The bracket half of the same incident. `holdGatedServicesForReinstall`
+    // stops the `preview: auto` services (SIGTERM → SIGKILL → exit 137), and
+    // ONLY `setInstallRunning(false)` starts them again — it lives in
+    // `reinstallForDepChange`'s `finally`, so a `runInstall` that never returns
+    // leaves the services in `gatedServices`, where the poller and
+    // `handleNonZeroExit` deliberately ignore them, permanently.
+    //
+    // Scope, deliberately: this asserts the BRACKET reaches its `finally` and
+    // releases as a success. It uses a recorder rather than a real
+    // ServiceManager (which needs Docker), so it does NOT observe
+    // `gatedServices`, `_gatedTeardown`, or a service actually restarting —
+    // `service-manager.test.ts` covers the release itself.
+    stub = await startStubWorker({
+      installResponse: { started: true },
+      status: { running: false, lastResult: null },
+      runningForStatusProbes: 2,
+    });
+
+    const runner = new ContainerSessionRunner({
+      sessionId: "gate-reopen-after-lost-event",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl: stub.url,
+    });
+    setProbeInterval(runner, 50);
+
+    // Stand in for the ServiceManager: `reinstallForDepChange` uses nothing of
+    // it but the gate bracket, and a real one needs Docker.
+    const gate: { running: boolean; failed?: boolean }[] = [];
+    const priv = runner as unknown as {
+      _serviceManager: { setInstallRunning(running: boolean, opts?: { failed?: boolean }): void };
+      reinstallForDepChange(): Promise<void>;
+    };
+    priv._serviceManager = {
+      setInstallRunning: (running, opts) => {
+        gate.push({ running, ...(opts?.failed !== undefined ? { failed: opts.failed } : {}) });
+      },
+    };
+    runner.setDepReinstallInputs(["npm install"], ["package-lock.json"]);
+
+    try {
+      await withTimeout(priv.reinstallForDepChange(), 5000, "reinstallForDepChange");
+      // Held, then RELEASED as a success — the release is what starts the
+      // gated services again.
+      expect(gate).toEqual([{ running: true }, { running: false, failed: false }]);
+      expect(stub.installDoneSent()).toBe(false);
+    } finally {
+      runner.dispose({ force: true });
+    }
+  });
+
+  it("does not let a probe outlive its install and resolve the NEXT one (docs/283)", async () => {
+    // Polling for the whole wait means a probe can still be awaiting HTTP when
+    // the install it asked about settles by SSE and a new install arms a fresh
+    // resolver. Every guard in `resyncInstallStateAfterReconnect` runs BEFORE
+    // that await, so the late answer — truthfully "settled", but about the
+    // PREVIOUS install — would resolve the current one. That is the docs/183
+    // early-resolve bug displaced by one generation: install B's gate opens
+    // while npm is still running, and the overlay publish hook snapshots a
+    // not-yet-installed dep dir.
+    stub = await startStubWorker({
+      installResponse: { started: true },
+      status: { running: false, lastResult: null },
+      holdFirstStatus: true,   // park install A's post-POST probe in flight
+    });
+
+    const runner = new ContainerSessionRunner({
+      sessionId: "gate-stale-probe-across-generations",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl: stub.url,
+    });
+    // Long enough that only the post-POST probes fire — the race under test is
+    // about a probe's LIFETIME, not the cadence.
+    setProbeInterval(runner, 5000);
+    const priv = runner as unknown as { signalInstallComplete(ok?: boolean): void };
+
+    try {
+      // Install A: the stub holds its first probe open, so one probe belonging
+      // to generation A is now parked in flight.
+      const runA = runner.runInstall(["npm install"]);
+      await waitFor(() => stub!.postPostStatusProbes() >= 1, 3000, "install A probe in flight");
+      // A's real SSE `install_done` lands and settles it — while that probe is
+      // still out there.
+      priv.signalInstallComplete(true);
+      expect((await withTimeout(runA, 3000, "runInstall A")).ok).toBe(true);
+
+      // Install B starts and arms a new resolver. Its own probes truthfully
+      // report `running: true`, so nothing legitimate can settle it.
+      const probesBeforeB = stub.postPostStatusProbes();
+      const runB = runner.runInstall(["npm install"]);
+      await waitFor(() => stub!.postPostStatusProbes() > probesBeforeB, 3000, "install B probe issued");
+
+      // Now A's probe finally answers `{running: false, lastResult: {ok: true}}`.
+      stub.releaseHeldStatus();
+
+      // B must still be waiting: that answer was never about B.
+      expect(await stillPending(runB, 300)).toBe(true);
+
+      priv.signalInstallComplete(true);   // B's real event, for a clean teardown
+      await withTimeout(runB, 3000, "runInstall B");
     } finally {
       runner.dispose({ force: true });
     }

@@ -92,6 +92,18 @@ const INSTALL_POST_TIMEOUT_MS = 180_000;
 const PLUGIN_PREPARE_TIMEOUT_MS = 30_000;
 
 /**
+ * How often to re-probe `/install/status` while `runInstall` waits for the
+ * SSE-delivered `install_done` / `install_error`.
+ *
+ * The wait has no deadline and must not get one — a slow `npm install` is not
+ * a fault — so this poll is its only other way out. Without it a lost event
+ * left `_installInFlight` true forever, and `setInstallRunning(false)` lives in
+ * `reinstallForDepChange`'s `finally`: the `preview: auto` services torn down
+ * for the reinstall were never started again. See docs/283 for the incident.
+ */
+const INSTALL_STATUS_PROBE_INTERVAL_MS = 30_000;
+
+/**
  * How an in-flight install resolved — the shape the SSE-backed completion
  * promise carries.
  *
@@ -1786,6 +1798,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * overlay publish hook snapshotted a not-yet-installed dep dir.
    */
   private _installPostIssued = false;
+  /**
+   * Cadence of the completion-wait probe ({@link INSTALL_STATUS_PROBE_INTERVAL_MS}).
+   * An instance field rather than the constant directly so a test can drive the
+   * lost-event recovery without waiting 30 real seconds for it.
+   */
+  private _installProbeIntervalMs = INSTALL_STATUS_PROBE_INTERVAL_MS;
 
   /**
    * #1622 — dependency-change auto-reinstall state. `_depReinstallCommands` is
@@ -1990,7 +2008,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // real event); if the install already settled and the event was
       // lost, it resolves the gate deterministically.
       void this.resyncInstallStateAfterReconnect();
-      const outcome = await completion;
+      const outcome = await this.awaitInstallCompletion(completion);
       // An install that ran and succeeded answers the gap — but only if it RAN.
       // `unverified` marks the resolutions synthesized from no observation
       // (reconnect resync with no last result, dispose), which resolve
@@ -2329,6 +2347,45 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   /**
+   * Wait for the install completion promise, re-probing `/install/status` on a
+   * fixed cadence for as long as the wait is open.
+   *
+   * The probe is the deterministic recovery for a lost `install_done` /
+   * `install_error` — see {@link INSTALL_STATUS_PROBE_INTERVAL_MS} for why the
+   * SSE-open-driven resync is not enough on its own. Deliberately NOT a
+   * deadline: the wait ends only when the worker says the install settled (or
+   * `dispose()` resolves it), so a slow install keeps running.
+   *
+   * Re-armed after each probe RESOLVES rather than on a fixed interval, so a
+   * wedged worker whose `/install/status` hangs cannot pile up overlapping
+   * probes. `resyncInstallStateAfterReconnect` swallows its own probe failures
+   * and `signalInstallComplete` is idempotent, so a probe that races the real
+   * event is harmless.
+   */
+  private async awaitInstallCompletion(completion: Promise<InstallCompletion>): Promise<InstallCompletion> {
+    let waiting = true;
+    let timer: NodeJS.Timeout | null = null;
+    const arm = (): void => {
+      timer = setTimeout(() => {
+        void (async () => {
+          await this.resyncInstallStateAfterReconnect();
+          if (waiting && !this._disposed) arm();
+        })();
+      }, this._installProbeIntervalMs);
+      // Never hold the process open for a probe — the install itself is what
+      // the caller is waiting on, not this.
+      timer.unref?.();
+    };
+    arm();
+    try {
+      return await completion;
+    } finally {
+      waiting = false;
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
    * Re-poll the worker for its current install state when an SSE stream opens
    * (first connect or reconnect). If the worker finished install while we had
    * no attached consumer — or the `install_done`/`install_error` event raced
@@ -2340,6 +2397,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * for the steady-state reconnect-during-idle case). Idempotent against the
    * real event and the HTTP-response fast-path resolution — `signalInstallComplete`
    * only fires once.
+   *
+   * Despite the name, the SSE-open path is no longer the only caller:
+   * {@link awaitInstallCompletion} runs this on a cadence for the whole
+   * completion wait, which is what makes the lost-event recovery independent of
+   * whether the stream ever reconnects.
    */
   private async resyncInstallStateAfterReconnect(): Promise<void> {
     if (!this._installInFlight || this._disposed) return;
@@ -2349,6 +2411,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // `runInstall` re-runs this resync right after the POST lands, so the
     // lost-event recovery is preserved without racing the POST.
     if (!this._installPostIssued) return;
+    // The install cycle this probe is asking ABOUT. Every guard above tests
+    // state that can change while the HTTP request is in flight, and a probe
+    // outlives the completion it was issued for: it can return after its own
+    // install settled via SSE and a NEXT install armed a new resolver, at which
+    // point resolving "the current" completion resolves the wrong one — the
+    // docs/183 early-resolve bug, one generation over. The promise identity is
+    // the generation: `signalInstallComplete` nulls it and `runInstall` arms a
+    // fresh one, so an unchanged reference is proof this answer is still ours.
+    const cycle = this._installComplete;
     let status: { running?: boolean; lastResult?: { ok: boolean; message?: string; command?: string } };
     try {
       status = await workerGet(this.workerUrl, "/install/status") as typeof status;
@@ -2361,6 +2432,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       );
       return;
     }
+    // Re-test what the await invalidated. Dropping a late answer is always
+    // safe: if an install really is still in flight, the next probe asks again.
+    if (this._disposed || this._installComplete !== cycle) return;
     if (status.running) return; // still installing — wait for the real event
     const last = status.lastResult;
     if (!last) {
