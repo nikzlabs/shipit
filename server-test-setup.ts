@@ -9,6 +9,7 @@ import path from "node:path";
 import { beforeEach } from "vitest";
 import { credentialStorageEnvNames } from "./src/server/shared/catalogue/index.js";
 import { CREDENTIAL_ROUTE_ENV_PREFIX } from "./src/server/shared/types/domain-types/credential-route.js";
+import { installShipitConfigFixtureGuard } from "./src/server/shared/shipit-config-test-guard.js";
 
 /**
  * **No server test may write the git config the SESSION ITSELF is using.**
@@ -225,3 +226,21 @@ function stripCredentialEnv(): void {
 
 stripCredentialEnv();
 beforeEach(stripCredentialEnv);
+
+/**
+ * planning#480 — **a `shipit.yaml` fixture that does not parse must fail the
+ * test that wrote it.**
+ *
+ * Same shape as the strips above: every production reader of the config wraps
+ * `resolveShipitConfig` in a try/catch and falls back to a conservative empty
+ * result, correctly, so a fixture the parser REJECTS silently disables the check
+ * the test exists to exercise — and the test still passes. Three dep-dir tests
+ * were green that way until planning#480 needed one of them to discriminate.
+ *
+ * Per-file discipline cannot close it, and a `writeShipitConfig()` helper would
+ * only guard fixtures that adopt it. Hooking the write catches every fixture,
+ * including interpolated ones no source scan can evaluate. A test that means to
+ * write an invalid config wraps it in `expectInvalidShipitConfig`. Full argument:
+ * `shared/shipit-config-test-guard.ts`.
+ */
+installShipitConfigFixtureGuard();

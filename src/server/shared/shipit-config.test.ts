@@ -9,6 +9,7 @@ import {
   ShipitConfigError,
   AGENT_DEFAULTS,
 } from "./shipit-config.js";
+import { expectInvalidShipitConfig } from "./shipit-config-test-guard.js";
 
 // ---------------------------------------------------------------------------
 // parseShipitConfig (unit tests — no filesystem)
@@ -567,7 +568,11 @@ describe("resolveShipitConfig", () => {
 
   it("propagates ShipitConfigError", () => {
     const dir = setup();
-    fs.writeFileSync(path.join(dir, "shipit.yaml"), "agent: bad_value\n");
+    // The rejected config IS the fixture here, so the planning#480 write guard
+    // is suspended for it — see `shipit-config-test-guard.ts`.
+    expectInvalidShipitConfig(() => {
+      fs.writeFileSync(path.join(dir, "shipit.yaml"), "agent: bad_value\n");
+    });
     expect(() => resolveShipitConfig(dir)).toThrow(ShipitConfigError);
   });
 

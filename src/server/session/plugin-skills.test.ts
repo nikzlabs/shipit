@@ -21,6 +21,7 @@ import {
 import { HARNESSES } from "../shared/catalogue/harnesses.js";
 import { pluginSkillLabel } from "../shared/plugin-skill-marker.js";
 import { scanSkillsDir } from "../shared/skill-scan.js";
+import { expectInvalidShipitConfig } from "../shared/shipit-config-test-guard.js";
 
 let tmp: string;
 let workspaceDir: string;
@@ -502,7 +503,9 @@ describe("resolvePluginSkillSources", () => {
   });
 
   it("survives a malformed manifest rather than failing the session", () => {
-    fs.writeFileSync(path.join(checkoutDir, "shipit.yaml"), "exports: [unclosed\n  - broken");
+    expectInvalidShipitConfig(() => {
+      fs.writeFileSync(path.join(checkoutDir, "shipit.yaml"), "exports: [unclosed\n  - broken");
+    });
     expect(resolvePluginSkillSources([{ plugin: "p", from: "t", alias: "p" }], () => ({ dir: checkoutDir, repo: "tools" }))).toEqual([]);
   });
 });

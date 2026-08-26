@@ -262,6 +262,22 @@ is deliberately lexical: `npm-workspace-hoist.ts`'s module doc.
   predicate both the trust side and the write side apply.
 - `src/server/session/npm-workspace-hoist.ts` — the planning#480 hoist exemption
   and why it cannot weaken either side.
+- `src/server/shared/shipit-config-test-guard.ts` — the write hook that stops a
+  malformed `shipit.yaml` fixture from silently disabling any of these checks.
+  Installed suite-wide by `server-test-setup.ts`; `expectInvalidShipitConfig` is
+  the opt-out for a test whose point IS the invalid config.
+
+**A note on how the checks above are tested.** Every reader of the config here
+catches `ShipitConfigError` and falls back to a conservative empty result — right
+in production, and the reason a malformed *fixture* is invisible: the check
+evaluates nothing and the test still passes. Three of the tests in
+`install-controller-dep-dir-outcome.test.ts` were green that way, because YAML
+parses a bare `true` as a boolean and `agent.install: [- true]` is therefore
+rejected. Auditing for more of them by reading test sources cannot work, since
+fixtures are built by interpolation; validating every fixture at the moment it is
+written can, and does both jobs at once. Running the full suite behind that hook
+found no further vacuous fixtures and eleven tests that write a malformed config
+deliberately, now marked as such.
 - `src/server/orchestrator/session-worker-uid.ts` — `shareTreeOnce` carries the
   same one-shot hazard and is not wrong today; the docstring says when it becomes
   wrong and what it would cost to rotate.

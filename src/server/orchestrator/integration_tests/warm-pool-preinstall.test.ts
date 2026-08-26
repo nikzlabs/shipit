@@ -19,6 +19,7 @@ import { EventEmitter } from "node:events";
 import { SessionWorker } from "../../session/session-worker.js";
 import { runPreInstall } from "../warm-pool-manager.js";
 import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams, PermissionMode } from "../../shared/types.js";
+import { expectInvalidShipitConfig } from "../../shared/shipit-config-test-guard.js";
 
 class FakeAgent extends EventEmitter<AgentProcessEvents> implements AgentProcess {
   readonly agentId: AgentId = "claude";
@@ -98,7 +99,9 @@ describe("warm-pool runPreInstall", () => {
   });
 
   it("doesn't throw when shipit.yaml is malformed (best-effort)", async () => {
-    fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), "agent: [not, valid, schema\n");
+    expectInvalidShipitConfig(() => {
+      fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), "agent: [not, valid, schema\n");
+    });
     // The helper must swallow the parse error — a broken shipit.yaml in the
     // warm path must NOT bring down the warming flow. The on-activation
     // path will surface it via the standard `compose_error` channel.

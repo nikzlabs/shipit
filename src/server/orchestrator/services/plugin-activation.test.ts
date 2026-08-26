@@ -19,6 +19,7 @@ import {
 } from "./plugin-activation.js";
 import { createStagedGenerationGate } from "./plugin-preflight.js";
 import { readActiveGeneration } from "../plugin-generations.js";
+import { expectInvalidShipitConfig } from "../../shared/shipit-config-test-guard.js";
 
 let tmp: string;
 let sessionDir: string;
@@ -179,7 +180,9 @@ describe("activateDeclaredPlugins", () => {
   });
 
   it("a malformed shipit.yaml is not fatal", async () => {
-    writeConfig("plugins: [unclosed\n  - broken");
+    expectInvalidShipitConfig(() => {
+      writeConfig("plugins: [unclosed\n  - broken");
+    });
     // Resolves with an empty outcome map — nothing to activate, nothing thrown.
     await expect(activateDeclaredPlugins("sess", workspaceDir, deps())).resolves.toEqual(new Map());
   });
