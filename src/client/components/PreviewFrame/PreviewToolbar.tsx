@@ -200,7 +200,18 @@ export function PreviewToolbar({
           </DropdownMenu>
         ) : (
           <>
-            <StatusDot status={isRunning || portLabel ? "success" : "info"} />
+            {/* `activeStatus` first, exactly as the selector branch above uses
+                it: with a single service the pane can be parked on one that is
+                stopped or starting (planning#478), and a green dot beside a
+                "not running" overlay contradicts it. `isRunning || portLabel`
+                stays the fallback for a preview no service row describes. */}
+            <StatusDot
+              status={
+                activeStatus !== "running"
+                  ? statusToDotVariant(activeStatus)
+                  : isRunning || portLabel ? "success" : "info"
+              }
+            />
             {/* Wrapped, not bare: a raw text node cannot carry the hide class,
                 so this label sat outside the collapse ladder and a long service
                 name could still clip the row after every stage was spent. */}

@@ -215,14 +215,33 @@ describe("preview target memory (planning#478)", () => {
       expect(usePreviewStore.getState().selectedPort).toBe(4000);
     });
 
+    it("holds the recorded port through a service-list gap", () => {
+      // `service_list` has not landed (a restore, a reconnect). The list is
+      // explicitly non-authoritative there, so surrendering the port would let
+      // `status.port` take the pane — the rejected fallback by the back door.
+      const web = svc("web", 3000);
+      usePreviewStore.getState().setServices([web, svc("api", 4000)]);
+      usePreviewStore.getState().setSelectedPort(4000);
+
+      usePreviewStore.getState().setServices([]);
+      usePreviewStore.getState().setStatus(statusFor(web));
+      expect(usePreviewStore.getState().selectedPort).toBe(4000);
+      expect(usePreviewStore.getState().previewTargetMemory["session-a"]).toEqual({
+        service: "api",
+        port: 4000,
+      });
+    });
+
     it("falls back only when the remembered service has no port to wait on", () => {
-      // A worker declares no ports, so there is nothing for the pane to show.
+      // Defensive: a worker declares no ports, so there is nothing for the pane
+      // to show. It cannot be reached by pinning (which resolves a service FROM
+      // a port), so the memory is written directly.
       usePreviewStore.getState().setServices([
         svc("web", 3000),
         { name: "worker", status: "running", preview: "manual" },
       ]);
       usePreviewStore.setState({
-        previewTargetMemory: { "session-a": { service: "worker", port: 0 } },
+        previewTargetMemory: { "session-a": { service: "worker", port: 4000 } },
       });
       usePreviewStore.getState().setStatus(statusFor(svc("web", 3000)));
       expect(usePreviewStore.getState().selectedPort).toBeNull();
@@ -318,10 +337,11 @@ describe("preview target memory (planning#478)", () => {
       expect(usePreviewStore.getState().selectedPort).toBe(3000);
     });
 
-    it("keeps the memory through an empty list, which is not authoritative", () => {
+    it("keeps the memory AND the port through an empty list, which is not authoritative", () => {
       const web = svc("web", 3000);
       const api = svc("api", 4000);
       usePreviewStore.getState().setServices([web, api]);
+      usePreviewStore.getState().setStatus(statusFor(web, api));
       usePreviewStore.getState().setSelectedPort(4000);
 
       usePreviewStore.getState().setServices([]);
@@ -329,6 +349,10 @@ describe("preview target memory (planning#478)", () => {
         service: "api",
         port: 4000,
       });
+      // Asserting the port too, not just the memory: the pane reads
+      // `selectedPort`, so a memory that survives while the port is surrendered
+      // still puts the other service on screen.
+      expect(usePreviewStore.getState().selectedPort).toBe(4000);
     });
 
     it("setSelectedPort(null) forgets the choice and re-pins the default", () => {

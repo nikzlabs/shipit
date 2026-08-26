@@ -214,23 +214,48 @@ Two rules make the pane hold still:
    authoritative (non-empty) `service_list` no longer declares that name — a
    rename or a removal, after which the pane re-pins.
 
-What the wait costs, and what pays for it:
+What the wait costs, and what pays for it. Every item below is a place where a
+port-shaped assumption survived the rewrite and had to be dug out; four were
+found by adversarial review rather than by the first pass.
 
+- **"Nothing is running" must not discard the port.** `activePort` was gated on
+  `preview.running`, which is the *aggregate* — so the commonest restart of all,
+  the one where the parked service is the only preview service, zeroed the port
+  and produced the generic "No preview running". The pane lost the very identity
+  the wait exists to state. A retained `selectedPort` now outranks the aggregate.
+- **The pane's service is resolved by NAME, like the store's.** Resolving the row
+  by port instead disagrees with the store the moment two services declare the
+  same port — ShipIt warns about that but permits it, and `find` returns whoever
+  is listed first. The pane could then sit forever on "A is not running" while
+  the remembered B served that very port.
+- **A missing row is a gap, not an answer.** `resolvePreviewTarget` holds the
+  *recorded* port when the service list has no row at all — the list is empty in
+  the window before `service_list` lands, and surrendering the port there drops
+  the pane onto `status.port`, reintroducing the fallback through the back door.
+  The waiting predicate is keyed on the remembered name for the same reason.
 - **The pane must not probe a port that answers nothing.** `usePreviewHealthPoller`
   returns early while waiting. Without that it would poll for its full 15s
   deadline and then create the slot *anyway* — a 502 document parked behind the
   overlay, and a created slot is only ever promoted afterwards, never re-probed,
   so it would still be there when the service came back.
-- **The wait must end on a live page.** The slot is deliberately retained
-  through the outage, so promoting it would re-show the document from before the
-  service went down. `PreviewFrame` bumps `refreshKey` on the
-  waiting → running edge, reusing the toolbar-refresh path.
-- **The wait must be escapable.** The toolbar's port list is built from
-  `detectedPorts`, which holds running ports only, so the parked service has no
-  row of its own — and with a single other service up, the selector would not
-  render at all. `allPorts` therefore gains the active service's own row, and
-  `showSelector` opens on `allPorts.length > 1`. `activeStatus` comes from the
-  service rather than from that list, so the dot reads stopped, not green.
+- **The wait must end on a live page — and only for the slot that waited.** The
+  slot is deliberately retained through the outage, so promoting it would
+  re-show the document from before the service went down; `PreviewFrame` bumps
+  `refreshKey` on the recovery edge, reusing the toolbar-refresh path. That edge
+  is recorded as the waiting **slot key**, never a bare boolean: a key carries
+  the session, and switching from a waiting session A straight to a running
+  session B reads as "was waiting, isn't now" — reloading B's retained iframe
+  and destroying exactly the in-page state the pool exists to keep. The edge is
+  also `running` rather than "no longer waiting", so a row that blinks out of
+  the list is not mistaken for a recovery.
+- **The wait must be escapable, and must not lie.** The toolbar's port list is
+  built from `detectedPorts`, which holds running ports only, so the parked
+  service has no row of its own — and with a single other service up, the
+  selector would not render at all. `allPorts` therefore gains the active
+  service's own row, and `showSelector` opens on `allPorts.length > 1`.
+  `activeStatus` comes from the service rather than from that list — in *both*
+  toolbar branches, since the selector-less one hard-coded a success dot from
+  `isRunning` and would show green beside a "not running" overlay.
 
 ### Session switch flow (session-actions.ts)
 

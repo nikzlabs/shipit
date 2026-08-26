@@ -507,9 +507,16 @@ function resolvePreviewTarget(
     // keeps its port while stopped, so the pane can WAIT for it. Handing the
     // user a different app for the duration is the replacement this exists to
     // stop; `PreviewFrame` renders a waiting state over the dormant slot
-    // instead. A service with no port at all (a worker) has nothing to show, so
-    // that alone falls back.
-    return { selectedPort: svc?.port ?? null };
+    // instead.
+    //
+    // With NO row at all, the recorded port is held rather than surrendered.
+    // The list is empty in the gap before `service_list` lands (and `forget`
+    // above deliberately treats that as non-authoritative), and returning null
+    // there would drop the pane onto `status.port` — the rejected fallback,
+    // arriving through the back door. A service with no port at all (a worker)
+    // is the one case with nothing to wait on; it cannot be pinned in the first
+    // place, since pinning resolves a service FROM a port.
+    return { selectedPort: svc ? svc.port ?? null : entry.port };
   }
   if (entry) {
     // Port-only memory: a preview no Compose service owns (Vite / `managed`).

@@ -144,8 +144,15 @@ export function PreviewFrame({
     }
     : null;
 
-  // Compute active port early so hooks can reference it (0 when not running)
-  const activePort = preview?.running ? (selectedPort ?? preview.port) : 0;
+  // Compute active port early so hooks can reference it (0 when not running).
+  //
+  // A retained `selectedPort` outranks "nothing is running" (planning#478). The
+  // commonest restart of all is the one where the parked service is the ONLY
+  // preview service: everything is then down, and discarding the port here
+  // would lose the very identity the pane needs to say what it is waiting for —
+  // the user would get the generic "No preview running" instead of "api is not
+  // running", for exactly the case this feature exists to handle.
+  const activePort = preview?.running ? (selectedPort ?? preview.port) : (selectedPort ?? 0);
 
   // Host + protocol for container-mode subdomain URLs (e.g. "localhost:3001").
   // On a Tailscale MagicDNS deploy this routes previews through the sslip host
@@ -170,17 +177,35 @@ export function PreviewFrame({
   // disagree. The health poller compares it with a retained slot's recorded
   // owner and drops the slot when the port changed hands (planning#394).
   const services = usePreviewStore((s) => s.services);
-  const activeServiceState = activePort ? services.find((s) => s.port === activePort) : undefined;
+  /**
+   * The service this session's pane is parked on, by NAME — the same identity
+   * the store resolves `selectedPort` from. Resolving the row by port alone
+   * would disagree with it: ShipIt warns about two project services declaring
+   * the same port but permits it, and `find` then returns whichever is listed
+   * first. That is how the pane could sit forever saying "A is not running"
+   * while the remembered B served that very port.
+   */
+  const targetServiceName = usePreviewStore((s) => (sessionId ? s.previewTargetMemory[sessionId]?.service : undefined));
+  const activeServiceState = activePort
+    ? (targetServiceName
+      ? services.find((s) => s.name === targetServiceName && s.port === activePort)
+      : undefined) ?? services.find((s) => s.port === activePort)
+    : undefined;
   const activeService = activeServiceState?.name;
 
   /**
-   * The pane is parked on a service that is not up right now (planning#478).
-   * The session's target is remembered by service name and the pane holds it
-   * through a restart, a stopped service and a reclaimed container, so this is
-   * the state where it waits instead of showing whatever else happens to be
-   * running. No service row for the active port (a Vite preview) is never this.
+   * The pane is parked on a Compose service that is not up right now
+   * (planning#478). The session's target is remembered by service name and the
+   * pane holds it through a restart, a stopped service and a reclaimed
+   * container, so this is the state where it waits instead of showing whatever
+   * else happens to be running.
+   *
+   * Keyed on the remembered NAME, not on finding a row: during the gap before
+   * `service_list` lands there is no row at all, and reading that as "not
+   * waiting" would let the poller probe a dead port and drop a slot behind the
+   * overlay. A preview no service owns (Vite) has no name and is never this.
    */
-  const waitingForService = !!activeServiceState && activeServiceState.status !== "running";
+  const waitingForService = !!activePort && !!targetServiceName && activeServiceState?.status !== "running";
 
   // Compute poll URL for the active slot
   const pollUrl = isContainerMode && sessionId
@@ -537,15 +562,28 @@ export function PreviewFrame({
   // it would re-show the document the service served before it went down — the
   // wait would end on a stale page. Only a slot that actually exists needs
   // this; a new one enters at the right URL on its own.
-  const wasWaitingRef = useRef(false);
+  //
+  // The ref holds the SLOT KEY that was waiting, never a bare boolean. A key
+  // carries the session, and a boolean cannot: switching from a waiting session
+  // A straight to a running session B reads as A-waiting → B-running, and the
+  // reload would land on B's retained iframe — destroying exactly the in-page
+  // state the iframe pool exists to keep. And the edge is `running`, not merely
+  // "no longer waiting", so a row that blinks out of the list is not mistaken
+  // for a recovery and reloaded on its way back.
+  const waitingSlotRef = useRef<string | null>(null);
   // eslint-disable-next-line no-restricted-syntax -- reacts to a service returning to `running` over WS
   useEffect(() => {
-    const wasWaiting = wasWaitingRef.current;
-    wasWaitingRef.current = waitingForService;
-    if (wasWaiting && !waitingForService && activeSlotKey && createdSlotsRef.current.has(activeSlotKey)) {
+    const waitingSlot = waitingSlotRef.current;
+    waitingSlotRef.current = waitingForService ? activeSlotKey : null;
+    if (
+      waitingSlot
+      && waitingSlot === activeSlotKey
+      && activeServiceState?.status === "running"
+      && createdSlotsRef.current.has(activeSlotKey)
+    ) {
       setRefreshKey((k) => k + 1);
     }
-  }, [waitingForService, activeSlotKey, createdSlotsRef]);
+  }, [waitingForService, activeSlotKey, activeServiceState?.status, createdSlotsRef]);
 
   // Remember the last port label so the top bar doesn't flash "Preview" during session switch
   const lastPortLabel = useRef<string | null>(null);
@@ -559,8 +597,11 @@ export function PreviewFrame({
   // Compute current port label and remember it for transitions
   // Prefer service name over raw port number for detected services
   const serviceForPort = (port: number) => services.find(s => s.port === port);
-  const currentPortLabel = isRunning
-    ? (serviceForPort(activePort)?.name ?? (preview?.url?.startsWith("/preview/") ? `port ${activePort}` : `localhost:${activePort}`))
+  // Keyed on `activePort`, not on `isRunning`: the pane can be parked on a
+  // service while nothing at all is up (planning#478), and the toolbar has to
+  // keep naming it — that name is what says WHAT the pane is waiting for.
+  const currentPortLabel = activePort
+    ? (activeServiceState?.name ?? serviceForPort(activePort)?.name ?? (preview?.url?.startsWith("/preview/") ? `port ${activePort}` : `localhost:${activePort}`))
     : null;
   if (currentPortLabel) {
     lastPortLabel.current = currentPortLabel;
