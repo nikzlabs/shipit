@@ -92,6 +92,30 @@ const INSTALL_POST_TIMEOUT_MS = 180_000;
 const PLUGIN_PREPARE_TIMEOUT_MS = 30_000;
 
 /**
+ * How often to re-probe `/install/status` while `runInstall` waits for the
+ * SSE-delivered `install_done` / `install_error`.
+ *
+ * The wait itself has no deadline, and must not have one: a genuinely slow
+ * `npm install` is not a fault, and cutting it short would report a failure
+ * that never happened. But the wait's ONLY other way out is an SSE event, and
+ * a lost event has no second delivery — `resyncInstallStateAfterReconnect`
+ * recovers one, yet it runs only when an SSE stream OPENS and once right after
+ * the POST. A stream that stays open for the rest of the session therefore
+ * never re-probes, so a mid-session reinstall whose event went missing left
+ * `_installInFlight` true forever. That is what wedged the ServiceManager
+ * install gate in production on 2026-08-26 (docs/283): `setInstallRunning(false)`
+ * lives in `reinstallForDepChange`'s `finally`, so the `preview: auto` services
+ * torn down by the hold were never started again — 12 sessions on one host had
+ * a hold as their last gate event.
+ *
+ * Polling makes the recovery independent of SSE timing. The probe is the same
+ * one the reconnect path uses and is a no-op while the worker reports
+ * `running: true`, so the slow-install case keeps waiting and only a settled
+ * worker resolves the gate.
+ */
+const INSTALL_STATUS_PROBE_INTERVAL_MS = 30_000;
+
+/**
  * How an in-flight install resolved — the shape the SSE-backed completion
  * promise carries.
  *
@@ -1786,6 +1810,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * overlay publish hook snapshotted a not-yet-installed dep dir.
    */
   private _installPostIssued = false;
+  /**
+   * Cadence of the completion-wait probe ({@link INSTALL_STATUS_PROBE_INTERVAL_MS}).
+   * An instance field rather than the constant directly so a test can drive the
+   * lost-event recovery without waiting 30 real seconds for it.
+   */
+  private _installProbeIntervalMs = INSTALL_STATUS_PROBE_INTERVAL_MS;
 
   /**
    * #1622 — dependency-change auto-reinstall state. `_depReinstallCommands` is
@@ -1990,7 +2020,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // real event); if the install already settled and the event was
       // lost, it resolves the gate deterministically.
       void this.resyncInstallStateAfterReconnect();
-      const outcome = await completion;
+      const outcome = await this.awaitInstallCompletion(completion);
       // An install that ran and succeeded answers the gap — but only if it RAN.
       // `unverified` marks the resolutions synthesized from no observation
       // (reconnect resync with no last result, dispose), which resolve
@@ -2329,6 +2359,45 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   /**
+   * Wait for the install completion promise, re-probing `/install/status` on a
+   * fixed cadence for as long as the wait is open.
+   *
+   * The probe is the deterministic recovery for a lost `install_done` /
+   * `install_error` — see {@link INSTALL_STATUS_PROBE_INTERVAL_MS} for why the
+   * SSE-open-driven resync is not enough on its own. Deliberately NOT a
+   * deadline: the wait ends only when the worker says the install settled (or
+   * `dispose()` resolves it), so a slow install keeps running.
+   *
+   * Re-armed after each probe RESOLVES rather than on a fixed interval, so a
+   * wedged worker whose `/install/status` hangs cannot pile up overlapping
+   * probes. `resyncInstallStateAfterReconnect` swallows its own probe failures
+   * and `signalInstallComplete` is idempotent, so a probe that races the real
+   * event is harmless.
+   */
+  private async awaitInstallCompletion(completion: Promise<InstallCompletion>): Promise<InstallCompletion> {
+    let waiting = true;
+    let timer: NodeJS.Timeout | null = null;
+    const arm = (): void => {
+      timer = setTimeout(() => {
+        void (async () => {
+          await this.resyncInstallStateAfterReconnect();
+          if (waiting && !this._disposed) arm();
+        })();
+      }, this._installProbeIntervalMs);
+      // Never hold the process open for a probe — the install itself is what
+      // the caller is waiting on, not this.
+      timer.unref?.();
+    };
+    arm();
+    try {
+      return await completion;
+    } finally {
+      waiting = false;
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
    * Re-poll the worker for its current install state when an SSE stream opens
    * (first connect or reconnect). If the worker finished install while we had
    * no attached consumer — or the `install_done`/`install_error` event raced
@@ -2340,6 +2409,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * for the steady-state reconnect-during-idle case). Idempotent against the
    * real event and the HTTP-response fast-path resolution — `signalInstallComplete`
    * only fires once.
+   *
+   * Despite the name, the SSE-open path is no longer the only caller:
+   * {@link awaitInstallCompletion} runs this on a cadence for the whole
+   * completion wait, which is what makes the lost-event recovery independent of
+   * whether the stream ever reconnects.
    */
   private async resyncInstallStateAfterReconnect(): Promise<void> {
     if (!this._installInFlight || this._disposed) return;
