@@ -333,6 +333,40 @@ describe("install outcome — declared dep dirs must actually hold something", (
     expect(logs).toContain("server/node_modules, web/node_modules");
   });
 
+  it("still fails when npm's record says an empty workspace dir holds a tree", async () => {
+    // The exemption's other half. A workspace with a version conflict npm could
+    // not hoist gets a nested tree — verified against npm 11, the root hidden
+    // lockfile carries `server/node_modules/lodash` beside the link. An empty
+    // `server/node_modules` then contradicts npm's own record, so the install
+    // must still fail even though the sibling `web` hoisted cleanly.
+    const { workspaceDir, stateDir } = makeWorkspace(
+      "  install:\n    - \"true\"\n  dep-dirs:\n    - node_modules\n" +
+        "    - server/node_modules\n    - web/node_modules\n",
+    );
+    const packages: Record<string, unknown> = {
+      "": { name: "root", version: "1.0.0" },
+      "server/node_modules/lodash": { version: "3.10.1", resolved: "https://x/lodash" },
+    };
+    for (const [name, target] of [["@fix/server", "server"], ["@fix/web", "web"]]) {
+      packages[`node_modules/${name}`] = { resolved: target, link: true };
+    }
+    fs.mkdirSync(path.join(workspaceDir, "node_modules"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspaceDir, "node_modules", ".package-lock.json"),
+      JSON.stringify({ name: "root", lockfileVersion: 3, packages }),
+    );
+    fs.mkdirSync(path.join(workspaceDir, "server", "node_modules"), { recursive: true });
+    fs.mkdirSync(path.join(workspaceDir, "web", "node_modules"), { recursive: true });
+    register(workspaceDir, stateDir);
+
+    const result = await runInstall(["true"]);
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("server/node_modules");
+    expect(result.message).not.toContain("web/node_modules");
+    expect(fs.existsSync(path.join(stateDir, INSTALL_MARKER_FILE))).toBe(false);
+  });
+
   it("still fails a hoisting monorepo whose ROOT dep dir is empty", async () => {
     // The exemption cannot excuse the dir it would have to be read from. With the
     // root tree empty there is no npm record at all — the docs/183 mode 1 / mode 2

@@ -151,6 +151,29 @@ describe("classifyEmptyDepDirs", () => {
     });
   });
 
+  it("still flags an empty NESTED mount point the root tree says holds a tree", () => {
+    // docs/183 mode 1 / mode 2 where only the nested dep dirs are declared, so
+    // the ancestor tree survives and its record is readable. `server` has a
+    // version conflict npm could not hoist, so its empty mount point contradicts
+    // npm's own record and the reinstall must still fire; `web` hoisted cleanly.
+    fs.writeFileSync(
+      path.join(workspace, "shipit.yaml"),
+      "agent:\n  dep-dirs:\n    - server/node_modules\n    - web/node_modules\n",
+    );
+    writeHoistingRootTree(
+      workspace,
+      { "@fix/server": "server", "@fix/web": "web" },
+      { "server/node_modules/lodash": { version: "3.10.1", resolved: "https://x/lodash" } },
+    );
+    fs.mkdirSync(path.join(workspace, "server", "node_modules"), { recursive: true });
+    fs.mkdirSync(path.join(workspace, "web", "node_modules"), { recursive: true });
+
+    expect(classifyEmptyDepDirs(workspace)).toEqual({
+      contradicting: [{ depDir: "server/node_modules", overlay: false }],
+      hoistedAway: ["web/node_modules"],
+    });
+  });
+
   it("still flags an empty sub-dir the root tree does NOT record as a workspace", () => {
     // A laundered sub-install (`npm --prefix game ci … || true`) beside a real
     // root install: the root tree is populated but names no `game` workspace, so
@@ -189,11 +212,16 @@ describe("classifyEmptyDepDirs", () => {
 /**
  * Write the root `node_modules` an npm workspaces install produces: a populated
  * tree carrying npm's hidden lockfile, whose `link: true` entries name each
- * workspace it reified. Shape verified against npm 10 — see
- * `npm-workspace-hoist.ts`.
+ * workspace it reified. `extra` adds entries keyed under a workspace's own
+ * `node_modules/`, which is how npm records a dependency that could not hoist.
+ * Shape verified against npm 10 and 11 — see `npm-workspace-hoist.ts`.
  */
-function writeHoistingRootTree(workspace: string, links: Record<string, string>): void {
-  const packages: Record<string, unknown> = { "": { name: "root", version: "1.0.0" } };
+function writeHoistingRootTree(
+  workspace: string,
+  links: Record<string, string>,
+  extra: Record<string, unknown> = {},
+): void {
+  const packages: Record<string, unknown> = { "": { name: "root", version: "1.0.0" }, ...extra };
   for (const [name, target] of Object.entries(links)) {
     packages[`node_modules/${name}`] = { resolved: target, link: true };
     packages[target] = { name, version: "1.0.0" };

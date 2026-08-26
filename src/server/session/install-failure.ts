@@ -70,26 +70,30 @@ export function formatEmptyDepDirsFailureMessage(depDirs: string[]): string {
 }
 
 /**
- * The advisory warning for an install that exited 0 and left a declared dep dir
+ * The advisory note for an install that exited 0 and left a declared dep dir
  * empty **because npm hoisted its package's dependencies elsewhere**
- * (planning#480). Not a failure — npm's own record proves the install reified
- * that workspace — but still worth naming, for the same reason the failure
- * message names dirs: the declaration does not describe what this repo's install
- * produces, and only the user can decide whether to trim it.
+ * (planning#480).
  *
- * Streamed to `install_log` rather than raised as `install_error`, so it reaches
- * the user without failing an install that genuinely succeeded.
+ * Deliberately NOT phrased as a misconfiguration to fix. Declaring a workspace's
+ * `node_modules` is legitimate and forward-looking: the moment a version
+ * conflict forces npm to build a nested tree there, the declaration is what gets
+ * that tree overlay-backed. The note exists so that an empty declared dir is
+ * never accepted *silently* — the breadcrumb matters if a gated service later
+ * fails looking for something in it — not to push the user into editing
+ * `shipit.yaml`.
+ *
+ * Streamed to `install_log` rather than raised as `install_error`, and only once
+ * the install has passed every other check, since the wording asserts success.
  */
 export function formatHoistedDepDirsWarning(depDirs: string[]): string {
   const list = depDirs.join(", ");
   const plural = depDirs.length === 1 ? "" : "s";
   const is = depDirs.length === 1 ? "is" : "are";
   return (
-    `[install] declared dep dir${plural} left empty by a hoisting install: ${list}. ` +
-    `npm's own record (.package-lock.json) shows the${plural ? "se" : ""} package${plural} ` +
-    `${is} linked into an ancestor node_modules, so the dependencies are installed — ` +
-    `just not there. Treating the install as successful. Removing ${plural ? "these entries" : "this entry"} ` +
-    `from agent.dep-dirs in shipit.yaml would silence this and skip an empty overlay mount.`
+    `[install] accepted empty declared dep dir${plural}: ${list}. ` +
+    `npm's own record (.package-lock.json) links th${plural ? "ese" : "is"} package${plural} ` +
+    `into an ancestor node_modules and records no nested tree, so the ` +
+    `dependencies ${is} installed — just not there. The install succeeded.`
   );
 }
 

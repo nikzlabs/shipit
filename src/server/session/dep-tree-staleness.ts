@@ -114,8 +114,10 @@ export interface StaleDepDir {
 }
 
 /** The subset of a lockfile entry this module reads. */
-interface LockEntry {
+export interface LockEntry {
   version?: unknown;
+  /** For a `link` entry, the path of the linked package relative to the project root. */
+  resolved?: unknown;
   dev?: unknown;
   optional?: unknown;
   devOptional?: unknown;
@@ -133,8 +135,11 @@ interface LockEntry {
  * lockfile. A v1 lockfile (npm 6) has `dependencies` and no `packages`, and is
  * not comparable to a hidden lockfile — `null` means "skip this dir", never
  * "the tree is stale".
+ *
+ * Exported for `npm-workspace-hoist.ts`, which reads the same artifact to answer
+ * a different question about it (planning#480).
  */
-function parsePackages(text: string): Record<string, LockEntry> | null {
+export function parsePackages(text: string): Record<string, LockEntry> | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -148,16 +153,19 @@ function parsePackages(text: string): Record<string, LockEntry> | null {
 }
 
 /**
- * Is this lockfile entry one the tree MUST hold?
+ * Does this lockfile entry describe a package that MUST be on disk?
  *
  * `treeHasDev` is the self-calibration described in the module doc: the caller
  * passes whether the tree recorded any dev package at all, and dev entries are
  * required only then.
+ *
+ * Key-independent, so `npm-workspace-hoist.ts` can ask the same question about
+ * entries under a WORKSPACE's own `node_modules/` (planning#480). Keeping one
+ * rule set matters: both callers are deciding "should this directory hold
+ * something", and a rule that drifted between them would make one of the two
+ * checks fail a repo the other excuses.
  */
-function isRequired(key: string, entry: LockEntry, treeHasDev: boolean): boolean {
-  // The root project (`""`) and workspace paths (`packages/web`) are not things
-  // installed INTO this dep dir. Only `node_modules/…` keys are.
-  if (!key.startsWith("node_modules/")) return false;
+export function isRequiredTreeEntry(entry: LockEntry, treeHasDev: boolean): boolean {
   if (typeof entry.version !== "string" || entry.version.length === 0) return false;
   if (entry.link === true || entry.extraneous === true || entry.inBundle === true) return false;
   if (entry.optional === true || entry.devOptional === true || entry.peer === true) return false;
@@ -166,6 +174,19 @@ function isRequired(key: string, entry: LockEntry, treeHasDev: boolean): boolean
   if (entry.os !== undefined || entry.cpu !== undefined || entry.libc !== undefined) return false;
   if (entry.dev === true) return treeHasDev;
   return true;
+}
+
+/** Whether any entry recorded a dev package — see {@link isRequiredTreeEntry}. */
+export function treeRecordsDevPackages(packages: Record<string, LockEntry>): boolean {
+  return Object.values(packages).some((e) => e?.dev === true);
+}
+
+/** Is this lockfile entry one THIS dep dir must hold? */
+function isRequired(key: string, entry: LockEntry, treeHasDev: boolean): boolean {
+  // The root project (`""`) and workspace paths (`packages/web`) are not things
+  // installed INTO this dep dir. Only `node_modules/…` keys are.
+  if (!key.startsWith("node_modules/")) return false;
+  return isRequiredTreeEntry(entry, treeHasDev);
 }
 
 /**
@@ -212,7 +233,7 @@ export function npmLockfileMismatches(
     if (entry?.link === true && installed[key] === undefined) return null;
   }
 
-  const treeHasDev = Object.values(installed).some((e) => e?.dev === true);
+  const treeHasDev = treeRecordsDevPackages(installed);
 
   const mismatches: LockMismatch[] = [];
   for (const [key, entry] of Object.entries(required)) {

@@ -15,12 +15,14 @@ import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { hoistedAwayDepDirs, workspaceLinkTargets } from "./npm-workspace-hoist.js";
+import { hoistedAwayDepDirs, hoistedLinkTargets } from "./npm-workspace-hoist.js";
 
 /**
- * A hidden lockfile in the shape npm 10 writes for a workspaces install —
+ * A hidden lockfile in the shape npm 10/11 writes for a workspaces install —
  * verified live, `node_modules/.package-lock.json` holds
- * `"node_modules/@fix/server": { "resolved": "server", "link": true }`.
+ * `"node_modules/@fix/server": { "resolved": "server", "link": true }`, and, for
+ * a workspace whose dependency could not hoist, a sibling entry keyed
+ * `server/node_modules/lodash`.
  */
 function hiddenLockfile(links: Record<string, string>, extra: Record<string, unknown> = {}): string {
   const packages: Record<string, unknown> = { "": { name: "root", version: "1.0.0" }, ...extra };
@@ -30,36 +32,73 @@ function hiddenLockfile(links: Record<string, string>, extra: Record<string, unk
   return JSON.stringify({ name: "root", lockfileVersion: 3, packages });
 }
 
-describe("workspaceLinkTargets", () => {
-  it("returns the workspace paths npm recorded as links", () => {
+describe("hoistedLinkTargets", () => {
+  it("returns the package paths npm recorded as links with no nested tree", () => {
     const text = hiddenLockfile({ "@fix/server": "server", "@fix/web": "packages/web" });
-    expect(workspaceLinkTargets(text)).toEqual(new Set(["server", "packages/web"]));
+    expect(hoistedLinkTargets(text)).toEqual(new Set(["server", "packages/web"]));
   });
 
   it("ignores ordinary reified packages — only `link: true` counts", () => {
     const text = hiddenLockfile({}, { "node_modules/ms": { version: "2.1.3", resolved: "https://x/ms" } });
-    expect(workspaceLinkTargets(text)).toEqual(new Set());
+    expect(hoistedLinkTargets(text)).toEqual(new Set());
+  });
+
+  /**
+   * The half a link alone does not prove. Verified against npm 11.12.1: a root
+   * on `lodash@4` with a workspace `server` on `lodash@3` writes BOTH the link
+   * and `server/node_modules/lodash@3.10.1` into the root hidden lockfile, and
+   * creates `server/node_modules` on disk. The sibling `web`, with no conflict,
+   * gets the link, no nested entry, and no directory.
+   */
+  it("drops a linked target npm gave a nested tree of its own", () => {
+    const text = hiddenLockfile(
+      { "@fix/server": "server", "@fix/web": "web" },
+      { "server/node_modules/lodash": { version: "3.10.1", resolved: "https://x/lodash" } },
+    );
+    expect(hoistedLinkTargets(text)).toEqual(new Set(["web"]));
+  });
+
+  it("attributes a doubly-nested entry to the outermost owner", () => {
+    const text = hiddenLockfile(
+      { "@fix/server": "server" },
+      { "server/node_modules/a/node_modules/b": { version: "1.0.0" } },
+    );
+    expect(hoistedLinkTargets(text)).toEqual(new Set());
+  });
+
+  it("keeps a target whose only nested entries npm legitimately skips", () => {
+    // Same rule set as the staleness check (`isRequiredTreeEntry`): an optional,
+    // peer or platform-restricted nested package is absent for a reason ShipIt
+    // cannot see, so demanding it would fail an install that succeeded.
+    const text = hiddenLockfile(
+      { "@fix/server": "server" },
+      {
+        "server/node_modules/fsevents": { version: "2.3.3", optional: true, os: ["darwin"] },
+        "server/node_modules/react": { version: "19.2.4", peer: true },
+      },
+    );
+    expect(hoistedLinkTargets(text)).toEqual(new Set(["server"]));
   });
 
   it("normalizes `./`-prefixed, `file:`-prefixed and trailing-slash targets", () => {
     // Normalized into the same shape `agent.dep-dirs` entries are, so the two
     // sides compare as strings without either having to guess the other's form.
     const text = hiddenLockfile({ a: "./server/", b: "file:packages/web", c: "web" });
-    expect(workspaceLinkTargets(text)).toEqual(new Set(["server", "packages/web", "web"]));
+    expect(hoistedLinkTargets(text)).toEqual(new Set(["server", "packages/web", "web"]));
   });
 
   it("drops targets that cannot name a dep dir inside the workspace", () => {
     const text = hiddenLockfile({ a: "/abs/server", b: "../outside", c: "https://x/y", d: "" });
-    expect(workspaceLinkTargets(text)).toEqual(new Set());
+    expect(hoistedLinkTargets(text)).toEqual(new Set());
   });
 
   it("returns an empty set for unparseable or non-v2 lockfiles", () => {
     // The direction that exempts NOTHING. A lockfile ShipIt cannot read is never
     // a licence to accept an empty dep dir.
-    expect(workspaceLinkTargets("not json")).toEqual(new Set());
-    expect(workspaceLinkTargets("null")).toEqual(new Set());
-    expect(workspaceLinkTargets(JSON.stringify({ dependencies: { ms: {} } }))).toEqual(new Set());
-    expect(workspaceLinkTargets(JSON.stringify({ packages: [] }))).toEqual(new Set());
+    expect(hoistedLinkTargets("not json")).toEqual(new Set());
+    expect(hoistedLinkTargets("null")).toEqual(new Set());
+    expect(hoistedLinkTargets(JSON.stringify({ dependencies: { ms: {} } }))).toEqual(new Set());
+    expect(hoistedLinkTargets(JSON.stringify({ packages: [] }))).toEqual(new Set());
   });
 });
 
@@ -74,11 +113,15 @@ describe("hoistedAwayDepDirs", () => {
     fs.rmSync(workspace, { recursive: true, force: true });
   });
 
-  /** Populate `<dir>/node_modules` with npm's record of the workspaces it linked. */
-  function writeTree(dir: string, links: Record<string, string>): void {
+  /** Populate `<dir>/node_modules` with npm's record of the packages it linked. */
+  function writeTree(
+    dir: string,
+    links: Record<string, string>,
+    extra: Record<string, unknown> = {},
+  ): void {
     const nm = path.join(workspace, dir, "node_modules");
     fs.mkdirSync(nm, { recursive: true });
-    fs.writeFileSync(path.join(nm, ".package-lock.json"), hiddenLockfile(links));
+    fs.writeFileSync(path.join(nm, ".package-lock.json"), hiddenLockfile(links, extra));
   }
 
   it("excuses a workspace dep dir the root tree records as a link", () => {
@@ -141,6 +184,22 @@ describe("hoistedAwayDepDirs", () => {
     // it. Reading npm's record of what it ACTUALLY reified — not the manifest's
     // intent — is what makes the exemption evidence rather than assumption.
     writeTree(".", { "@fix/web": "web" });
+    expect(hoistedAwayDepDirs(workspace, ["server/node_modules", "web/node_modules"])).toEqual([
+      "web/node_modules",
+    ]);
+  });
+
+  /**
+   * The docs/183 mode 1 / mode 2 case the FIRST cut of this exemption got wrong:
+   * only a NESTED dep dir is declared, so the ancestor tree survives in the clone
+   * and its record is readable even though the mount point is empty. The record
+   * is exactly what decides it — a conflicting nested dependency means the empty
+   * mount point IS a contradiction, and the reinstall must still fire.
+   */
+  it("does not excuse an empty mount point npm's record says holds a nested tree", () => {
+    writeTree(".", { "@fix/server": "server", "@fix/web": "web" }, {
+      "server/node_modules/lodash": { version: "3.10.1", resolved: "https://x/lodash" },
+    });
     expect(hoistedAwayDepDirs(workspace, ["server/node_modules", "web/node_modules"])).toEqual([
       "web/node_modules",
     ]);

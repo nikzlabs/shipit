@@ -222,17 +222,32 @@ could reach that cleared it short of editing `agent.dep-dirs`.
 
 The fix reads npm's own record rather than loosening the predicate. An empty dep
 dir is excused only when a *populated* ancestor tree's hidden lockfile
-(`node_modules/.package-lock.json`) records the dir's package as a workspace
-`link` — positive, install-written evidence that this install reified that
-workspace and put its dependencies elsewhere. The looser alternative (fail only
-when EVERY declared dep dir is empty) was rejected: it keeps this incident's shape
-but opens a new one, where a monorepo's successful root install masks a laundered
-sub-install. The exemption cannot weaken what this section or docs/183 protects,
-because every exemption requires a hidden lockfile that only a real install
-writes: a laundered exit and both docs/183 flag-transition modes leave the ROOT
-dep dir empty, which is never eligible. It is applied inside the single shared
-predicate, so the trust side and the write side still cannot diverge. Full
-argument: `npm-workspace-hoist.ts`'s module doc.
+(`node_modules/.package-lock.json`) both **links** the dir's package
+(`{ "resolved": "server", "link": true }`) **and records no required package
+beneath that package's own `node_modules/`** — npm saying, in its own record,
+that it deliberately put nothing there.
+
+**Both halves are load-bearing**, and the first cut of this fix had only the
+first — caught in review. Verified against npm 10 and 11: a root on `lodash@4`
+with a workspace `server` on `lodash@3` writes BOTH the link and
+`server/node_modules/lodash@3.10.1` into the root hidden lockfile, and creates
+`server/node_modules` on disk. A link alone therefore proves nothing about the
+workspace's own dep dir, and excusing on it would have let a conflicting
+workspace's empty mount point skip the reinstall. "Required" reuses
+`isRequiredTreeEntry`, shared verbatim with the staleness check, so an optional
+or platform-restricted nested package stays legitimately absent.
+
+The looser alternative (fail only when EVERY declared dep dir is empty) was
+rejected: it keeps this incident's shape but opens a new one, where a monorepo's
+successful root install masks a laundered sub-install. The exemption cannot
+weaken what this section or docs/183 protects, because every exemption requires a
+hidden lockfile that only a real install writes: a laundered exit and both
+docs/183 flag-transition modes leave the ROOT dep dir empty, which is never
+eligible, and where only a nested dep dir is declared the surviving ancestor
+record is precisely what decides whether the empty mount point should hold
+anything. It is applied inside the single shared predicate, so the trust side and
+the write side still cannot diverge. Full argument, including why the path walk
+is deliberately lexical: `npm-workspace-hoist.ts`'s module doc.
 
 ### Key files (follow-on)
 
