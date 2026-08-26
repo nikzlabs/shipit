@@ -814,18 +814,23 @@ describe("destroyContainer — overlay volume teardown", () => {
       listFilters?: unknown[];
       /** id → error its `remove()` throws (models the reaper-vs-sweep race). */
       removeErrors?: Record<string, Error>;
+      /** Every id `getContainer` was asked for — an empty one is a malformed URL. */
+      requestedContainerIds?: string[];
     } = {},
   ): Docker {
     const noop = async (): Promise<void> => {};
     return {
-      getContainer: (id: string) => ({
-        stop: noop,
-        remove: async () => {
-          const err = opts.removeErrors?.[id];
-          if (err) throw err;
-          opts.removedContainers?.push(id);
-        },
-      }),
+      getContainer: (id: string) => {
+        opts.requestedContainerIds?.push(id);
+        return {
+          stop: noop,
+          remove: async () => {
+            const err = opts.removeErrors?.[id];
+            if (err) throw err;
+            opts.removedContainers?.push(id);
+          },
+        };
+      },
       listContainers: async (o: { filters?: unknown }) => {
         opts.listFilters?.push(o?.filters);
         return opts.children ?? [];
@@ -978,6 +983,78 @@ describe("destroyContainer — overlay volume teardown", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Archive racing container creation (prod orchestrator crash, 2026-08-26)
+  // -------------------------------------------------------------------------
+  //
+  // `createContainer` publishes the SessionContainer into the map with `id: ""`
+  // and only fills the real id in after `docker.createContainer` returns — a
+  // window that spans an image pull. An archive landing inside it used to reach
+  // `getContainer("").stop()`, i.e. `POST /containers//stop`. The daemon answers
+  // a non-canonical path with a `301`, docker-modem follows it to a hostname
+  // parsed out of the path (`containers`), and that request has no `'error'`
+  // listener — which killed the process. `docker-client.ts` contains the
+  // redirect; this is the trigger itself, and the guard test for it.
+  describe("archive racing container creation", () => {
+    function creatingContainer(): SessionContainer {
+      return { ...makeContainer(undefined), id: "", status: "starting" } as SessionContainer;
+    }
+
+    it("never dials Docker with an empty container id", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const requestedContainerIds: string[] = [];
+        const { deps } = makeDeps([], creatingContainer(), { requestedContainerIds });
+
+        await destroyContainer(deps, "sess-x");
+
+        // An empty id is the malformed `/containers//…` path, whatever the verb.
+        expect(requestedContainerIds).not.toContain("");
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("still completes the rest of the teardown", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const removedContainers: string[] = [];
+        const { deps, emitter } = makeDeps([], creatingContainer(), {
+          children: [{ Id: "egress-resolver-1", State: "running" }],
+          removedContainers,
+        });
+        let destroyed: string | undefined;
+        emitter.on("container_destroyed", (id: string) => { destroyed = id; });
+
+        await destroyContainer(deps, "sess-x");
+
+        // Skipping the agent container must not skip the label sweep, the map
+        // eviction, or the event — the session is still being archived.
+        expect(removedContainers).toContain("egress-resolver-1");
+        expect(deps.containers.has("sess-x")).toBe(false);
+        expect(destroyed).toBe("sess-x");
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("says so, because the in-flight creation is not cancelled", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { deps } = makeDeps([], creatingContainer());
+
+        await destroyContainer(deps, "sess-x");
+
+        // The container being created may still start, for a session that no
+        // longer exists. Silence there would make that orphan undiagnosable.
+        const skipped = warn.mock.calls.filter((c) => String(c[0]).includes("still being created"));
+        expect(skipped).toHaveLength(1);
+      } finally {
+        warn.mockRestore();
+      }
+    });
   });
 });
 

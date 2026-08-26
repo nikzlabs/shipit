@@ -73,7 +73,6 @@ let applied = false;
  */
 export function disableDockerModemRedirects(): void {
   if (applied) return;
-  applied = true;
   try {
     const mod = createRequire(import.meta.url)(DOCKER_MODEM_HTTP) as { maxRedirects?: unknown };
     if (typeof mod.maxRedirects !== "number") {
@@ -86,6 +85,9 @@ export function disableDockerModemRedirects(): void {
       return;
     }
     mod.maxRedirects = 0;
+    // Latched only on success, so a transient resolution failure is retried by
+    // the next client rather than remembered as done.
+    applied = true;
   } catch (err) {
     console.warn(`[docker] could not disable ${DOCKER_MODEM_HTTP} redirects:`, err);
   }

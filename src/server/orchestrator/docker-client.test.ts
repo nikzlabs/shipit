@@ -59,16 +59,18 @@ function watchRequests(): void {
 }
 
 /** A daemon that answers every request with the router's canonicalizing 301. */
-function startRedirectingDaemon(): { socketPath: string; close: () => Promise<void> } {
+function startRedirectingDaemon(): { socketPath: string; listening: Promise<void>; close: () => Promise<void> } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docker-client-test-"));
   const socketPath = path.join(dir, "docker.sock");
   const server = http.createServer((_req, res) => {
     res.writeHead(301, { Location: "/containers/abc/json" });
     res.end();
   });
+  const listening = new Promise<void>((resolve) => server.once("listening", () => resolve()));
   server.listen(socketPath);
   return {
     socketPath,
+    listening,
     close: () =>
       new Promise<void>((resolve) => {
         server.close(() => {
@@ -81,10 +83,11 @@ function startRedirectingDaemon(): { socketPath: string; close: () => Promise<vo
 
 let daemon: ReturnType<typeof startRedirectingDaemon>;
 
-beforeEach(() => {
+beforeEach(async () => {
   seen = [];
   watchRequests();
   daemon = startRedirectingDaemon();
+  await daemon.listening;
 });
 
 afterEach(async () => {
@@ -102,22 +105,18 @@ describe("createDockerClient", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]?.socketPath).toBe(daemon.socketPath);
   });
-
-  it("reports the redirect on the first request, which has an error listener", async () => {
-    const docker = createDockerClient({ socketPath: daemon.socketPath });
-
-    // A rejected promise — an ordinary Docker error the caller's `catch` sees —
-    // is the entire behavioural difference from a process kill.
-    await expect(docker.getContainer("abc").inspect()).rejects.toBeInstanceOf(Error);
-  });
 });
 
 describe("the upstream defect the guard exists for", () => {
   /**
-   * Re-arms `docker-modem`'s redirect following and shows what it does. This
-   * FAILS if the guard is removed from `createDockerClient` — and it also fails
-   * if `docker-modem` ever fixes this upstream, which is the signal to drop the
-   * guard rather than carry it forever.
+   * Re-arms `docker-modem`'s redirect following and pins what it does.
+   *
+   * This characterizes the DEPENDENCY, not our factory — it patches
+   * `maxRedirects` itself, so removing the guard from `createDockerClient` does
+   * not change its result. Its value is the other direction: if `docker-modem`
+   * ever fixes this upstream, this goes red and tells us the guard can be
+   * dropped rather than carried forever. The factory's own guard is asserted by
+   * the request count in the suite above.
    */
   it("follows the redirect to a hostname parsed out of the Docker API path", async () => {
     const modemHttp = createRequire(import.meta.url)("docker-modem/lib/http") as { maxRedirects: number };

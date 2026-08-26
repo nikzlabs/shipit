@@ -1697,16 +1697,40 @@ export async function destroyContainer(
   // so nothing that could present one survives it.
   clearEgressDecisionTokens(sessionId);
 
+  // `sc.id` is EMPTY between the map publish above (`containers.set`, with
+  // `id: ""`) and the assignment that follows `docker.createContainer` — a window
+  // that spans an image pull and the overlay provisioning, so an archive landing
+  // inside it is entirely ordinary. Dialing Docker with it builds the path
+  // `/containers//stop`, which the daemon's router answers with a canonicalizing
+  // `301` — and following that redirect is what killed the orchestrator on
+  // 2026-08-26 (the full chain is in `docker-client.ts`). The failure-cleanup path
+  // in `createContainer` already guards this way; this one did not.
+  //
+  // Skipping is right rather than merely safe: with no id there is no container we
+  // could name, and every call here needs one. What it does NOT do is stop the
+  // in-flight creation, so a container may still be started for a session that is
+  // being archived — a separate lifecycle defect (create/destroy are not
+  // serialized), which this log makes visible instead of silent.
+  if (!sc.id) {
+    console.warn(
+      `[containers] destroy(${sessionId}) reached a container still being created `
+      + "(no id yet) — skipping the agent-container stop/remove. Its creation is not "
+      + "cancelled, so it may need the orphan sweep.",
+    );
+  }
+
   // Stop the session container first so it can't create new child resources
-  try {
-    const container = deps.docker.getContainer(sc.id);
+  if (sc.id) {
     try {
-      await container.stop({ t: 5 });
+      const container = deps.docker.getContainer(sc.id);
+      try {
+        await container.stop({ t: 5 });
+      } catch {
+        // Already stopped or doesn't exist
+      }
     } catch {
-      // Already stopped or doesn't exist
+      // Container may already be gone
     }
-  } catch {
-    // Container may already be gone
   }
 
   // A full session-container teardown owns its proxy/Compose children. The
@@ -1716,16 +1740,18 @@ export async function destroyContainer(
     await cleanupSessionDockerResources(deps.docker, sessionId);
   }
 
-  // Remove the session container
-  try {
-    const container = deps.docker.getContainer(sc.id);
+  // Remove the session container — same empty-id guard as the stop above.
+  if (sc.id) {
     try {
-      await container.remove({ force: true });
+      const container = deps.docker.getContainer(sc.id);
+      try {
+        await container.remove({ force: true });
+      } catch {
+        // Already removed
+      }
     } catch {
-      // Already removed
+      // Container may already be gone
     }
-  } catch {
-    // Container may already be gone
   }
 
   // docs/183 dep-dir design — drop every per-session overlay volume after the
