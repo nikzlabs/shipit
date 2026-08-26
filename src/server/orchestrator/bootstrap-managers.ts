@@ -1,6 +1,6 @@
 import { serviceForLoginIntegration } from "../shared/catalogue/index.js";
 import path from "node:path";
-import Docker from "dockerode";
+import { createDockerClient } from "./docker-client.js";
 import type { AgentId, DockerMemoryStats } from "../shared/types.js";
 import type { SessionInfo } from "../shared/types.js";
 import { readGlobalSystemPrompt } from "./global-system-prompt.js";
@@ -179,7 +179,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   }
 
   // ---- Docker instance for memory stats ----
-  const dockerForStats = containerManager ? new Docker() : null;
+  const dockerForStats = containerManager ? createDockerClient() : null;
 
   // ---- Bare repo cache directory ----
   // In local mode (dogfooding), `stateDir` lives outside the visible
