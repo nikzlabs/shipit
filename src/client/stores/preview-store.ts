@@ -664,11 +664,12 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       const entry = port === null ? null : svc ? { service: svc.name, port } : { port };
       const previewTargetMemory = withPreviewTargetEntry(get().previewTargetMemory, sessionId, entry);
       savePreviewTargetMemory(previewTargetMemory);
-      set({ previewTargetMemory });
+      set({ previewTargetMemory, selectedPort: port });
+    } else {
+      set({ selectedPort: port });
     }
-    set({ selectedPort: port });
     // A cleared choice re-pins to whatever the pane shows now; an explicit one
-    // is already consistent, so this is a no-op there.
+    // already agrees with the memory just written, so this would be a no-op.
     if (port === null) get().reconcilePreviewTarget();
   },
 
@@ -678,12 +679,14 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     const sessionId = forSessionId ?? useSessionStore.getState().sessionId;
     const state = get();
     const { selectedPort, write } = resolvePreviewTarget(state, sessionId);
+    const changed = selectedPort !== state.selectedPort;
     if (write !== undefined && sessionId) {
       const previewTargetMemory = withPreviewTargetEntry(state.previewTargetMemory, sessionId, write);
       savePreviewTargetMemory(previewTargetMemory);
-      set({ previewTargetMemory });
+      set(changed ? { previewTargetMemory, selectedPort } : { previewTargetMemory });
+    } else if (changed) {
+      set({ selectedPort });
     }
-    if (selectedPort !== state.selectedPort) set({ selectedPort });
   },
 
   setServicesDrawerExpanded: (servicesDrawerExpanded) => {
