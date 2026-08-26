@@ -13,3 +13,9 @@
 - [x] `npm run test:dev`, `npm run lint:dev`, `npm run typecheck`.
 - [x] Rebase onto the latest default branch before opening the PR.
 - [x] Independent review.
+- [x] Review finding: correlate each probe with its install generation so a late
+      answer cannot resolve the next install (req 5), with a regression test.
+- [x] Review finding: scope the bracket test's name and comments to what it
+      actually observes.
+- [x] Review finding: record the hung-`_gatedTeardown` hole as separate and
+      unfixed rather than letting req 1 imply it is closed.

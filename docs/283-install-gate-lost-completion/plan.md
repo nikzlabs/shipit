@@ -1,4 +1,5 @@
 ---
+issue: planning#479
 title: Install gate — recover from a lost completion event
 description: Poll /install/status for the whole completion wait so a lost install_done cannot hold preview services stopped forever.
 ---
@@ -85,6 +86,44 @@ Nothing in the gate itself changed, so req 4 holds by construction:
 `releaseInstallGate` still awaits `_gatedTeardown`, and gated services are still
 exempt from crash reporting while held.
 
+### A probe outlives the install it asked about (req 5)
+
+Polling for the whole wait created a second-order hazard that probing twice did
+not. Every guard in `resyncInstallStateAfterReconnect` — `_installInFlight`,
+`_disposed`, `_installPostIssued` — runs *before* the HTTP await, and a probe
+can still be in flight when the install it asked about settles by SSE and a
+*next* install arms a fresh resolver. The late answer is truthful and about the
+wrong install, and resolving "the current" completion with it opens install B's
+gate while npm is still running: the docs/183 early-resolve bug displaced by one
+generation, with the overlay publish hook snapshotting a not-yet-installed dep
+dir.
+
+So the probe now captures `_installComplete` before the await and re-tests it
+after. The promise identity IS the generation — `signalInstallComplete` nulls it
+and `runInstall` arms a fresh one — so an unchanged reference is proof the
+answer is still ours. Dropping a late answer is always safe: if an install
+really is in flight, the next probe asks again.
+
+`_installPostIssued` alone was not enough here. It is sufficient for the
+original same-cycle pre-POST race it was written for, but it is read before the
+await too, so it says nothing about which generation the answer belongs to.
+
+### Known separate hole — a hung teardown (NOT fixed here)
+
+`releaseInstallGate` awaits `_gatedTeardown` with no bound, and the
+`docker compose stop` underneath it (`defaultComposeRunner`, `compose-cli.ts`)
+has no timeout. A compose stop that hangs therefore leaves services gated
+forever by a different route, which this change does not address. Two reasons it
+is out of scope: the production evidence rules it out as this incident's cause
+(`docker top` on the orchestrator showed no `docker compose stop` process for
+the session's project, so `_gatedTeardown` had already resolved), and bounding a
+compose child process is a different mechanism in a different subsystem.
+
+Related and also unfixed: `_gatedTeardown` is a single field, so a later hold
+overwrites an earlier one, and the earlier release callback re-checks only
+`_installRunning` — an older teardown can reopen a newer gate. Both were raised
+by review on this change; neither is reachable from a lost completion event.
+
 ## Key files
 
 - `src/server/orchestrator/container-session-runner.ts` —
@@ -99,7 +138,8 @@ exempt from crash reporting while held.
 
 ## Tests
 
-Two tests, both of which hang without the fix — the production symptom exactly:
+Three tests. The first two hang without the fix — the production symptom
+exactly; the third fails a specific assertion:
 
 - **`recovers an install_done lost MID-install, with no SSE reconnect`** — POST
   returns `{ started: true }`, the first two post-POST `/install/status` probes
@@ -108,7 +148,16 @@ Two tests, both of which hang without the fix — the production symptom exactly
   Probe counting rather than wall-clock timing is what makes this
   timing-independent while still proving the recovery came from a probe the
   runner issued itself.
-- **`reopens the ServiceManager install gate after an install_done lost
-  mid-reinstall`** — the user-visible half. Drives `reinstallForDepChange` with
-  a stand-in for the ServiceManager and asserts the gate is both held AND
-  released as a success, since the release is what starts the services again.
+- **`releases the reinstall bracket's gate after an install_done lost
+  mid-reinstall`** — drives `reinstallForDepChange` and asserts the gate is both
+  held AND released as a success, since the release is what starts the services
+  again. Scoped deliberately: it uses a recorder rather than a real
+  `ServiceManager` (which needs Docker), so it observes the *bracket* reaching
+  its `finally`, not `gatedServices`, `_gatedTeardown`, or a service actually
+  restarting — `service-manager.test.ts` covers the release itself. There is
+  still no single end-to-end regression spanning both halves.
+- **`does not let a probe outlive its install and resolve the NEXT one`** (req
+  5) — the stub holds install A's first `/install/status` open, A settles by
+  SSE, install B starts, and only then does A's probe answer "settled". B must
+  still be waiting. Without the generation re-check B resolves early, which is
+  the failure this test names.

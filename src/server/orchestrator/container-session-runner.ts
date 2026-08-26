@@ -95,23 +95,11 @@ const PLUGIN_PREPARE_TIMEOUT_MS = 30_000;
  * How often to re-probe `/install/status` while `runInstall` waits for the
  * SSE-delivered `install_done` / `install_error`.
  *
- * The wait itself has no deadline, and must not have one: a genuinely slow
- * `npm install` is not a fault, and cutting it short would report a failure
- * that never happened. But the wait's ONLY other way out is an SSE event, and
- * a lost event has no second delivery — `resyncInstallStateAfterReconnect`
- * recovers one, yet it runs only when an SSE stream OPENS and once right after
- * the POST. A stream that stays open for the rest of the session therefore
- * never re-probes, so a mid-session reinstall whose event went missing left
- * `_installInFlight` true forever. That is what wedged the ServiceManager
- * install gate in production on 2026-08-26 (docs/283): `setInstallRunning(false)`
- * lives in `reinstallForDepChange`'s `finally`, so the `preview: auto` services
- * torn down by the hold were never started again — 12 sessions on one host had
- * a hold as their last gate event.
- *
- * Polling makes the recovery independent of SSE timing. The probe is the same
- * one the reconnect path uses and is a no-op while the worker reports
- * `running: true`, so the slow-install case keeps waiting and only a settled
- * worker resolves the gate.
+ * The wait has no deadline and must not get one — a slow `npm install` is not
+ * a fault — so this poll is its only other way out. Without it a lost event
+ * left `_installInFlight` true forever, and `setInstallRunning(false)` lives in
+ * `reinstallForDepChange`'s `finally`: the `preview: auto` services torn down
+ * for the reinstall were never started again. See docs/283 for the incident.
  */
 const INSTALL_STATUS_PROBE_INTERVAL_MS = 30_000;
 
@@ -2423,6 +2411,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // `runInstall` re-runs this resync right after the POST lands, so the
     // lost-event recovery is preserved without racing the POST.
     if (!this._installPostIssued) return;
+    // The install cycle this probe is asking ABOUT. Every guard above tests
+    // state that can change while the HTTP request is in flight, and a probe
+    // outlives the completion it was issued for: it can return after its own
+    // install settled via SSE and a NEXT install armed a new resolver, at which
+    // point resolving "the current" completion resolves the wrong one — the
+    // docs/183 early-resolve bug, one generation over. The promise identity is
+    // the generation: `signalInstallComplete` nulls it and `runInstall` arms a
+    // fresh one, so an unchanged reference is proof this answer is still ours.
+    const cycle = this._installComplete;
     let status: { running?: boolean; lastResult?: { ok: boolean; message?: string; command?: string } };
     try {
       status = await workerGet(this.workerUrl, "/install/status") as typeof status;
@@ -2435,6 +2432,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       );
       return;
     }
+    // Re-test what the await invalidated. Dropping a late answer is always
+    // safe: if an install really is still in flight, the next probe asks again.
+    if (this._disposed || this._installComplete !== cycle) return;
     if (status.running) return; // still installing — wait for the real event
     const last = status.lastResult;
     if (!last) {

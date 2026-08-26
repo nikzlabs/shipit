@@ -69,6 +69,13 @@ interface StubOpts {
    * ITSELF, not from the single post-POST resync.
    */
   runningForStatusProbes?: number;
+  /**
+   * Hold the FIRST `/install/status` response open until the test releases it,
+   * then answer `{running: false, lastResult: {ok: true}}`. Every later probe
+   * answers `{running: true}` immediately. Lets a test park one probe in flight
+   * across an install-generation boundary.
+   */
+  holdFirstStatus?: boolean;
 }
 
 interface StubWorker {
@@ -81,6 +88,8 @@ interface StubWorker {
   postPostStatusProbes: () => number;
   /** How many times the runner has opened the SSE stream. */
   sseConnects: () => number;
+  /** Let the held first `/install/status` response through (`holdFirstStatus`). */
+  releaseHeldStatus: () => void;
 }
 
 /**
@@ -105,6 +114,7 @@ async function startStubWorker(opts: StubOpts): Promise<StubWorker> {
   let installDoneSent = false;
   let postPostStatusProbes = 0;
   let sseConnects = 0;
+  let releaseHeldStatus: () => void = () => {};
   const sseClients = new Set<NodeJS.WritableStream>();
 
   app.post("/install", async () => {
@@ -123,6 +133,11 @@ async function startStubWorker(opts: StubOpts): Promise<StubWorker> {
   app.get("/install/status", async () => {
     if (!installPosted) return opts.status;
     postPostStatusProbes += 1;
+    if (opts.holdFirstStatus) {
+      if (postPostStatusProbes > 1) return { running: true, lastResult: null };
+      await new Promise<void>((r) => { releaseHeldStatus = r; });
+      return { running: false, lastResult: { ok: true } };
+    }
     if (opts.runningForStatusProbes !== undefined) {
       return postPostStatusProbes <= opts.runningForStatusProbes
         ? { running: true, lastResult: null }
@@ -160,7 +175,18 @@ async function startStubWorker(opts: StubOpts): Promise<StubWorker> {
     installDoneSent: () => installDoneSent,
     postPostStatusProbes: () => postPostStatusProbes,
     sseConnects: () => sseConnects,
+    releaseHeldStatus: () => { releaseHeldStatus(); },
   };
+}
+
+/** Resolves to true if `p` is still pending after `ms`. */
+async function stillPending(p: Promise<unknown>, ms: number): Promise<boolean> {
+  const pending = Symbol("pending");
+  const raced = await Promise.race([
+    p.then(() => "settled" as const),
+    new Promise<typeof pending>((r) => setTimeout(() => r(pending), ms)),
+  ]);
+  return raced === pending;
 }
 
 describe("Integration: install gate — resolution without SSE install_done (docs/162)", () => {
@@ -305,13 +331,19 @@ describe("Integration: install gate — resolution without SSE install_done (doc
     }
   });
 
-  it("reopens the ServiceManager install gate after an install_done lost mid-reinstall (docs/283)", async () => {
-    // The user-visible half of the same incident: `holdGatedServicesForReinstall`
+  it("releases the reinstall bracket's gate after an install_done lost mid-reinstall (docs/283)", async () => {
+    // The bracket half of the same incident. `holdGatedServicesForReinstall`
     // stops the `preview: auto` services (SIGTERM → SIGKILL → exit 137), and
-    // ONLY `setInstallRunning(false)` starts them again. It lives in
+    // ONLY `setInstallRunning(false)` starts them again — it lives in
     // `reinstallForDepChange`'s `finally`, so a `runInstall` that never returns
-    // leaves the services in `gatedServices` — where the poller and
-    // `handleNonZeroExit` deliberately ignore them — permanently.
+    // leaves the services in `gatedServices`, where the poller and
+    // `handleNonZeroExit` deliberately ignore them, permanently.
+    //
+    // Scope, deliberately: this asserts the BRACKET reaches its `finally` and
+    // releases as a success. It uses a recorder rather than a real
+    // ServiceManager (which needs Docker), so it does NOT observe
+    // `gatedServices`, `_gatedTeardown`, or a service actually restarting —
+    // `service-manager.test.ts` covers the release itself.
     stub = await startStubWorker({
       installResponse: { started: true },
       status: { running: false, lastResult: null },
@@ -346,6 +378,61 @@ describe("Integration: install gate — resolution without SSE install_done (doc
       // gated services again.
       expect(gate).toEqual([{ running: true }, { running: false, failed: false }]);
       expect(stub.installDoneSent()).toBe(false);
+    } finally {
+      runner.dispose({ force: true });
+    }
+  });
+
+  it("does not let a probe outlive its install and resolve the NEXT one (docs/283)", async () => {
+    // Polling for the whole wait means a probe can still be awaiting HTTP when
+    // the install it asked about settles by SSE and a new install arms a fresh
+    // resolver. Every guard in `resyncInstallStateAfterReconnect` runs BEFORE
+    // that await, so the late answer — truthfully "settled", but about the
+    // PREVIOUS install — would resolve the current one. That is the docs/183
+    // early-resolve bug displaced by one generation: install B's gate opens
+    // while npm is still running, and the overlay publish hook snapshots a
+    // not-yet-installed dep dir.
+    stub = await startStubWorker({
+      installResponse: { started: true },
+      status: { running: false, lastResult: null },
+      holdFirstStatus: true,   // park install A's post-POST probe in flight
+    });
+
+    const runner = new ContainerSessionRunner({
+      sessionId: "gate-stale-probe-across-generations",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl: stub.url,
+    });
+    // Long enough that only the post-POST probes fire — the race under test is
+    // about a probe's LIFETIME, not the cadence.
+    setProbeInterval(runner, 5000);
+    const priv = runner as unknown as { signalInstallComplete(ok?: boolean): void };
+
+    try {
+      // Install A: the stub holds its first probe open, so one probe belonging
+      // to generation A is now parked in flight.
+      const runA = runner.runInstall(["npm install"]);
+      await waitFor(() => stub!.postPostStatusProbes() >= 1, 3000, "install A probe in flight");
+      // A's real SSE `install_done` lands and settles it — while that probe is
+      // still out there.
+      priv.signalInstallComplete(true);
+      expect((await withTimeout(runA, 3000, "runInstall A")).ok).toBe(true);
+
+      // Install B starts and arms a new resolver. Its own probes truthfully
+      // report `running: true`, so nothing legitimate can settle it.
+      const probesBeforeB = stub.postPostStatusProbes();
+      const runB = runner.runInstall(["npm install"]);
+      await waitFor(() => stub!.postPostStatusProbes() > probesBeforeB, 3000, "install B probe issued");
+
+      // Now A's probe finally answers `{running: false, lastResult: {ok: true}}`.
+      stub.releaseHeldStatus();
+
+      // B must still be waiting: that answer was never about B.
+      expect(await stillPending(runB, 300)).toBe(true);
+
+      priv.signalInstallComplete(true);   // B's real event, for a clean teardown
+      await withTimeout(runB, 3000, "runInstall B");
     } finally {
       runner.dispose({ force: true });
     }
