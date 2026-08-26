@@ -298,9 +298,14 @@ describe("restartContainer (docs/124 §3.1, §3.2)", () => {
     );
 
     expect(result.noContainer).toBe(true);
-    // destroy is skipped, but reapOrphans still runs as defense in depth
+    // `destroy` now runs even with no container record (review of PR #2587):
+    // "no container" and "nothing to tear down" are different facts. A creation
+    // still in its preflight has published no record, and `destroy` is what
+    // cancels it — otherwise it finishes moments later, beside the replacement
+    // Rescue is about to build. It is a cheap no-op when there is genuinely
+    // nothing there. `reapOrphans` still runs as defense in depth.
     const cmAny = cm as unknown as { _destroyCalls: () => number; _reapCalls: () => number };
-    expect(cmAny._destroyCalls()).toBe(0);
+    expect(cmAny._destroyCalls()).toBe(1);
     expect(cmAny._reapCalls()).toBe(1);
   });
 });

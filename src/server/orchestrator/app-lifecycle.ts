@@ -564,6 +564,13 @@ async function attemptContainerCreate(
   const { mgr, runner, sessionId } = opts;
   try {
     if (opts.destroyFirst) await mgr.destroy(sessionId);
+    // Snapshot the teardown counter HERE — after our own `destroyFirst` (which
+    // bumps it, and must not cancel the create it exists to make room for) and
+    // before the preflight awaits below. A teardown during the workspace check
+    // or overlay preparation would otherwise already be counted by the time
+    // `create` looks, and the create would run to completion for a session
+    // that no longer exists. See `SessionContainerManager.teardownEpoch`.
+    const intentEpoch = mgr.teardownEpoch(sessionId);
     // planning#181 — fail fast with a clear, terminal message if the workspace clone
     // is missing. The activation path (route-registry `activateSession`)
     // re-materializes an evicted/missing workspace from the bare cache before
@@ -611,7 +618,7 @@ async function attemptContainerCreate(
       overlaySpecs,
     });
     const createStart = Date.now();
-    const sc = await mgr.create(config);
+    const sc = await mgr.create(config, { intentEpoch });
     console.log(`[timing] container.create for ${sessionId} took ${Date.now() - createStart}ms`);
     // docs/279 — record the grants this container was actually plumbed with, so
     // a later edit to the durable set can be diffed against them ("pending ·

@@ -1768,3 +1768,110 @@ describe("createContainer — cancelled by a concurrent destroy", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// A cancelled create must not damage the incarnation that replaced it
+// (review of PR #2587)
+// ---------------------------------------------------------------------------
+//
+// Cancellation aborts deliberately late, so a teardown can return, a
+// replacement create can start, and only THEN does the cancelled create run its
+// cleanup. Most of that cleanup is scoped by session rather than by container —
+// the `shipit-parent-session` sweep, the per-session overlay volume names — so
+// running it blind reaps the replacement's resources.
+
+describe("createContainer — cleanup after a newer incarnation took over", () => {
+  const SESSION = "3f6d1497-c466-4b2c-b9af-0f1800fbf759";
+  const OVERLAY_VOL = "shipit-3f6d1497-c46_overlay-dba27c31";
+
+  it("skips the session-wide sweep when another container owns the session", async () => {
+    const sweeps: string[] = [];
+    const removedVolumes: string[] = [];
+    const removedContainers: string[] = [];
+    let release!: () => void;
+    const paused = new Promise<void>((resolve) => { release = resolve; });
+    let reachedCreate!: () => void;
+    const atCreate = new Promise<void>((resolve) => { reachedCreate = resolve; });
+
+    const docker = {
+      listContainers: async (o: { filters?: { label?: string[] } }) => {
+        sweeps.push(JSON.stringify(o?.filters ?? {}));
+        return [];
+      },
+      listNetworks: async () => [],
+      listVolumes: async () => ({ Volumes: [] }),
+      getNetwork: () => ({ remove: async () => {} }),
+      getVolume: (name: string) => ({ remove: async () => { removedVolumes.push(name); } }),
+      getContainer: (id: string) => ({
+        inspect: async () => { throw Object.assign(new Error("no such container"), { statusCode: 404 }); },
+        stop: async () => {},
+        remove: async () => { removedContainers.push(id); },
+      }),
+      createContainer: async () => {
+        reachedCreate();
+        await paused;
+        return {
+          id: "cid-old",
+          start: async () => {},
+          inspect: async () => ({
+            Config: { Labels: {} },
+            NetworkSettings: { Networks: { "shipit-net": { IPAddress: "172.20.0.9" } } },
+          }),
+        };
+      },
+    } as unknown as Docker;
+
+    const containers = new Map<string, SessionContainer>();
+    const deps = {
+      docker,
+      containers,
+      standbySessionIds: new Set<string>(),
+      destroyEpochs: new Map<string, number>(),
+      emitter: new EventEmitter(),
+      baseLabels: () => ({ "shipit-managed": "true" }),
+      networkName: "shipit-net",
+      workerPort: 9100,
+      imageName: "shipit-worker:test",
+      skipHealthCheck: true,
+    } as unknown as LifecycleDeps;
+
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-supersede-"));
+    fs.mkdirSync(path.join(tmp, "session", "workspace"), { recursive: true });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // Stand in for the replacement: a DIFFERENT record, already owning the
+      // session's map entry and mounting the same session-derived volume.
+      const replacement = {
+        id: "cid-new", sessionId: SESSION, workerUrl: "http://172.20.0.9:9100",
+        overlayVolumeNames: [OVERLAY_VOL],
+      } as unknown as SessionContainer;
+
+      // Force the older create to fail after it built its own container, with
+      // the replacement already installed.
+      const failing = createContainer(deps, baseConfig({
+        sessionId: SESSION,
+        sessionDir: path.join(tmp, "session"),
+        workspaceDir: path.join(tmp, "session", "workspace"),
+        sessionStateDir: path.join(tmp, "session", "state"),
+      }));
+      // Held inside `docker.createContainer`, so the takeover below lands at a
+      // known point rather than racing the create's own publish.
+      await atCreate;
+      containers.set(SESSION, replacement);
+      deps.destroyEpochs.set(SESSION, 1); // a teardown happened → cancellation
+      release();
+
+      await expect(failing).rejects.toBeInstanceOf(ContainerCreateCancelledError);
+
+      // Its own container: removed. The replacement's session-scoped
+      // resources: untouched.
+      expect(removedContainers).not.toContain("cid-new");
+      expect(removedVolumes).not.toContain(OVERLAY_VOL);
+      expect(sweeps).toEqual([]);
+      expect(containers.get(SESSION)).toBe(replacement);
+    } finally {
+      warn.mockRestore();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

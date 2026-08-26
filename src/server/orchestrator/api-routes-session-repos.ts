@@ -321,9 +321,15 @@ export async function registerSessionReposRoutes(
         const url = decodeURIComponent(request.params.url);
         const repo = deps.repoStore.get(url);
         if (repo?.warmSessionId) {
-          if (deps.containerManager?.isStandby(repo.warmSessionId)) {
-            await deps.containerManager.destroy(repo.warmSessionId);
-          }
+          // Unconditional, deliberately. `isStandby` only becomes true once
+          // `createStandby` RETURNS, so gating on it skipped teardown for
+          // exactly the window where a standby is still being built — the
+          // creation then finished, added a deleted session to the standby set,
+          // and started pre-installing into it. `destroy` is what cancels an
+          // in-flight create (it bumps the teardown counter before its own
+          // "nothing to destroy" return), and this session is being deleted on
+          // the next line either way, so there is nothing to preserve.
+          await deps.containerManager?.destroy(repo.warmSessionId);
           const runner = deps.runnerRegistry.get(repo.warmSessionId);
           // Forced — user is removing the repo, so the warm session is
           // explicitly being torn down regardless of agent state.

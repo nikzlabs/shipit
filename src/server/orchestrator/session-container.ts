@@ -24,6 +24,7 @@ import {
   buildContainerConfig,
   cleanupSessionDockerResources,
   type LifecycleDeps,
+  type CreateContainerOpts,
 } from "./container-lifecycle.js";
 import {
   rediscoverContainers,
@@ -1217,8 +1218,22 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * Create and start a container for the given session.
    * Returns the SessionContainer with its bridge IP and worker URL.
    */
-  async create(config: ContainerConfig): Promise<SessionContainer> {
-    return createContainer(this.lifecycleDeps(), config);
+  async create(config: ContainerConfig, opts?: CreateContainerOpts): Promise<SessionContainer> {
+    return createContainer(this.lifecycleDeps(), config, opts);
+  }
+
+  /**
+   * Snapshot this session's teardown counter — the value to hand back to
+   * {@link create} as `intentEpoch`.
+   *
+   * Take it the moment a creation is DECIDED ON, before any preflight `await`
+   * (workspace checks, overlay preparation). Without that, a teardown during
+   * the preflight is already counted by the time `create` looks, so it reads as
+   * "no teardown since we began" and the create runs to completion for a
+   * session that is gone. See `LifecycleDeps.destroyEpochs`.
+   */
+  teardownEpoch(sessionId: string): number {
+    return this.destroyEpochs.get(sessionId) ?? 0;
   }
 
   /**

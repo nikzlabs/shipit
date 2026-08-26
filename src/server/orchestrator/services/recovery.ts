@@ -303,9 +303,18 @@ export async function restartContainer(
       console.warn(`[rescue] destroy container failed for ${sessionId}:`, err);
     }
   } else {
-    // No container, but a stale create-error from a previous failed attempt
-    // would persist otherwise — wipe it so we observe only THIS attempt's
-    // outcome below.
+    // "No container" does not mean "nothing to tear down": a creation still in
+    // its preflight has published no record yet, and Rescue would otherwise
+    // leave it running — to finish moments later, alongside the replacement
+    // Rescue is about to build. `destroy` bumps the teardown counter before its
+    // own "nothing to destroy" return, which is what cancels it.
+    try {
+      await withTimeout(deps.containerManager.destroy(sessionId), PHASE_TIMEOUT_MS.destroying_container);
+    } catch (err) {
+      console.warn(`[rescue] cancelling an in-flight create failed for ${sessionId}:`, err);
+    }
+    // A stale create-error from a previous failed attempt would persist
+    // otherwise — wipe it so we observe only THIS attempt's outcome below.
     deps.containerManager.clearCreateError(sessionId);
   }
 
@@ -475,9 +484,20 @@ export async function restartAgent(
       console.warn(`[restart-agent] destroy container failed for ${sessionId}:`, err);
     }
   } else {
-    // No container, but a stale create-error from a previous failed attempt
-    // would persist otherwise — wipe it so we observe only THIS attempt's
-    // outcome below.
+    // Same reasoning as Rescue above, with `destroyAgentContainer` so the
+    // session's Compose stack is preserved: a creation still in its preflight
+    // has published no record, and must be cancelled rather than left to
+    // finish alongside the agent container this path is about to rebuild.
+    try {
+      await withTimeout(
+        deps.containerManager.destroyAgentContainer(sessionId),
+        PHASE_TIMEOUT_MS.destroying_container,
+      );
+    } catch (err) {
+      console.warn(`[restart-agent] cancelling an in-flight create failed for ${sessionId}:`, err);
+    }
+    // A stale create-error from a previous failed attempt would persist
+    // otherwise — wipe it so we observe only THIS attempt's outcome below.
     deps.containerManager.clearCreateError(sessionId);
   }
 
