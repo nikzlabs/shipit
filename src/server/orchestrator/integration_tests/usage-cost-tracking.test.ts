@@ -312,8 +312,6 @@ describe("Integration: Usage & cost tracking", () => {
       sessionId: appSessionId,
       totalDurationMs: 2500,
       turnCount: 1,
-      lastTurnInputTokens: 120,
-      lastTurnOutputTokens: 40,
       cumulativeInputTokens: 120,
       cumulativeOutputTokens: 40,
     });

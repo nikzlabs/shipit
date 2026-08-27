@@ -1619,8 +1619,10 @@ export function wireAgentListeners(
             groups: sessionUsage.groups ?? [],
             totalDurationMs: sessionUsage.totalDurationMs,
             turnCount: sessionUsage.turnCount,
-            lastTurnInputTokens: event.tokens?.input,
-            lastTurnOutputTokens: event.tokens?.output,
+            // The turn's own figures ride the `turn_usage_update` emitted just
+            // below, which is what the dial reads; a second copy here had no
+            // reader left once `usage_update` stopped moving the dial
+            // (planning#482).
             cumulativeInputTokens: tokenTotals?.cumulativeInputTokens,
             cumulativeOutputTokens: tokenTotals?.cumulativeOutputTokens,
           });

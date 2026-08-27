@@ -351,8 +351,6 @@ export interface WsUsageUpdate {
   groups: UsageGroup[];
   totalDurationMs: number;
   turnCount: number;
-  lastTurnInputTokens?: number;
-  lastTurnOutputTokens?: number;
   cumulativeInputTokens?: number;
   cumulativeOutputTokens?: number;
   /**
@@ -360,9 +358,11 @@ export interface WsUsageUpdate {
    * the pinned agent's own turn. The consult's cost and tokens roll into the
    * session bill and cumulative-token totals, but it must NOT move the context
    * dial — the dial tracks the PINNED agent's window occupancy, and a one-shot
-   * consult has its own, smaller context. The client skips `setContextTokens`
-   * for these. No accompanying `turn_usage_update` is emitted for the same
-   * reason (a consult is kept out of the per-turn dial series).
+   * consult has its own, smaller context. That exclusion no longer rests on
+   * this flag: no `usage_update` moves the dial at all (planning#482), and a
+   * consult emits no `turn_usage_update`, which is the only message that does.
+   * The flag stays as the attribution fact — what this update is ABOUT — since
+   * nothing else on the message carries it.
    */
   subAgent?: boolean;
 }

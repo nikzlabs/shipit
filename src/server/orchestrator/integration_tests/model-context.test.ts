@@ -174,8 +174,6 @@ describe("Integration: Model context & token tracking", () => {
     const usageUpdate = await client.receiveType("usage_update");
     expect(usageUpdate).toMatchObject({
       type: "usage_update",
-      lastTurnInputTokens: 5000,
-      lastTurnOutputTokens: 1200,
       cumulativeInputTokens: 5000,
       cumulativeOutputTokens: 1200,
     });
