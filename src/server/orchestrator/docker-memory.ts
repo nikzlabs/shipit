@@ -23,6 +23,17 @@ const AGENT_SESSION_LABEL = "shipit-session-id";
  */
 const SERVICE_SESSION_LABEL = "shipit-parent-session";
 
+/*
+ * These two labels only. ShipIt runs other session-scoped containers — plugin
+ * CLI runs, plugin installs, egress namespace holders — under their own labels
+ * (`shipit-plugin-cli`, `shipit-plugin-install`, `shipit-plugin-netns`). They
+ * are deliberately NOT attributed here: `bySession` answers exactly one
+ * question, "how much would reclaiming this session give back", and neither
+ * reclaim tier stops those. Their memory still counts in `usedBytes`, so the
+ * shortfall they contribute to is real; what would be wrong is promising it
+ * back. They are also short-lived by construction.
+ */
+
 /**
  * Read aggregate memory stats for all running Docker containers.
  * Returns null if Docker is not available or stats can't be read.
@@ -49,14 +60,25 @@ export async function readDockerMemoryStats(
         const container = docker.getContainer(ci.Id);
         // stream: false returns a single stats snapshot instead of a stream
         const stats: ContainerStats = await container.stats({ stream: false });
-        return { bytes: stats.memory_stats?.usage ?? 0, labels: ci.Labels ?? {} };
+        return { bytes: stats.memory_stats?.usage ?? 0, labels: ci.Labels ?? {}, ok: true };
       } catch {
-        return { bytes: 0, labels: ci.Labels ?? {} };
+        // A failed read is UNKNOWN, not zero. Attributing 0 to the session
+        // would create a truthy `bySession` entry, and the enforcer reads a
+        // present entry as "measured" — so it would keep reclaiming on the
+        // strength of a number nobody read.
+        return { bytes: 0, labels: ci.Labels ?? {}, ok: false };
       }
     });
     const readings = await Promise.all(statPromises);
-    for (const { bytes, labels } of readings) {
+    const unreadable = new Set<string>();
+    for (const { labels, ok } of readings) {
+      if (ok) continue;
+      const owner = labels[AGENT_SESSION_LABEL] ?? labels[SERVICE_SESSION_LABEL];
+      if (owner) unreadable.add(owner);
+    }
+    for (const { bytes, labels, ok } of readings) {
       usedBytes += bytes;
+      if (!ok) continue;
       const agentOf = labels[AGENT_SESSION_LABEL];
       const serviceOf = labels[SERVICE_SESSION_LABEL];
       // An agent container carries only the first label and a service container
@@ -71,7 +93,13 @@ export async function readDockerMemoryStats(
       }
     }
 
-    return { usedBytes, totalBytes, bySession };
+    // Drop any session with an unreadable container: a partial sum would be
+    // read as the whole of what stopping it frees.
+    const attributed = Object.fromEntries(
+      Object.entries(bySession).filter(([sessionId]) => !unreadable.has(sessionId)),
+    );
+
+    return { usedBytes, totalBytes, bySession: attributed };
   } catch {
     return null;
   }

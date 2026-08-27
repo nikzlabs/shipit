@@ -138,6 +138,14 @@ export function createIdleEnforcer(
    * literally the same object.
    */
   let actedOn: DockerMemoryStats | null = null;
+  /**
+   * Teardowns this enforcer started that have not finished. A `docker stop`
+   * takes seconds, so a snapshot taken while one is in flight still counts
+   * memory that is on its way back — acting on it would reclaim a second
+   * session for bytes the first one was already returning. The identity guard
+   * above cannot see this: that snapshot is genuinely new.
+   */
+  let teardownsInFlight = 0;
 
   /** Shared guards: is this session reclaimable at all right now? */
   function isReclaimable(sessionId: string, runner: SessionRunnerInterface | undefined): boolean {
@@ -174,6 +182,7 @@ export function createIdleEnforcer(
     if (need <= 0) return;
 
     if (stats && stats === actedOn) return;
+    if (teardownsInFlight > 0) return;
 
     const now = Date.now();
 
@@ -188,6 +197,26 @@ export function createIdleEnforcer(
      */
     let shortfallIsStale = false;
 
+    // ---- Tier 0: give back the speculative capacity first ----
+    // A standby is a container the warm pool made on the chance that someone
+    // starts a session on this repo. Nobody has claimed it, so reclaiming a
+    // real session's agent container while one sits there spends a user's work
+    // to protect a guess. The enforcer used to skip standbys unconditionally,
+    // which was defensible when the limit was a count they did not enter into;
+    // under a memory budget they occupy the same bytes as anything else.
+    for (const sc of containerManager.getAll()) {
+      if (need <= 0) break;
+      if (!containerManager.isStandby(sc.sessionId)) continue;
+      const measured = usage[sc.sessionId];
+      need -= measured?.agentBytes ?? 0;
+      reclaimedSomething = true;
+      console.log(`[idle-cleanup] Dropping standby container for ${sc.sessionId} (over memory budget)`);
+      // No runner, no viewer, no session row — a standby has nothing to
+      // announce and nothing to preserve, so this is the full teardown.
+      trackTeardown(containerManager.destroy(sc.sessionId), sc.sessionId);
+      if (!measured) { shortfallIsStale = true; break; }
+    }
+
     // ---- Tier 1: stop agent containers, keep the previews running ----
     const tier1: Candidate[] = [];
     for (const sc of containerManager.getAll()) {
@@ -198,7 +227,7 @@ export function createIdleEnforcer(
     }
     tier1.sort(byReclaimOrder);
 
-    for (const c of tier1) {
+    for (const c of (shortfallIsStale ? [] : tier1)) {
       if (need <= 0) break;
       // TOCTOU re-check: between the scan and now, the runner may have become
       // active (new viewer attached, agent started). Dispose only if it is
@@ -248,7 +277,7 @@ export function createIdleEnforcer(
         + `${idleMs !== undefined ? ` idleMs=${idleMs}` : ""})`,
       );
       announce(c.sessionId, keepsPreview ? "agent-reclaimed" : "memory-pressure", idleMs, runner?.queueLength ?? 0);
-      destroyContainer(c.sessionId);
+      destroyAgentOnly(c.sessionId);
       // Nothing measured this session, so we cannot tell how much of the
       // shortfall it just covered. Stop here and let the next snapshot decide:
       // subtracting 0 and carrying on would walk the whole idle list and empty
@@ -260,12 +289,19 @@ export function createIdleEnforcer(
     if (need > 0 && !shortfallIsStale && services) {
       const tier2: Candidate[] = [];
       for (const sessionId of services.liveSessions()) {
+        // ONLY stacks tier 1 orphaned. "Has a manager and no runner" is not
+        // enough: `restartAgent` (`services/recovery.ts`) disposes the old
+        // runner with `preserveComposeOnDispose` and creates the replacement
+        // container asynchronously, so a session actively restarting looks
+        // exactly like a preview-only one for the length of that window — and
+        // tier 2 would stop the stack out from under it.
+        if (!tier1At.has(sessionId)) continue;
         const runner = runnerRegistry.get(sessionId);
-        // A stack whose session is still in use is not idle slack. Its agent
-        // container was either just reclaimed above (no runner) or never
-        // existed; either way the reclaimability guards still apply.
+        // A stack whose session came back into use is not idle slack.
         if (!isReclaimable(sessionId, runner)) continue;
-        if (runner) continue; // still has a live runner — tier 1 declined it
+        // Reattached since tier 1: its stack was adopted by a live runner, so
+        // drop the marker rather than carrying a stale claim on it.
+        if (runner) { tier1At.delete(sessionId); continue; }
         tier2.push({ sessionId, runner: undefined, idleSince: tier1At.get(sessionId) ?? 0 });
       }
       tier2.sort(byReclaimOrder);
@@ -334,8 +370,25 @@ export function createIdleEnforcer(
     }
   }
 
-  function destroyContainer(sessionId: string): void {
-    containerManager?.destroy(sessionId).catch((err: unknown) => {
+  /**
+   * Tier 1's teardown, and the reason it is NOT `containerManager.destroy()`.
+   *
+   * `destroy()` is the FULL session teardown: it runs
+   * `cleanupSessionDockerResources`, which sweeps every
+   * `shipit-parent-session=<sid>` container plus the session's networks — i.e.
+   * exactly the Compose stack this tier exists to keep alive.
+   * `destroyAgentContainer()` is the same call with `preserveChildResources`,
+   * built for the agent-restart path (`session-container.ts`), and it is the
+   * one that matches what tier 1 promises the user.
+   */
+  function destroyAgentOnly(sessionId: string): void {
+    trackTeardown(containerManager?.destroyAgentContainer(sessionId), sessionId);
+  }
+
+  function trackTeardown(p: Promise<void> | undefined, sessionId: string): void {
+    if (!p) return;
+    teardownsInFlight++;
+    p.catch((err: unknown) => {
       const errMsg = getErrorMessage(err);
       console.error(`[idle-cleanup] Failed to destroy container ${sessionId}:`, errMsg);
       // The runner was already disposed above — its emitMessage path is gone —
@@ -347,6 +400,6 @@ export function createIdleEnforcer(
           `Failed to destroy idle container: ${errMsg}. Container may still be running on the host.`,
         );
       }
-    });
+    }).finally(() => { teardownsInFlight--; });
   }
 }

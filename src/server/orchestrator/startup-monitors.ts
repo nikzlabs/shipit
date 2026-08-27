@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { isUnderEvictionPressure, effectiveBudgetBytes } from "./memory-pressure.js";
+import { isUnderEvictionPressure, resolveMemoryTargets } from "./memory-pressure.js";
 import { readDockerMemoryStats } from "./docker-memory.js";
 import {
   createMissingContainerReconciler,
@@ -59,17 +59,22 @@ export async function startStartupMonitors(
   // eviction threshold. Without the immediate trigger, eviction would
   // wait for the next 30s idle-enforcement tick — long enough for the
   // host to OOM-kill containers underneath us.
-  const memoryStatsInterval = dockerForStats ? setInterval(() => {
-    void (async () => {
-      const raw = await readDockerMemoryStats(dockerForStats);
+  // docs/284 — one read is one pass. `container.stats()` is a per-container
+  // round trip, so on a busy host a read can outlast the 10s interval; two
+  // overlapping reads would publish out-of-order snapshots and the enforcer
+  // would decide against whichever landed last.
+  let memoryReadInFlight = false;
+  const pollMemory = async (): Promise<void> => {
+    if (memoryReadInFlight) return;
+    memoryReadInFlight = true;
+    try {
+      const raw = await readDockerMemoryStats(dockerForStats!);
       if (!raw) return;
-      // docs/284 — resolve the budget once, here, and put it on the snapshot.
-      // The enforcer and the client then read the SAME number instead of each
-      // recomputing it from a setting they may have read at different times.
-      const stats = {
-        ...raw,
-        budgetBytes: effectiveBudgetBytes(raw.totalBytes, credentialStore.getMemoryBudgetMb()),
-      };
+      // docs/284 — resolve the budget and its warn/evict lines once, here, and
+      // put them on the snapshot. The enforcer and the client then read the
+      // SAME numbers instead of each recomputing them from a setting they may
+      // have read at different times.
+      const stats = { ...raw, ...resolveMemoryTargets(raw.totalBytes, credentialStore.getMemoryBudgetMb()) };
       const wasUnderPressure = isUnderEvictionPressure(latestMemoryStats.value);
       latestMemoryStats.value = stats;
       sseBroadcast("docker_memory", stats);
@@ -82,17 +87,27 @@ export async function startStartupMonitors(
         try { enforceIdleContainerLimit(); }
         catch (err) { console.error("[memory-pressure] immediate eviction failed:", err); }
       }
-    })();
-  }, 10_000) : null;
+    } finally {
+      memoryReadInFlight = false;
+    }
+  };
+  // docs/284 — seed a reading immediately rather than waiting 10s for the first
+  // tick. Everything memory-aware treats "no snapshot" as "no answer": the warm
+  // pool would create standbys through the whole startup burst, and the
+  // enforcer would decline to reclaim. Fire-and-forget so a slow Docker cannot
+  // hold up boot.
+  if (dockerForStats) void pollMemory().catch(() => {});
+  const memoryStatsInterval = dockerForStats
+    ? setInterval(() => { void pollMemory().catch(() => {}); }, 10_000)
+    : null;
 
   // ---- Periodic idle container cleanup (every 30s) ----
   // Runs the idle enforcer on a fixed cadence so cleanup happens regardless
   // of WebSocket activity. WebSocket close handlers MUST NOT trigger this
   // synchronously — that would couple WS lifecycle to runner/container
-  // lifecycle and let transient disconnects kill running agents. The
-  // enforcer itself also enforces a grace period (IDLE_GRACE_PERIOD_MS) so
-  // a runner whose viewer just detached is not immediately eligible for
-  // disposal.
+  // lifecycle and let transient disconnects kill running agents. The enforcer
+  // reclaims only when ShipIt is over its memory budget (docs/284),
+  // longest-idle first — never because time passed.
   //
   // The missing-container reconciler runs on the same cadence — it catches
   // runners whose container vanished without a `container_exited` event
@@ -414,7 +429,7 @@ export async function startStartupMonitors(
   });
   registerShutdownHook(app, {
     startupTimer, authManagers, runnerRegistry, autoPushScheduler,
-    dockerProxyServer, containerManager, databaseManager,
+    dockerProxyServer, containerManager, databaseManager, serviceManagers,
   });
 
   return { kickDiskEscalation };

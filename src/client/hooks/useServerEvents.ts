@@ -839,6 +839,23 @@ export function useServerEvents(): void {
         next.delete(data.sessionId);
         return next;
       });
+      // docs/284 — the reclaim notice has to be set HERE, not only in the
+      // per-session WS handler. The enforcer broadcasts on this global channel
+      // precisely because it has just disposed the runner the WS path needs, so
+      // the health strip's explanation would otherwise never render for the one
+      // flow it was written for. Scoped to the session the user is looking at:
+      // the store holds a single active transcript, and a notice about some
+      // other session would render against this one.
+      if (
+        (data.reason === "agent-reclaimed" || data.reason === "memory-pressure")
+        && useSessionStore.getState().sessionId === data.sessionId
+      ) {
+        useSessionStore.getState().setPauseNotice({
+          reason: data.reason,
+          ...(data.idleMs !== undefined ? { idleMs: data.idleMs } : {}),
+          at: Date.now(),
+        });
+      }
     });
 
     es.addEventListener("full_reset_complete", () => {

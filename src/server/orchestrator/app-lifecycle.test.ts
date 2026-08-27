@@ -64,16 +64,28 @@ describe("resolveAutoStartDeps", () => {
   });
 });
 
+/**
+ * docs/284 — `destroy` and `destroyAgentContainer` are NOT interchangeable, and
+ * the fake must not blur them. `destroy()` runs the full session teardown,
+ * which sweeps every `shipit-parent-session` container — i.e. the Compose stack
+ * tier 1 exists to preserve. A fake that accepted either would let a tier-1
+ * test assert "the preview survived" while production tore it down, which is
+ * exactly the bug this shape now catches.
+ */
 function makeContainerManager(opts: {
   containers: FakeContainer[];
   standby?: Set<string>;
   destroy?: (sid: string) => Promise<void>;
+  destroyAgentContainer?: (sid: string) => Promise<void>;
 }): SessionContainerManager {
   const standby = opts.standby ?? new Set<string>();
   return {
     getAll: () => opts.containers,
     isStandby: (sid: string) => standby.has(sid),
     destroy: opts.destroy ?? (async () => {}),
+    // Default to the agent-only teardown reusing the same spy, so the many
+    // tests that only care THAT a container went away keep reading naturally.
+    destroyAgentContainer: opts.destroyAgentContainer ?? opts.destroy ?? (async () => {}),
   } as unknown as SessionContainerManager;
 }
 
@@ -520,11 +532,19 @@ describe("createIdleEnforcer", () => {
   }
 
   describe("docs/284 reclaim ladder", () => {
+    // The assertion that matters is WHICH teardown ran. `destroy()` runs
+    // `cleanupSessionDockerResources`, which sweeps every
+    // `shipit-parent-session` container — the stack this tier promises to keep.
+    // Asserting only "a container went away" passes against that bug, which is
+    // how the first version of this test missed it.
     it("tier 1 stops the agent container and leaves the preview stack running", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
       const destroy = vi.fn().mockResolvedValue(undefined);
-      const cm = makeContainerManager({ containers: [{ sessionId: "a" }], destroy });
+      const destroyAgentContainer = vi.fn().mockResolvedValue(undefined);
+      const cm = makeContainerManager({
+        containers: [{ sessionId: "a" }], destroy, destroyAgentContainer,
+      });
       const runner = idleRunner("a");
       vi.advanceTimersByTime(600_000);
       const services = makeServiceHooks(["a"]);
@@ -538,7 +558,8 @@ describe("createIdleEnforcer", () => {
         sseBroadcast,
       })();
 
-      expect(destroy).toHaveBeenCalledWith("a");
+      expect(destroyAgentContainer).toHaveBeenCalledWith("a");
+      expect(destroy).not.toHaveBeenCalled();
       // The whole point: the stack was NOT torn down with the container.
       expect(services.stop).not.toHaveBeenCalled();
       // `preserveComposeOnDispose` is what keeps the ServiceManager in the map
@@ -576,33 +597,64 @@ describe("createIdleEnforcer", () => {
       }));
     });
 
-    it("tier 2 stops a surviving stack only once tier 1 is exhausted", () => {
+    it("leaves the stack alone when tier 1 alone covered the shortfall", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
       const destroy = vi.fn().mockResolvedValue(undefined);
-      // "old" has no agent container left — tier 1 already took it in an
-      // earlier pass — while "b" still has one.
       const cm = makeContainerManager({ containers: [{ sessionId: "b" }], destroy });
       idleRunner("b");
       vi.advanceTimersByTime(600_000);
-      const services = makeServiceHooks(["old", "b"]);
+      const services = makeServiceHooks(["b"]);
 
-      // Overage 10; b's agent gives back 1, so the stacks are still needed.
+      // Overage is 10 and b's agent gives back 12 — the preview is not needed.
       createIdleEnforcer({
         containerManager: cm,
         runnerRegistry: registry,
-        getMemoryStats: () => overBudgetWith({
-          b: { agentBytes: 1 }, old: { serviceBytes: 12 },
-        }),
+        getMemoryStats: () => overBudgetWith({ b: { agentBytes: 12, serviceBytes: 5 } }),
         services: services.hooks,
       })();
 
       expect(destroy).toHaveBeenCalledWith("b");
-      // "old" has no runner and no container: only its stack is left to take.
-      expect(services.stop).toHaveBeenCalledWith("old");
-      // "old" covered the rest of the shortfall, so the pass stopped before
-      // reaching the stack tier 1 had just spared.
-      expect(services.stop).not.toHaveBeenCalledWith("b");
+      expect(services.stop).not.toHaveBeenCalled();
+    });
+
+    it("tier 2 stops the stack when tier 1 did not free enough", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const destroy = vi.fn().mockResolvedValue(undefined);
+      const cm = makeContainerManager({ containers: [{ sessionId: "b" }], destroy });
+      idleRunner("b");
+      vi.advanceTimersByTime(600_000);
+      const services = makeServiceHooks(["b"]);
+
+      createIdleEnforcer({
+        containerManager: cm,
+        runnerRegistry: registry,
+        getMemoryStats: () => overBudgetWith({ b: { agentBytes: 1, serviceBytes: 20 } }),
+        services: services.hooks,
+      })();
+
+      expect(services.stop).toHaveBeenCalledWith("b");
+    });
+
+    // `restartAgent` (services/recovery.ts) disposes the old runner with
+    // `preserveComposeOnDispose` and creates the replacement container
+    // asynchronously. For that window the session has a manager and no runner —
+    // indistinguishable from a preview-only session by shape alone — so tier 2
+    // keys off what THIS enforcer orphaned, not off "no runner".
+    it("never stops a stack it did not orphan itself (agent restart in flight)", () => {
+      const destroy = vi.fn().mockResolvedValue(undefined);
+      const cm = makeContainerManager({ containers: [], destroy });
+      const services = makeServiceHooks(["restarting"]);
+
+      createIdleEnforcer({
+        containerManager: cm,
+        runnerRegistry: registry,
+        getMemoryStats: () => overBudgetWith({ restarting: { serviceBytes: 50 } }),
+        services: services.hooks,
+      })();
+
+      expect(services.stop).not.toHaveBeenCalled();
     });
 
     it("never stops the stack of a session that still has a viewer", () => {
@@ -663,6 +715,36 @@ describe("createIdleEnforcer", () => {
       expect(services.stop).not.toHaveBeenCalled();
     });
 
+    // A standby is a container the warm pool created speculatively — nobody
+    // has claimed it. Spending a user's session to protect a guess is backwards,
+    // so it goes before tier 1 does. (The enforcer used to skip standbys
+    // outright, which made sense when they were exempt from the count too.)
+    it("gives back speculative standby capacity before touching a session", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const destroy = vi.fn().mockResolvedValue(undefined);
+      const destroyAgentContainer = vi.fn().mockResolvedValue(undefined);
+      const cm = makeContainerManager({
+        containers: [{ sessionId: "warm" }, { sessionId: "mine" }],
+        standby: new Set(["warm"]),
+        destroy,
+        destroyAgentContainer,
+      });
+      idleRunner("mine");
+      vi.advanceTimersByTime(600_000);
+
+      // The standby covers the whole shortfall, so the real session is spared.
+      createIdleEnforcer({
+        containerManager: cm,
+        runnerRegistry: registry,
+        getMemoryStats: () => overBudgetWith({ warm: { agentBytes: 20 }, mine: { agentBytes: 20 } }),
+      })();
+
+      expect(destroy).toHaveBeenCalledWith("warm");
+      expect(destroyAgentContainer).not.toHaveBeenCalled();
+      expect(registry.get("mine")?.disposed).toBe(false);
+    });
+
     // Two triggers can fire between two 10s polls (the 30s timer and the
     // pressure-crossing edge). The second must not reclaim again for memory the
     // first pass already gave back.
@@ -690,32 +772,6 @@ describe("createIdleEnforcer", () => {
 
       expect(destroy.mock.calls.length).toBe(afterFirst);
     });
-  });
-
-  it("skips standby containers", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
-    const containers = [{ sessionId: "a" }, { sessionId: "warm" }];
-    const destroy = vi.fn().mockResolvedValue(undefined);
-    const cm = makeContainerManager({
-      containers,
-      standby: new Set(["warm"]),
-      destroy,
-    });
-
-    const r = registry.getOrCreate("a", "/tmp/a", "claude" as AgentId);
-    r.attachViewer(); r.detachViewer();
-    vi.advanceTimersByTime(600_000);
-
-    createIdleEnforcer({
-      containerManager: cm,
-      runnerRegistry: registry,
-      getMemoryStats: overBudget,
-    })();
-
-    // "warm" is standby and skipped from idle scan; only "a" was eligible.
-    expect(destroy).toHaveBeenCalledWith("a");
-    expect(destroy).not.toHaveBeenCalledWith("warm");
   });
 
   // --- Memory-pressure-aware behavior (feature 122) ---

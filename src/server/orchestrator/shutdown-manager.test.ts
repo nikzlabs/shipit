@@ -35,9 +35,10 @@ function captureOnClose(): { app: any; run: () => Promise<void> } {
   };
 }
 
-function buildDeps(): {
+function buildDeps(opts: { orphanedStacks?: string[] } = {}): {
   deps: ShutdownDeps;
   containerManager: { dispose: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> };
+  serviceManagers: Map<string, { stop: ReturnType<typeof vi.fn> }>;
   order: string[];
 } {
   const order: string[] = [];
@@ -47,12 +48,23 @@ function buildDeps(): {
     // never reaches for it — a re-introduced sweep would show up here.
     destroy: vi.fn(async () => { order.push("containerManager.destroy"); }),
   };
+  // docs/284 — a tier-1 reclaim leaves a Compose stack running with no runner,
+  // so there is no `disposed` handler left to tear it down. `get` answers the
+  // "does this session still have a live runner?" question the sweep asks.
+  const serviceManagers = new Map<string, { stop: ReturnType<typeof vi.fn> }>(
+    (opts.orphanedStacks ?? []).map((sid) => [
+      sid,
+      { stop: vi.fn(async () => { order.push(`serviceManagers.stop:${sid}`); }) },
+    ]),
+  );
   const deps = {
     startupTimer: setTimeout(() => {}, 60_000),
     authManagers: new Map(),
     runnerRegistry: {
       disposeAll: vi.fn(() => { order.push("runnerRegistry.disposeAll"); }),
+      get: vi.fn(() => undefined),
     },
+    serviceManagers,
     // The armed post-turn pushes no longer live on the runners disposed above,
     // so shutdown has to drop them itself.
     autoPushScheduler: {
@@ -64,10 +76,39 @@ function buildDeps(): {
       close: vi.fn(() => { order.push("databaseManager.close"); }),
     },
   } as unknown as ShutdownDeps;
-  return { deps, containerManager, order };
+  return { deps, containerManager, serviceManagers, order };
 }
 
 describe("registerShutdownHook", () => {
+  // docs/284 — `serviceManagers` is process-local, so a stack the idle
+  // enforcer preserved past its agent container cannot be routed to or
+  // reclaimed by the NEXT orchestrator. Leaving it up is the "dev server
+  // running for a session nobody reopens" this hook already refuses.
+  it("stops compose stacks left with no runner (tier-1 preserved previews)", async () => {
+    const { app, run } = captureOnClose();
+    const { deps, serviceManagers, order } = buildDeps({ orphanedStacks: ["orphan"] });
+
+    registerShutdownHook(app, deps);
+    await run();
+
+    expect(serviceManagers.get("orphan")).toBeUndefined();
+    expect(order).toContain("serviceManagers.stop:orphan");
+  });
+
+  it("leaves a stack alone while its session still has a live runner", async () => {
+    const { app, run } = captureOnClose();
+    const { deps, order } = buildDeps({ orphanedStacks: ["live"] });
+    // `disposeAll` fires each live runner's own `disposed` handler, which runs
+    // the compose teardown — sweeping here too would double-stop it.
+    (deps.runnerRegistry as unknown as { get: ReturnType<typeof vi.fn> }).get =
+      vi.fn(() => ({}) as never);
+
+    registerShutdownHook(app, deps);
+    await run();
+
+    expect(order).not.toContain("serviceManagers.stop:live");
+  });
+
   it("disposes the container manager without destroying any container", async () => {
     const { app, run } = captureOnClose();
     const { deps, containerManager } = buildDeps();

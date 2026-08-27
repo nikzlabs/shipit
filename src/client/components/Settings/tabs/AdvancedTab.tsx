@@ -539,11 +539,10 @@ export function AdvancedTab({
       <div className="space-y-3">
         <h3 className="text-sm font-medium text-(--color-text-primary)">Memory Budget</h3>
         <p className="text-sm text-(--color-text-secondary)">
-          Memory ShipIt may use in total, in GB — sessions, previews and all. While ShipIt is inside
-          the budget, nothing is stopped for being idle: an idle session keeps its preview running so
-          it is there when you come back. Over the budget, the longest-idle session gives up its agent
-          container first, and its preview only if that was not enough. Leave empty to use the whole
-          machine.
+          Memory ShipIt may use in total, in GB — sessions, previews and all. Inside the budget
+          nothing is stopped for being idle, so an idle session keeps its preview running. Over it,
+          the longest-idle session gives up its agent container first, its preview only if that was
+          not enough. Leave empty to use the whole machine.
         </p>
         <div className="flex items-center gap-3">
           <input

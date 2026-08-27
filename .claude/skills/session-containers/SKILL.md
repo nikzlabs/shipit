@@ -89,7 +89,7 @@ A standby is a normal session container pre-created by the warm pool and tagged
   startup validation to avoid treating an unclaimed standby as an orphan.
 
 Standby containers are excluded from the "real" count when the pool decides
-whether to create another (`size - standbyCount < maxIdleContainers`).
+whether to create another; since docs/284 the warm pool skips standby creation while ShipIt is at its memory budget (`isUnderEvictionPressure`), and the enforcer reclaims standbys before touching a real session.
 
 ## ContainerSessionRunner Internals
 
@@ -280,23 +280,48 @@ live turn, so the flow completes even in sessions nobody opens.
 
 Containers that survive — after any shutdown, clean or not — are rediscovered on startup, enabling fast reconnection: a new runner reconnects to the existing container without restarting anything, and `reattachInFlightTurns()` re-adopts a turn that is still running inside it.
 
-## Idle Container Cleanup
+## Idle Container Cleanup (docs/284)
 
-Instead of per-runner idle timers, ShipIt manages container lifecycle with a single `maxIdleContainers` setting (default 5, persisted in `CredentialStore`). An **idle container** is one where:
-- The runner has `viewerCount === 0` AND `!running`, OR
-- The container has no runner at all
+ShipIt reclaims idle sessions when, and only when, it is over the user's
+**memory budget** — one setting (`memoryBudgetMb`, Settings → Advanced; unset
+means "the whole machine"). Idle time alone reclaims nothing. The old
+`maxIdleContainers` count is gone: it treated an idle shell and a Postgres
+service as equal claims on the machine.
 
-`enforceIdleContainerLimit()` scans all containers, identifies idle ones, and destroys the oldest excess beyond the limit. It fires on two triggers:
+An **idle** session is one whose runner has `viewerCount === 0` and
+`!agentBusy`, or that has no runner at all. Sessions holding a docs/241
+reservation are never candidates.
+
+`enforceIdleContainerLimit()` (`idle-enforcer.ts`) reclaims longest-idle first,
+in three tiers, stopping as soon as usage is back under the evict line:
+
+0. **Standby containers** — speculative warm-pool capacity nobody claimed. Full
+   `containerManager.destroy()`; there is no runner and no stack to preserve.
+1. **Agent containers** — `containerManager.destroyAgentContainer()` (NOT
+   `destroy()`, which sweeps every `shipit-parent-session` container), with
+   `preserveComposeOnDispose = true` on the runner first. The session's Compose
+   stack keeps running and its preview stays reachable, because
+   `preview-proxy.ts:resolveTarget` routes through the `ServiceManager` that
+   stays in `serviceManagers`.
+2. **Preview stacks** — only stacks tier 1 orphaned in this process, and only
+   once tier 1 is exhausted. Keying off "manager with no runner" would also hit
+   a session mid-`restartAgent`.
+
+Three rules keep it honest against a snapshot the poller refreshes every 10s:
+an **unmeasured** reclaim (no `bySession` entry) ends the pass; **tier 2 is
+skipped** behind an unmeasured tier-1 reclaim; and a snapshot object is acted
+on at most once. A pass is also skipped entirely while a previous teardown is
+still in flight.
+
+It fires on two triggers:
 1. **A periodic timer** (`startup-monitors.ts`)
 2. **Agent finishes** — via the `onRunnerIdle` registry callback when a runner emits `"idle"`
 
 **It is deliberately NOT called from the WS close handler** (`route-registry.ts` carries an explicit comment saying so): WebSocket lifecycle must not drive container lifecycle, or a network blip or page reload would destroy a live session's container. A close handler only calls `detachFromRunner()`. See `CLAUDE.md` → *WebSocket lifecycle MUST NOT affect server behavior*.
 
-When excess idle containers are destroyed:
-- `containerManager.destroy(sessionId)` stops and removes the Docker container
-- `runnerRegistry.dispose(sessionId)` cleans up the in-memory runner
-
-The `maxIdleContainers` setting is exposed via `PUT /api/settings` and the Settings UI (Advanced tab).
+Because `serviceManagers` is process-local, a tier-1-preserved stack cannot be
+routed to or reclaimed by the *next* orchestrator — so the shutdown hook stops
+every runner-less manager, and the user reopening the session rebuilds it.
 
 ## Idle Timer
 
@@ -365,7 +390,7 @@ The session's **Compose stack** is the exception: it is still `compose down`-ed 
 
 **`agent.memory` / `agent.cpu` / `agent.pids` in `shipit.yaml` are removed keys** (docs/229). They are warned-and-ignored by `shipit-config.ts`, not honored — a repo that still sets them is getting host-derived sizing regardless.
 | Concurrent runners | 10 | `SessionRunnerRegistry` |
-| Runner idle timeout | 10 min (default) | `SessionRunnerRegistry` |
+| Container reclaim | Only when over the memory budget (docs/284) | `idle-enforcer.ts` |
 | Unused runner idle | 10 sec | `ContainerSessionRunner` |
 | Container stop timeout | 5 s | `session-container.ts` |
 | Health check interval | 500 ms | `session-container.ts` |

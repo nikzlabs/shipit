@@ -139,12 +139,20 @@ export interface DockerMemoryStats {
   /** Memory limit (bytes). 0 means unlimited. */
   totalBytes: number;
   /**
-   * docs/284 — the budget pressure is actually measured against:
-   * `min(totalBytes, configured budget)`, or `totalBytes` when the user has
-   * set no budget. The client reports usage against THIS number, not the raw
-   * host total, because it is the one that decides reclaim (req 12).
+   * docs/284 — what usage is reported against: the user's budget clamped to
+   * the host, or the host total when no budget is set. The client reports
+   * against THIS number, not the raw host total, because it is the one that
+   * decides reclaim (req 12).
    */
   budgetBytes?: number;
+  /** docs/284 — usage at or above this renders the memory banner. */
+  warnAtBytes?: number;
+  /**
+   * docs/284 — usage above this makes the enforcer reclaim. With an explicit
+   * budget this IS the budget (req 5: previews survive until it is reached);
+   * with none it is the long-standing 85% of host.
+   */
+  evictAtBytes?: number;
   /**
    * docs/284 — per-session usage (bytes), summing the session's agent
    * container and its Compose service containers. Present only when the
