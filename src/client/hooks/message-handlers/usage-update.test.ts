@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useUiStore } from "../../stores/ui-store.js";
+import { useSessionStore } from "../../stores/session-store.js";
 import { handleUsageUpdate } from "./usage-update.js";
 import type { HandlerContext } from "./types.js";
 import type { UsageGroup, WsUsageUpdate } from "../../../server/shared/types.js";
@@ -28,6 +29,8 @@ const update = (over: Partial<WsUsageUpdate> = {}): WsUsageUpdate => ({
 describe("handleUsageUpdate (docs/252 req 16)", () => {
   beforeEach(() => {
     useUiStore.getState().setCurrentSessionUsage(null);
+    useUiStore.getState().setContextTokens(0);
+    useSessionStore.setState({ sessionId: "s1" });
   });
 
   it("carries the per-service split live, not just the totals", () => {
@@ -48,5 +51,33 @@ describe("handleUsageUpdate (docs/252 req 16)", () => {
       totals: { ...EMPTY_USAGE_TOTALS, meteredCostUsd: 0.2, meteredTurns: 1 },
     }));
     expect(useUiStore.getState().currentSessionUsage!.groups).toEqual([]);
+  });
+});
+
+/**
+ * planning#482 — the socket is keyed off the route while this handler reads the
+ * store, and a session switch moves the store first. Everything the handler
+ * writes is a session-less global describing the session on screen, so the
+ * outgoing session's trailing usage used to land on the incoming one.
+ */
+describe("handleUsageUpdate — session scoping", () => {
+  beforeEach(() => {
+    useUiStore.getState().setCurrentSessionUsage(null);
+    useUiStore.getState().setContextTokens(0);
+    useUiStore.getState().setCumulativeTokens(0, 0);
+    useSessionStore.setState({ sessionId: "s1" });
+  });
+
+  it("applies an update for the session on screen", () => {
+    handleUsageUpdate(ctx, update({ cumulativeInputTokens: 64_000 }));
+    expect(useUiStore.getState().contextTokens).toBe(64_000);
+    expect(useUiStore.getState().currentSessionUsage).not.toBeNull();
+  });
+
+  it("drops an update naming a DIFFERENT session", () => {
+    handleUsageUpdate(ctx, update({ sessionId: "other", cumulativeInputTokens: 64_000 }));
+    expect(useUiStore.getState().contextTokens).toBe(0);
+    expect(useUiStore.getState().currentSessionUsage).toBeNull();
+    expect(useUiStore.getState().cumulativeInputTokens).toBe(0);
   });
 });

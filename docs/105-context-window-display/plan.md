@@ -1,3 +1,8 @@
+---
+issue: planning#482
+title: Context Window Usage Display
+description: The composer's context dial — per-turn token/cost breakdown and the session's running cost.
+---
 
 # 105 — Context Window Usage Display
 
@@ -209,6 +214,32 @@ The original implementation derived the context window from a static `MODEL_CONT
 - The static map is still used (a) for the first frame before `result` arrives, and (b) for adapters that can't surface the field. `"claude-opus-4-7": 1_000_000` was added so even the first-frame fallback is correct.
 - Backend-reported context windows are authoritative for the active session, including Codex profiles that expose less than a model's maximum API context. The static model map remains a first-frame fallback only; completion telemetry replaces it without model-specific reconciliation so the dial reflects the context the backend actually assigned.
 - GPT-5.6's static fallback is Codex's 272K assigned window, not the model's larger API-advertised maximum. ShipIt invokes these profiles through Codex, so showing the API maximum before the first telemetry event overstates the context actually available to the session.
+
+## The current-context reading belongs to the session on screen
+
+`ui-store.contextTokens` is a session-LESS global, and `ContextDialMount` falls
+back to it for exactly the session that has no turns of its own. That makes every
+writer of the field a potential cross-session leak, and both writers were one
+(planning#482 — "sometimes I open a new session and the context window is already
+a third full"):
+
+- `loadSessionHistory` seeded it only `if (data.turnUsage.length > 0)`, so a
+  session with no recorded turns never corrected whatever the previously-viewed
+  session had left there. It is now authoritative in both directions: no turns ⇒
+  `0`. (`modelInfo` deliberately keeps the one-directional seed — clearing it on a
+  mid-turn foreground reconnect would hide the dial while a turn is running.)
+- `handleUsageUpdate` / `handleTurnUsageUpdate` wrote it with no session check.
+  The per-session socket is keyed off the ROUTE (`App`'s `wsSessionId`) while the
+  handlers read the STORE, and a switch moves the store first — so the outgoing
+  session's trailing usage landed on the incoming one. Both now drop a message
+  naming another session; `appendTurnUsage` stays unscoped because it is keyed by
+  the message's own session id.
+
+This is the same hazard `TRANSCRIPT_SCOPED_MESSAGES` exists for. `usage_update` is
+deliberately outside that set, on the grounds that these messages are "keyed by
+their own `sessionId` inside their stores" — true for the per-turn series, and not
+true for `contextTokens` (no key) or `currentSessionUsage` (keyed in the object,
+read unconditionally by the dial). Scoping lives in the handlers for that reason.
 
 ## Future extensions
 
