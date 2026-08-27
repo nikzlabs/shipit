@@ -241,6 +241,31 @@ their own `sessionId` inside their stores" — true for the per-turn series, and
 true for `contextTokens` (no key) or `currentSessionUsage` (keyed in the object,
 read unconditionally by the dial). Scoping lives in the handlers for that reason.
 
+### `usage_update` no longer writes the reading at all
+
+Scoping fixed *whose* number reached the field; it did not make the number a
+context occupancy. `handleUsageUpdate` set `contextTokens` from
+`cumulativeInputTokens` — the session's LIFETIME sum of input tokens, which only
+grows — falling back to `lastTurnInputTokens`, the uncached portion of one turn's
+prompt, which under prompt caching is near zero. One overstates without bound, the
+other undercounts heavily, and the field means "occupied NOW".
+
+`turn_usage_update` is the authoritative reading, and every `usage_update` the
+agent path emits is emitted alongside one — both live inside the same
+`if (perTurnUsage)` block in `agent-listeners.ts` — so the coarse value was
+overwritten a moment later in the ordinary case. The case where it was NOT: a turn
+that reports no token telemetry (a Codex compact result) produces no per-turn row,
+so the dial stayed pinned to the lifetime sum precisely when a compaction had just
+FREED context. The write is gone; the last real occupancy stands until the next
+per-turn row replaces it.
+
+Consequences: `lastTurnInputTokens` / `lastTurnOutputTokens` lost their only
+reader and are off the wire — the same figures ride `turn_usage_update.turn`.
+`WsUsageUpdate.subAgent` stays, but no longer as the mechanism that keeps a
+consult off the dial (nothing on this message reaches the dial now, and a consult
+emits no `turn_usage_update`) — only as the attribution fact, which nothing else
+on the message carries.
+
 ## Future extensions
 
 - **Auto-compact** — a setting that, on reaching 90%, has the agent itself proactively run a compaction during its next turn (agent-driven, not a UI button).

@@ -27,23 +27,25 @@ export const handleUsageUpdate: Handler<WsUsageUpdate> = (_ctx, data) => {
     totalDurationMs: update.totalDurationMs,
     turnCount: update.turnCount,
   });
-  // contextTokens reflects the *last turn's* context occupancy. The
-  // `turn_usage_update` handler below sets the precise value (input +
-  // cache reads + cache writes); this is just a coarse fallback for
-  // sessions that don't emit per-turn data. `lastTurnInputTokens` alone
-  // undercounts heavily when prompt caching is active, so prefer the
-  // cumulative figure when that's all we have.
+  // This message deliberately does NOT touch `contextTokens` (planning#482).
   //
-  // A sub-agent consult (docs/144) is excluded: it contributes to the cost +
-  // cumulative-token rollups below, but the context dial tracks the PINNED
-  // agent's window — a one-shot consult must not move that needle.
-  if (!update.subAgent) {
-    if (update.cumulativeInputTokens !== undefined) {
-      ui.setContextTokens(update.cumulativeInputTokens);
-    } else if (update.lastTurnInputTokens !== undefined) {
-      ui.setContextTokens(update.lastTurnInputTokens);
-    }
-  }
+  // That field means "how much of the window the session occupies NOW", and
+  // nothing on this message measures it. It used to be written from
+  // `cumulativeInputTokens` — the session's LIFETIME sum of input tokens, which
+  // only grows — falling back to `lastTurnInputTokens`, the uncached portion of
+  // one turn's prompt, which under prompt caching is near zero. One overstates
+  // without bound, the other undercounts heavily; neither is an occupancy.
+  //
+  // The authoritative reading is `turn_usage_update.turn`, and every
+  // `usage_update` the agent path emits is emitted alongside one
+  // (`agent-listeners.ts` — both live inside the same `if (perTurnUsage)`), so
+  // the coarse value was at best overwritten a moment later and at worst left
+  // standing: a turn that reports no token telemetry (a Codex compact result)
+  // gets no per-turn row, so the dial was pinned to a lifetime sum precisely
+  // when a compaction had just FREED context. The sub-agent consult that emits
+  // this message on its own (docs/144) never had a reading to contribute
+  // either. Keeping the last real occupancy is the honest answer in all three
+  // cases.
   ui.setCumulativeTokens(
     update.cumulativeInputTokens ?? 0,
     update.cumulativeOutputTokens ?? 0,

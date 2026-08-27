@@ -70,14 +70,44 @@ describe("handleUsageUpdate — session scoping", () => {
 
   it("applies an update for the session on screen", () => {
     handleUsageUpdate(ctx, update({ cumulativeInputTokens: 64_000 }));
-    expect(useUiStore.getState().contextTokens).toBe(64_000);
     expect(useUiStore.getState().currentSessionUsage).not.toBeNull();
+    expect(useUiStore.getState().cumulativeInputTokens).toBe(64_000);
   });
 
   it("drops an update naming a DIFFERENT session", () => {
     handleUsageUpdate(ctx, update({ sessionId: "other", cumulativeInputTokens: 64_000 }));
-    expect(useUiStore.getState().contextTokens).toBe(0);
     expect(useUiStore.getState().currentSessionUsage).toBeNull();
     expect(useUiStore.getState().cumulativeInputTokens).toBe(0);
+  });
+});
+
+/**
+ * planning#482 — `contextTokens` means "how much of the window the session
+ * occupies NOW". Nothing on `usage_update` measures that: `cumulativeInputTokens`
+ * is a lifetime sum that only grows, and it was written into the field. The
+ * authoritative reading is `turn_usage_update`, which a turn reporting no token
+ * telemetry (a Codex compact result) does not produce — so the dial was left
+ * pinned to the lifetime sum at exactly the moment a compaction had freed
+ * context.
+ */
+describe("handleUsageUpdate — the context reading is not this message's to make", () => {
+  beforeEach(() => {
+    useUiStore.getState().setCurrentSessionUsage(null);
+    useUiStore.getState().setCumulativeTokens(0, 0);
+    useSessionStore.setState({ sessionId: "s1" });
+  });
+
+  it("keeps the last real occupancy when a compaction turn reports only totals", () => {
+    // The dial's last authoritative reading, from `turn_usage_update`.
+    useUiStore.getState().setContextTokens(30_000);
+
+    // The compaction turn: no per-turn row, so no `turn_usage_update` follows —
+    // only these session-lifetime sums, 12x the real occupancy.
+    handleUsageUpdate(ctx, update({ cumulativeInputTokens: 360_000, cumulativeOutputTokens: 90_000 }));
+
+    expect(useUiStore.getState().contextTokens).toBe(30_000);
+    // The cost + cumulative rollups this message DOES own still land.
+    expect(useUiStore.getState().cumulativeInputTokens).toBe(360_000);
+    expect(useUiStore.getState().currentSessionUsage).not.toBeNull();
   });
 });
