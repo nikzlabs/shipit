@@ -3,9 +3,9 @@ import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
 
 /**
- * docs/233 (planning#243) — render a `SessionReportCard` inline when another session
- * in this session's cohort pushes a report to it (`shipit session report`): a
- * child reporting up to its parent, or a sibling on a `--to cohort` broadcast.
+ * docs/233 (planning#243) — render a `SessionReportCard` inline when a child
+ * reports up to its parent. A sibling relation can occur only while rehydrating
+ * legacy cards from the removed cohort-broadcast path.
  *
  * The card is BOTH persisted in chat history (appended server-side, since the
  * report arrives outside any of THIS session's turns) AND buffered into the

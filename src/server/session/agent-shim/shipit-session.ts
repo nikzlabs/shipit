@@ -1190,12 +1190,12 @@ async function armSelfMergeWatch(json: boolean, deps: RunDeps): Promise<void> {
   );
 }
 
-// ---- Upward / lateral coordination (docs/233, planning#243) ----
+// ---- Upward coordination (docs/233, planning#243) ----
 
 /** Valid `--severity` values, mirrored from the orchestrator's service. */
 const REPORT_SEVERITIES = ["fyi", "warn", "blocker"];
-/** Valid `--to` targets. There is deliberately no `--to <session-id>`. */
-const REPORT_TARGETS = ["parent", "cohort"];
+/** Valid `--to` target. Sibling delivery is deliberately unavailable. */
+const REPORT_TARGETS = ["parent"];
 /** Mirrors `MAX_REPORT_BODY_CHARS`; checked here to save a round-trip. */
 const MAX_REPORT_BODY_CHARS = 10_000;
 
@@ -1261,8 +1261,8 @@ export async function handleSessionRename(args: string[], deps: RunDeps): Promis
  * `shipit session whoami [--json]` (docs/233).
  *
  * Resolves the CALLING session — id, title, branch, status — plus its parent,
- * its siblings (the cohort a `--to cohort` report reaches), and any children it
- * spawned. Before this, a spawned session had no way to answer "who am I and
+ * its read-only sibling topology, and any children it spawned. Before this, a
+ * spawned session had no way to answer "who am I and
  * who am I working alongside?": `view <own-id>` is descendant-scoped and 404s,
  * and `list` only shows sessions the caller itself spawned.
  */
@@ -1319,13 +1319,13 @@ function formatPeer(peer: Record<string, unknown>): string {
 
 /**
  * `shipit session report -b TEXT | --body-file FILE [--severity S] [--subject T]
- * [--to parent|cohort] [--json]` (docs/233).
+ * [--to parent] [--json]` (docs/233).
  *
  * The upward push channel. The report lands in each recipient's transcript as a
  * persisted card AND as a queued system turn, so the recipient AGENT is woken
- * rather than having to go and look. Recipients are derived server-side from
- * this session's parent linkage — there is no `--to <session-id>`, so a report
- * can only reach the cohort the parent already coordinates.
+ * rather than having to go and look. The recipient is derived server-side from
+ * this session's parent linkage — there is no `--to <session-id>` and no
+ * sibling/cohort broadcast. The parent is the coordination hub.
  *
  * Exits 1 when no recipient's agent could be woken (the card is still posted, so
  * the human record survives); the per-recipient outcome is always printed.
@@ -1369,14 +1369,18 @@ export async function handleSessionReport(args: string[], deps: RunDeps): Promis
       `shipit session report: unknown --severity '${severity}'. Valid: ${REPORT_SEVERITIES.join(", ")}.`,
     );
   }
-  // `--cohort` is the shorthand for `--to cohort`; both are accepted so the
-  // broadcast form is reachable without remembering the target vocabulary.
-  const to = parsed.booleans.has("cohort") ? "cohort" : (parsed.values.to ?? "parent");
+  if (parsed.booleans.has("cohort")) {
+    fail(
+      deps.io,
+      "shipit session report: --cohort is not allowed. Child sessions can report only to their parent.",
+    );
+  }
+  const to = parsed.values.to ?? "parent";
   if (!REPORT_TARGETS.includes(to)) {
     fail(
       deps.io,
       `shipit session report: unknown --to '${to}'. Valid: ${REPORT_TARGETS.join(", ")}. ` +
-        "A report can only reach your own cohort — you cannot target an arbitrary session id.",
+        "Child sessions cannot message siblings or target an arbitrary session id.",
     );
   }
 
@@ -1389,7 +1393,6 @@ export async function handleSessionReport(args: string[], deps: RunDeps): Promis
   }
 
   const recipients = (res.body.recipients as Record<string, unknown>[] | undefined) ?? [];
-  const skippedRecipients = (res.body.skippedRecipients as Record<string, unknown>[] | undefined) ?? [];
   const wokenCount = recipients.filter((r) => r.woken === true).length;
 
   if (parsed.booleans.has("json")) {
@@ -1405,17 +1408,10 @@ export async function handleSessionReport(args: string[], deps: RunDeps): Promis
     `delivered: ${wokenCount}/${recipients.length} recipient(s) woken`,
   ];
   for (const r of recipients) {
-    const relation = r.relation === "sibling" ? "sibling" : "parent";
     const outcome = r.woken === true
       ? "woken"
       : `NOT woken (${asString(r.error) || "unknown error"}) — the card was still posted in its chat`;
-    lines.push(`  ${relation} ${asString(r.title)} (${asString(r.sessionId)}): ${outcome}`);
-  }
-  for (const r of skippedRecipients) {
-    lines.push(
-      `  sibling ${asString(r.title)} (${asString(r.sessionId)}): NOT delivered `
-      + "(session is resolved; no message, card, or wake turn was sent)",
-    );
+    lines.push(`  parent ${asString(r.title)} (${asString(r.sessionId)}): ${outcome}`);
   }
   deps.io.stdout(`${lines.join("\n")}\n`);
   deps.io.exit(wokenCount > 0 ? 0 : 1);

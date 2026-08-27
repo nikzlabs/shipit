@@ -3,7 +3,7 @@
  *
  * Several orchestrator-side events need to push an *actionable* turn into a
  * session that isn't currently being driven by a viewer: a watched child's PR
- * merges (docs/196), a cohort peer pushes a report (docs/233). They all face the
+ * merges (docs/196), a child pushes a report to its parent (docs/233). They all face the
  * same three problems, which this module solves once:
  *
  *   1. **A stale runner.** A runner can outlive its container (idle-eviction

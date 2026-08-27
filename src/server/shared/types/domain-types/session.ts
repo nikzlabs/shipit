@@ -687,7 +687,7 @@ export interface SessionReportCard {
   /**
    * How the recipient relates to the reporter:
    * - `child`   — the reporter is this recipient's own spawned child.
-   * - `sibling` — the reporter shares this recipient's parent (cohort broadcast).
+   * - `sibling` — legacy persisted value from the removed cohort-broadcast path.
    */
   relation: "child" | "sibling";
   severity: SessionReportSeverity;

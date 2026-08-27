@@ -812,14 +812,12 @@ export async function registerSessionSpawnRoutes(
   );
 
   // ===========================================================================
-  // Upward / lateral session reports (docs/233, planning#243)
+  // Upward session reports (docs/233, planning#243)
   //
   // The counterpart to the parent→child routes above: these two are called with
-  // the REPORTING session's own id (the worker injects it), so a child can at
-  // last resolve its own cohort and push a finding to its parent + siblings.
-  // Every recipient is derived server-side from `parentSessionId` — there is no
-  // agent-supplied target — so a report can only travel inside the tree the
-  // parent already coordinates.
+  // the REPORTING session's own id (the worker injects it), so a child can
+  // resolve its own topology and push a finding to its parent. The recipient is
+  // derived server-side from `parentSessionId`; there is no agent-supplied target.
   // ===========================================================================
 
   // GET /api/sessions/:sessionId/cohort — self + parent + siblings + children.
@@ -846,9 +844,9 @@ export async function registerSessionSpawnRoutes(
     },
   );
 
-  // POST /api/sessions/:sessionId/report — push a report up to the parent (or
-  // across the whole cohort). Each recipient gets a persisted card AND a queued
-  // system turn, so the report is pushed rather than waiting to be pulled.
+  // POST /api/sessions/:sessionId/report — push a report up to the parent. The
+  // parent gets a persisted card AND a queued system turn, so the report is
+  // pushed rather than waiting to be pulled. Cohort targets are rejected.
   app.post<{
     Params: { sessionId: string };
     Body: { body?: string; subject?: string; severity?: string; to?: string };

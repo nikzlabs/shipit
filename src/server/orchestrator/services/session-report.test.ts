@@ -1,11 +1,11 @@
 /**
- * Unit tests for upward / lateral session reports (docs/233, planning#243).
+ * Unit tests for upward session reports (docs/233, planning#243).
  *
  * Covers the two halves of delivery — the persisted card in each recipient's
  * history and the queued system turn on its runner — plus the guards that make
  * a report safe to expose to an agent: recipients derived from the reporter's
- * own linkage (never agent input), archived peers skipped, validation, and the
- * runaway rate limit.
+ * own parent linkage (never agent input), sibling delivery refusal, validation,
+ * and the runaway rate limit.
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
@@ -149,89 +149,35 @@ describe("deliverSessionReport (docs/233)", () => {
     );
   });
 
-  it("--to cohort reaches the parent and every live sibling, but never the reporter", async () => {
-    const result = await deliverSessionReport(ctx.deps, "elementalist", {
+  it.each(["fyi", "warn", "blocker"] as const)(
+    "delivers %s reports only to the parent",
+    async (severity) => {
+      const result = await deliverSessionReport(ctx.deps, "elementalist", {
+        body: `${severity} finding`,
+        severity,
+      });
+
+      expect(result.recipients).toEqual([
+        { sessionId: "parent", title: "Spell catalogs", relation: "child", woken: true },
+      ]);
+      expect(ctx.chatHistoryManager.load("parent")[0].sessionReport?.severity).toBe(severity);
+      expect(ctx.runners.get("parent")?.dispatched[0].text).toContain(severity.toUpperCase());
+      expect(ctx.chatHistoryManager.load("druid")).toHaveLength(0);
+      expect(ctx.chatHistoryManager.load("necromancer")).toHaveLength(0);
+    },
+  );
+
+  it("rejects sibling/cohort delivery before any card, runner, or wake is created", async () => {
+    await expect(deliverSessionReport(ctx.deps, "elementalist", {
       body: "Heads up",
       to: "cohort",
       severity: "warn",
-    });
+    })).rejects.toMatchObject({ statusCode: 400 });
 
-    // Siblings arrive in the session manager's most-recently-used order, so
-    // assert membership, not sequence.
-    expect(result.recipients.map((r) => r.sessionId).sort()).toEqual(["druid", "necromancer", "parent"]);
-    expect(result.recipients[0]).toMatchObject({ sessionId: "parent", relation: "child" });
-    expect(result.recipients.slice(1).every((r) => r.relation === "sibling")).toBe(true);
-    // The reporter never receives its own report.
-    expect(ctx.chatHistoryManager.load("elementalist").filter((m) => m.sessionReport)).toHaveLength(0);
-    // Each sibling is told the reporter is a SIBLING, not a child.
-    expect(ctx.runners.get("druid")?.dispatched[0].text).toContain("report from sibling");
-  });
-
-  it("skips archived peers", async () => {
-    ctx.sessionManager.archive("druid");
-
-    const result = await deliverSessionReport(ctx.deps, "elementalist", {
-      body: "Heads up",
-      to: "cohort",
-    });
-
-    expect(result.recipients.map((r) => r.sessionId).sort()).toEqual(["necromancer", "parent"]);
-    expect(ctx.chatHistoryManager.load("druid").filter((m) => m.sessionReport)).toHaveLength(0);
-  });
-
-  it("returns resolved siblings as named skips without a card or wake", async () => {
-    ctx.db.db.prepare("UPDATE sessions SET last_used_at = ?, merged_at = ? WHERE id = ?")
-      .run("2026-08-14T10:00:00.000Z", "2026-08-14 11:00:00", "druid");
-
-    const result = await deliverSessionReport(ctx.deps, "elementalist", {
-      body: "Heads up",
-      to: "cohort",
-    });
-
-    expect(result.skippedRecipients).toEqual([{
-      sessionId: "druid",
-      title: "Druid catalog",
-      relation: "sibling",
-      reason: "resolved",
-    }]);
-    expect(result.recipients.map((recipient) => recipient.sessionId).sort()).toEqual([
-      "necromancer",
-      "parent",
-    ]);
-    expect(ctx.chatHistoryManager.load("druid").filter((message) => message.sessionReport)).toHaveLength(0);
-    expect(ctx.runners.has("druid")).toBe(false);
-  });
-
-  it("delivers to a running sibling whose PR became terminal mid-turn", async () => {
-    const runner = ctx.registry.getOrCreate("druid", "/ws/druid", "claude") as unknown as FakeRunner;
-    runner.running = true;
-    ctx.db.db.prepare("UPDATE sessions SET last_used_at = ?, closed_at = ? WHERE id = ?")
-      .run("2026-08-14T10:00:00.000Z", "2026-08-14 11:00:00", "druid");
-
-    const result = await deliverSessionReport(ctx.deps, "elementalist", {
-      body: "Heads up",
-      to: "cohort",
-      severity: "blocker",
-    });
-
-    expect(result.skippedRecipients).toEqual([]);
-    expect(result.recipients.some((recipient) => recipient.sessionId === "druid")).toBe(true);
-  });
-
-  it("does not charge the rate limit when all available recipients are resolved", async () => {
-    ctx.sessionManager.archive("parent");
-    ctx.sessionManager.archive("necromancer");
-    ctx.db.db.prepare("UPDATE sessions SET last_used_at = ?, merged_at = ? WHERE id = ?")
-      .run("2026-08-14T10:00:00.000Z", "2026-08-14 11:00:00", "druid");
-
-    for (let index = 0; index < MAX_REPORTS_PER_WINDOW + 1; index++) {
-      const result = await deliverSessionReport(ctx.deps, "elementalist", {
-        body: `report ${index}`,
-        to: "cohort",
-      });
-      expect(result.recipients).toEqual([]);
-      expect(result.skippedRecipients).toHaveLength(1);
+    for (const sessionId of ["parent", "elementalist", "druid", "necromancer"]) {
+      expect(ctx.chatHistoryManager.load(sessionId).filter((m) => m.sessionReport)).toHaveLength(0);
     }
+    expect(ctx.runners.size).toBe(0);
   });
 
   it("refuses when the reporting session has no parent (top-level or --detached)", async () => {
@@ -261,11 +207,19 @@ describe("deliverSessionReport (docs/233)", () => {
     ).rejects.toThrow(/Unknown severity/i);
     await expect(
       deliverSessionReport(ctx.deps, "elementalist", { body: "hi", to: "everyone" }),
-    ).rejects.toThrow(/Unknown report target/i);
+    ).rejects.toThrow(/only to their parent/i);
   });
 
   it("rate-limits a runaway reporter, and a rejected call doesn't burn budget", async () => {
-    // A rejected (invalid) call must not consume the reporter's allowance.
+    // An old shim can retry the removed target without consuming the reporter's
+    // allowance for later valid parent reports.
+    for (let i = 0; i < MAX_REPORTS_PER_WINDOW + 1; i++) {
+      await expect(deliverSessionReport(ctx.deps, "elementalist", {
+        body: "legacy retry",
+        to: "cohort",
+      })).rejects.toMatchObject({ statusCode: 400 });
+    }
+    // Other rejected validation calls also do not consume the allowance.
     await expect(deliverSessionReport(ctx.deps, "elementalist", { body: "" })).rejects.toThrow();
 
     for (let i = 0; i < MAX_REPORTS_PER_WINDOW; i++) {
@@ -279,26 +233,18 @@ describe("deliverSessionReport (docs/233)", () => {
     await expect(deliverSessionReport(ctx.deps, "druid", { body: "mine" })).resolves.toBeTruthy();
   });
 
-  it("reports a recipient whose wake failed without dropping the others (card still posted)", async () => {
-    // A session with no workspace can't be woken — `wakeSessionWithTurn` throws.
-    ctx.sessionManager.track("no-workspace", "Broken sibling");
-    ctx.sessionManager.setParentSession("no-workspace", "parent");
+  it("reports a parent whose wake failed while keeping the persisted card", async () => {
+    // A parent with no workspace can't be woken — `wakeSessionWithTurn` throws.
+    ctx.db.db.prepare("UPDATE sessions SET workspace_dir = NULL WHERE id = ?").run("parent");
 
     const result = await deliverSessionReport(ctx.deps, "elementalist", {
       body: "Heads up",
-      to: "cohort",
     });
 
-    const broken = result.recipients.find((r) => r.sessionId === "no-workspace");
+    const broken = result.recipients[0];
     expect(broken?.woken).toBe(false);
     expect(broken?.error).toMatch(/no workspace/i);
-    // Its card is still persisted, and the healthy recipients were still woken.
-    expect(ctx.chatHistoryManager.load("no-workspace").filter((m) => m.sessionReport)).toHaveLength(1);
-    expect(result.recipients.filter((r) => r.woken).map((r) => r.sessionId).sort()).toEqual([
-      "druid",
-      "necromancer",
-      "parent",
-    ]);
+    expect(ctx.chatHistoryManager.load("parent").filter((m) => m.sessionReport)).toHaveLength(1);
   });
 });
 

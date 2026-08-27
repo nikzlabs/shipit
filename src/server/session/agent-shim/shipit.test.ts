@@ -1721,10 +1721,9 @@ describe("shipit session report", () => {
     body: {
       reportId: "r-1",
       severity: "blocker",
-      to: "cohort",
+      to: "parent",
       recipients: [
         { sessionId: "ses_parent", title: "Spell catalogs", relation: "child", woken: true },
-        { sessionId: "ses_druid", title: "Druid catalog", relation: "sibling", woken: true },
       ],
     },
   };
@@ -1736,10 +1735,10 @@ describe("shipit session report", () => {
     expect(out.stderr).toContain("--body");
   });
 
-  it("posts body/severity/target and prints per-recipient delivery", async () => {
+  it("posts body/severity/parent target and prints delivery", async () => {
     const { run } = makeRunner();
     const out = await run(
-      ["session", "report", "-b", "regen wipes every catalog", "--severity", "blocker", "--to", "cohort", "--subject", "regen"],
+      ["session", "report", "-b", "regen wipes every catalog", "--severity", "blocker", "--subject", "regen"],
       { "POST /agent-ops/session/report": DELIVERED },
     );
     expect(out.exitCode).toBe(0);
@@ -1747,12 +1746,11 @@ describe("shipit session report", () => {
     expect(out.calls[0].body).toEqual({
       body: "regen wipes every catalog",
       severity: "blocker",
-      to: "cohort",
+      to: "parent",
       subject: "regen",
     });
-    expect(out.stdout).toContain("delivered: 2/2 recipient(s) woken");
+    expect(out.stdout).toContain("delivered: 1/1 recipient(s) woken");
     expect(out.stdout).toContain("parent Spell catalogs (ses_parent): woken");
-    expect(out.stdout).toContain("sibling Druid catalog (ses_druid): woken");
   });
 
   it("defaults to severity fyi and the parent target", async () => {
@@ -1767,12 +1765,40 @@ describe("shipit session report", () => {
     expect(out.calls[0].body).toEqual({ body: "fyi note", severity: "fyi", to: "parent" });
   });
 
-  it("--cohort is shorthand for --to cohort", async () => {
+  it("accepts an explicit parent target for older callers", async () => {
     const { run } = makeRunner();
-    const out = await run(["session", "report", "-b", "x", "--cohort"], {
-      "POST /agent-ops/session/report": DELIVERED,
+    const out = await run(["session", "report", "-b", "fyi note", "--to", "parent"], {
+      "POST /agent-ops/session/report": {
+        status: 200,
+        body: {
+          reportId: "r-parent",
+          severity: "fyi",
+          to: "parent",
+          recipients: [
+            { sessionId: "ses_parent", title: "Spell catalogs", relation: "child", woken: true },
+          ],
+        },
+      },
     });
-    expect((out.calls[0].body as { to: string }).to).toBe("cohort");
+
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ to: "parent" });
+  });
+
+  it("rejects --cohort before calling the broker", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "-b", "x", "--cohort"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("report only to their parent");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("rejects the legacy --to cohort form before calling the broker", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "-b", "x", "--to", "cohort"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("cannot message siblings");
+    expect(out.calls).toHaveLength(0);
   });
 
   it("reads the body from --body-file - (stdin-style file path)", async () => {
@@ -1798,7 +1824,7 @@ describe("shipit session report", () => {
     const { run: run2 } = makeRunner();
     const badTarget = await run2(["session", "report", "-b", "x", "--to", "ses_someone_else"]);
     expect(badTarget.exitCode).not.toBe(0);
-    expect(badTarget.stderr).toContain("cannot target an arbitrary session id");
+    expect(badTarget.stderr).toContain("cannot message siblings or target an arbitrary session id");
     expect(badTarget.calls).toHaveLength(0);
   });
 
@@ -1818,41 +1844,6 @@ describe("shipit session report", () => {
     expect(out.exitCode).toBe(1);
     expect(out.stdout).toContain("NOT woken (container could not be resumed)");
     expect(out.stdout).toContain("the card was still posted");
-  });
-
-  it("names resolved cohort recipients that received no delivery", async () => {
-    const { run } = makeRunner();
-    const out = await run(["session", "report", "-b", "x", "--cohort"], {
-      "POST /agent-ops/session/report": {
-        status: 200,
-        body: {
-          reportId: "r",
-          severity: "fyi",
-          to: "cohort",
-          recipients: [{ sessionId: "p", title: "Parent", relation: "child", woken: true }],
-          skippedRecipients: [{ sessionId: "d", title: "Druid", relation: "sibling", reason: "resolved" }],
-        },
-      },
-    });
-    expect(out.exitCode).toBe(0);
-    expect(out.stdout).toContain("sibling Druid (d): NOT delivered");
-    expect(out.stdout).toContain("no message, card, or wake turn was sent");
-  });
-
-  it("preserves resolved cohort skips in JSON", async () => {
-    const body = {
-      reportId: "r",
-      severity: "warn",
-      to: "cohort",
-      recipients: [],
-      skippedRecipients: [{ sessionId: "d", title: "Druid", relation: "sibling", reason: "resolved" }],
-    };
-    const { run } = makeRunner();
-    const out = await run(["session", "report", "-b", "x", "--cohort", "--json"], {
-      "POST /agent-ops/session/report": { status: 200, body },
-    });
-    expect(out.exitCode).toBe(1);
-    expect(JSON.parse(out.stdout)).toEqual(body);
   });
 
   it("surfaces a 400 'no parent' rejection from the orchestrator", async () => {

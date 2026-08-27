@@ -571,9 +571,9 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:sessionId/notify-on-merge-self",
   "POST /api/sessions/:id/branch/reset-to-base",
   // docs/233 (planning#243) — the upward channel: `shipit session whoami` resolves
-  // the CALLING session's own cohort, and `shipit session report` pushes a
-  // report to its parent / siblings. Own-session scoped like every route above:
-  // the worker injects the caller's id and recipients are derived server-side
+  // the CALLING session's own topology, and `shipit session report` pushes a
+  // report only to its parent. Own-session scoped like every route above: the
+  // worker injects the caller's id and the recipient is derived server-side
   // from `parentSessionId`, so neither route accepts an agent-supplied target.
   "GET /api/sessions/:sessionId/cohort",
   "POST /api/sessions/:sessionId/report",

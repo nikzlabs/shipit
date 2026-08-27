@@ -670,7 +670,7 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].path).toBe("/source/show?commit=abc123&path=src%2Fa.ts");
   });
 
-  // ---- Upward / lateral session reports (docs/233) ----
+  // ---- Upward session reports (docs/233) ----
 
   it("GET /agent-ops/session/cohort forwards to /cohort with no agent-supplied target", async () => {
     client.setResponse("GET", "/cohort", {

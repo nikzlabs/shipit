@@ -1,10 +1,9 @@
 /**
- * SessionReportCard — in-chat affordance surfaced into a session when another
- * session in its cohort pushes a report with `shipit session report`
- * (docs/233 / planning#243).
+ * SessionReportCard — in-chat affordance surfaced into a parent session when
+ * its child pushes a report with `shipit session report` (docs/233 / planning#243).
  *
  * Session coordination used to run one way (parent → child), so a child that
- * found something affecting its parent or its siblings had nowhere to put it.
+ * found something affecting work outside its scope had nowhere to push it.
  * This card is the human-facing half of the fix: the machine-facing half is a
  * queued system turn carrying the same text into the recipient's agent.
  *

@@ -357,8 +357,7 @@ export interface PersistedMessage {
   selfMergeWatch?: SelfMergeWatchCard;
   /**
    * docs/233 (planning#243) — when set, this message renders an inline "session
-   * report" card: another session in this session's cohort (a child, or a
-   * sibling on a cohort broadcast) pushed a report here via `shipit session
+   * report" card: this session's child pushed a report here via `shipit session
    * report`. Arrives over HTTP outside any of THIS session's turns, so it's
    * appended directly to history and persisted here so it survives a
    * switch/reload like any other transcript content. Static payload.

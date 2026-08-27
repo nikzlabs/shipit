@@ -855,14 +855,13 @@ export function registerAgentOpsRoutes(
   );
 
   // ---------------------------------------------------------------------------
-  // Upward / lateral session reports (docs/233, planning#243)
+  // Upward session reports (docs/233, planning#243)
   //
   // Every route above is parent→child. These two are the reverse: they're called
   // with THIS container's own session id (injected by `OrchestratorClient`, as
-  // always), so a child can resolve its own cohort and push a report to its
-  // parent and siblings. The recipients are derived orchestrator-side from the
-  // caller's `parentSessionId` — the shim never names a target session — so the
-  // reach is the same tree the parent already coordinates.
+  // always), so a child can resolve its own topology and push a report to its
+  // parent. The recipient is derived orchestrator-side from the caller's
+  // `parentSessionId`; the shim never names a target session.
   // ---------------------------------------------------------------------------
 
   // GET /agent-ops/session/cohort — this session + parent + siblings + children
@@ -871,7 +870,7 @@ export function registerAgentOpsRoutes(
     async (_request, reply) => relay("GET", "/cohort", undefined, reply),
   );
 
-  // POST /agent-ops/session/report — push a report to the parent (or cohort)
+  // POST /agent-ops/session/report — push a report to the parent
   app.post<{ Body: { body?: string; subject?: string; severity?: string; to?: string } }>(
     "/agent-ops/session/report",
     async (request, reply) => relay("POST", "/report", request.body ?? {}, reply),

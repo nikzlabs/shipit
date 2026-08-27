@@ -38,7 +38,7 @@ describe("SessionReportCard", () => {
     expect(screen.getByText(/deletes every catalog/)).toBeInTheDocument();
   });
 
-  it("labels a cohort broadcast as coming from a sibling", () => {
+  it("renders a legacy persisted sibling report", () => {
     render(<SessionReportCard {...props} relation="sibling" severity="warn" />);
     expect(screen.getByText(/from a sibling session/)).toBeInTheDocument();
     expect(screen.getByTestId("session-report-card")).toHaveAttribute("data-severity", "warn");
