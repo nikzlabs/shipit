@@ -602,53 +602,6 @@ describe("standby container pre-warming", () => {
     expect(restartedManager.isStandby(claimedId)).toBe(false);
   }, 30000);
 
-  it("no standby when at container cap", async () => {
-    const warmId = await (async () => {
-      await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10000, "warm session");
-      return repoStore.get(REPO_URL)!.warmSessionId!;
-    })();
-    // Startup warming now creates a standby (docs/148). Wait for it so the
-    // realCount/standbyCount math below is deterministic.
-    await waitFor(() => containerManager.isStandby(warmId), 10000, "startup standby");
-
-    // Fill up to the cap (default maxIdleContainers = 10). The startup
-    // standby is one container but it doesn't count toward `realCount`, so
-    // fill 10 real ones — realCount becomes 10 (= maxIdle), blocking the
-    // re-warm's standby creation below.
-    const sessionsDir = path.join(tmpDir, "sessions");
-    for (let i = 0; i < 10; i++) {
-      const sid = `fill-session-${i}`;
-      const dir = path.join(sessionsDir, sid);
-      fs.mkdirSync(dir, { recursive: true });
-      await containerManager.create({
-        sessionId: sid,
-        sessionDir: dir,
-        workspaceDir: path.join(dir, "workspace"),
-        sessionStateDir: path.join(dir, "state"),
-        credentialsDir: tmpDir,
-        imageName: "shipit-session-worker:test",
-        memoryLimit: 512 * 1024 * 1024,
-        cpuQuota: 50_000,
-        pidsLimit: 256,
-      });
-    }
-    expect(containerManager.size - containerManager.standbyCount).toBe(10);
-
-    // Claim the warm session — triggers re-warming (with standby + pre-install)
-    const encodedUrl = encodeURIComponent(REPO_URL);
-    await app.inject({ method: "POST", url: `/api/repos/${encodedUrl}/claim-session` });
-
-    // The claim response already contains the re-warmed session (claim awaits
-    // warmSessionForRepo). Just verify the new warm session exists.
-    const newWarmId = repoStore.get(REPO_URL)!.warmSessionId!;
-
-    // Wait a bit to ensure standby creation would have completed if attempted
-    await new Promise((r) => setTimeout(r, 500));
-
-    // No standby should be created — we're at the container cap
-    expect(containerManager.isStandby(newWarmId)).toBe(false);
-    expect(containerManager.get(newWarmId)).toBeUndefined();
-  }, 25000);
 });
 
 // ---------------------------------------------------------------------------

@@ -35,20 +35,35 @@ start again. Only the first of those two teardowns is wanted.
    through the surfaces that already report idle disposal.
 9. On an install where the user has not set a budget, ShipIt behaves as it does
    today rather than changing memory behaviour silently.
+10. The memory budget is the only setting rationing idle runtime. The
+    **Max Idle Containers** count is removed.
+11. The budget decides what ShipIt **stops**, never what it **refuses**. At the
+    budget with nothing reclaimable — every session has a viewer or a running
+    agent — ShipIt warns and keeps working, and reclaims as soon as something
+    becomes idle. Nothing the user is actively using is stopped or blocked.
+12. The memory warning the user sees reports usage against the budget that
+    decides reclaim, and names that budget. A budget larger than the machine
+    cannot disable the warning: the host's own memory stays the ceiling.
 
 ## Open questions
 
-- **What happens to Max Idle Containers.** Req 3 replaces the count with a
-  memory budget. Does the existing **Max Idle Containers** setting go away,
-  stay as a secondary hard ceiling on top of the budget, or keep governing
-  agent containers while the budget governs only previews?
-- **Hard cap or reclaim target.** When the budget is reached and nothing is
-  idle — every session has a viewer or a running agent — does ShipIt refuse to
-  start more (new sessions, new services), or does it exceed the budget and
-  warn, reclaiming only once something goes idle?
+- (none)
 
 ## Resolved questions
 
+- 2026-08-27 — *Does the Max Idle Containers count survive alongside the memory
+  budget?* The user chose to drop it: memory is the only knob. Carried by
+  req 10.
+- 2026-08-27 — *At the budget with nothing reclaimable, refuse or exceed?* The
+  user chose to exceed and warn. Carried by req 11.
+- 2026-08-27 — *Should the memory-pressure banner, today measured against total
+  host RAM, be measured against the configured budget instead?* The user raised
+  this and asked for a recommendation. Recommended and adopted: the banner
+  measures against the budget, because the budget is what decides eviction — on
+  a 64 GB host with a 16 GB budget a host-measured banner would never fire, and
+  previews would vanish with no warning. The host stays a hard ceiling
+  (`min(hostTotal, budget)`), so an oversized budget cannot disable the warning
+  and an unset budget reproduces today's behaviour. Carried by req 12.
 - 2026-08-27 — *Which services survive an idle stop, the whole Compose stack or
   only the `auto` preview services?* The user chose the whole stack. Carried by
   req 7.

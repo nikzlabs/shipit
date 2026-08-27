@@ -28,18 +28,18 @@
  * up forever.
  */
 
-import { IDLE_GRACE_PERIOD_MS } from "./idle-enforcer.js";
-
 /**
  * How long a non-zero background-task count is honored without a refresh.
  *
- * Matched to the idle grace period on purpose: that is already the window the
- * enforcer waits before considering a viewer-less runner reclaimable, so a
- * stale count can never extend a container's life beyond one extra grace
- * period — the cost of a dropped event is bounded by a number the system
- * already tolerates.
+ * A stale count reads as `agentBusy`, and a busy session is never reclaimed —
+ * so without a TTL one dropped event would pin a container for the life of the
+ * process. Ten minutes bounds that to a single window.
+ *
+ * It used to be defined as the idle enforcer's grace period, which docs/284
+ * removed when reclaim stopped being driven by elapsed time. The value was
+ * always about how long to trust a stale reading, so it keeps it as its own.
  */
-export const BACKGROUND_TASK_TTL_MS = IDLE_GRACE_PERIOD_MS;
+export const BACKGROUND_TASK_TTL_MS = 600_000;
 
 /** One outstanding background task, normalized across agent backends. */
 export interface BackgroundTaskInfo {

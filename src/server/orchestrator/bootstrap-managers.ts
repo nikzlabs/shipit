@@ -74,7 +74,7 @@ import { refreshPluginRepos, type PluginRefreshResult } from "./services/plugin-
 import { resolveSessionPluginServices } from "./services/plugin-services.js";
 import { createStagedGenerationGate } from "./services/plugin-preflight.js";
 import type { PluginComposeService } from "./plugin-compose.js";
-import { emitPluginReposUpdated } from "./service-manager-setup.js";
+import { emitPluginReposUpdated, trackComposeStop } from "./service-manager-setup.js";
 import { createPluginInstallRunner, PLUGIN_INSTALL_NETWORK } from "./plugin-install.js";
 import { registerExistingPluginNetworks } from "./plugin-container.js";
 import { createGenerationDeletionLease } from "./plugin-leases.js";
@@ -268,10 +268,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   /** Sessions where compose is not configured in shipit.yaml. */
   const composeNotConfigured = new Set<string>();
 
-  // ---- Latest Docker memory stats (memory pressure cache) ----
-  // The periodic stats poller below writes here on every successful read.
-  // The idle enforcer reads from here to decide whether to switch into
-  // pressure-aware mode (bypass grace period, drop effective maxIdle to 0).
+  // ---- Latest Docker memory stats (memory budget cache) ----
+  // The periodic stats poller below writes here on every successful read,
+  // having stamped the resolved budget onto the snapshot. The idle enforcer
+  // reads from here to decide whether ShipIt is over budget and, if so, how
+  // many bytes each session would give back (docs/284).
   // A simple holder is enough — we only need the most recent reading and
   // it's overwritten in place every 10s.
   const latestMemoryStats: { value: DockerMemoryStats | null } = { value: null };
@@ -280,18 +281,32 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // Idle enforcement uses a lazy reference to `runnerRegistry` — the callback
   // only fires when a runner goes idle (always after initialization).
   const registryHolder: { ref: SessionRunnerRegistry | null } = { ref: null };
+  // docs/284 — built ONCE and cached. The enforcer carries state across passes
+  // (which sessions tier 1 already reclaimed, when it last freed anything), so
+  // rebuilding it per call would silently reset that and let a burst of
+  // triggers reclaim against the same stale memory snapshot repeatedly.
+  let idleEnforcer: (() => void) | null = null;
   const enforceIdleContainerLimit = () => {
-    if (registryHolder.ref) {
-      createIdleEnforcer({
-        containerManager,
-        credentialStore,
-        runnerRegistry: registryHolder.ref,
-        sessionManager,
-        getMemoryStats: () => latestMemoryStats.value,
-        sseBroadcast,
-        broadcastLog,
-      })();
-    }
+    if (!registryHolder.ref) return;
+    idleEnforcer ??= createIdleEnforcer({
+      containerManager,
+      runnerRegistry: registryHolder.ref,
+      sessionManager,
+      getMemoryStats: () => latestMemoryStats.value,
+      services: {
+        liveSessions: () => [...serviceManagers.keys()],
+        has: (sessionId) => serviceManagers.has(sessionId),
+        stop: (sessionId) => {
+          const mgr = serviceManagers.get(sessionId);
+          if (!mgr) return;
+          serviceManagers.delete(sessionId);
+          trackComposeStop(composeStopPromises, sessionId, mgr);
+        },
+      },
+      sseBroadcast,
+      broadcastLog,
+    });
+    idleEnforcer();
   };
 
   // ---- Non-turn work's text generator (docs/252 phase 7, req 9) ----
@@ -1393,9 +1408,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // ---- Warm session pool ----
   const { warmSessionForRepo, waitForWarmSession } = createWarmPool({
     repoStore, sessionManager, createRepoGit,
-    githubAuthManager, credentialStore, containerManager,
+    githubAuthManager, containerManager,
     credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
     oomBreaker,
+    getMemoryStats: () => latestMemoryStats.value,
   });
 
   // ---- docs/262 req 19: drop remote credentials an earlier build stored ----

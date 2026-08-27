@@ -218,17 +218,19 @@ function MultiAgentSettings() {
 
 export function AdvancedTab({
   onFullReset,
-  maxIdleContainers,
-  onMaxIdleContainersSave,
+  memoryBudgetMb,
+  onMemoryBudgetSave,
 }: {
   onFullReset?: () => void;
-  maxIdleContainers: number;
-  onMaxIdleContainersSave: (n: number) => void;
+  memoryBudgetMb: number | null;
+  onMemoryBudgetSave: (mb: number | null) => void;
 }) {
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [resetting, setResetting] = useState(false);
-  const [idleContainers, setIdleContainers] = useState(maxIdleContainers);
-  const [idleContainersSaved, setIdleContainersSaved] = useState(false);
+  const [memoryBudgetGb, setMemoryBudgetGb] = useState(
+    memoryBudgetMb === null ? "" : String(Math.round((memoryBudgetMb / 1024) * 10) / 10),
+  );
+  const [memoryBudgetSaved, setMemoryBudgetSaved] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatusResult | null>(null);
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateApplying, setUpdateApplying] = useState(false);
@@ -531,28 +533,42 @@ export function AdvancedTab({
 
       <div className="border-t border-(--color-border-secondary)" />
 
+      {/* docs/284 — replaces "Max Idle Containers". A count rationed the wrong
+          unit: an idle shell and a Postgres service cost the machine very
+          different amounts, and memory is what the user is actually out of. */}
       <div className="space-y-3">
-        <h3 className="text-sm font-medium text-(--color-text-primary)">Max Idle Containers</h3>
+        <h3 className="text-sm font-medium text-(--color-text-primary)">Memory Budget</h3>
         <p className="text-sm text-(--color-text-secondary)">
-          Maximum Docker containers kept running when not in use. Containers beyond this limit are stopped. Set to 0 to stop all idle containers immediately.
+          Memory ShipIt may use in total, in GB — sessions, previews and all. While ShipIt is inside
+          the budget, nothing is stopped for being idle: an idle session keeps its preview running so
+          it is there when you come back. Over the budget, the longest-idle session gives up its agent
+          container first, and its preview only if that was not enough. Leave empty to use the whole
+          machine.
         </p>
         <div className="flex items-center gap-3">
           <input
             type="number"
             min={0}
-            value={idleContainers}
-            onChange={(e) => { setIdleContainers(Math.max(0, Math.floor(Number(e.target.value) || 0))); setIdleContainersSaved(false); }}
-            className="w-24 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) focus:outline-none focus:border-(--color-border-focus)"
-            data-testid="settings-max-idle-containers"
+            step={0.5}
+            placeholder="whole machine"
+            value={memoryBudgetGb}
+            onChange={(e) => { setMemoryBudgetGb(e.target.value); setMemoryBudgetSaved(false); }}
+            className="w-36 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) focus:outline-none focus:border-(--color-border-focus)"
+            data-testid="settings-memory-budget"
           />
+          <span className="text-sm text-(--color-text-secondary)">GB</span>
           <Button
             variant="primary"
             size="md"
-            onClick={() => { onMaxIdleContainersSave(idleContainers); setIdleContainersSaved(true); }}
+            onClick={() => {
+              const gb = Number(memoryBudgetGb);
+              onMemoryBudgetSave(memoryBudgetGb.trim() === "" || !(gb > 0) ? null : Math.round(gb * 1024));
+              setMemoryBudgetSaved(true);
+            }}
             className="rounded-md"
-            data-testid="settings-max-idle-containers-save"
+            data-testid="settings-memory-budget-save"
           >
-            {idleContainersSaved ? "Saved" : "Save"}
+            {memoryBudgetSaved ? "Saved" : "Save"}
           </Button>
         </div>
       </div>

@@ -98,7 +98,14 @@ interface CredentialData {
   githubToken?: string;
   /** docs/170 — Linear Issues-tab binding. */
   linear?: LinearTrackerConfig;
-  maxIdleContainers?: number;
+  /**
+   * docs/284 — the memory budget, in MB, for everything ShipIt runs. Absent
+   * means "the host is the budget", which is the behaviour installs had before
+   * this setting existed (req 9). Replaced `maxIdleContainers`: a container
+   * count treated an idle shell and a Postgres service as equal claims on the
+   * machine, which is what the user was actually rationing (req 3).
+   */
+  memoryBudgetMb?: number;
   agentSystemInstructionsEnabled?: boolean;
   autoCreatePr?: boolean;
   /**
@@ -1163,14 +1170,21 @@ export class CredentialStore {
     }
   }
 
-  // ---- Max idle containers ----
+  // ---- Memory budget (docs/284) ----
 
-  getMaxIdleContainers(): number {
-    return this.data.maxIdleContainers ?? 5;
+  /** The configured budget in MB, or `null` for "the host is the budget". */
+  getMemoryBudgetMb(): number | null {
+    const v = this.data.memoryBudgetMb;
+    return typeof v === "number" && v > 0 ? v : null;
   }
 
-  setMaxIdleContainers(n: number): void {
-    this.data.maxIdleContainers = n;
+  /** Pass `null` (or a non-positive number) to clear the budget. */
+  setMemoryBudgetMb(mb: number | null): void {
+    if (mb === null || !Number.isFinite(mb) || mb <= 0) {
+      delete this.data.memoryBudgetMb;
+    } else {
+      this.data.memoryBudgetMb = Math.floor(mb);
+    }
     this.save();
   }
 

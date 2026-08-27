@@ -82,11 +82,14 @@ export function DiagnosticsPanel({
           className="px-3 py-1.5 border-t border-(--color-warning)/40 bg-(--color-warning)/10 flex items-center gap-2"
         >
           <span className="flex-1 text-(--color-text-primary)">
-            {pauseNotice.reason === "memory-pressure"
-              ? "Session container shut down to reclaim memory."
-              : pauseNotice.idleMs && pauseNotice.idleMs > 0
-                ? `Session container shut down after ${formatIdleDuration(pauseNotice.idleMs)} idle.`
-                : "Session container shut down after idle timeout."}
+            {/* docs/284 — tier 1 kept the preview running, tier 2 did not.
+                Saying "shut down to reclaim memory" for both would tell a user
+                whose preview is still serving that it is gone. */}
+            {pauseNotice.reason === "agent-reclaimed"
+              ? pauseNotice.idleMs && pauseNotice.idleMs > 0
+                ? `Agent container stopped after ${formatIdleDuration(pauseNotice.idleMs)} idle, to stay inside the memory budget. The preview is still running.`
+                : "Agent container stopped to stay inside the memory budget. The preview is still running."
+              : "Session container and preview services stopped to reclaim memory."}
             <span className="ml-1 text-(--color-text-secondary)">Your workspace is preserved — send a message to resume.</span>
           </span>
           <button

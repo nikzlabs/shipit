@@ -817,7 +817,7 @@ export function useServerEvents(): void {
       const data = JSON.parse(e.data as string) as {
         sessionId: string;
         running?: boolean;
-        reason?: "idle-disposed" | "memory-pressure";
+        reason?: "agent-reclaimed" | "memory-pressure";
         idleMs?: number;
       };
       // Drop the disposed session from the active-runners set so any

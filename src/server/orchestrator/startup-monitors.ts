@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { isUnderEvictionPressure } from "./memory-pressure.js";
+import { isUnderEvictionPressure, effectiveBudgetBytes } from "./memory-pressure.js";
 import { readDockerMemoryStats } from "./docker-memory.js";
 import {
   createMissingContainerReconciler,
@@ -44,6 +44,7 @@ export async function startStartupMonitors(
   const {
     dockerForStats, latestMemoryStats, sseBroadcast, enforceIdleContainerLimit,
     containerManager, runnerRegistry, broadcastLog, sessionManager,
+    credentialStore,
     isTestMode, stateDir, repoStore, credentialsDir, githubAuthManager,
     createRepoGit, getBareCacheDir, serviceManagers, createGitManager,
     loopDetector, oomBreaker, chatHistoryManager,
@@ -60,8 +61,15 @@ export async function startStartupMonitors(
   // host to OOM-kill containers underneath us.
   const memoryStatsInterval = dockerForStats ? setInterval(() => {
     void (async () => {
-      const stats = await readDockerMemoryStats(dockerForStats);
-      if (!stats) return;
+      const raw = await readDockerMemoryStats(dockerForStats);
+      if (!raw) return;
+      // docs/284 — resolve the budget once, here, and put it on the snapshot.
+      // The enforcer and the client then read the SAME number instead of each
+      // recomputing it from a setting they may have read at different times.
+      const stats = {
+        ...raw,
+        budgetBytes: effectiveBudgetBytes(raw.totalBytes, credentialStore.getMemoryBudgetMb()),
+      };
       const wasUnderPressure = isUnderEvictionPressure(latestMemoryStats.value);
       latestMemoryStats.value = stats;
       sseBroadcast("docker_memory", stats);

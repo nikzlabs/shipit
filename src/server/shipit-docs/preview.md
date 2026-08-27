@@ -35,6 +35,15 @@ automatically as you edit files.
 
 ## Keeping a preview running
 
+A preview does **not** stop just because its session went idle. ShipIt keeps
+idle previews running while it is inside its memory budget, and when it has to
+reclaim, an idle session gives up its agent container first and its preview only
+if that was not enough. So an ordinary session's preview normally survives idle
+periods on its own.
+
+**Keep preview running** is the stronger, explicit guarantee: a reserved session
+is exempt from reclaim entirely, including under memory pressure.
+
 The session overflow menu has a checked **Keep preview running** action. Enabling
 it immediately activates the ordinary session runtime and the same `auto`
 Compose-service reconciliation described above. The reservation survives idle

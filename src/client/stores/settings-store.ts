@@ -192,7 +192,7 @@ interface SettingsState {
    */
   githubRateLimit: { resetAt: number | null } | null;
   pendingFiles: FileContextRef[];
-  maxIdleContainers: number;
+  memoryBudgetMb: number | null;
   agentSystemInstructionsEnabled: boolean;
   agentSystemInstructions: string;
   notifyOnFinish: boolean;
@@ -353,7 +353,7 @@ interface SettingsState {
   setProviderAccountNotice: (loginId: LoginIntegrationId, notice: ProviderAccountNotice | null) => void;
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
-  setMaxIdleContainers: (n: number) => void;
+  setMemoryBudgetMb: (mb: number | null) => void;
   setAgentSystemInstructionsEnabled: (enabled: boolean) => void;
   setAgentSystemInstructions: (text: string) => void;
   setNotifyOnFinish: (enabled: boolean) => void;
@@ -465,7 +465,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   githubStatus: { authenticated: false },
   githubRateLimit: null,
   pendingFiles: [],
-  maxIdleContainers: 5,
+  memoryBudgetMb: null,
   agentSystemInstructionsEnabled: true,
   agentSystemInstructions: "",
   notifyOnFinish: getSavedNotifyOnFinish(),
@@ -518,7 +518,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setSystemPromptContent: (content) => set({ systemPromptContent: content }),
 
-  setMaxIdleContainers: (n) => set({ maxIdleContainers: n }),
+  setMemoryBudgetMb: (mb) => set({ memoryBudgetMb: mb }),
 
   setAgentSystemInstructionsEnabled: (enabled) => set({ agentSystemInstructionsEnabled: enabled }),
 

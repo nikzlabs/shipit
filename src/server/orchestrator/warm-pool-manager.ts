@@ -4,7 +4,6 @@ import type { RepoStore } from "./repo-store.js";
 import type { SessionManager } from "./sessions.js";
 import type { RepoGit } from "./repo-git.js";
 import type { GitHubAuthManager } from "./github-auth.js";
-import type { CredentialStore } from "./credential-store.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { generateBranchPrefix, fetchAndResolveDefaultBranch, syncLocalDefaultBranchToOrigin } from "./git-utils.js";
@@ -14,6 +13,8 @@ import { materializeLfsWithWarning } from "./git-lfs.js";
 import { getErrorMessage } from "./validation.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { workerInstall, workerGet } from "./worker-http.js";
+import { isUnderEvictionPressure } from "./memory-pressure.js";
+import type { DockerMemoryStats } from "../shared/types.js";
 
 // ---- Warm session pool ----
 
@@ -23,7 +24,6 @@ export interface WarmPoolDeps {
   sessionManager: SessionManager;
   createRepoGit: (dir: string) => RepoGit;
   githubAuthManager: GitHubAuthManager;
-  credentialStore: CredentialStore;
   containerManager: SessionContainerManager | null;
   credentialsDir: string;
   getBareCacheDir: (repoUrl: string) => string;
@@ -40,6 +40,13 @@ export interface WarmPoolDeps {
    * under-provisioned limit just to OOM again.
    */
   oomBreaker?: SessionOomCircuitBreaker;
+  /**
+   * docs/284 — the latest memory snapshot, so standby creation can be skipped
+   * when ShipIt is already at its memory budget. Optional: without it the pool
+   * behaves as it did when the guard was a container count with no reading
+   * available, i.e. it creates the standby.
+   */
+  getMemoryStats?: () => DockerMemoryStats | null;
 }
 
 /**
@@ -54,9 +61,9 @@ export function createWarmPool(
 } {
   const {
     repoStore, sessionManager, createRepoGit,
-    githubAuthManager, credentialStore, containerManager,
+    githubAuthManager, containerManager,
     credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
-    oomBreaker,
+    oomBreaker, getMemoryStats,
   } = poolDeps;
 
   const warmingInProgress = new Set<string>();
@@ -240,9 +247,12 @@ export function createWarmPool(
         }
         const standbyAllowed = containerManager && !oomBreaker?.isTripped(appSessionId);
         if (standbyAllowed && containerManager) {
-          const realCount = containerManager.size - containerManager.standbyCount;
-          const maxIdle = credentialStore.getMaxIdleContainers();
-          if (realCount < maxIdle) {
+          // docs/284 — a standby is speculative work, so it is the first thing
+          // to skip when the machine is tight. This used to compare a container
+          // count against `maxIdleContainers`; the count was always a proxy for
+          // "is there room", and now that ShipIt measures memory the real
+          // question is askable directly.
+          if (!isUnderEvictionPressure(getMemoryStats?.() ?? null)) {
             // `buildConfigForWorkspace` reads shipit.yaml so the standby
             // container is provisioned with the user's declared agent
             // resources (memory/cpu/pids) and docker-access capability.

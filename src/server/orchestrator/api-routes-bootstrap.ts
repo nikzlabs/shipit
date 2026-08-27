@@ -165,7 +165,7 @@ export async function registerBootstrapRoutes(
   app.put<{ Body: {
     gitIdentity?: { name: string; email: string };
     systemPrompt?: string;
-    maxIdleContainers?: number;
+    memoryBudgetMb?: number | null;
     agentSystemInstructionsEnabled?: boolean;
     autoCreatePr?: boolean;
     liveSteering?: boolean;
@@ -233,7 +233,7 @@ export async function registerBootstrapRoutes(
           },
           ...(request.body.gitIdentity !== undefined ? { gitIdentity: request.body.gitIdentity } : {}),
           ...(request.body.systemPrompt !== undefined ? { systemPrompt: request.body.systemPrompt } : {}),
-          ...(request.body.maxIdleContainers !== undefined ? { maxIdleContainers: request.body.maxIdleContainers } : {}),
+          ...(request.body.memoryBudgetMb !== undefined ? { memoryBudgetMb: request.body.memoryBudgetMb } : {}),
           ...(request.body.agentSystemInstructionsEnabled !== undefined ? { agentSystemInstructionsEnabled: request.body.agentSystemInstructionsEnabled } : {}),
           ...(request.body.autoCreatePr !== undefined ? { autoCreatePr: request.body.autoCreatePr } : {}),
           ...(request.body.liveSteering !== undefined ? { liveSteering: request.body.liveSteering } : {}),
