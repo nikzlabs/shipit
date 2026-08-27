@@ -124,9 +124,9 @@ override the parent.
 | `shipit session notify-on-merge <id> [--json]` | **Async** — arm a watch and return immediately (exit `0`, "armed"); the turn ends. When the child's PR later **merges**, the orchestrator wakes *this* session with a queued, self-describing system turn (child id, branch, merged PR ref, merge SHA, and the intent: "proceed with the planned rebase unless the user has since redirected you") and surfaces a "Child PR merged" card in this chat. If the PR **closes without merging**, you get a *distinct* wake-turn telling you the work did **not** ship — don't proceed as if it had. Use this instead of blocking a turn on a human merge (which can take days). The child's PR need not exist yet — the watch fires once it appears and resolves. Fires once. Only the parent that spawned the child may watch it. If the wake-turn itself can't be delivered (this session's container won't resume, for instance) the orchestrator retries it on a backoff; after repeated failures it gives up and posts a "Couldn't resume this session" card in this chat naming the merged PR, so the merge is never silently dropped — send a message here to continue by hand. |
 | `shipit session notify-on-merge --self [--json]` | **Async, and about YOUR own PR.** Arm a watch on this session's currently-open PR and return immediately; the turn ends. When that PR merges — by hand, from ShipIt or GitHub, or via auto-merge — the orchestrator wakes **this** session with a turn telling you to run `shipit branch reset-to-base` and then continue the work you were already asked for. Use it when the user asked for several PRs in a row and the next step can only start after this one lands. Refuses if the branch has no open PR (open one first; if your PR has *already* merged, just keep going in this turn). Arming always **replaces** any previous self-watch, so re-arming mid-chain is normal. **Nothing re-arms on your behalf** — after you open the next PR, run it again if more work remains. See *Chaining several PRs* below. |
 | `shipit session archive <id> [--json]` | Archive a child this parent spawned. Refuses with a clear error when the child is still running — use `shipit session wait` first. |
-| `shipit session whoami [--json]` | Resolve **this** session: id, title, branch, status, its parent, its cohort siblings, and any children it spawned. This topology view can include a resolved peer that cannot receive a message. `view <id>` is descendant-scoped, so passing your own id doesn't work — use this. A bare `shipit session view` (no id) is the same thing. |
+| `shipit session whoami [--json]` | Resolve **this** session: id, title, branch, status, its parent, its read-only sibling topology, and any children it spawned. Siblings shown here cannot receive messages from this child. `view <id>` is descendant-scoped, so passing your own id doesn't work — use this. A bare `shipit session view` (no id) is the same thing. |
 | `shipit session rename --title T [--json]` | Retitle **this** session (never another — there is no session-id argument). A session is named automatically from your first message, so once it has done more than that first piece of work the sidebar name is stale; renaming is what keeps it honest. Do it when you open a PR and when you continue past a merged one. Max 60 characters, **rejected** if longer rather than truncated. It changes only the title — never the git branch, which usually has a PR attached by then. If the user has renamed the session by hand, this refuses (exit non-zero) and that name is final: leave it alone. |
-| `shipit session report -b TEXT \| --body-file FILE [--severity fyi\|warn\|blocker] [--subject T] [--to parent\|cohort] [--json]` | Push a report **up** to the session that spawned you (and, with `--to cohort`, to every eligible sibling). Each eligible recipient gets a card and a queued system turn. Resolved siblings are named as not delivered and receive neither. See *Reporting upward* below. |
+| `shipit session report -b TEXT \| --body-file FILE [--severity fyi\|warn\|blocker] [--subject T] [--to parent] [--json]` | Push a report **up** to the session that spawned you. The parent gets a card and a queued system turn. Sibling and cohort delivery is rejected. See *Reporting upward* below. |
 | `shipit session help` | Print the subcommand reference. |
 | `shipit session find --branch NAME \| --pr NUMBER \| --container NAME \| --id ID [--include-archived] [--include-warm] [--limit N] [--offset N] [--json]` | **Ops sessions only** (docs/255). Resolve a branch, PR, or container name back to the session that produced it — the one-step answer to "what session created this PR?". `--container` takes a name exactly as `docker ps` or the host journal prints it (`agent-83292266-744`, `shipit-83292266-744-web-1`); a container with a project-set explicit `container_name:` carries no session id, and the error points you at its `shipit-parent-session` / `shipit-session-id` label instead of guessing. `--pr` accepts `1744`, `#1744`, or the PR URL and matches the session's *current* PR as well as the one immediately before it on the same branch (only one prior PR is retained — for an older one, look it up by `--branch`). Sessions the user archived, and warm pool sessions, are excluded from the default answer — `--include-archived` / `--include-warm` show them (a disk-**evicted** session is not hidden; eviction is orthogonal to visibility). Results are capped; when more exist the output names the exact `--offset N` for the next page. Returns **metadata only** — id, title, kind, branch, repo, parent session, agent/model, timestamps, container name, PR number/url/state — never another session's conversation, prompts, secrets, or workspace contents, and the repo URL is credential-stripped. In a non-Ops session this exits non-zero with "only available in Ops sessions". |
 | `shipit session list --all [--include-archived] [--include-warm] [--limit N] [--offset N] [--json]` | **Ops sessions only** (docs/255). The whole host inventory, same metadata-only projection and same flags as `find`. Without `--all`, `list` is unchanged: only the children **this** session spawned. |
@@ -354,13 +354,13 @@ Be conservative with `message` — every prompt you push lands in the
 child's chat, visible to the user. Use it for coordination, not for
 chattering at the child agent.
 
-### Reporting upward (and to your cohort)
+### Reporting upward
 
 Everything above is parent → child. `shipit session report` is the other
-direction: it is how a **spawned session** tells the session that spawned it —
-and, optionally, its siblings — something they need to know. Without it, a
-finding can only sit in your PR body or your final turn summary, where nobody
-learns about it until they go and look.
+direction: it is how a **spawned session** tells the session that spawned it
+something the parent needs to know. The parent is the coordination hub. A child
+cannot message a sibling, because lateral wake-ups can form feedback loops and
+message storms.
 
 First, know where you are:
 
@@ -380,7 +380,7 @@ shipit session whoami
 Then push what travels:
 
 ```sh
-shipit session report --severity blocker --to cohort \
+shipit session report --severity blocker \
   --subject "regen command deletes every catalog" --body-file - <<'EOF'
 `npm run regen` clears data/catalogs/ before writing, so running it destroys the
 druid and necromancer catalogs too, not just mine. I can't fix it from here (it's
@@ -388,17 +388,17 @@ shared machinery, outside my scope). Don't run it until this is fixed.
 EOF
 # report-id: 6f0b…
 # severity:  blocker
-# to:        cohort
-# delivered: 3/3 recipient(s) woken
+# to:        parent
+# delivered: 1/1 recipient(s) woken
 ```
 
-**Reach.** `--to parent` (default) delivers to the session that spawned you.
-`--to cohort` (or `--cohort`) delivers to your parent **and** every live sibling
-under it. You cannot name an arbitrary session id: recipients are derived from
-your own parent linkage, so a report never leaves the tree your parent already
-coordinates. A session with no parent (top-level, or spawned `--detached`) has no
-cohort, and `report` exits non-zero telling you so — put the finding in your PR
-body or file an issue with `shipit issue create` instead.
+**Reach.** `--to parent` is the only target and the default. The recipient is
+derived from your own parent linkage. `--to cohort`, `--cohort`, sibling session
+ids, and arbitrary session ids are rejected. If a sibling needs to know, report
+the finding to the parent and let the parent coordinate it. A session with no
+parent (top-level, or spawned `--detached`) cannot report and exits non-zero —
+put the finding in your PR body or file an issue with `shipit issue create`
+instead.
 
 **Severity** shapes what the recipient is told to do with it:
 
@@ -409,15 +409,15 @@ body or file an issue with `shipit issue create` instead.
 **When to use it.** When what you found reaches **beyond your own session**:
 
 - shared machinery, policy, or docs you are scoped **not** to touch but that is
-  broken (especially when it can damage a sibling's work);
-- a blocker that stops part of your assignment and changes what the cohort
+  broken, especially when it can damage another child's work;
+- a blocker that stops part of your assignment and changes what the parent
   should expect from you;
-- a finding that invalidates a sibling's approach.
+- a finding the parent must coordinate across children.
 
 **When not to.** Routine progress, anything already visible in your PR, or a
-question for the *user* (that's `voice_note`). A report costs every recipient a
-real agent turn, so batch your findings into one report rather than sending a
-stream — the shim rate-limits a runaway sender (5 per 10 minutes).
+question for the *user* (that's `voice_note`). A report costs the parent a real
+agent turn, so batch your findings into one report rather than sending a stream
+— the shim rate-limits a runaway sender (5 per 10 minutes).
 
 **What the recipient gets.** A persisted card in its chat (so the human sees it
 inline, and it survives a reload) plus a queued system turn carrying the report

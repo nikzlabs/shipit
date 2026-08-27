@@ -1,5 +1,5 @@
 /**
- * Integration tests for the upward / lateral session-report channel
+ * Integration tests for the upward session-report channel
  * (docs/233, planning#243).
  *
  * Exercises the orchestrator end of the chain end-to-end through `buildApp`:
@@ -202,23 +202,43 @@ describe("Integration: session report (docs/233)", () => {
     expect(wake.lastPrompt).toContain("deletes every catalog");
   });
 
-  it("--to cohort reaches every sibling as well as the parent", { timeout: 30_000 }, async () => {
+  it("rejects sibling/cohort delivery without touching any transcript", { timeout: 30_000 }, async () => {
     const parentId = await createParent();
     const druid = await spawnChild(parentId, "Druid catalog");
     const necro = await spawnChild(parentId, "Necromancer catalog");
     const elem = await spawnChild(parentId, "Elementalist catalog");
+    const sessionIds = [parentId, druid, necro, elem];
+    await waitFor(
+      () => spawnedAgents.filter((agent) => agent.runCalled).length === 3,
+      10_000,
+      "initial child turns started",
+    );
+    const agentsBefore = spawnedAgents.map((agent) => ({
+      runCalled: agent.runCalled,
+      lastPrompt: agent.lastPrompt,
+    }));
+    const queuesBefore = await Promise.all(sessionIds.map(async (sessionId) => {
+      const status = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/status` });
+      return (status.json() as { queueLength: number }).queueLength;
+    }));
 
     const res = await report(elem, { body: "Do not run npm run regen.", to: "cohort", severity: "warn" });
-    expect(res.statusCode).toBe(200);
-    const recipients = (res.json() as { recipients: { sessionId: string }[] }).recipients;
-    expect(recipients.map((r) => r.sessionId).sort()).toEqual([parentId, druid, necro].sort());
+    expect(res.statusCode).toBe(400);
+    expect((res.json() as { error: string }).error).toMatch(/only to their parent/i);
 
-    // Every recipient carries the card; the reporter carries none.
-    expect(await reportCards(parentId)).toHaveLength(1);
-    expect(await reportCards(druid)).toHaveLength(1);
-    expect(await reportCards(necro)).toHaveLength(1);
+    expect(await reportCards(parentId)).toHaveLength(0);
+    expect(await reportCards(druid)).toHaveLength(0);
+    expect(await reportCards(necro)).toHaveLength(0);
     expect(await reportCards(elem)).toHaveLength(0);
-    expect((await reportCards(druid))[0]).toMatchObject({ relation: "sibling", fromSessionId: elem });
+    expect(spawnedAgents.map((agent) => ({
+      runCalled: agent.runCalled,
+      lastPrompt: agent.lastPrompt,
+    }))).toEqual(agentsBefore);
+    const queuesAfter = await Promise.all(sessionIds.map(async (sessionId) => {
+      const status = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/status` });
+      return (status.json() as { queueLength: number }).queueLength;
+    }));
+    expect(queuesAfter).toEqual(queuesBefore);
   });
 
   it("rejects a report from a session with no parent", { timeout: 20_000 }, async () => {

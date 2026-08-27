@@ -131,8 +131,8 @@ start at the [README](README.md).
   branch from any point
 - **Parallel PR-shaped sessions** — spawn separate workspaces with their own branch, container, and
   chat history; review each as its own PR. A spawned session can push a finding back to the session
-  that started it (and its siblings) as a card plus a queued turn, so a blocker one agent hits
-  reaches the others instead of sitting in a PR nobody has opened
+  that started it as a card plus a queued turn. The parent coordinates its children; children cannot
+  message siblings, which prevents lateral feedback loops and message storms
 - **Work survives updates and restarts** — an update replaces only the orchestrator, so running
   sessions keep going and a turn that was mid-flight is adopted and finished, including its commit,
   push, and PR flow. Containers left on an older build are flagged inline with a restart suggestion,

@@ -232,8 +232,8 @@ export interface ChatMessage {
   selfMergeWatch?: SelfMergeWatchCardData;
   /**
    * docs/233 (planning#243) — when set, this message renders a `SessionReportCard`
-   * inline: another session in this session's cohort (a child, or a sibling on a
-   * `--to cohort` broadcast) pushed a report here with `shipit session report`.
+   * inline: this session's child pushed a report here with `shipit session
+   * report`. A `sibling` relation can occur only in legacy persisted history.
    * Populated from `session_report_card` WS events and from persisted history
    * (static payload, no client store).
    */

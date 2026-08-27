@@ -769,7 +769,7 @@ const MIGRATIONS: Migration[] = [
     db.exec("ALTER TABLE repos ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
   },
   // docs/233 (planning#243) — persist the inline "session report" card so a report
-  // pushed from a child/sibling survives a session switch / full reload. The
+  // pushed from a child survives a session switch / full reload. The
   // card is appended to the RECIPIENT's history from an HTTP relay that fires
   // outside any of the recipient's turns, so without this column it would render
   // live and then vanish on the next loadSessionHistory, which rebuilds the
