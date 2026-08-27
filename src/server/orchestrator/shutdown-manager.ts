@@ -29,6 +29,12 @@ export interface ShutdownDeps {
   dockerProxyServer: HttpServer | null;
   containerManager: SessionContainerManager | null;
   databaseManager: DatabaseManager;
+  /**
+   * docs/284 — per-session Compose stacks. Needed here because a tier-1
+   * reclaim leaves a stack running with no runner, so nothing else would fire
+   * its teardown. See the loop below.
+   */
+  serviceManagers: Map<string, { stop: (opts?: { removeVolumes?: boolean }) => Promise<void> }>;
 }
 
 /**
@@ -67,6 +73,20 @@ export function registerShutdownHook(
     // The agent container is the opposite case, which is why `dispose()` below
     // must not touch it — see `session-container.ts`.
     shutdownDeps.runnerRegistry.disposeAll({ preserveAgent: true });
+    // docs/284 — the same reasoning, for the stacks that have no runner left to
+    // fire a `disposed` handler. Tier-1 reclaim keeps a session's Compose stack
+    // running after disposing its runner, and `serviceManagers` is process-local:
+    // the next orchestrator cannot route to such a stack (`preview-proxy.ts`
+    // resolves through that map) or reclaim it, so leaving it up is exactly the
+    // "dev server running for a session nobody reopens" this hook already
+    // refuses. The user reopening the session rebuilds it, as it always did.
+    for (const [sessionId, mgr] of shutdownDeps.serviceManagers) {
+      if (shutdownDeps.runnerRegistry.get(sessionId)) continue;
+      shutdownDeps.serviceManagers.delete(sessionId);
+      void mgr.stop().catch((err: unknown) => {
+        console.error(`[shutdown] Failed to stop orphaned compose stack for ${sessionId}:`, err);
+      });
+    }
     // The armed pushes no longer live on those runners, so drop them here. A
     // push that has already fired is unaffected — it is an awaited git call, not
     // a timer.

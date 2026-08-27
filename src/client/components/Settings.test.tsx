@@ -57,8 +57,8 @@ const defaultProps: SettingsProps = {
   agentList: [claudeAuthed],
   gitIdentity: { name: "", email: "" },
   onGitIdentitySave: vi.fn(),
-  maxIdleContainers: 5,
-  onMaxIdleContainersSave: vi.fn(),
+  memoryBudgetMb: null,
+  onMemoryBudgetSave: vi.fn(),
   agentSystemInstructionsEnabled: true,
   agentSystemInstructions: "You are working inside ShipIt.",
   onToggleAgentSystemInstructions: vi.fn(),
@@ -780,20 +780,31 @@ describe("Settings - Advanced tab", () => {
     expect(btn).toBeDisabled();
   });
 
-  it("renders Max Idle Containers section", async () => {
+  // docs/284 — the count setting was replaced by a memory budget.
+  it("renders the Memory Budget section, empty when no budget is set", async () => {
     await renderOnAdvancedTab();
-    expect(screen.getByText("Max Idle Containers")).toBeInTheDocument();
-    expect(screen.getByTestId("settings-max-idle-containers")).toHaveValue(5);
+    expect(screen.getByText("Memory Budget")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-memory-budget")).toHaveValue(null);
   });
 
-  it("calls onMaxIdleContainersSave when save is clicked", async () => {
-    const onMaxIdleContainersSave = vi.fn();
-    await renderOnAdvancedTab({ maxIdleContainers: 3, onMaxIdleContainersSave });
-    const input = screen.getByTestId("settings-max-idle-containers");
-    expect(input).toHaveValue(3);
-    fireEvent.change(input, { target: { value: "7" } });
-    await userEvent.click(screen.getByTestId("settings-max-idle-containers-save"));
-    expect(onMaxIdleContainersSave).toHaveBeenCalledWith(7);
+  it("shows the stored budget in GB and saves it back in MB", async () => {
+    const onMemoryBudgetSave = vi.fn();
+    await renderOnAdvancedTab({ memoryBudgetMb: 8192, onMemoryBudgetSave });
+    const input = screen.getByTestId("settings-memory-budget");
+    expect(input).toHaveValue(8);
+    fireEvent.change(input, { target: { value: "16" } });
+    await userEvent.click(screen.getByTestId("settings-memory-budget-save"));
+    expect(onMemoryBudgetSave).toHaveBeenCalledWith(16 * 1024);
+  });
+
+  // req 9 — clearing the field is how the user says "use the whole machine",
+  // and `null` is what carries that through to the server.
+  it("saves null when the budget field is cleared", async () => {
+    const onMemoryBudgetSave = vi.fn();
+    await renderOnAdvancedTab({ memoryBudgetMb: 8192, onMemoryBudgetSave });
+    fireEvent.change(screen.getByTestId("settings-memory-budget"), { target: { value: "" } });
+    await userEvent.click(screen.getByTestId("settings-memory-budget-save"));
+    expect(onMemoryBudgetSave).toHaveBeenCalledWith(null);
   });
 
   // ---- Release channels (feature 162) ----

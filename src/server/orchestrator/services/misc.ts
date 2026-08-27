@@ -105,7 +105,7 @@ export async function getBootstrapData(deps: {
         failoverCutoffs: {},
         // req 21 — same reasoning: no invented modes in the fallback shape.
         accountSelectionMode: {},
-        maxIdleContainers: deps.credentialStore?.getMaxIdleContainers() ?? 5,
+        memoryBudgetMb: deps.credentialStore?.getMemoryBudgetMb() ?? null,
         agentSystemInstructionsEnabled: true,
         agentSystemInstructions: "",
         autoCreatePr: false,

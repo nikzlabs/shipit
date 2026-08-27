@@ -122,13 +122,17 @@ export interface WsSessionStatus {
    * idle. Send a message to resume.") instead of leaving the user to
    * guess why their container went away.
    *
-   * - `idle-disposed` — idle enforcer reaped the container after the grace
-   *   period elapsed.
-   * - `memory-pressure` — pressure-aware eviction reaped the container
-   *   (feature 122).
+   * - `agent-reclaimed` — the idle enforcer stopped the AGENT container to
+   *   stay inside the memory budget, and the session's preview services are
+   *   still running (docs/284 tier 1).
+   * - `memory-pressure` — the container AND the preview services were stopped
+   *   (feature 122; docs/284 tier 2).
+   *
+   * There is no plain "idle" reason: since docs/284 reclaim happens only when
+   * ShipIt is over its memory budget, never because time passed (req 5).
    * See docs/124-session-rescue-and-diagnostics §1.6.
    */
-  reason?: "idle-disposed" | "memory-pressure";
+  reason?: "agent-reclaimed" | "memory-pressure";
   /** When `reason` is set, how long the session was idle before disposal (ms). */
   idleMs?: number;
   /**

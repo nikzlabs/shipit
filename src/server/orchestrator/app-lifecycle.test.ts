@@ -8,7 +8,6 @@ import { EventEmitter } from "node:events";
 import {
   buildRunnerFactory,
   createIdleEnforcer,
-  IDLE_GRACE_PERIOD_MS,
   runMcpOAuthStartupRefresh,
   scheduleStartupTasks,
   wireEventHandlers,
@@ -28,6 +27,7 @@ import { CredentialStore } from "./credential-store.js";
 import { ProviderAccountManager } from "./provider-account-manager.js";
 import { SessionManager } from "./sessions.js";
 import { createTestDatabaseManager } from "./integration_tests/test-helpers.js";
+import type { DockerMemoryStats } from "../shared/types.js";
 import type { AgentId, AgentProcess, SessionInfo } from "../shared/types.js";
 import type { AgentMcpWriteContext } from "../shared/types/agent-types.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
@@ -64,21 +64,55 @@ describe("resolveAutoStartDeps", () => {
   });
 });
 
+/**
+ * docs/284 — `destroy` and `destroyAgentContainer` are NOT interchangeable, and
+ * the fake must not blur them. `destroy()` runs the full session teardown,
+ * which sweeps every `shipit-parent-session` container — i.e. the Compose stack
+ * tier 1 exists to preserve. A fake that accepted either would let a tier-1
+ * test assert "the preview survived" while production tore it down, which is
+ * exactly the bug this shape now catches.
+ */
 function makeContainerManager(opts: {
   containers: FakeContainer[];
   standby?: Set<string>;
   destroy?: (sid: string) => Promise<void>;
+  destroyAgentContainer?: (sid: string) => Promise<void>;
 }): SessionContainerManager {
   const standby = opts.standby ?? new Set<string>();
   return {
     getAll: () => opts.containers,
     isStandby: (sid: string) => standby.has(sid),
     destroy: opts.destroy ?? (async () => {}),
+    // Default to the agent-only teardown reusing the same spy, so the many
+    // tests that only care THAT a container went away keep reading naturally.
+    destroyAgentContainer: opts.destroyAgentContainer ?? opts.destroy ?? (async () => {}),
   } as unknown as SessionContainerManager;
 }
 
-function makeCredentialStore(maxIdle: number): CredentialStore {
-  return { getMaxIdleContainers: () => maxIdle } as unknown as CredentialStore;
+/**
+ * docs/284 — reclaim is driven by memory, not a container count. `overBudget`
+ * puts usage past the eviction threshold with NO per-session breakdown, which
+ * is the conservative shape: the enforcer cannot tell what a reclaim freed, so
+ * it stops after one. `overBudgetWith` supplies the breakdown, which is what
+ * lets a single pass reclaim more than one session.
+ */
+function overBudget(): DockerMemoryStats {
+  return { usedBytes: 95, totalBytes: 100, budgetBytes: 100 };
+}
+
+function overBudgetWith(bySession: Record<string, { agentBytes?: number; serviceBytes?: number }>): DockerMemoryStats {
+  return {
+    usedBytes: 95,
+    totalBytes: 100,
+    budgetBytes: 100,
+    bySession: Object.fromEntries(
+      Object.entries(bySession).map(([k, v]) => [k, { agentBytes: v.agentBytes ?? 0, serviceBytes: v.serviceBytes ?? 0 }]),
+    ),
+  };
+}
+
+function underBudget(): DockerMemoryStats {
+  return { usedBytes: 10, totalBytes: 100, budgetBytes: 100 };
 }
 
 describe("createIdleEnforcer", () => {
@@ -102,7 +136,6 @@ describe("createIdleEnforcer", () => {
 
     createIdleEnforcer({
       containerManager: cm,
-      credentialStore: makeCredentialStore(0),
       runnerRegistry: registry,
       sessionManager: {
         get: (id: string) => id === "reserved" ? { keepPreviewRunning: true } : undefined,
@@ -126,7 +159,6 @@ describe("createIdleEnforcer", () => {
 
     createIdleEnforcer({
       containerManager: cm,
-      credentialStore: makeCredentialStore(0),
       runnerRegistry: registry,
       sessionManager: {
         get: () => ({ keepPreviewRunning: true, userArchived: true, archived: true }),
@@ -153,8 +185,8 @@ describe("createIdleEnforcer", () => {
 
     const enforce = createIdleEnforcer({
       containerManager: cm,
-      credentialStore: makeCredentialStore(1),
       runnerRegistry: registry,
+      getMemoryStats: overBudget,
     });
     enforce();
 
@@ -183,8 +215,8 @@ describe("createIdleEnforcer", () => {
 
     createIdleEnforcer({
       containerManager: cm,
-      credentialStore: makeCredentialStore(1),
       runnerRegistry: registry,
+      getMemoryStats: overBudget,
     })();
 
     expect(destroy).not.toHaveBeenCalled();
@@ -215,8 +247,8 @@ describe("createIdleEnforcer", () => {
 
     createIdleEnforcer({
       containerManager: cm,
-      credentialStore: makeCredentialStore(1),
       runnerRegistry: registry,
+      getMemoryStats: overBudget,
     })();
 
     expect(destroy).not.toHaveBeenCalled();
@@ -240,8 +272,8 @@ describe("createIdleEnforcer", () => {
 
     createIdleEnforcer({
       containerManager: cm,
-      credentialStore: makeCredentialStore(0),
       runnerRegistry: registry,
+      getMemoryStats: () => overBudgetWith({ a: { agentBytes: 1 }, b: { agentBytes: 1 } }),
     })();
 
     expect(destroy).toHaveBeenCalledTimes(2);
@@ -262,8 +294,8 @@ describe("createIdleEnforcer", () => {
 
     createIdleEnforcer({
       containerManager: cm,
-      credentialStore: makeCredentialStore(0),
       runnerRegistry: registry,
+      getMemoryStats: overBudget,
     })();
 
     expect(destroy).toHaveBeenCalledWith("a");
@@ -313,8 +345,8 @@ describe("createIdleEnforcer", () => {
 
     const enforce = createIdleEnforcer({
       containerManager: cm,
-      credentialStore: makeCredentialStore(0),
       runnerRegistry: registry,
+      getMemoryStats: overBudget,
     });
     enforce();
 
@@ -354,15 +386,18 @@ describe("createIdleEnforcer", () => {
 
     createIdleEnforcer({
       containerManager: cm,
-      credentialStore: makeCredentialStore(0),
       runnerRegistry: registry,
+      getMemoryStats: overBudget,
     })();
 
     expect(destroy).not.toHaveBeenCalled();
     expect(runner.disposed).toBe(false);
   });
 
-  it("skips runners whose viewer just detached (within grace period)", () => {
+  // docs/284 req 5 — the protection a fixed grace window used to give is now
+  // the budget itself: inside it, an idle session is never reclaimed, however
+  // long it has been idle. A just-detached viewer is the sharpest case.
+  it("reclaims nothing while ShipIt is inside its memory budget", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
 
@@ -380,8 +415,8 @@ describe("createIdleEnforcer", () => {
 
     createIdleEnforcer({
       containerManager: cm,
-      credentialStore: makeCredentialStore(0), // limit is zero — every idle runner over limit
       runnerRegistry: registry,
+      getMemoryStats: underBudget,
     })();
 
     expect(destroy).not.toHaveBeenCalled();
@@ -390,7 +425,10 @@ describe("createIdleEnforcer", () => {
     }
   });
 
-  it("disposes only runners whose grace period has expired", async () => {
+  // docs/284 — longest-idle first, and it stops as soon as the shortfall is
+  // covered. The just-detached session survives because the two older ones
+  // freed enough, not because a timer exempted it.
+  it("reclaims longest-idle first and stops once back inside the budget", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
 
@@ -406,59 +444,23 @@ describe("createIdleEnforcer", () => {
     const old2 = registry.getOrCreate("old2", "/tmp/old2", "claude" as AgentId);
     old2.attachViewer(); old2.detachViewer();
 
-    // Advance past grace period.
-    vi.advanceTimersByTime(IDLE_GRACE_PERIOD_MS + 1_000);
+    vi.advanceTimersByTime(600_000);
 
     const fresh = registry.getOrCreate("fresh", "/tmp/fresh", "claude" as AgentId);
     fresh.attachViewer(); fresh.detachViewer();
 
-    // maxIdle = 0 so any eligible idle runner is over the limit.
+    // Overage is 10 bytes; old1 and old2 give back 6 each, so the pass is done
+    // before it reaches "fresh".
     createIdleEnforcer({
       containerManager: cm,
-      credentialStore: makeCredentialStore(0),
       runnerRegistry: registry,
+      getMemoryStats: () => overBudgetWith({ old1: { agentBytes: 6 }, old2: { agentBytes: 6 } }),
     })();
 
-    // Both old runners eligible (2 > 0); fresh one is in grace period and skipped.
-    // Excess = 2, so both old1 and old2 disposed; fresh untouched.
     expect(destroy).toHaveBeenCalledWith("old1");
     expect(destroy).toHaveBeenCalledWith("old2");
     expect(destroy).not.toHaveBeenCalledWith("fresh");
     expect(registry.get("fresh")?.disposed).toBe(false);
-  });
-
-  it("grace-period boundary: a runner detached IDLE_GRACE_PERIOD_MS - 1 ms ago is skipped, +1 ms is disposed", () => {
-    // Pins the exact grace-period semantics so future drift to the constant
-    // (or to the comparison operator) is caught immediately.
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
-
-    const containers = [{ sessionId: "edge" }];
-    const destroy = vi.fn().mockResolvedValue(undefined);
-    const cm = makeContainerManager({ containers, destroy });
-
-    const r = registry.getOrCreate("edge", "/tmp/edge", "claude" as AgentId);
-    r.attachViewer();
-    r.detachViewer();
-
-    // Tick 1: advance to JUST inside the grace period — runner must be skipped.
-    vi.advanceTimersByTime(IDLE_GRACE_PERIOD_MS - 1);
-    createIdleEnforcer({
-      containerManager: cm,
-      credentialStore: makeCredentialStore(0),
-      runnerRegistry: registry,
-    })();
-    expect(destroy).not.toHaveBeenCalled();
-    expect(registry.get("edge")?.disposed).toBe(false);
-
-    // Tick 2: advance JUST past the grace period — now disposable.
-    vi.advanceTimersByTime(2);
-    createIdleEnforcer({
-      containerManager: cm,
-      credentialStore: makeCredentialStore(0),
-      runnerRegistry: registry,
-    })();
-    expect(destroy).toHaveBeenCalledWith("edge");
   });
 
   it("re-checks runner state at dispose time (TOCTOU defense)", () => {
@@ -474,7 +476,7 @@ describe("createIdleEnforcer", () => {
     const b = registry.getOrCreate("b", "/tmp/b", "claude" as AgentId);
     b.attachViewer(); b.detachViewer();
 
-    vi.advanceTimersByTime(IDLE_GRACE_PERIOD_MS + 1_000);
+    vi.advanceTimersByTime(600_000);
 
     // Patch registry.get to flip "a" back to running between scan and dispose.
     // This simulates a viewer reattaching or a turn starting in the gap.
@@ -496,8 +498,8 @@ describe("createIdleEnforcer", () => {
 
     createIdleEnforcer({
       containerManager: cm,
-      credentialStore: makeCredentialStore(0),
       runnerRegistry: registry,
+      getMemoryStats: overBudget,
     })();
 
     // "a" should NOT be destroyed because it became active between scan and dispose.
@@ -510,30 +512,266 @@ describe("createIdleEnforcer", () => {
     a.detachViewer();
   });
 
-  it("skips standby containers", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
-    const containers = [{ sessionId: "a" }, { sessionId: "warm" }];
-    const destroy = vi.fn().mockResolvedValue(undefined);
-    const cm = makeContainerManager({
-      containers,
-      standby: new Set(["warm"]),
-      destroy,
+  // ---- docs/284: the two-tier reclaim ladder ----
+
+  /** A ServiceManager registry stand-in: which sessions have a live stack. */
+  function makeServiceHooks(live: string[]) {
+    const set = new Set(live);
+    const stop = vi.fn((sid: string) => { set.delete(sid); });
+    return {
+      hooks: { liveSessions: () => [...set], has: (sid: string) => set.has(sid), stop },
+      stop,
+      set,
+    };
+  }
+
+  function idleRunner(sessionId: string) {
+    const r = registry.getOrCreate(sessionId, `/tmp/${sessionId}`, "claude" as AgentId);
+    r.attachViewer(); r.detachViewer();
+    return r;
+  }
+
+  describe("docs/284 reclaim ladder", () => {
+    // The assertion that matters is WHICH teardown ran. `destroy()` runs
+    // `cleanupSessionDockerResources`, which sweeps every
+    // `shipit-parent-session` container — the stack this tier promises to keep.
+    // Asserting only "a container went away" passes against that bug, which is
+    // how the first version of this test missed it.
+    it("tier 1 stops the agent container and leaves the preview stack running", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const destroy = vi.fn().mockResolvedValue(undefined);
+      const destroyAgentContainer = vi.fn().mockResolvedValue(undefined);
+      const cm = makeContainerManager({
+        containers: [{ sessionId: "a" }], destroy, destroyAgentContainer,
+      });
+      const runner = idleRunner("a");
+      vi.advanceTimersByTime(600_000);
+      const services = makeServiceHooks(["a"]);
+      const sseBroadcast = vi.fn();
+
+      createIdleEnforcer({
+        containerManager: cm,
+        runnerRegistry: registry,
+        getMemoryStats: overBudget,
+        services: services.hooks,
+        sseBroadcast,
+      })();
+
+      expect(destroyAgentContainer).toHaveBeenCalledWith("a");
+      expect(destroy).not.toHaveBeenCalled();
+      // The whole point: the stack was NOT torn down with the container.
+      expect(services.stop).not.toHaveBeenCalled();
+      // `preserveComposeOnDispose` is what keeps the ServiceManager in the map
+      // and the preview URL routable (`preview-proxy.ts:resolveTarget`).
+      expect((runner as unknown as { preserveComposeOnDispose: boolean }).preserveComposeOnDispose).toBe(true);
+      expect(sseBroadcast).toHaveBeenCalledWith("session_status", expect.objectContaining({
+        sessionId: "a",
+        reason: "agent-reclaimed",
+      }));
     });
 
-    const r = registry.getOrCreate("a", "/tmp/a", "claude" as AgentId);
-    r.attachViewer(); r.detachViewer();
-    vi.advanceTimersByTime(IDLE_GRACE_PERIOD_MS + 1_000);
+    it("does not set the preserve flag for a session with no stack to keep", () => {
+      // Otherwise a session that never had services would strand an empty
+      // ServiceManager entry, and the NEXT dispose would skip its teardown.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const destroy = vi.fn().mockResolvedValue(undefined);
+      const cm = makeContainerManager({ containers: [{ sessionId: "a" }], destroy });
+      const runner = idleRunner("a");
+      vi.advanceTimersByTime(600_000);
+      const sseBroadcast = vi.fn();
 
-    createIdleEnforcer({
-      containerManager: cm,
-      credentialStore: makeCredentialStore(0),
-      runnerRegistry: registry,
-    })();
+      createIdleEnforcer({
+        containerManager: cm,
+        runnerRegistry: registry,
+        getMemoryStats: overBudget,
+        services: makeServiceHooks([]).hooks,
+        sseBroadcast,
+      })();
 
-    // "warm" is standby and skipped from idle scan; only "a" was eligible.
-    expect(destroy).toHaveBeenCalledWith("a");
-    expect(destroy).not.toHaveBeenCalledWith("warm");
+      expect((runner as unknown as { preserveComposeOnDispose?: boolean }).preserveComposeOnDispose).not.toBe(true);
+      expect(sseBroadcast).toHaveBeenCalledWith("session_status", expect.objectContaining({
+        sessionId: "a",
+        reason: "memory-pressure",
+      }));
+    });
+
+    it("leaves the stack alone when tier 1 alone covered the shortfall", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const destroy = vi.fn().mockResolvedValue(undefined);
+      const cm = makeContainerManager({ containers: [{ sessionId: "b" }], destroy });
+      idleRunner("b");
+      vi.advanceTimersByTime(600_000);
+      const services = makeServiceHooks(["b"]);
+
+      // Overage is 10 and b's agent gives back 12 — the preview is not needed.
+      createIdleEnforcer({
+        containerManager: cm,
+        runnerRegistry: registry,
+        getMemoryStats: () => overBudgetWith({ b: { agentBytes: 12, serviceBytes: 5 } }),
+        services: services.hooks,
+      })();
+
+      expect(destroy).toHaveBeenCalledWith("b");
+      expect(services.stop).not.toHaveBeenCalled();
+    });
+
+    it("tier 2 stops the stack when tier 1 did not free enough", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const destroy = vi.fn().mockResolvedValue(undefined);
+      const cm = makeContainerManager({ containers: [{ sessionId: "b" }], destroy });
+      idleRunner("b");
+      vi.advanceTimersByTime(600_000);
+      const services = makeServiceHooks(["b"]);
+
+      createIdleEnforcer({
+        containerManager: cm,
+        runnerRegistry: registry,
+        getMemoryStats: () => overBudgetWith({ b: { agentBytes: 1, serviceBytes: 20 } }),
+        services: services.hooks,
+      })();
+
+      expect(services.stop).toHaveBeenCalledWith("b");
+    });
+
+    // `restartAgent` (services/recovery.ts) disposes the old runner with
+    // `preserveComposeOnDispose` and creates the replacement container
+    // asynchronously. For that window the session has a manager and no runner —
+    // indistinguishable from a preview-only session by shape alone — so tier 2
+    // keys off what THIS enforcer orphaned, not off "no runner".
+    it("never stops a stack it did not orphan itself (agent restart in flight)", () => {
+      const destroy = vi.fn().mockResolvedValue(undefined);
+      const cm = makeContainerManager({ containers: [], destroy });
+      const services = makeServiceHooks(["restarting"]);
+
+      createIdleEnforcer({
+        containerManager: cm,
+        runnerRegistry: registry,
+        getMemoryStats: () => overBudgetWith({ restarting: { serviceBytes: 50 } }),
+        services: services.hooks,
+      })();
+
+      expect(services.stop).not.toHaveBeenCalled();
+    });
+
+    it("never stops the stack of a session that still has a viewer", () => {
+      const destroy = vi.fn().mockResolvedValue(undefined);
+      const cm = makeContainerManager({ containers: [], destroy });
+      const busy = registry.getOrCreate("busy", "/tmp/busy", "claude" as AgentId);
+      busy.attachViewer();
+      const services = makeServiceHooks(["busy"]);
+
+      createIdleEnforcer({
+        containerManager: cm,
+        runnerRegistry: registry,
+        getMemoryStats: overBudget,
+        services: services.hooks,
+      })();
+
+      expect(services.stop).not.toHaveBeenCalled();
+    });
+
+    it("docs/241: a reserved session keeps both its container and its preview", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const destroy = vi.fn().mockResolvedValue(undefined);
+      const cm = makeContainerManager({ containers: [{ sessionId: "reserved" }], destroy });
+      idleRunner("reserved");
+      vi.advanceTimersByTime(600_000);
+      const services = makeServiceHooks(["reserved"]);
+
+      createIdleEnforcer({
+        containerManager: cm,
+        runnerRegistry: registry,
+        sessionManager: { get: () => ({ keepPreviewRunning: true }) } as never,
+        getMemoryStats: overBudget,
+        services: services.hooks,
+      })();
+
+      expect(destroy).not.toHaveBeenCalled();
+      expect(services.stop).not.toHaveBeenCalled();
+    });
+
+    // req 11 — the budget decides what is stopped, never what is refused. Over
+    // budget with everything in use is a warning, not a teardown.
+    it("reclaims nothing when every session is in use", () => {
+      const destroy = vi.fn().mockResolvedValue(undefined);
+      const cm = makeContainerManager({ containers: [{ sessionId: "a" }], destroy });
+      const r = registry.getOrCreate("a", "/tmp/a", "claude" as AgentId);
+      r.attachViewer();
+      const services = makeServiceHooks(["a"]);
+
+      createIdleEnforcer({
+        containerManager: cm,
+        runnerRegistry: registry,
+        getMemoryStats: overBudget,
+        services: services.hooks,
+      })();
+
+      expect(destroy).not.toHaveBeenCalled();
+      expect(services.stop).not.toHaveBeenCalled();
+    });
+
+    // A standby is a container the warm pool created speculatively — nobody
+    // has claimed it. Spending a user's session to protect a guess is backwards,
+    // so it goes before tier 1 does. (The enforcer used to skip standbys
+    // outright, which made sense when they were exempt from the count too.)
+    it("gives back speculative standby capacity before touching a session", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const destroy = vi.fn().mockResolvedValue(undefined);
+      const destroyAgentContainer = vi.fn().mockResolvedValue(undefined);
+      const cm = makeContainerManager({
+        containers: [{ sessionId: "warm" }, { sessionId: "mine" }],
+        standby: new Set(["warm"]),
+        destroy,
+        destroyAgentContainer,
+      });
+      idleRunner("mine");
+      vi.advanceTimersByTime(600_000);
+
+      // The standby covers the whole shortfall, so the real session is spared.
+      createIdleEnforcer({
+        containerManager: cm,
+        runnerRegistry: registry,
+        getMemoryStats: () => overBudgetWith({ warm: { agentBytes: 20 }, mine: { agentBytes: 20 } }),
+      })();
+
+      expect(destroy).toHaveBeenCalledWith("warm");
+      expect(destroyAgentContainer).not.toHaveBeenCalled();
+      expect(registry.get("mine")?.disposed).toBe(false);
+    });
+
+    // Two triggers can fire between two 10s polls (the 30s timer and the
+    // pressure-crossing edge). The second must not reclaim again for memory the
+    // first pass already gave back.
+    it("does not act twice on the same memory snapshot", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const destroy = vi.fn().mockResolvedValue(undefined);
+      const cm = makeContainerManager({
+        containers: [{ sessionId: "a" }, { sessionId: "b" }],
+        destroy,
+      });
+      idleRunner("a");
+      idleRunner("b");
+      vi.advanceTimersByTime(600_000);
+      const snapshot = overBudgetWith({ a: { agentBytes: 1 }, b: { agentBytes: 1 } });
+
+      const enforce = createIdleEnforcer({
+        containerManager: cm,
+        runnerRegistry: registry,
+        getMemoryStats: () => snapshot,
+      });
+      enforce();
+      const afterFirst = destroy.mock.calls.length;
+      enforce();
+
+      expect(destroy.mock.calls.length).toBe(afterFirst);
+    });
   });
 
   // --- Memory-pressure-aware behavior (feature 122) ---
@@ -552,7 +790,6 @@ describe("createIdleEnforcer", () => {
     // High pressure (95% used) — grace period must be bypassed.
     createIdleEnforcer({
       containerManager: cm,
-      credentialStore: makeCredentialStore(5),
       runnerRegistry: registry,
       getMemoryStats: () => ({ usedBytes: 0.95 * 16 * 1024 ** 3, totalBytes: 16 * 1024 ** 3 }),
     })();
@@ -560,12 +797,12 @@ describe("createIdleEnforcer", () => {
     expect(destroy).toHaveBeenCalledWith("a");
   });
 
-  it("under eviction pressure: drops effective maxIdle to 0 even when configured higher", () => {
+  // docs/284 — with a per-session breakdown the enforcer keeps going until the
+  // shortfall is covered, so one pass can reclaim several sessions.
+  it("keeps reclaiming until usage is back under the budget", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
 
-    // 3 idle containers past the grace period; configured maxIdle is 5.
-    // Without pressure, none would be reaped (3 ≤ 5). With pressure, all 3 go.
     const containers = [{ sessionId: "a" }, { sessionId: "b" }, { sessionId: "c" }];
     const destroy = vi.fn().mockResolvedValue(undefined);
     const cm = makeContainerManager({ containers, destroy });
@@ -574,13 +811,15 @@ describe("createIdleEnforcer", () => {
       const r = registry.getOrCreate(c.sessionId, `/tmp/${c.sessionId}`, "claude" as AgentId);
       r.attachViewer(); r.detachViewer();
     }
-    vi.advanceTimersByTime(IDLE_GRACE_PERIOD_MS + 1_000);
+    vi.advanceTimersByTime(600_000);
 
+    // Overage is 10; each session gives back 4, so all three are needed.
     createIdleEnforcer({
       containerManager: cm,
-      credentialStore: makeCredentialStore(5),
       runnerRegistry: registry,
-      getMemoryStats: () => ({ usedBytes: 0.90 * 16 * 1024 ** 3, totalBytes: 16 * 1024 ** 3 }),
+      getMemoryStats: () => overBudgetWith({
+        a: { agentBytes: 4 }, b: { agentBytes: 4 }, c: { agentBytes: 4 },
+      }),
     })();
 
     expect(destroy).toHaveBeenCalledWith("a");
@@ -600,7 +839,6 @@ describe("createIdleEnforcer", () => {
 
     createIdleEnforcer({
       containerManager: cm,
-      credentialStore: makeCredentialStore(0),
       runnerRegistry: registry,
       getMemoryStats: () => ({ usedBytes: 0.99 * 16 * 1024 ** 3, totalBytes: 16 * 1024 ** 3 }),
     })();
@@ -624,7 +862,6 @@ describe("createIdleEnforcer", () => {
 
     createIdleEnforcer({
       containerManager: cm,
-      credentialStore: makeCredentialStore(0),
       runnerRegistry: registry,
       getMemoryStats: () => ({ usedBytes: 0.95 * 16 * 1024 ** 3, totalBytes: 16 * 1024 ** 3 }),
     })();
@@ -645,7 +882,6 @@ describe("createIdleEnforcer", () => {
     // 50% used — well below the 85% eviction threshold.
     createIdleEnforcer({
       containerManager: cm,
-      credentialStore: makeCredentialStore(0),
       runnerRegistry: registry,
       getMemoryStats: () => ({ usedBytes: 0.50 * 16 * 1024 ** 3, totalBytes: 16 * 1024 ** 3 }),
     })();

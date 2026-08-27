@@ -38,7 +38,7 @@ export const handleSessionStatus: Handler<WsSessionStatus> = (_ctx, data) => {
     if (data.lastInterruptError) {
       session.setInterruptError(data.lastInterruptError);
     }
-    if (data.reason === "idle-disposed" || data.reason === "memory-pressure") {
+    if (data.reason === "agent-reclaimed" || data.reason === "memory-pressure") {
       session.setPauseNotice({
         reason: data.reason,
         ...(data.idleMs !== undefined ? { idleMs: data.idleMs } : {}),

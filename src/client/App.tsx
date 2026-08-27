@@ -289,7 +289,7 @@ export default function App() {
   const agentSystemInstructions = useSettingsStore(
     (s) => s.agentSystemInstructions,
   );
-  const maxIdleContainers = useSettingsStore((s) => s.maxIdleContainers);
+  const memoryBudgetMb = useSettingsStore((s) => s.memoryBudgetMb);
 
   const rightTabRaw = useUiStore((s) => s.rightTab);
   const runtimeMode = useUiStore((s) => s.runtimeMode);
@@ -1160,7 +1160,7 @@ export default function App() {
             gitIdentity: { name: string; email: string };
             systemPrompt: string;
             agents: AgentOption[];
-            maxIdleContainers?: number;
+            memoryBudgetMb?: number | null;
             agentSystemInstructionsEnabled?: boolean;
             agentSystemInstructions?: string;
             autoCreatePr?: boolean;
@@ -1211,13 +1211,10 @@ export default function App() {
         useSettingsStore
           .getState()
           .setHasSystemPrompt(data.settings.systemPrompt.length > 0);
-        if (
-          data.settings.maxIdleContainers !== null &&
-          data.settings.maxIdleContainers !== undefined
-        )
+        if (data.settings.memoryBudgetMb !== undefined)
           {useSettingsStore
             .getState()
-            .setMaxIdleContainers(data.settings.maxIdleContainers);}
+            .setMemoryBudgetMb(data.settings.memoryBudgetMb);}
         if (data.settings.agentSystemInstructionsEnabled !== undefined)
           {useSettingsStore
             .getState()
@@ -2388,23 +2385,20 @@ export default function App() {
                 .submitGitIdentity(name, email)
                 .catch(() => {})
             }
-            maxIdleContainers={maxIdleContainers}
-            onMaxIdleContainersSave={async (n) => {
+            memoryBudgetMb={memoryBudgetMb}
+            onMemoryBudgetSave={async (mb) => {
               try {
                 const raw = await apiPut("/api/settings", {
-                  maxIdleContainers: n,
+                  memoryBudgetMb: mb,
                 });
                 const res = raw as Record<string, unknown>;
-                if (
-                  res.maxIdleContainers !== null &&
-                  res.maxIdleContainers !== undefined
-                )
+                if (res.memoryBudgetMb !== undefined)
                   {useSettingsStore
                     .getState()
-                    .setMaxIdleContainers(res.maxIdleContainers as number);}
+                    .setMemoryBudgetMb(res.memoryBudgetMb as number | null);}
               } catch (err) {
                 console.error(
-                  "[settings] Failed to save max idle containers:",
+                  "[settings] Failed to save the memory budget:",
                   err,
                 );
               }

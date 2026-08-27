@@ -52,8 +52,8 @@ export interface SettingsProps {
   onFullReset?: () => void;
   gitIdentity: { name: string; email: string };
   onGitIdentitySave: (name: string, email: string) => void;
-  maxIdleContainers: number;
-  onMaxIdleContainersSave: (n: number) => void;
+  memoryBudgetMb: number | null;
+  onMemoryBudgetSave: (mb: number | null) => void;
   agentSystemInstructionsEnabled: boolean;
   agentSystemInstructions: string;
   onToggleAgentSystemInstructions: (enabled: boolean) => void;
@@ -71,8 +71,8 @@ export function Settings({
   onFullReset,
   gitIdentity,
   onGitIdentitySave,
-  maxIdleContainers,
-  onMaxIdleContainersSave,
+  memoryBudgetMb,
+  onMemoryBudgetSave,
   agentSystemInstructionsEnabled,
   agentSystemInstructions,
   onToggleAgentSystemInstructions,
@@ -234,8 +234,8 @@ export function Settings({
           <TabsContent value="advanced">
             <AdvancedTab
               onFullReset={onFullReset}
-              maxIdleContainers={maxIdleContainers}
-              onMaxIdleContainersSave={onMaxIdleContainersSave}
+              memoryBudgetMb={memoryBudgetMb}
+              onMemoryBudgetSave={onMemoryBudgetSave}
             />
           </TabsContent>
 

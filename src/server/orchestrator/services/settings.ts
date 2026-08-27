@@ -386,7 +386,7 @@ export async function getGlobalSettings(
   const systemPrompt = (await readGlobalSystemPrompt(appWorkspaceDir)) ?? "";
 
   const agents = listAgents(agentRegistry);
-  const maxIdleContainers = credentialStore?.getMaxIdleContainers() ?? 5;
+  const memoryBudgetMb = credentialStore?.getMemoryBudgetMb() ?? null;
   const agentSystemInstructionsEnabled = credentialStore?.getAgentSystemInstructionsEnabled() ?? true;
   const autoCreatePr = credentialStore?.getAutoCreatePr() ?? false;
   const liveSteering = credentialStore?.getLiveSteering() ?? true;
@@ -461,7 +461,7 @@ export async function getGlobalSettings(
   const roles = credentialStore
     ? buildRoleSettings({ credentialStore, ...(providerAccountManager ? { providerAccountManager } : {}) })
     : [];
-  return { canRunTurns, harnessOnboardingCompletedAt, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes, reviewers, roles,
+  return { canRunTurns, harnessOnboardingCompletedAt, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, memoryBudgetMb, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes, reviewers, roles,
     ...(nonTurnModel ? { nonTurnModel } : {}),
     ...(nonTurnModelResolved ? { nonTurnModelResolved } : {}) };
 }
@@ -507,7 +507,8 @@ export interface SaveGlobalSettingsOptions {
   onAutoFixCiEnabled?: () => void;
   gitIdentity?: { name: string; email: string };
   systemPrompt?: string;
-  maxIdleContainers?: number;
+  /** docs/284 — MB, or `null` to clear the budget back to "the host". */
+  memoryBudgetMb?: number | null;
   agentSystemInstructionsEnabled?: boolean;
   autoCreatePr?: boolean;
   liveSteering?: boolean;
@@ -576,7 +577,7 @@ export async function saveGlobalSettings(
   const {
     agentRegistry, appWorkspaceDir, credentialStore, providerAccountManager,
     onAutoResolveConflictsEnabled,
-    gitIdentity, systemPrompt, maxIdleContainers,
+    gitIdentity, systemPrompt, memoryBudgetMb,
     agentSystemInstructionsEnabled, autoCreatePr, liveSteering,
     autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode,
     failoverCutoffs, accountSelectionMode, nonTurnModel, reviewers, roles,
@@ -600,10 +601,11 @@ export async function saveGlobalSettings(
     await writeGlobalSystemPrompt(appWorkspaceDir, content);
   }
 
-  // Save max idle containers if provided
-  if (maxIdleContainers !== undefined) {
-    const n = Math.max(0, Math.floor(maxIdleContainers));
-    credentialStore.setMaxIdleContainers(n);
+  // Save the memory budget if provided (docs/284)
+  if (memoryBudgetMb !== undefined) {
+    credentialStore.setMemoryBudgetMb(
+      memoryBudgetMb === null ? null : Math.max(0, Math.floor(memoryBudgetMb)),
+    );
   }
 
   // Save agent system instructions toggle if provided

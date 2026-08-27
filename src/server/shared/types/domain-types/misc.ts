@@ -138,6 +138,37 @@ export interface DockerMemoryStats {
   usedBytes: number;
   /** Memory limit (bytes). 0 means unlimited. */
   totalBytes: number;
+  /**
+   * docs/284 — what usage is reported against: the user's budget clamped to
+   * the host, or the host total when no budget is set. The client reports
+   * against THIS number, not the raw host total, because it is the one that
+   * decides reclaim (req 12).
+   */
+  budgetBytes?: number;
+  /** docs/284 — usage at or above this renders the memory banner. */
+  warnAtBytes?: number;
+  /**
+   * docs/284 — usage above this makes the enforcer reclaim. With an explicit
+   * budget this IS the budget (req 5: previews survive until it is reached);
+   * with none it is the long-standing 85% of host.
+   */
+  evictAtBytes?: number;
+  /**
+   * docs/284 — per-session usage (bytes), summing the session's agent
+   * container and its Compose service containers. Present only when the
+   * reader could attribute containers to sessions; absent in the fallback
+   * shapes. Lets the idle enforcer subtract what a reclaim actually frees
+   * instead of guessing at a container count.
+   */
+  bySession?: Record<string, SessionMemoryUsage>;
+}
+
+/** docs/284 — one session's share of {@link DockerMemoryStats.usedBytes}. */
+export interface SessionMemoryUsage {
+  /** Bytes used by the session's agent container, 0 when it has none. */
+  agentBytes: number;
+  /** Bytes used by the session's Compose service containers. */
+  serviceBytes: number;
 }
 
 // ---- System info ----

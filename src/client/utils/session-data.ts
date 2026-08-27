@@ -94,7 +94,7 @@ interface BootstrapResponse {
     harnessOnboardingCompletedAt?: string;
     gitIdentity: { name: string; email: string };
     systemPrompt: string;
-    maxIdleContainers?: number | null;
+    memoryBudgetMb?: number | null;
     agentSystemInstructionsEnabled?: boolean;
     agentSystemInstructions?: string;
     autoCreatePr?: boolean;
@@ -694,7 +694,7 @@ export async function loadBootstrapData(): Promise<void> {
     .setHarnessOnboardingCompletedAt(data.settings.harnessOnboardingCompletedAt ?? null);
   useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
   useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
-  if (data.settings.maxIdleContainers !== null && data.settings.maxIdleContainers !== undefined) useSettingsStore.getState().setMaxIdleContainers(data.settings.maxIdleContainers);
+  if (data.settings.memoryBudgetMb !== undefined) useSettingsStore.getState().setMemoryBudgetMb(data.settings.memoryBudgetMb);
   if (data.settings.agentSystemInstructionsEnabled !== undefined) useSettingsStore.getState().setAgentSystemInstructionsEnabled(data.settings.agentSystemInstructionsEnabled);
   if (data.settings.agentSystemInstructions) useSettingsStore.getState().setAgentSystemInstructions(data.settings.agentSystemInstructions);
   if (data.settings.autoCreatePr !== undefined) useSettingsStore.getState().setAutoCreatePr(data.settings.autoCreatePr);

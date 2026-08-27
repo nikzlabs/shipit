@@ -439,7 +439,8 @@ export async function registerRoutes(
     );
 
     // Test-only: simulate idle cleanup. Production triggers this via the
-    // periodic timer + IDLE_GRACE_PERIOD_MS check inside createIdleEnforcer.
+    // periodic timer, and `createIdleEnforcer` acts only when over the memory
+    // budget (docs/284).
     // Tests want the same outcome (registry entry gone, runner disposed)
     // without waiting on real timers.
     app.post<{ Params: { sessionId: string } }>(

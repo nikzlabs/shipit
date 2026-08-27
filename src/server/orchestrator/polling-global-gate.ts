@@ -36,9 +36,8 @@ import type { PrSessionTracker } from "./pr-session-tracker.js";
 /**
  * After the last viewer detaches, keep polling for this long before pausing.
  * Tolerates page reloads and short network blips so a quick reconnect doesn't
- * pay the cost of a re-burn. Aligned with the idle-enforcer's grace window
- * (see `idle-enforcer.ts:IDLE_GRACE_PERIOD_MS`) so both timers fire on the
- * same schedule from the user's perspective.
+ * pay the cost of a re-burn. Independent of container reclaim, which since
+ * docs/284 is driven by the memory budget rather than by a detach timer.
  */
 const VIEWER_DETACH_GRACE_MS = 60_000;
 

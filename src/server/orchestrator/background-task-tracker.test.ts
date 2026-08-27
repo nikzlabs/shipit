@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { BackgroundTaskTracker, BACKGROUND_TASK_TTL_MS } from "./background-task-tracker.js";
-import { IDLE_GRACE_PERIOD_MS } from "./idle-enforcer.js";
 
 /**
  * docs/235 — the tracker is a deliberately *lossy* view of the agent backend's
@@ -58,10 +57,10 @@ describe("BackgroundTaskTracker", () => {
     expect(t.descriptions(true, now + BACKGROUND_TASK_TTL_MS)).toEqual([]);
   });
 
-  it("bounds the decay by the idle grace period", () => {
-    // The cost of a dropped event must not exceed a window the enforcer
-    // already tolerates.
-    expect(BACKGROUND_TASK_TTL_MS).toBe(IDLE_GRACE_PERIOD_MS);
+  it("bounds the decay to a single window", () => {
+    // A stale count reads as busy, and a busy session is never reclaimed, so
+    // the cost of a dropped event has to be bounded rather than open-ended.
+    expect(BACKGROUND_TASK_TTL_MS).toBe(600_000);
   });
 
   it("clears everything on demand", () => {

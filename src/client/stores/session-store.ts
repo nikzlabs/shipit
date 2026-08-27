@@ -157,13 +157,13 @@ interface SessionState {
    */
   interruptError: string | null;
   /**
-   * Most recent idle-disposal / memory-pressure notice for the active
+   * Most recent memory-reclaim notice for the active
    * session. Lets the strip render a dedicated banner ("Session paused
    * after N minutes idle. Send a message to resume.") instead of
    * relying solely on the Logs entry. Cleared on session change or when
    * the user dismisses. See docs/124-session-rescue-and-diagnostics §1.6.
    */
-  pauseNotice: { reason: "idle-disposed" | "memory-pressure"; idleMs?: number; at: number } | null;
+  pauseNotice: { reason: "agent-reclaimed" | "memory-pressure"; idleMs?: number; at: number } | null;
   /**
    * Agent-container OOM circuit-breaker trip notice. Set when the
    * orchestrator sends a `session_memory_exhausted` WS message — the

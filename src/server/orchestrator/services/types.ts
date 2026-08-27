@@ -77,7 +77,11 @@ export interface GlobalSettings {
   gitIdentity: { name: string; email: string };
   systemPrompt: string;
   agents: AgentInfo[];
-  maxIdleContainers: number;
+  /**
+   * docs/284 — memory budget in MB for everything ShipIt runs, or `null`
+   * for "the host is the budget". Replaced `maxIdleContainers`.
+   */
+  memoryBudgetMb: number | null;
   agentSystemInstructionsEnabled: boolean;
   agentSystemInstructions: string;
   autoCreatePr: boolean;

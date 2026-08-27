@@ -76,11 +76,8 @@ import { dockerEgressDecisionTokenRecovery } from "./egress-proxy-install.js";
 // The implementations live in cohesive sibling modules — see each module's
 // docstring for boundaries and rationale.
 
-export {
-  createIdleEnforcer,
-  IDLE_GRACE_PERIOD_MS,
-} from "./idle-enforcer.js";
-export type { IdleEnforcementDeps } from "./idle-enforcer.js";
+export { createIdleEnforcer } from "./idle-enforcer.js";
+export type { IdleEnforcementDeps, IdleServiceHooks } from "./idle-enforcer.js";
 
 export {
   adoptExistingServiceManager,
