@@ -49,6 +49,12 @@ services:
       - DOCKER_NETWORK=shipit-prod
       - SESSION_WORKER_IMAGE=shipit-session-worker:prod
       - DOCKER_STACK=shipit-prod
+      # docs/284 req 13 — this machine is the user's, not ShipIt's. With no
+      # Memory Budget set in Settings, ShipIt defaults to HALF the host's RAM
+      # here instead of the ~85% a dedicated server may take; the other half is
+      # the user's editor, browser and whatever they are building. Distinct
+      # from RUNTIME_MODE, which is about whether sessions get containers at all.
+      - SHIPIT_DEPLOYMENT=local
       # docs/172 Gap 1 (planning#92) — agent egress containment is ON by default for
       # all instances (fail-closed). The orchestrator runs the privileged
       # installer/resolver/proxy sidecars in the agent netns from this image;

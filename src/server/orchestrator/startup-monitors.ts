@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { isUnderEvictionPressure, resolveMemoryTargets } from "./memory-pressure.js";
+import { resolveDeploymentMode } from "./deployment-mode.js";
 import { readDockerMemoryStats } from "./docker-memory.js";
 import {
   createMissingContainerReconciler,
@@ -59,6 +60,9 @@ export async function startStartupMonitors(
   // eviction threshold. Without the immediate trigger, eviction would
   // wait for the next 30s idle-enforcement tick — long enough for the
   // host to OOM-kill containers underneath us.
+  // docs/284 req 13 — a local install shares the machine with the user, so an
+  // unset budget defaults to half of it there instead of the whole host.
+  const deployment = resolveDeploymentMode();
   // docs/284 — one read is one pass. `container.stats()` is a per-container
   // round trip, so on a busy host a read can outlast the 10s interval; two
   // overlapping reads would publish out-of-order snapshots and the enforcer
@@ -74,7 +78,10 @@ export async function startStartupMonitors(
       // put them on the snapshot. The enforcer and the client then read the
       // SAME numbers instead of each recomputing them from a setting they may
       // have read at different times.
-      const stats = { ...raw, ...resolveMemoryTargets(raw.totalBytes, credentialStore.getMemoryBudgetMb()) };
+      const stats = {
+        ...raw,
+        ...resolveMemoryTargets(raw.totalBytes, credentialStore.getMemoryBudgetMb(), deployment),
+      };
       const wasUnderPressure = isUnderEvictionPressure(latestMemoryStats.value);
       latestMemoryStats.value = stats;
       sseBroadcast("docker_memory", stats);

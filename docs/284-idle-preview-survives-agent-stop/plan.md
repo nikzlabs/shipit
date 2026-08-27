@@ -32,11 +32,20 @@ rations by measured bytes.
   is taken literally — reclaim starts *at* it (reqs 3 and 5 say previews survive
   until the budget is *reached*; evicting at 85% of a 16 GB budget would stop
   them with 2.4 GB of the allowance unspent) and the banner warns at 90% of it.
-  With no budget the ceiling is the machine, which is not ShipIt's to fill, so
-  the long-standing 80%/85% *host* fractions stand — which is what makes an
-  unset budget byte-for-byte today's behaviour (req 9). The host clamps the
-  budget in both regimes, or usage could never reach the number and nothing
-  would ever be reclaimed.
+  With no budget, what "the machine" means depends on **whose** machine it is
+  (req 13): a `server` deployment keeps the long-standing 80%/85% *host*
+  fractions, which is what makes an unset budget byte-for-byte today's behaviour
+  there (req 9), while a `local` install defaults to **half** the host — applied
+  like a budget the user typed, so it reclaims at the half rather than creeping
+  to 85% of everything. The host clamps the budget in every regime, or usage
+  could never reach the number and nothing would ever be reclaimed.
+- **`deployment-mode.ts`** (new) — `SHIPIT_DEPLOYMENT=local`, set by
+  `docker/local/prod/compose.yml`, which is the stack `deployment/local/setup.sh`
+  starts. Anything other than an exact `local` is `server`, so an unrecognised
+  value cannot silently halve a server's budget, and every existing deployment
+  is unchanged because none sets it. **Not** `RUNTIME_MODE`: that says whether
+  sessions get containers at all (the dogfood inner instance), not who else is
+  using the machine.
 - **`docker-memory.ts`** — `readDockerMemoryStats` today sums per-container
   usage and throws the breakdown away. It must keep it, keyed by session, so
   the enforcer can subtract what each reclaim actually frees instead of

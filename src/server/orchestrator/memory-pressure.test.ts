@@ -122,6 +122,29 @@ describe("memory-pressure", () => {
     });
   });
 
+  // req 13 — the machine is the user's too, so ShipIt takes half of it by
+  // default and leaves the rest alone. The half behaves like a budget the user
+  // typed (reclaim AT it), not like the softer host fraction — otherwise the
+  // "default" would still creep to 85% of everything.
+  describe("local deployment default", () => {
+    it("defaults to half the machine, applied like an explicit budget", () => {
+      const t = resolveMemoryTargets(16 * GB, null, "local");
+      expect(t.budgetBytes).toBe(8 * GB);
+      expect(t.evictAtBytes).toBe(8 * GB);
+      expect(t.warnAtBytes).toBe(8 * GB * BUDGET_BANNER_THRESHOLD);
+    });
+
+    it("a server install is unchanged by it (req 9)", () => {
+      expect(resolveMemoryTargets(16 * GB, null, "server"))
+        .toEqual(resolveMemoryTargets(16 * GB, null));
+    });
+
+    it("an explicit budget still wins, in either direction", () => {
+      expect(resolveMemoryTargets(16 * GB, 12 * 1024, "local").budgetBytes).toBe(12 * GB);
+      expect(resolveMemoryTargets(16 * GB, 2 * 1024, "local").budgetBytes).toBe(2 * GB);
+    });
+  });
+
   it("banner fires before reclaim in both regimes (hysteresis)", () => {
     const host = resolveMemoryTargets(16 * GB, null);
     expect(host.warnAtBytes).toBeLessThan(host.evictAtBytes);

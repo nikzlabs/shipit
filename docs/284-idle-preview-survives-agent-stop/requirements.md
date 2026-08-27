@@ -33,8 +33,8 @@ start again. Only the first of those two teardowns is wanted.
 8. When something must be reclaimed to stay inside the budget, the session
    returns to today's behaviour: the stack is stopped, and the user is told why
    through the surfaces that already report idle disposal.
-9. On an install where the user has not set a budget, ShipIt behaves as it does
-   today rather than changing memory behaviour silently.
+9. On a **server** install where the user has not set a budget, ShipIt behaves
+   as it does today rather than changing memory behaviour silently.
 10. The memory budget is the only setting rationing idle runtime. The
     **Max Idle Containers** count is removed.
 11. The budget decides what ShipIt **stops**, never what it **refuses**. At the
@@ -44,6 +44,10 @@ start again. Only the first of those two teardowns is wanted.
 12. The memory warning the user sees reports usage against the budget that
     decides reclaim, and names that budget. A budget larger than the machine
     cannot disable the warning: the host's own memory stays the ceiling.
+13. On a **local** install — ShipIt running on the machine the user works on —
+    the default with no budget set is **half** the machine's memory, not all of
+    it. The user's own editor and browser have the other half. A server
+    install, where the host is ShipIt's, keeps the whole-machine default.
 
 ## Open questions
 
@@ -51,6 +55,10 @@ start again. Only the first of those two teardowns is wanted.
 
 ## Resolved questions
 
+- 2026-08-27 — *On a local install, an unset budget lets ShipIt take the whole
+  user machine. Should the default be lower there?* The user asked for half the
+  RAM as the default, "but only for local". Carried by req 13; req 9 is now
+  explicitly about server installs.
 - 2026-08-27 — *Does the Max Idle Containers count survive alongside the memory
   budget?* The user chose to drop it: memory is the only knob. Carried by
   req 10.
@@ -71,5 +79,4 @@ start again. Only the first of those two teardowns is wanted.
   containers Max Idle Containers counts today, or a separate allowance of the
   same size?* Neither: the user asked for a **user-set memory budget for all of
   ShipIt** instead of a container count, "because not all the containers have
-  the same load on the system." Carried by reqs 3 and 4; what becomes of the
-  count setting is open above.
+  the same load on the system." Carried by reqs 3 and 4.

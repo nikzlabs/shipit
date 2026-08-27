@@ -235,8 +235,9 @@ thawed; it is deleted. When the user sends the next message, a **brand-new**
 container is created and re-mounted onto the same host clone at `/workspace`.
 
 **Idle time alone never causes this.** ShipIt reclaims only when it is over its
-configured **memory budget** (Settings → Advanced; the whole machine when the
-user has set none), and it takes the longest-idle session first. Two tiers, in
+**memory budget** (Settings → Advanced). With none set, the default is the whole
+machine on a server deployment and half of it on a local install, where the user
+is working on the same machine. It takes the longest-idle session first. Two tiers, in
 order: the session's **agent container** goes first and its Compose services
 keep running — an idle session's preview stays up and reachable — and only if
 that did not free enough does the **preview stack** stop too. So a session you

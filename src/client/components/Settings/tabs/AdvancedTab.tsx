@@ -231,6 +231,13 @@ export function AdvancedTab({
     memoryBudgetMb === null ? "" : String(Math.round((memoryBudgetMb / 1024) * 10) / 10),
   );
   const [memoryBudgetSaved, setMemoryBudgetSaved] = useState(false);
+  // docs/284 req 13 — the default differs by deployment, so the field cannot
+  // just say "the whole machine". The orchestrator already resolves it onto
+  // every memory snapshot; show that rather than re-deriving it here.
+  const dockerMemory = useUiStore((s) => s.dockerMemory);
+  const effectiveBudgetGb = memoryBudgetMb === null && dockerMemory?.budgetBytes
+    ? Math.round((dockerMemory.budgetBytes / 1024 ** 3) * 10) / 10
+    : null;
   const [updateStatus, setUpdateStatus] = useState<UpdateStatusResult | null>(null);
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateApplying, setUpdateApplying] = useState(false);
@@ -542,7 +549,8 @@ export function AdvancedTab({
           Memory ShipIt may use in total, in GB — sessions, previews and all. Inside the budget
           nothing is stopped for being idle, so an idle session keeps its preview running. Over it,
           the longest-idle session gives up its agent container first, its preview only if that was
-          not enough. Leave empty to use the whole machine.
+          not enough. Leave empty for this install's default{effectiveBudgetGb ? ` (${effectiveBudgetGb} GB)` : ""} —
+          half the machine on a local install, the whole machine on a server.
         </p>
         <div className="flex items-center gap-3">
           <input

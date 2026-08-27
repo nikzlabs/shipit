@@ -9,10 +9,12 @@
  *    (reqs 3 and 5 — previews survive *until the budget is reached*). Warning
  *    at 90% of it keeps the hysteresis the banner exists for: the user sees it
  *    coming before anything is stopped.
- *  - **No budget.** The ceiling is the machine, which is not ShipIt's to fill —
- *    the OS and everything else on the host need headroom — so the long-standing
- *    80%/85% host fractions stand unchanged. This is what makes an unset budget
- *    byte-for-byte today's behaviour (req 9).
+ *  - **No budget.** What "the machine" means depends on whose machine it is
+ *    (req 13). On a **server** deployment the host is ShipIt's, so the
+ *    long-standing 80%/85% host fractions stand unchanged — which is what makes
+ *    an unset budget byte-for-byte today's behaviour there (req 9). On a
+ *    **local** install the user is working on that machine too, so the default
+ *    is half of it, applied exactly like a budget the user typed.
  *
  * The host is a hard ceiling in both regimes: a budget larger than the machine
  * clamps to it, or usage could never reach the number and nothing would ever be
@@ -20,6 +22,7 @@
  */
 
 import type { DockerMemoryStats } from "../shared/types.js";
+import type { DeploymentMode } from "./deployment-mode.js";
 
 /** Fraction of HOST memory used at which the client renders a banner (no budget set). */
 export const MEMORY_PRESSURE_BANNER_THRESHOLD = 0.80;
@@ -29,6 +32,15 @@ export const MEMORY_PRESSURE_EVICT_THRESHOLD = 0.85;
 
 /** Fraction of an EXPLICIT budget at which the client renders a banner. */
 export const BUDGET_BANNER_THRESHOLD = 0.90;
+
+/**
+ * Default share of the machine ShipIt takes on a `local` deployment (req 13).
+ *
+ * Half, because the other half is the user's: their editor, browser and
+ * whatever they are actually building. It is a default, not a cap — the
+ * Memory Budget setting overrides it in either direction.
+ */
+export const LOCAL_DEFAULT_BUDGET_FRACTION = 0.5;
 
 /** The three numbers every consumer of a memory snapshot needs. */
 export interface MemoryTargets {
@@ -42,7 +54,9 @@ export interface MemoryTargets {
 
 /**
  * Resolve the budget and its warn/evict lines. `totalBytes` is host memory;
- * `budgetMb` is the user's setting, or null/undefined for "the host".
+ * `budgetMb` is the user's setting, or null/undefined for the deployment's
+ * default; `deployment` decides what that default is (see
+ * {@link LOCAL_DEFAULT_BUDGET_FRACTION}).
  *
  * All three are 0 when host memory is unknown, which callers read as "no answer
  * available" rather than as a budget of zero.
@@ -50,11 +64,17 @@ export interface MemoryTargets {
 export function resolveMemoryTargets(
   totalBytes: number,
   budgetMb: number | null | undefined,
+  deployment: DeploymentMode = "server",
 ): MemoryTargets {
   if (totalBytes <= 0) return { budgetBytes: 0, warnAtBytes: 0, evictAtBytes: 0 };
-  const explicit = budgetMb !== null && budgetMb !== undefined && budgetMb > 0
+  const configured = budgetMb !== null && budgetMb !== undefined && budgetMb > 0
     ? Math.min(totalBytes, Math.floor(budgetMb) * 1024 * 1024)
     : null;
+  // A local install's default is a real budget, not a softer host fraction: the
+  // user gets back the half ShipIt is not using, rather than watching it creep
+  // toward 85% of everything.
+  const explicit = configured
+    ?? (deployment === "local" ? totalBytes * LOCAL_DEFAULT_BUDGET_FRACTION : null);
   if (explicit === null) {
     return {
       budgetBytes: totalBytes,

@@ -9,4 +9,5 @@
 - [x] Distinguish tier 1 from tier 2 in the SSE reason, Logs copy, and the health strip.
 - [x] Report the memory banner against the budget and name it.
 - [x] Cover budget math, per-session attribution, and both tiers with tests.
+- [x] Default a local install's budget to half the machine.
 - [x] Update the agent-facing environment and preview docs.
