@@ -1,8 +1,21 @@
 import type { WsUsageUpdate } from "../../../server/shared/types.js";
 import { useUiStore } from "../../stores/ui-store.js";
+import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
 
 export const handleUsageUpdate: Handler<WsUsageUpdate> = (_ctx, data) => {
+  // Every field this handler writes is a session-LESS global describing the
+  // session on screen (`currentSessionUsage`, `contextTokens`, the cumulative
+  // token pair) — so a message naming a DIFFERENT session must not be applied
+  // (planning#482).
+  //
+  // The two disagree in a real window, not a hypothetical one: the per-session
+  // socket is keyed off the ROUTE (`App`'s `wsSessionId`) while this handler
+  // reads the STORE, and a switch moves the store first. The outgoing session's
+  // trailing usage then landed on the incoming session — which for a session
+  // with no turns of its own is the whole of what its dial reads, so a fresh
+  // session opened straight after a long one showed the long one's fill.
+  if (data.sessionId !== useSessionStore.getState().sessionId) return;
   const ui = useUiStore.getState();
   const update = data;
   ui.setCurrentSessionUsage({

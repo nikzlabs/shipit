@@ -563,11 +563,21 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   const ui = useUiStore.getState();
   if (data.turnUsage) {
     session.setTurnUsageForSession(sessionId, data.turnUsage);
-    if (data.turnUsage.length > 0) {
-      // Real context occupancy = uncached input + cache reads + cache writes;
-      // `inputTokens` alone undercounts massively under prompt caching.
-      ui.setContextTokens(turnContextTokens(data.turnUsage[data.turnUsage.length - 1]));
-    }
+    // Authoritative in BOTH directions, unlike `modelInfo` below (planning#482).
+    //
+    // `contextTokens` is a session-LESS global in the UI store, and
+    // `ContextDialMount` falls back to it for exactly the session that has no
+    // turns of its own. Writing it only when this session HAS turns therefore
+    // left a fresh session showing whatever the previously-viewed session had
+    // put there — a session that has never completed a turn occupies nothing,
+    // and the empty payload is what says so. Real context occupancy = uncached
+    // input + cache reads + cache writes; `inputTokens` alone undercounts
+    // massively under prompt caching.
+    ui.setContextTokens(
+      data.turnUsage.length > 0
+        ? turnContextTokens(data.turnUsage[data.turnUsage.length - 1])
+        : 0,
+    );
     // Seed `modelInfo` from the most recent turn that recorded a model. The
     // server only emits `model_info` over WS on `agent_init`, so a session
     // loaded from history (page reload, session switch) where the agent isn't

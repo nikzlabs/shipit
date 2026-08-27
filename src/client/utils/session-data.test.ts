@@ -153,6 +153,43 @@ describe("loadSessionHistory — modelInfo seeding", () => {
     expect(useUiStore.getState().modelInfo).toBeNull();
   });
 
+  /**
+   * planning#482 — the reported symptom: "sometimes I open a new session and the
+   * context window is shown as already a third full".
+   *
+   * `contextTokens` is a session-less global and `ContextDialMount` falls back to
+   * it for a session with no turns of its own, so anything left there by the
+   * previously-viewed session WAS the fresh session's reading. The empty payload
+   * is the authoritative statement that this session has occupied nothing.
+   */
+  it("clears a previous session's context reading when this session has no turns", async () => {
+    useUiStore.getState().setContextTokens(64_000);
+    useSessionStore.getState().setSessionId("fresh-session");
+    fetchSpy.mockImplementation((url: string) => {
+      if (url.includes("/history")) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              messages: [],
+              commits: [],
+              fileTree: [],
+              agentRunning: false,
+              turnUsage: [],
+              sessionUsage: null,
+              cumulativeInputTokens: 0,
+              cumulativeOutputTokens: 0,
+            }),
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404 });
+    });
+
+    await loadSessionHistory("fresh-session");
+
+    expect(useUiStore.getState().contextTokens).toBe(0);
+  });
+
   it("ignores history responses for sessions that are no longer active", async () => {
     useSessionStore.getState().setSessionId("old-session");
     let resolveHistory!: (value: {
