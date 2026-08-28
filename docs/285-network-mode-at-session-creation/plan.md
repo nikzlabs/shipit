@@ -86,26 +86,68 @@ no override.
 >   comparison.
 > - A `PUT` immediately followed by Send races unless Send awaits it or carries the mode.
 >
-> Keep such a comparison only as an optimisation, never as the guarantee — and if kept, gate
-> it on `isStandby`: both call sites also run for ordinary existing containers, and
-> `claimStandby()` silently no-ops for a non-standby id (`session-container.ts:1534-1546`).
+> And it is **not** kept as an optimisation either. The gate below has to handle every case
+> regardless, so a second, partial check earns nothing and adds `isStandby` / `starting`
+> edge cases to reason about. There is one mechanism, not one-and-a-fallback.
 
-**The guarantee is a server-side gate immediately before the first turn is dispatched**,
-after the desired mode is durably known:
+### One serialized admission service
 
-- The **first** `send_message` of an ungraduated session carries the desired network mode.
-  The server persists it, then — before dispatch — checks the live container's
-  `egressContainedAtStart` against the now-resolved containment and **recreates the
-  container if they disagree**. `ws-handlers/send-message.ts` (~583) is where the runner is
-  reused, so the gate belongs on that path, awaited.
-- **Quick Capture** cannot write the override "before the claim": it has no session id until
-  `claim()` returns (`services/headless-sessions.ts:403`). It persists **after** the claim
-  and **before** the runner is created and dispatched (~426), explicitly awaited.
+The guarantee is **`admitFirstTurn(sessionId, desiredMode?)`** — a single service every
+first-dispatch path awaits before the turn runs. Not a check bolted onto one handler: there
+is more than one way to dispatch a first turn, and the two below are both real.
 
-`egressContainedAtStart === undefined` means **unknown**, not "matches" — it is documented
-absent on rediscovered/re-adopted containers (`session-container.ts:304`). Unknown must
-neither pass the gate silently nor be grounds to destroy an ordinary rediscovered
-container.
+| Caller | Where | Note |
+|---|---|---|
+| WebSocket send | `ws-handlers/send-message.ts` | Must run **before** graduation (~485), or capture "was ungraduated" first — graduation clears the flag the gate keys on. |
+| HTTP dispatch | `services/agent.ts` (~213) | `POST /api/sessions/:id/agent/dispatch` graduates and dispatches on its own, never entering `send-message.ts`. `App.tsx` (~816) uses it from the `/new` route for compose-error and preview-setup messages, so it genuinely carries first turns. It accepts no network mode today. |
+| Quick Capture | `services/headless-sessions.ts` | Between `claim()` (~403) and runner creation (~426). It cannot persist "before the claim" — there is no session id until the claim returns. |
+
+Every client that produces a first dispatch sends the mode through one shared request shape;
+`/review` and the other frame-constructing paths get it from the same helper rather than each
+growing a field.
+
+The service, under a **per-session admission lock** held across all of it — persistence,
+validation, replacement, graduation, and claiming the dispatch slot. WebSocket callbacks are
+not serialized, so two near-simultaneous first sends can both observe `runner.running ===
+false`, persist different modes, and race the replacement:
+
+1. Persist the desired mode (`PUT`-equivalent into `egress-allowlist-store.ts`).
+2. Resolve containment and compare against the live container's `egressContainedAtStart`.
+3. On a mismatch, **replace the runner and the container** (below), not the container alone.
+4. Graduate, claim the dispatch slot, release the lock, dispatch.
+
+### Replacement is a runner replacement
+
+A `ContainerSessionRunner` holds worker-specific state — its readiness promise (already
+resolved for a runner built against a running worker, `container-session-runner.ts` ~370),
+SSE wiring, service manager, file-watch and resource-start flags. Repointing it at a new
+worker does not reset that. The shape already exists in `restartAgent`
+(`services/recovery.ts` ~407) and this reuses it:
+
+preserve Compose services → dispose the old runner → destroy the agent container →
+create the new runner → **attach the current WebSocket immediately** → await readiness →
+dispatch.
+
+Attaching before the readiness wait is load-bearing: the idle enforcer treats an unviewed,
+non-running runner as reclaimable under pressure (`idle-enforcer.ts` ~150). The headless
+path has no viewer at all and takes a bounded lifecycle lease instead. This does not touch
+the WebSocket-lifecycle invariant in `CLAUDE.md` — the replacement is caused by a user
+dispatch, never by connect or disconnect — but it must capture the session identity up front
+and must not attach a replacement runner to a socket that has since closed.
+
+### What `egressContainedAtStart === undefined` means
+
+It is **unknown**, never "matches" — but two different unknowns hide behind it, and they get
+different answers:
+
+- **`status === "starting"`.** The field is assigned inside `create()`
+  (`container-lifecycle.ts:1435`) while the record is already published and pollable, so a
+  container can legitimately be mid-creation. **Await the in-flight creation, then compare.**
+- **Genuinely unknown** (rediscovered / re-adopted, `session-container.ts:304`). "Neither
+  pass nor destroy" is not an answer, so: **replace it when the session carries an explicit
+  override, accept it otherwise.** Requirement 3 is a promise about a mode the user *picked*;
+  where they picked nothing there is nothing to guarantee beyond today's behaviour, and
+  recreating every rediscovered container on its first turn would be a cost paid for nobody.
 
 Cost, stated rather than hidden: a non-inherited pick **throws away one warm container** and
 pays a cold create (seconds) before the first turn.
@@ -125,9 +167,19 @@ design is not safe without them.
   local `inert` flag (`MessageInput.tsx:231`) that today closes the mode control's anchor,
   while the sidebar dialog stays usable in exactly that state (a session with no runnable
   service). Since the dialog's network half is being removed, the network section must
-  remain openable under `inert`. There is **no** HTML `inert` attribute on the composer, so
-  this is a small change, not a relocation. The existing split stays: a *running turn* locks
-  the pickers but leaves the mode readable.
+  remain reachable. There is **no** HTML `inert` attribute on the composer — it is a boolean
+  each affordance reads and passes as `disabled` — so this is a small change, not a
+  relocation. The exact split:
+
+  | State | Trigger | Network rows | Permission rows |
+  |---|---|---|---|
+  | `disabledReason` set (`inert`) | opens | interactive | disabled, as today |
+  | Turn running (`pickersLocked`) | opens | interactive | interactive, as today |
+  | Normal | opens | interactive | interactive |
+
+  Network stays interactive in every row of that table: it is a container-start setting, so
+  nothing about a dead composer or a running turn makes choosing it invalid. Everything else
+  keeps the behaviour it has now.
 - **The enforcement warning and air-gap footnote come along.** `SessionSettingsDialog`
   (~252, ~361) warns "Contained — NOT enforced on this deployment" and states that
   containment is not an air-gap. Deleting the radio group without moving these deletes a
@@ -144,11 +196,14 @@ design is not safe without them.
   pick locally and writes it through once the id arrives. It must also **reset on every new
   session** — the explicit reset Quick Capture already does for auto-merge, not an implicit
   one (req 8).
-- **Scope the client egress store carefully.** `egress-store.ts` is a single-scope store
-  keyed by one `sessionId` (its docstring, ~line 20), not a per-session cache; the global
-  Settings dialog loads it with `load(null)`. Sharing it with a per-session composer control
-  needs explicit ownership or a separate slice, or one surface will clobber the other's
-  scope.
+- **The client egress store stays global-only; the composer owns its own state.**
+  `egress-store.ts` holds ONE mutable session scope (`load()` sets `sessionId`, ~line 111),
+  so a composer sharing it with the global Settings dialog would have the two overwrite each
+  other's scope. The decision: leave that store as the global Settings dialog's
+  (`load(null)`), and give the combined control local state plus direct `fetch` calls —
+  exactly what `SessionSettingsDialog` already does, and for the stated reason (its
+  docstring, ~line 64: "wired with direct fetches so it doesn't depend on the Settings
+  store, which is single-session-scoped"). No new store, no new slice.
 
 ## Wiring
 

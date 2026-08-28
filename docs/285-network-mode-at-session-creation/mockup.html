@@ -191,8 +191,10 @@
       </div>
     </div>
     <p class="note" style="max-width:640px;margin-top:2px">
-      A network mode that <b>tightens</b> (Contained on an open workspace) shows the globe in the mode's own tint.
-      Only a <b>loosening</b> turns the control amber — colouring the safe choice would train the eye to ignore it.
+      Any non-default network mode adds the globe glyph. <b>Only a loosening</b> (Open on a contained workspace)
+      tints the control amber; a tightening keeps the mode's own colouring — tinting the safe choice too would
+      train the eye to ignore the tint that matters. The tint is never the message: the trigger's accessible
+      name and tooltip state the effective network mode, and any pending restart, in words.
     </p>
   </div>
 </div>
@@ -527,9 +529,10 @@
 </div>
 
 <p class="note" style="margin-top:34px">
-  <b>One consequence to accept.</b> Today the mode control hides itself entirely for a harness that supports
-  only Auto (Codex has nothing to toggle). Carrying network, it can no longer hide — it would render with a
-  single, already-current mode row above the network section. That is the price of one control instead of two.
+  <b>A harness with one permission mode.</b> Today the control hides entirely when the harness advertises only
+  Auto (Codex has nothing to toggle). Carrying network it must render, since network is meaningful whatever the
+  harness offers — but it then shows the <b>network section alone</b> and omits the permission section. A dead
+  “Auto” row above the network section would be worse than the nothing it replaced.
 </p>
 
 </body>
