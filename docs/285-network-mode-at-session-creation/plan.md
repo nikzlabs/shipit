@@ -92,7 +92,7 @@ no override.
 
 ### One serialized admission service
 
-The guarantee is **`admitFirstTurn(sessionId, desiredMode?)`** — a single service every
+The guarantee is **`admitFirstTurn(sessionId, desiredMode)`** — a single service every
 first-dispatch path awaits before the turn runs. Not a check bolted onto one handler: there
 are four ways to dispatch a first turn, and all four are real.
 
@@ -134,12 +134,17 @@ can issue both an imperative claim and the route's auto-claim
 (`useSessionActivation.ts` ~96 and ~143), so a second, later claim result would erase a
 selection the user had already made against the first. Instead:
 
-- **Every first-turn admission carries a concrete mode**, and `Inherit` is a value, not an
-  omission: it writes `setSessionOverride(id, null)`. Child spawn supplies `Inherit`
-  explicitly rather than leaving the field out. A stale override is therefore overwritten by
-  the very act of admitting the first turn, which is the only moment it could matter.
-- **The client persists its current local selection when it adopts a claimed id** — including
-  `Inherit` — and does not reset that selection on a duplicate claim result.
+- **`desiredMode` is a required argument, and `Inherit` is a value rather than an omission**
+  — it writes `setSessionOverride(id, null)`, which deletes the stale row so resolution falls
+  back to the global (`egress-allowlist-store.ts` ~188). Child spawn passes `Inherit`
+  explicitly. Because admission is the *only* pre-first-turn writer and it always writes, a
+  stale override is overwritten by the act of admitting the first turn — the only moment it
+  could matter. An optional `desiredMode?` would have contradicted exactly that guarantee.
+- **Nothing is persisted before the first turn.** The composer keeps the pick in local state
+  until admission writes it. An earlier draft persisted on adopting a claimed id and then had
+  to defend against the second claim overwriting the first; not writing at all deletes that
+  race instead of managing it. A session that has already graduated still persists each
+  change immediately, as today.
 - **Egress state is cleared on permanent session deletion**, through the `deleteSession`
   cascade, which covers warm retirement, zombie cleanup and repo deletion.
 - **Not on archive, and not on ordinary runner or container disposal.** The session still
@@ -310,7 +315,8 @@ design is not safe without them.
   control "can no longer hide" — it renders, but only with what is actionable.)
 - **Selection exists before a session id does.** The new-session composer renders and the
   claim resolves asynchronously (`useSessionActivation.ts:96-106`), so the control holds the
-  pick locally and writes it through once the id arrives. It must also **reset on every new
+  pick in local state and hands it to admission at first send — it never writes it through on
+  claim. It must also **reset on every new
   session** — the explicit reset Quick Capture already does for auto-merge, not an implicit
   one (req 8).
 - **The client egress store stays global-only; the composer owns its own state.**
@@ -350,6 +356,6 @@ design is not safe without them.
 | `src/server/orchestrator/services/agent.ts` | First-dispatch caller — the HTTP path, which graduates and dispatches on its own |
 | `src/server/orchestrator/services/headless-sessions.ts` | First-dispatch caller — Quick session: persist after the claim, before dispatch |
 | `src/server/orchestrator/services/child-sessions.ts` | First-dispatch caller — child spawns graduate and dispatch on their own |
-| `src/server/orchestrator/services/claim-session.ts` | Warm-id reuse — where a stale per-session override must be cleared |
+| `src/server/orchestrator/services/claim-session.ts` | Warm-id reuse — why a stale override can exist; nothing is written here |
 | `src/server/orchestrator/services/recovery.ts` | `restartAgent` — the replacement sequence this reuses |
 | `src/server/orchestrator/egress-allowlist-store.ts` | Durable per-session override |
