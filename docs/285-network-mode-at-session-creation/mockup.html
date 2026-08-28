@@ -248,7 +248,7 @@
     <p class="cap">Running session — same menu, one extra strip</p>
     <div class="menu">
       <div class="mhead">Permission mode</div>
-      <div class="mrow off">
+      <div class="mrow">
         <span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M208 32H72a24 24 0 0 0-24 24v168a8 8 0 0 0 8 8h136a8 8 0 0 0 8-8V40a8 8 0 0 0-8-8Z"/></svg></span>
         <span class="lbl">Plan mode<span class="desc">Read-only — research and plan, no edits.</span></span>
       </div>
@@ -281,10 +281,15 @@
         <svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><path d="M136 80v43.47l36.12 21.67a8 8 0 0 1-8.24 13.72l-40-24A8 8 0 0 1 120 128V80a8 8 0 0 1 16 0Z"/></svg>
         <span style="flex:1">Applies on next container start — restart from Session settings</span>
       </div>
+      <div class="pend" style="border-color:rgba(245,158,11,.35);background:var(--color-warning-subtle);color:var(--color-warning)">
+        <svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><path d="M236.8 188.09 149.35 36.22a24.76 24.76 0 0 0-42.7 0L19.2 188.09a23.51 23.51 0 0 0 0 23.72A24.35 24.35 0 0 0 40.55 224h174.9a24.35 24.35 0 0 0 21.33-12.19 23.51 23.51 0 0 0 .02-23.72ZM120 104a8 8 0 0 1 16 0v40a8 8 0 0 1-16 0Zm8 88a12 12 0 1 1 12-12 12 12 0 0 1-12 12Z"/></svg>
+        <span style="flex:1">Contained — <b>not enforced</b> on this deployment. See the install notes.</span>
+      </div>
     </div>
     <p class="note" style="width:300px">
-      A running turn greys the modes it cannot change and disables Restart — the rules the mode selector and
-      the Session settings dialog already apply, in one place instead of two.
+      A running turn changes nothing here: permission mode stays changeable mid-turn today, and network is a
+      container-start setting, so neither is locked. The strip states where the change lands; the restart itself
+      lives in Session settings, so this menu never carries a second copy of that control.
     </p>
   </div>
 </div>
@@ -485,7 +490,7 @@
 </div>
 
 <!-- ═══════════════════════════════════════════ -->
-<h2>7 · Session settings is unchanged (req 7)</h2>
+<h2>7 · Session settings keeps its section (req 7)</h2>
 <p class="note">
   An earlier draft deleted the dialog's network radio group, on the reasoning that one setting should live in
   one place. That was an inference, not a request, and it cost more than it saved — it forced a composer control
@@ -494,16 +499,23 @@
   and no <em>state</em>. Requirement 7 now asks for one authoritative <b>value</b>: both surfaces read and write
   the same per-session override, so neither is a second source of truth.
 </p>
+<p class="note" style="margin-top:-10px">
+  “Kept” is not “untouched”, and the design should not pretend otherwise. Two things change here: the first
+  option is renamed from <b>Inherit global</b> to <b>Inherit workspace</b>, because one value with two names in
+  two places is exactly the inconsistency requirement 7 is about; and the dialog joins a shared session-scoped
+  slice, since today it fetches only when opened and then keeps its own optimistic state — so a change made in
+  the composer would leave this dialog showing the old value until reopened.
+</p>
 <div class="row">
   <div>
-    <p class="cap">Unchanged — the same dialog, for sessions that already exist</p>
+    <p class="cap">Kept — but its copy and its state are not untouched</p>
     <div class="frame" style="width:330px">
       <div style="padding:14px 16px 10px">
         <div style="font-size:14px;font-weight:600">Session settings</div>
         <div style="font-size:11.5px;color:var(--color-text-secondary);margin-top:2px">Network access for this session only. Applies the next time its container starts.</div>
       </div>
       <div style="padding:0 16px 14px">
-        <div style="border:1px solid var(--color-border-secondary);background:var(--color-bg-secondary);border-radius:9px;padding:9px 11px;margin-bottom:6px;font-size:12.5px">Inherit global</div>
+        <div style="border:1px solid var(--color-border-secondary);background:var(--color-bg-secondary);border-radius:9px;padding:9px 11px;margin-bottom:6px;font-size:12.5px">Inherit workspace</div>
         <div style="border:1px solid var(--color-border-secondary);background:var(--color-bg-secondary);border-radius:9px;padding:9px 11px;margin-bottom:6px;font-size:12.5px">Contained</div>
         <div style="border:1px solid var(--color-accent);background:var(--color-accent-subtle);border-radius:9px;padding:9px 11px;font-size:12.5px">Open</div>
       </div>

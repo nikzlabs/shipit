@@ -1,6 +1,6 @@
 ---
 title: Network mode at session creation — design
-description: Fold network containment into the composer's permission-mode control, and make the new-session page a draft so the mode is chosen before any runner exists.
+description: Fold network containment into the composer's permission-mode control; make /new sessionless so the mode is chosen before any runner exists.
 ---
 
 # Network mode at session creation
@@ -12,205 +12,203 @@ Implements [requirements.md](./requirements.md). Prototype: [mockup.html](./mock
 Network containment gets **no new control**. It joins the composer's existing
 permission-mode button (`PermissionModeSelector`), which becomes one flat popover with two
 labelled sections — **Permission mode** and **Network access** — and no drill-down
-(reqs 5, 6). Both settings are one tap from the same trigger, on desktop and on mobile.
+(reqs 5, 6). One trigger, on desktop and mobile, for new sessions and running ones.
 
-Why this and not a pill of its own: the setting is needed rarely, and the composer row is
-already the scarcest space in the product — docs/260 exists to keep the harness, model and
-reasoning labels from pushing Send off the edge.
+Why not a pill of its own: the setting is needed rarely and the composer row is the scarcest
+space in the product (docs/260 exists to keep that row from pushing Send off the edge).
 
-- **Trigger.** Unchanged in the common case: Auto with an inherited network mode is the bare
-  icon it is today. A non-default network mode is stated **in words on the trigger** — not a
-  glyph and a tint alone. A tooltip does not count: this is used on touch, where there is no
-  hover, and req 10 asks for the effective mode to be visible *before* committing. Amber is
-  reserved for a loosening and sits on top of the words, never instead of them.
-- **The `Inherit workspace` row names what is inherited** ("Currently Contained"), re-read at
-  open rather than cached — the global can change while a draft is sitting there.
-- **The enforcement warning belongs here too.** The API separates containment *policy* from
-  actual *enforcement*, and the UI is required never to imply protection it cannot deliver
-  (`docs/172-agent-containment/egress-control.md` ~566). The "Contained — NOT enforced on
-  this deployment" warning therefore appears in this control, not only in the retained
-  dialog.
-- **The menu states, it does not act.** Before the first turn: "In force from this session's
-  first turn." On a running session: "Applies on next container start" — and **no restart
-  button**. Session settings stays the lifecycle surface and already has that control;
-  duplicating it here would put two restart affordances on one session and force the popover
-  to survive its own selection. The menu closes on pick, as it does today.
-- **Never sticky** (req 8): every new session opens at "Inherit workspace", reset explicitly
-  where Quick Capture resets its other non-sticky fields (`QuickCaptureOverlay.tsx` ~134).
-- **Sandboxes get no network section** — their network access is a capability grant
-  (docs/211, docs/279), the mutual exclusion `SessionSettingsDialog` already enforces.
-- **Harness with one permission mode**: renders the network section alone, no dead "Auto"
-  row.
+- **Trigger.** Auto with an inherited network mode is the bare icon it is today. A
+  non-default network mode is named **in words**, not by a glyph and a tint — this control is
+  used on touch, where there is no hover, and req 10 wants the effective mode visible before
+  committing. Amber marks a loosening and sits on top of the words.
+- **`Inherit workspace` names what is inherited** ("Currently Contained"), re-read on open.
+  The same wording is used in `SessionSettingsDialog`, which says "Inherit global" today —
+  one value must not have two names.
+- **The enforcement warning appears here**, not only in the dialog: policy and enforcement
+  are separate, and the UI must never imply protection it cannot deliver
+  (`docs/172-agent-containment/egress-control.md` ~566).
+- **The menu states; it does not act.** Before the first turn: "In force from this session's
+  first turn." On a running session: "Applies on next container start — restart from Session
+  settings." No restart button here, so no need for the popover to survive its own selection.
+- **No claim about warm containers in the copy.** An earlier draft said Send would be a cold
+  container start when the pick differs from the standby. The browser cannot know a standby's
+  boot state, so that sentence was asserting something the client cannot see.
+- **Never sticky** (req 8): every new session opens at "Inherit workspace".
+- **Sandboxes get no network section** (docs/211, docs/279); a harness with one permission
+  mode renders the network section alone, with no dead "Auto" row.
 
-**Mode leaves `ComposerSettingsMenu`** on every viewport. That menu keeps only what a role
-sets, and the role case loses a nesting level (req 9): the anchor opens the **role list
-directly**, with "Adjust parameters…" beneath it.
+**Mode leaves `ComposerSettingsMenu`** on every viewport; the role case loses a nesting level
+so the anchor opens the **role list directly** (req 9).
 
-**`SessionSettingsDialog` keeps its network section.** Req 7 asks for one authoritative
-*value*, not one location. But two surfaces reading the same row is not yet "consistently
-represented": the dialog fetches only when it opens (`SessionSettingsDialog.tsx` ~117) and
-the composer would hold its own state, so a change in one can leave the other stale. They
-need **shared invalidation** — a session-scoped update event both listen to — or the
-requirement is met on paper only.
+**`SessionSettingsDialog` keeps its network section** — but it is *not* untouched: its copy
+changes to match, and it joins the shared client state below. Req 7 asks for one
+authoritative value, and today the dialog fetches only on open
+(`SessionSettingsDialog.tsx` ~117) and then keeps its own optimistic state (~170), while the
+`egress_settings` SSE refreshes the global store only when it was already loaded
+(`useServerEvents.ts` ~733). So: **one session-scoped client slice, and a session-scoped
+update carrying the complete server-normalized value.** Not "invalidation" in the abstract.
 
-## Mechanism — no runner exists before the choice
+## Mechanism
 
-Egress is a **container-creation** topology choice: the Tier A firewall, Tier B resolver and
-Tier C SNI proxy are plumbed into the agent netns when the container is *created*
-(`container-lifecycle.ts`). A running container cannot be re-plumbed.
+Egress is plumbed into the agent netns when the container is *created*
+(`container-lifecycle.ts`); a running container cannot be re-plumbed. Today `/new` claims a
+session on arrival (`useSessionActivation.ts` ~96), which opens the WS and materializes a
+runner — so a mode picked afterwards arrives at a session that is already live. `/new`
+therefore stops claiming, and one server-side transaction does the whole thing at Send.
 
-Today `/new` claims a session on arrival (`useSessionActivation.ts` ~96), which opens the WS
-(`App.tsx` ~186) and materializes a runner (`route-registry.ts` ~1263). A mode picked
-afterwards therefore arrives at a session that is already live. **So `/new` stops claiming**
-and holds a draft until Send, at which point one server-side service does the whole thing in
-order, with nothing to race.
+**It is not a new subsystem.** `createHeadlessSession` already is this transaction — validate,
+claim, apply settings, materialize, dispatch — so the work is generalizing it to serve both
+Quick Capture and `/new`, not writing a second one beside it. It claims with
+**`skipReuse: true`** (as headless already does, `headless-sessions.ts` ~396): with no
+server-side draft there is nothing to recycle, and reuse lets two tabs alias onto one
+ungraduated session via `findUngraduatedWarm` (`claim-session.ts` ~340).
 
-### The draft is the whole composer, not just the network field
+### The first-turn payload
 
-This is the part an earlier draft of this plan got wrong by assuming `/new` was already
-close to sessionless. It is not — several things currently work *because* an id exists:
+With no socket, everything the WS used to carry must ride the creation request and be
+**validated server-side**:
 
-| What | Today | Consequence |
-|---|---|---|
-| The composer itself | Enabled only with a socket or a session id (`App.tsx` ~2224) | Would render permanently disabled |
-| Send | With no id, appends an optimistic bubble and logs that it cannot send (`App.tsx` ~613, ~680) | There is no creation path to call |
-| Attachments | Raw files sit in a hook-local ref until an id appears; only the overlay backend exposes `File[]`, selected on `surface` not on absence of id (`useFileUpload.ts` ~124, `useUploadBackend.ts` ~27) | Atomic Send cannot reach the bytes |
-| Issue seeding | `pendingIssueRef` is keyed to the claimed id and discarded when there is none (`App.tsx` ~1415) | Issue-started sessions lose their pointer |
-| Harness / model / reasoning / role | Applied to the new session over WS `set_*` messages (`App.tsx` ~1532, ~1569, ~1594, ~1628) | With no socket, the creation request must carry and the server must validate the whole tuple |
-| `/review @path` as a first action | Works only because the eager claim supplied an id (`App.tsx` ~530) | Needs an explicit decision, not silence |
+- the text, and the **raw attachments** (chat buffers them in a hook-local ref today, and
+  only the overlay backend exposes `File[]` — `useFileUpload.ts` ~124,
+  `useUploadBackend.ts` ~25);
+- **service + billing + model as a triple**, never a bare model id (`App.tsx` ~1564);
+- reasoning, role, and **permission mode** — which Quick Capture displays but does not send
+  today, the server hardcoding `permissionMode: undefined` (`headless-sessions.ts` ~460), so
+  req 6 needs this fixed regardless of network;
+- the **issue pointer and its lifecycle side effect** — seeding also marks the issue started
+  (`api-routes-session-crud.ts` ~679), not just an `issueRef`;
+- **dictation provenance** (`App.tsx` ~642);
+- the network mode.
 
-So the deliverable is a **draft→session transaction**, and the network mode is one field in
-it. That is still far smaller than the admission protocol it replaces, but it is not a
-one-line change and this plan should not have implied it was.
+**Repository trust is checked before the claim.** Dispatch enforces it synchronously today
+(`session-runner.ts` ~393), which in the headless path is *after* a workspace has already
+been claimed and mutated.
 
-Related, and required by req 6 rather than by this list: **Quick Capture does not send the
-permission mode today** — it displays one (`QuickCaptureOverlay.tsx` ~197) while the server
-hardcodes `permissionMode: undefined` (`headless-sessions.ts` ~460). A combined control that
-sets both settings has to fix that too.
+### Standby reconciliation: one named operation, before materialization
 
-### One create-and-dispatch service
+The warm pointer is published before the standby boots, creation is fire-and-forget
+(`warm-pool-manager.ts` ~224, ~296), the container record is `starting` before its egress
+mode is resolved (`container-lifecycle.ts` ~1191 vs ~1435), and it is not marked a standby
+until creation finishes (`session-container.ts` ~1524). Materialization currently waits for
+`starting` and then adopts (`app-lifecycle.ts` ~788).
 
-A new orchestration service owns the transaction: apply the draft, reconcile the standby,
-materialize, graduate, dispatch. It **calls** `claim-session` and does not become part of it
-— claim is a workspace allocator shared by the child, install, headless and interactive
-paths (its own docstring, ~100), and widening its responsibility drags those callers back
-into this feature.
-
-It claims with **`skipReuse: true`**, as headless creation already does
-(`headless-sessions.ts` ~396). With no server-side draft there is no abandoned interactive
-draft to recycle, and reuse actively hurts: two tabs sending to the same repo can alias,
-the second finding the first's still-ungraduated session through `findUngraduatedWarm`
-(`claim-session.ts` ~340).
-
-Quick Capture shares this **core**, not the whole surface. It is background and optimistic;
-`/new` must keep its draft on failure and navigate only if its originating route is still
-active. Treating the two as identical hides that difference.
-
-### Standby reconciliation has three states, not two
-
-The warm pointer is published **before** standby creation finishes, and creation is
-deliberately fire-and-forget (`warm-pool-manager.ts` ~224, ~296). The container record exists
-as `starting` before its egress mode is resolved (`container-lifecycle.ts` ~1231 vs ~1435),
-and it is not marked a standby until creation completes (`session-container.ts` ~1524).
-Materializing inside that window creates a runner that waits and then adopts the container
-(`app-lifecycle.ts` ~788). So reconciliation must be atomic *with respect to that window*,
-and must happen before materialization:
+So the transaction calls **one container-manager operation that serializes reconciliation
+with creation and completes before `runnerRegistry.getOrCreate`**:
 
 - **Known and matching** → adopt.
-- **Known and mismatching** → destroy, create fresh.
-- **`starting`, or unknown** → await the boot decision, or conservatively destroy before
-  materializing. **Unknown must never read as matching** — that is the state that would
-  silently run the first turn under the wrong mode.
+- **Known and mismatching, or `starting`, or unknown** → destroy and await a fresh container.
+  Paying a replacement in the uncommon cases is worth not having a fourth state to reason
+  about.
 
-### Failure, duplication and navigation
+Two details that decide correctness:
 
-`MessageInput` calls a synchronous `onSend` and immediately clears the text and uploads
-(`MessageInput.tsx` ~640). Creation can now fail at claim, validation, upload, container
-replacement or dispatch, so:
+- It must read **raw `egressContainedAtStart`**, never `isEgressContained()`, which
+  deliberately substitutes current policy when boot state is unknown
+  (`session-container.ts` ~639). That fallback is right for compose reachability and wrong
+  here — it is exactly how "unknown" would come to read as "matching".
+- Conservative cancellation is already supported: destruction bumps the teardown epoch before
+  reading the container record (`container-lifecycle.ts` ~1799) and creation observes it
+  (~1012). Name and test that path.
 
-- **The draft survives until the server accepts it** — text *and* raw attachments. Clearing
-  on call is only safe when sending cannot fail.
-- **Duplicate submission is blocked**, and the request carries a client-generated
-  **idempotency key**: a lost response, a double Enter or two tabs must not create or
-  dispatch twice. A failure after the claim currently leaves side effects with no rollback
-  (`headless-sessions.ts` has several throws after its claim, ~403), so the service needs
-  cleanup for a claimed-but-never-dispatched session.
-- **A late response must not yank the user** out of a session they switched to — the same
-  race the eager-claim path already needed a route guard for (`useSessionActivation.ts` ~142).
+The **legacy claim route uses the same operation** before returning (below).
+
+### Failure, and what "sent" means
+
+`MessageInput` calls a synchronous `onSend` and clears text and uploads immediately
+(`MessageInput.tsx` ~640), which is only safe when sending cannot fail. So:
+
+- **Every fallible step happens before dispatch, and dispatch is the commit point.** After it
+  succeeds there is no rollback — the turn may already be running. Cleanup covers only the
+  pre-dispatch window (a claimed, never-dispatched session).
+- **The draft — text and raw files — survives until the server accepts it.** A late *success*
+  must clear the originating draft even if the user has navigated away, or an already-sent
+  message sits waiting to be sent again. A late success must not yank the user out of a
+  session they switched to (`useSessionActivation.ts` ~142 guards the same class of race).
+- **Single-flight submission**, not cross-tab exactly-once. Two tabs generate different keys
+  and would not coalesce anyway; promising exactly-once would mean draft identity,
+  key lifetime, same-key-different-payload rejection, in-flight coalescing, response replay
+  and crash semantics — a protocol far larger than this feature. Duplicate submission is
+  blocked within a tab; two tabs deliberately create two sessions.
 
 ### Rollout
 
-A cached old client still claims, connects its WS and materializes a runner *before* it
-sends, so "missing network field means Inherit" cannot be repaired at first dispatch for it.
-**The legacy claim route must clear the override to `Inherit` before returning the session
-id**, and the old claim/WS path stays supported for the rollout window.
+A cached old client still claims, connects and materializes *before* it sends, so "missing
+field means Inherit" cannot be repaired at its first dispatch. **The legacy claim route
+clears the override to `Inherit` and runs the same reconciliation before returning the id**,
+with `skipReuse: true` so it cannot recycle an ungraduated session carrying a live runner or
+a stale override.
 
-Validation is currently too lax to rely on: `PUT /api/egress/session/:id` returns 200 for an
-invalid or missing `override` instead of rejecting it (`api-routes-egress.ts` ~331). One
-strict enum conversion serves the JSON, multipart, legacy-claim and dialog paths.
+Validation today is too lax to build on: `PUT /api/egress/session/:id` returns 200 for a
+missing or invalid `override` and will write an arbitrary session id
+(`api-routes-egress.ts` ~331). One strict service validates the enum **and that the session
+exists**, and emits the **persisted audit card** — a trust-boundary change with no transcript
+record is the docs/279 req 8 regression. That card already supports a session with no runner
+(`services/session-settings.ts` ~61).
 
-Every mutation goes through the service that emits the **persisted audit card** — a
-trust-boundary change with no transcript record is the docs/279 req 8 regression, and that
-card already supports a session with no runner (`services/session-settings.ts` ~61).
+## Scope: what is explicitly cut
 
-### Copy that is actually true
-
-- **"In force from this session's first turn"**, not "applied when this session starts".
-  A trusted repo's `agent.install` may already have run in the standby before the mode was
-  chosen (`warm-pool-manager.ts` ~297). Req 3 is a promise about the first *turn*.
-- **Picking a mode that differs from the standby means Send is a cold container start.** The
-  checkout stays warm; the container does not. Say so rather than implying the choice is
-  free.
-
-### Cost of the draft, stated
-
-No live preview and no warm container while the first message is composed
-(`requirements.md`, resolved 2026-08-28).
+- **First-action `/review`.** It already refuses without a session (`App.tsx` ~531). Nobody
+  asking for a network mode would notice; it is not a requirement.
+- **Cross-tab exactly-once**, per above.
+- **Pre-Send `@file` and project-skill autocomplete.** Both need a session checkout
+  (`utils/session-data.ts` ~272, `MessageInput.tsx` ~717, `api-routes-files.ts` ~301). This is
+  a **user-visible loss beyond the preview** already accepted in `requirements.md`, and it is
+  accepted on the same grounds: building repo-scoped replacement APIs to preserve it would
+  cost more than the feature.
+- **A new client draft model.** Text is already sessionless and persisted per repo
+  (`App.tsx` ~1692, `useMessageDraft.ts` ~35); the pickers already have sessionless seeds.
+  What is missing is submission state and server-side application, not a draft abstraction.
 
 ## Sequencing
 
-The draft→session transaction is a prerequisite that stands on its own and touches more of
-the client than this feature does. It is worth landing as its **own change** — `/new` becomes
-a draft, with the full tuple (text, attachments, harness/model/reasoning/role, permission
-mode, issue ref) carried in one create-and-dispatch request and no behaviour change the user
-can see — and then adding the network field and the combined control on top. Two reviewable
-steps, each of which can be reverted without the other.
+The earlier "land a sessionless `/new` invisibly, then add the control" split was false —
+sessionless `/new` *is* the user-visible change (no preview, no warm container, no file or
+skill autocomplete). The real split:
+
+1. **Backend only, invisible:** generalize `createHeadlessSession` into the create-and-dispatch
+   transaction — full payload validation, the reconciliation operation, trust-before-claim,
+   pre-dispatch cleanup. Eager `/new` claim stays; Quick Capture switches to it.
+2. **User-visible, together:** `/new` goes sessionless and the combined control ships in the
+   same change. Landing "sessionless `/new`, no network control" has no product stopping
+   point.
 
 ## Where the tests go
 
-1. **Mode in force on the first turn**, across `/new` Send and Quick Capture: force a
-   mismatch against the standby and assert the first turn runs on a container created with
-   the requested mode.
-2. **Standby reconciliation in all three states** — matching adopts, mismatching destroys,
-   `starting`/unknown never silently adopts. It must be able to fail in both directions.
-3. **The full draft tuple survives creation**: harness, model, reasoning, role, permission
-   mode (including Quick Capture's, which is dropped today), issue ref, and raw attachments.
-4. **Failed submission preserves the draft** — text and attachments — and a duplicate or
-   two-tab Send creates exactly one session.
-5. **Legacy rollout**: an old client that claims and connects before sending gets `Inherit`,
-   not a stale override on a recycled warm id.
-6. **The audit card is emitted** for a creation-time choice and survives a reload.
+1. **Mode in force on the first turn**, across `/new` Send and Quick Capture.
+2. **Reconciliation in every state** — matching adopts; mismatching, `starting` and unknown
+   all destroy-and-await. Must fail in both directions, and must fail if the implementation
+   reads `isEgressContained()` instead of the raw field.
+3. **The complete payload survives**: model triple, reasoning, role, permission mode
+   (including Quick Capture's, dropped today), issue pointer *and* its mark-started effect,
+   dictation, raw attachments.
+4. **Failure before dispatch** preserves the draft and leaves no claimed session behind;
+   **success after navigation** still clears the originating draft.
+5. **Legacy rollout**: an old client that claims and connects before sending gets `Inherit`.
+6. **The audit card** is emitted for a creation-time choice and survives a reload.
 7. **Composer and dialog agree** after a change in either.
 
 ## Key files
 
 | File | Role |
 |---|---|
-| `src/client/components/PermissionModeSelector.tsx` | Becomes the combined mode + network control |
-| `src/client/components/MessageInput/MessageInput.tsx` | Renders it on every viewport; must not clear a draft that failed to send |
-| `src/client/components/MessageInput/ComposerSettingsMenu.tsx` | Loses its Mode row; role case opens the list directly |
-| `src/client/hooks/useSessionActivation.ts` | Stops claiming on `/new` |
-| `src/client/hooks/useFileUpload.ts`, `MessageInput/hooks/useUploadBackend.ts` | Raw attachments must be reachable with no session id |
-| `src/client/App.tsx` | Composer enablement, Send, issue seeding, `/review`, the `set_*` tuple |
-| `src/client/components/QuickCaptureOverlay.tsx` | Sends mode + permission mode; resets on open |
-| `src/client/components/SessionSidebar/SessionSettingsDialog.tsx` | Keeps its network section; needs shared invalidation |
-| *new* create-and-dispatch service | Owns the transaction; calls claim with `skipReuse: true` |
-| `src/server/orchestrator/services/claim-session.ts` | Unchanged responsibility — workspace allocator |
-| `src/server/orchestrator/services/headless-sessions.ts` | Quick Capture, through the same core |
-| `src/server/orchestrator/api-routes-egress.ts` | Strict validation; the one mutation path with the audit card |
-| `src/server/orchestrator/egress-allowlist-store.ts` | Durable per-session override |
+| `src/server/orchestrator/services/headless-sessions.ts` | Generalized into the create-and-dispatch transaction (phase 1) |
+| `src/server/orchestrator/session-container.ts` | The named pre-materialization reconciliation op; raw `egressContainedAtStart` |
+| `src/server/orchestrator/container-lifecycle.ts` | Teardown-epoch cancellation path |
+| `src/server/orchestrator/api-routes-egress.ts` | Strict validation, session existence, audit card |
+| `src/server/orchestrator/services/claim-session.ts` | Unchanged responsibility; called with `skipReuse: true` |
+| `src/client/components/PermissionModeSelector.tsx` | The combined mode + network control |
+| `src/client/components/MessageInput/MessageInput.tsx` | Renders it everywhere; must not clear a draft that failed |
+| `src/client/components/MessageInput/ComposerSettingsMenu.tsx` | Loses its Mode row; role list opens directly |
+| `src/client/hooks/useSessionActivation.ts` | Stops claiming on `/new` (phase 2) |
+| `src/client/hooks/useFileUpload.ts`, `MessageInput/hooks/useUploadBackend.ts` | Raw attachments reachable with no session id |
+| `src/client/App.tsx` | Composer enablement, Send, issue seeding, the picker tuple, dictation |
+| `src/client/components/QuickCaptureOverlay.tsx` | Sends network **and** permission mode; resets on open |
+| `src/client/components/SessionSidebar/SessionSettingsDialog.tsx` | Keeps its section; shared slice, matched copy |
 
 **Separable hygiene, not on this path:** permanent deletion clears several stores but not
 egress (`services/session.ts` ~924), and the egress tables have no session foreign key
-(`database.ts` ~632). UUID-scoped rows leak storage but cannot reach a future session id, so
-this is worth fixing on its own rather than inside this feature.
+(`database.ts` ~632). UUID-scoped rows leak storage but cannot reach a future session id.
+
+**Open for local mode:** `RUNTIME_MODE=local` has no container manager, so reconciliation has
+nothing to reconcile while the durable setting and the first turn must still work. The
+transaction must no-op that step rather than assume a manager exists.
