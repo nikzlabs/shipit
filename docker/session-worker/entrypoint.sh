@@ -482,13 +482,44 @@ for d in /workspace /uploads /persist /session-state /dep-cache /credentials /ho
   # walk, so on the boot where the walk is owed, root still owns them and passes.
   #
   # That premise is the whole argument, and it is a claim about each specific
-  # mount rather than a property of the probe. It holds for `/persist`,
-  # `/session-state` and `/credentials` — measured on a live host, each carries
-  # its `.shipit-uid-<uid>-<gid>-v<scheme>` sentinel, so the walk did claim them.
-  # It never held for `/workspace`, which the orchestrator hands over at CLONE
-  # time, before the container has ever booted: that same host's `/workspace` is
-  # `2775 <sessionUid>:1000` with no sentinel of any version. So do not extend
-  # this reasoning to a mount without checking which of the two it is.
+  # mount rather than a property of the probe. Do NOT extend it to a mount
+  # without checking which group that mount is in. Census, measured on two live
+  # hosts rather than reasoned about — the sentinel is the evidence, because it
+  # exists only where this walk has actually run:
+  #
+  #   CLAIMED by the walk (the premise holds — created root-owned here):
+  #     /persist, /session-state   `.shipit-uid-<uid>-<gid>-v<scheme>`
+  #     /dep-cache                 `.shipit-gid-<gid>-v<scheme>`, via its own
+  #                                branch above, which skips this probe already.
+  #
+  #   NEVER claimed (the premise is false — handed over BEFORE this container
+  #   boots, so the probe fails on boot #1 and every boot after):
+  #     /workspace     `2775 <sessionUid>:<sharedGid>`, no sentinel. The
+  #                    orchestrator hands it over at CLONE time.
+  #     /credentials   `0700 <sessionUid>:<sharedGid>`, no sentinel. The
+  #                    orchestrator seals it before the container starts
+  #                    (`chownSessionCredentialsTree` -> `sealDirMode`) — the
+  #                    OpenCode block near the bottom of this script is a bug
+  #                    report about someone believing otherwise, and says "THE
+  #                    LOOP DOES NO SUCH THING" in as many words.
+  #
+  #   /uploads is `:ro` and excluded by design, above.
+  #
+  #   /home/shipit is in the list and is usually not a mount at all: an image
+  #   directory owned by the image's own `shipit` account, so root is in its
+  #   `other` class and the probe fails there too. Its ownership comes from
+  #   `usermod -u` further down instead, which re-chowns the account's home —
+  #   measured: image files baked at build time carry the SESSION's uid, and
+  #   nothing else in this script touches them. That lands the same pair the
+  #   walk would have (`usermod` keeps the primary gid, which is already
+  #   WORKER_GID), so the skip costs nothing today. Under SHIPIT_READONLY_HOME=1
+  #   it IS a root-owned tmpfs, the probe passes, and the loop claims it.
+  #
+  # Only `/workspace` is exempted from this probe, because only its walk changed
+  # in v3. `/credentials` shares the shape and keeps the probe deliberately: its
+  # walk is the generic `chown -R`, which v3 did not touch, and the orchestrator
+  # refreshes that subtree every turn (docs/150 §7). A future bump that changes
+  # the generic walk would need to give it the same branch `/workspace` has.
   #
   # *This paragraph ended "Once handed over, a later boot fails the probe and
   # skips — which is the correct outcome there, because the sentinel says the

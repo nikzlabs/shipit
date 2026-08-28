@@ -227,6 +227,41 @@ walk" — remains true for the mounts that keep it, which is precisely why
 It is the same self-latching shape docs/272 already had to fix for `/dep-cache`,
 one mount over.
 
+**The full census, because the premise is a claim about each mount and not a
+property of the probe.** A first version of this section, and of the corrected
+comment, asserted the walk claims `/credentials` too. It does not — that was an
+inference presented as a measurement, which is the exact failure this section
+exists to correct, so it is recorded rather than quietly fixed. Measured on two
+live hosts:
+
+| Mount | State | Claimed by the walk? |
+|---|---|---|
+| `/persist`, `/session-state` | `.shipit-uid-<uid>-<gid>-v2` | **yes** — created root-owned here |
+| `/dep-cache` | `.shipit-gid-<gid>-v2` | **yes**, via its own branch above the probe |
+| `/workspace` | `2775 <sessionUid>:<sharedGid>`, no sentinel | **no** — handed over at clone time |
+| `/credentials` | `0700 <sessionUid>:<sharedGid>`, no sentinel | **no** — sealed before the container starts |
+| `/uploads` | `:ro` | excluded by design |
+| `/home/shipit` | usually not a mount | **no** — see below |
+
+`/credentials` is not an inference either way: the script's own OpenCode block
+already records it, as a bug report about someone believing the loop claims it
+("THE LOOP DOES NO SUCH THING"). It keeps the probe here deliberately — its walk
+is the generic `chown -R`, which v3 did not change, and the orchestrator
+refreshes that subtree every turn (docs/150 §7).
+
+`/home/shipit` is a third skip and a benign one. It is normally an image
+directory rather than a mount, owned by the image's own `shipit` account, so
+root is in its `other` class and the probe fails. Its ownership comes from
+`usermod -u` further down instead — measured, not assumed: files baked into the
+image at build time carry the *session's* uid, and nothing else in the script
+touches them. `usermod` keeps the account's primary gid, which is already the
+shared one, so the result is the pair the walk would have produced. Under
+`SHIPIT_READONLY_HOME=1` it is a root-owned tmpfs and the loop does claim it.
+
+So the exemption this change makes is `/workspace`'s alone, and the reason is
+narrow: only its walk changed in v3. A future bump that changes the generic
+`chown -R` would have to give `/credentials` the same branch.
+
 So the workspace now takes its own branch **above** the probe, mirroring the
 shared-cache one: `stat` decides the skip (reading needs no write permission),
 the walk itself needs only `CAP_CHOWN`/`CAP_FOWNER`, and the sentinel is written
