@@ -240,7 +240,11 @@
         <span class="ico" style="color:var(--color-warning)"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M53.92 34.62a8 8 0 1 0-11.84 10.76l17.68 19.45A15.93 15.93 0 0 0 32 80v34.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c11-3.68 55.2-21.19 78.11-67.4l10.97 12.07a8 8 0 0 0 11.84-10.76Z"/></svg></span>
         <span class="lbl">Open<span class="desc">Unrestricted outbound access — no allowlist, no prompts.</span></span>
       </div>
-      <div class="mfoot">In force from this session’s first turn. Picking a mode that differs from the warm container means Send starts a fresh one — the checkout stays warm, the container does not.</div>
+      <div class="pend" style="border-color:rgba(245,158,11,.35);background:var(--color-warning-subtle);color:var(--color-warning)">
+        <svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><path d="M236.8 188.09 149.35 36.22a24.76 24.76 0 0 0-42.7 0L19.2 188.09a23.51 23.51 0 0 0 0 23.72A24.35 24.35 0 0 0 40.55 224h174.9a24.35 24.35 0 0 0 21.33-12.19 23.51 23.51 0 0 0 .02-23.72ZM120 104a8 8 0 0 1 16 0v40a8 8 0 0 1-16 0Zm8 88a12 12 0 1 1 12-12 12 12 0 0 1-12 12Z"/></svg>
+        <span style="flex:1">Contained — <b>not enforced</b> on this deployment. See the install notes.</span>
+      </div>
+      <div class="mfoot">In force from this session’s <b>first turn</b>. Repository setup may already have run under the workspace default before you chose — “Contained” does not reach back over that.</div>
     </div>
   </div>
 
@@ -281,10 +285,7 @@
         <svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><path d="M136 80v43.47l36.12 21.67a8 8 0 0 1-8.24 13.72l-40-24A8 8 0 0 1 120 128V80a8 8 0 0 1 16 0Z"/></svg>
         <span style="flex:1">Applies on next container start — restart from Session settings</span>
       </div>
-      <div class="pend" style="border-color:rgba(245,158,11,.35);background:var(--color-warning-subtle);color:var(--color-warning)">
-        <svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><path d="M236.8 188.09 149.35 36.22a24.76 24.76 0 0 0-42.7 0L19.2 188.09a23.51 23.51 0 0 0 0 23.72A24.35 24.35 0 0 0 40.55 224h174.9a24.35 24.35 0 0 0 21.33-12.19 23.51 23.51 0 0 0 .02-23.72ZM120 104a8 8 0 0 1 16 0v40a8 8 0 0 1-16 0Zm8 88a12 12 0 1 1 12-12 12 12 0 0 1-12 12Z"/></svg>
-        <span style="flex:1">Contained — <b>not enforced</b> on this deployment. See the install notes.</span>
-      </div>
+
     </div>
     <p class="note" style="width:300px">
       A running turn changes nothing here: permission mode stays changeable mid-turn today, and network is a
@@ -322,9 +323,9 @@
       </div>
     </div>
     <p class="note" style="width:720px">
-      The row is exactly as long as it is today — the network state re-uses the control the mode already
-      occupies. Nothing was added to compete for width with the harness, model and reasoning pills that
-      docs/260 already fights to keep on screen.
+      No new control — the network state re-uses the button the mode already occupies. It is not free of width:
+      naming a non-default mode adds a glyph, a divider and a word. That is a deliberate trade against req 10,
+      which wants the effective mode readable without hover, and it is still one control instead of two.
     </p>
   </div>
 </div>
@@ -332,9 +333,10 @@
 <!-- ═══════════════════════════════════════════ -->
 <h2>4 · Same control on mobile (req 6)</h2>
 <p class="note">
-  Today the mode is folded <b>into</b> the parameters menu below 700px, so on a phone it takes two taps and
-  sits behind a name that says “Opus 5”. It comes out into the row instead, exactly as it already does in
-  Quick Capture on desktop — one control, one place, every viewport.
+  Today the mode folds <b>into</b> the parameters menu when the composer measures under 700px — its own width,
+  not the viewport's, with Quick Capture on desktop as a deliberate exception. So “the same control everywhere”
+  is more than a copy change: the control has to leave that measured fold entirely rather than gain a third
+  case. On a phone it is two taps behind a name that says “Opus 5” today.
 </p>
 <div class="row">
   <div>
@@ -452,15 +454,20 @@
     </div>
     <div class="arrow">→</div>
     <div>
-      <p class="cap">After — the anchor IS the role list</p>
+      <p class="cap">After — the anchor IS the role panel</p>
       <div class="menu" style="width:270px">
         <div class="mhead">Role</div>
-        <div class="mrow"><span class="lbl">No role<span class="desc">Run without a role's standing instructions</span></span></div>
-        <div class="mrow cur"><span class="lbl">reviewer<span class="desc">Independent review of a branch diff</span></span><span class="tick"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183l119.51-119.5a12 12 0 0 1 17 17Z"/></svg></span></div>
-        <div class="mrow"><span class="lbl">deep-dive<span class="desc">Long-running research</span></span></div>
+        <div style="padding:6px 10px 2px;font-size:11.5px;color:var(--color-text-tertiary);line-height:1.45">
+          Fixed after the first message. This session runs as <b style="color:var(--color-text-secondary)">reviewer</b>.
+        </div>
         <div class="msep"></div>
         <div class="mrow"><span class="lbl">Adjust parameters…<span class="desc">Show the harness, model and level this role set</span></span></div>
       </div>
+      <p class="note" style="width:270px;margin-top:8px">
+        A session that has taken its first turn lists no roles — the server refuses to change one, and the
+        menu already omits them when locked. Before the first turn the same panel lists “No role” and each
+        available role instead. Either way it is one level, not a row that opens a panel.
+      </p>
     </div>
   </div>
 </div>

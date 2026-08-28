@@ -30,6 +30,11 @@ space in the product (docs/260 exists to keep that row from pushing Send off the
 - **The menu states; it does not act.** Before the first turn: "In force from this session's
   first turn." On a running session: "Applies on next container start — restart from Session
   settings." No restart button here, so no need for the popover to survive its own selection.
+- **The setup limitation is stated, not implied** (req 11). If the workspace default is
+  Open, a trusted repo's `agent.install` may already have run in the warm container before
+  the mode was picked (`warm-pool-manager.ts` ~297). The menu says the guarantee is this
+  session's first *turn*; it does not let "Contained" imply that repository setup was also
+  contained.
 - **No claim about warm containers in the copy.** An earlier draft said Send would be a cold
   container start when the pick differs from the standby. The browser cannot know a standby's
   boot state, so that sentence was asserting something the client cannot see.
@@ -40,13 +45,34 @@ space in the product (docs/260 exists to keep that row from pushing Send off the
 **Mode leaves `ComposerSettingsMenu`** on every viewport; the role case loses a nesting level
 so the anchor opens the **role list directly** (req 9).
 
-**`SessionSettingsDialog` keeps its network section** — but it is *not* untouched: its copy
-changes to match, and it joins the shared client state below. Req 7 asks for one
-authoritative value, and today the dialog fetches only on open
-(`SessionSettingsDialog.tsx` ~117) and then keeps its own optimistic state (~170), while the
-`egress_settings` SSE refreshes the global store only when it was already loaded
-(`useServerEvents.ts` ~733). So: **one session-scoped client slice, and a session-scoped
-update carrying the complete server-normalized value.** Not "invalidation" in the abstract.
+**`SessionSettingsDialog` keeps its network section**, and the composer control **piggybacks
+its existing pattern** rather than introducing state machinery:
+
+- `GET /api/egress/allowlist?session=<id>` when the menu opens;
+- `PUT /api/egress/session/:id` on change, reading the returned `EgressSessionSettings`,
+  which already carries `pendingRestart` — the same two calls the dialog makes
+  (`SessionSettingsDialog.tsx` ~117, ~174), with no store between them.
+
+A review proposed a keyed `sessionId → settings` cache plus a new session-scoped SSE
+payload. That is more than this needs. The per-session route **emits no SSE today** (it
+persists a transcript card and returns the settings —`api-routes-egress.ts` ~331), the dialog
+uses no store, and both surfaces live in one browser tab. Fetch-on-open already makes the
+dialog current after a composer write.
+
+The one genuine gap is narrower: the composer's **trigger** is always visible, so it can
+show a stale mode after a write made *in the dialog*. That is fixed by the two components
+telling each other in-process — the write path notifies, the trigger updates — not by a
+server event. Cross-tab divergence is out of scope, exactly as it is today.
+
+**Copy alignment is part of this.** The dialog says "Inherit global" where the composer says
+"Inherit workspace"; one value must not have two names.
+
+**No audit card for the creation-time choice.** The route's persisted
+`session-settings-change` card (docs/279 req 8) records a *change* to a session's settings.
+At creation there is no prior state to change from, and a "changed network containment" card
+sitting above the first message describes something that never happened. The card stays for
+edits to an existing session — which is what docs/279 asks for — and the creation path
+suppresses it.
 
 ## Mechanism
 
@@ -92,13 +118,21 @@ mode is resolved (`container-lifecycle.ts` ~1191 vs ~1435), and it is not marked
 until creation finishes (`session-container.ts` ~1524). Materialization currently waits for
 `starting` and then adopts (`app-lifecycle.ts` ~788).
 
-So the transaction calls **one container-manager operation that serializes reconciliation
-with creation and completes before `runnerRegistry.getOrCreate`**:
+So the transaction calls one container-manager operation **before**
+`runnerRegistry.getOrCreate` — and that operation **evicts; it does not create**:
 
-- **Known and matching** → adopt.
-- **Known and mismatching, or `starting`, or unknown** → destroy and await a fresh container.
-  Paying a replacement in the uncommon cases is worth not having a fourth state to reason
-  about.
+- **A running standby whose recorded boot mode matches** → leave it alone.
+- **Anything else** — mismatching, `starting`, or unknown → `await destroy(sessionId)` and
+  return. The ordinary runner factory then materializes the replacement.
+
+It must not "destroy and await a fresh container", which an earlier draft said: production
+containers are created *by the factory, after* `getOrCreate`, which returns a runner
+immediately and kicks off creation with a `void` call (`app-lifecycle.ts` ~840). There is
+also no creation mutex or tracked creation promise to serialize against — `destroy()` bumps
+the teardown epoch so an in-flight creation aborts (`container-lifecycle.ts` ~1799, observed
+at ~1012), and the code explicitly tolerates an old creation failing after a newer
+incarnation started (~1597). That is **cancellation with overlap, not serialization**, and
+the design has to fit it rather than assume a primitive that does not exist.
 
 Two details that decide correctness:
 
@@ -117,9 +151,27 @@ The **legacy claim route uses the same operation** before returning (below).
 `MessageInput` calls a synchronous `onSend` and clears text and uploads immediately
 (`MessageInput.tsx` ~640), which is only safe when sending cannot fail. So:
 
-- **Every fallible step happens before dispatch, and dispatch is the commit point.** After it
-  succeeds there is no rollback — the turn may already be running. Cleanup covers only the
-  pre-dispatch window (a claimed, never-dispatched session).
+- **Every fallible step moves in front of dispatch, and dispatch becomes the commit point.**
+  It is not one today: `createHeadlessSession` dispatches (~460) and then still graduates
+  (~476), arms auto-merge, and re-reads the session in a way that can throw (~510), with the
+  route starting the issue lifecycle afterwards (`api-routes-session-crud.ts` ~679). All of
+  that has to precede the dispatch, or "committed" means nothing.
+- **What dispatch commits is admission, not success.** `dispatch()` returns once the turn is
+  synchronously admitted; the actual setup is fire-and-forget and can still fail later during
+  attachment, agent creation or run-parameter assembly (`session-runner.ts` ~561). That is a
+  fine definition of acceptance — but it is the definition, and it is stated rather than
+  assumed.
+- **Rollback covers only the pre-dispatch window**, and it must clear the **egress row** it
+  wrote. That is why the store's missing deletion cascade (`services/session.ts` ~924) is not
+  fully "separable hygiene": this transaction creates the row itself, so it owns cleaning it
+  up when it abandons a claimed session. Cleanup also has to coordinate registry disposal
+  with the asynchronous container creation `getOrCreate` has already started.
+- **At-least-once, stated honestly.** If the response is lost *after* the server accepted,
+  the browser cannot know: it keeps the draft and a retry creates a second session. Only
+  request idempotency resolves that, and idempotency is cut (above) — so this is a real,
+  accepted behaviour, not an oversight. The user sees the extra session in the sidebar. The
+  plan must not promise "the draft survives until the server accepts it" as though the client
+  can always tell.
 - **The draft — text and raw files — survives until the server accepts it.** A late *success*
   must clear the originating draft even if the user has navigated away, or an already-sent
   message sits waiting to be sent again. A late success must not yank the user out of a
@@ -133,16 +185,19 @@ The **legacy claim route uses the same operation** before returning (below).
 ### Rollout
 
 A cached old client still claims, connects and materializes *before* it sends, so "missing
-field means Inherit" cannot be repaired at its first dispatch. **The legacy claim route
-clears the override to `Inherit` and runs the same reconciliation before returning the id**,
-with `skipReuse: true` so it cannot recycle an ungraduated session carrying a live runner or
-a stale override.
+field means Inherit" cannot be repaired at its first dispatch. The legacy claim route
+therefore does the **minimum**, in order: treat a missing mode as `Inherit`; claim a session
+that cannot alias a live draft; clear any stale override; evict an incompatible standby via
+the same operation; return. It does **not** pre-create a replacement — the factory does that,
+as everywhere else.
 
 Validation today is too lax to build on: `PUT /api/egress/session/:id` returns 200 for a
 missing or invalid `override` and will write an arbitrary session id
 (`api-routes-egress.ts` ~331). One strict service validates the enum **and that the session
-exists**, and emits the **persisted audit card** — a trust-boundary change with no transcript
-record is the docs/279 req 8 regression. That card already supports a session with no runner
+exists**. It keeps the persisted `session-settings-change` card for edits to an existing
+session (docs/279 req 8 — a trust-boundary change with no transcript record is the
+regression that requirement closed) and suppresses it for the creation-time choice, per
+above. The card already supports a session with no runner
 (`services/session-settings.ts` ~61).
 
 ## Scope: what is explicitly cut
@@ -161,16 +216,26 @@ record is the docs/279 req 8 regression. That card already supports a session wi
 
 ## Sequencing
 
-The earlier "land a sessionless `/new` invisibly, then add the control" split was false —
-sessionless `/new` *is* the user-visible change (no preview, no warm container, no file or
-skill autocomplete). The real split:
+Sessionless `/new` and the combined control **ship together**. Landing "sessionless `/new`,
+no network control yet" removes the preview, the warm container and file/skill autocomplete
+for no user benefit — there is no product stopping point there.
 
-1. **Backend only, invisible:** generalize `createHeadlessSession` into the create-and-dispatch
-   transaction — full payload validation, the reconciliation operation, trust-before-claim,
-   pre-dispatch cleanup. Eager `/new` claim stays; Quick Capture switches to it.
-2. **User-visible, together:** `/new` goes sessionless and the combined control ships in the
-   same change. Landing "sessionless `/new`, no network control" has no product stopping
-   point.
+**And phase one is not invisible either.** An earlier draft claimed a behaviour-preserving
+backend phase; it is not one. Quick Capture already calls `createHeadlessSession`
+(`stores/actions/session-actions.ts` ~296), so there is no untouched path waiting to be
+switched over, and every item in that phase changes something observable: sending Quick
+Capture's currently-ignored permission mode changes first-turn behaviour; trust-before-claim
+changes when a failure surfaces; reconciliation can evict a standby after a global policy
+change, altering both containment and start latency; and `skipReuse: true` on the legacy
+route disables its abandoned-draft reuse branch (`claim-session.ts` ~340), leaving more
+ungraduated sessions behind.
+
+So it is one change, sequenced internally rather than split into two releases — and the
+honest framing is that the backend work is *smaller-blast-radius*, not *invisible*.
+
+**Requirement 9 stays in scope**, despite looking like unrelated cleanup: the one-row role
+root exists *because* Mode leaves `ComposerSettingsMenu`, and Mode leaves because of this
+feature. It is a consequence, not a bundled chore.
 
 ## Where the tests go
 
@@ -184,7 +249,9 @@ skill autocomplete). The real split:
 4. **Failure before dispatch** preserves the draft and leaves no claimed session behind;
    **success after navigation** still clears the originating draft.
 5. **Legacy rollout**: an old client that claims and connects before sending gets `Inherit`.
-6. **The audit card** is emitted for a creation-time choice and survives a reload.
+6. **The audit card fires for an edit and not for creation** — a change from the dialog or
+   the composer on an existing session records a persisted card that survives a reload; the
+   initial choice records none.
 7. **Composer and dialog agree** after a change in either.
 
 ## Key files
@@ -194,7 +261,7 @@ skill autocomplete). The real split:
 | `src/server/orchestrator/services/headless-sessions.ts` | Generalized into the create-and-dispatch transaction (phase 1) |
 | `src/server/orchestrator/session-container.ts` | The named pre-materialization reconciliation op; raw `egressContainedAtStart` |
 | `src/server/orchestrator/container-lifecycle.ts` | Teardown-epoch cancellation path |
-| `src/server/orchestrator/api-routes-egress.ts` | Strict validation, session existence, audit card |
+| `src/server/orchestrator/api-routes-egress.ts` | Strict validation, session existence; card on edit, not on creation |
 | `src/server/orchestrator/services/claim-session.ts` | Unchanged responsibility; called with `skipReuse: true` |
 | `src/client/components/PermissionModeSelector.tsx` | The combined mode + network control |
 | `src/client/components/MessageInput/MessageInput.tsx` | Renders it everywhere; must not clear a draft that failed |

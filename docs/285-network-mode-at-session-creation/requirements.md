@@ -32,6 +32,11 @@ description: Fold network containment into the composer's existing permission-mo
     will run in, and — when that is not the inherited default — that it is a
     deliberate change from the workspace setting.
 
+11. The control does not claim that a session's *setup* ran under the chosen mode. If the
+    workspace default is Open, a trusted repository's `agent.install` may already have run
+    in the warm container before the mode was picked; the guarantee is the first **turn**,
+    and the UI says so rather than leaving it implied.
+
 ## Open questions
 
 - (none)
@@ -53,6 +58,20 @@ description: Fold network containment into the composer's existing permission-mo
   deliberately: it removes the need for a first-turn admission protocol entirely,
   because no runner exists before the choice is made. The warm pool still pre-builds
   standby containers, so this is not a cold start.
+- 2026-08-28 — *A review argued that the running-session half of requirement 6 is the
+  largest remaining cost and should be cut, leaving the composer control on creation
+  surfaces only.* No — requirement 6 stands as written: one menu, new and existing
+  sessions alike. The cost was also overstated. The review assumed a keyed client cache
+  and a new session-scoped SSE payload; the composer can instead do exactly what
+  `SessionSettingsDialog` already does — fetch on open, write with `PUT`, read the
+  returned `EgressSessionSettings` — since the per-session route emits no SSE today and
+  the dialog uses no store. Only the always-visible trigger can go stale, and two
+  components in one browser tab do not need a server round trip to agree.
+- 2026-08-28 — *If the workspace default is Open, a trusted repo's `agent.install` may
+  already have run in the warm container before Contained is chosen. Accept, force
+  pre-installs to be contained, or defer pre-install until the mode is known?* Accept and
+  **state the limitation plainly** — keep today's warm-start behaviour and say in the UI
+  that the guarantee is the first turn. → req 11.
 - 2026-08-28 — *Must the network setting live in exactly ONE place, so the Session
   settings dialog loses its network section?* No — that was an agent inference from
   "one control", not a stated requirement. The dialog keeps its network section for
