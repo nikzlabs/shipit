@@ -106,17 +106,26 @@ Every client that produces a first dispatch sends the mode through one shared re
 `/review` and the other frame-constructing paths get it from the same helper rather than each
 growing a field.
 
-**Deliberately NOT in the table: `spawnChildSession`.** It is a genuine fourth first-turn
-producer — it graduates (`services/child-sessions.ts:881`) and dispatches
-(`:948`) without touching any caller above — and it is still excluded, because it cannot
-violate requirement 3. A spawned child is a new session with a new id and therefore **no
-explicit override**; its resolved containment is the global default, which is exactly what
-its container was created with. The rule below ("no explicit override → accept") already
-covers it, so routing it through admission would buy a lock nothing contends for and a
-comparison that cannot fail. **The condition that changes this:** the day a spawn can carry
-a network mode of its own (`shipit session create --network …`, or a role that sets one), it
-joins the table — and the day the exclusion is not written down is the day someone adds that
-flag without noticing.
+| Child spawn | `services/child-sessions.ts` | Graduates (~881) and dispatches (~948) without touching any caller above. |
+
+> **A rejected exclusion, kept as the reason.** An earlier draft left child spawns out,
+> arguing that a child is a new session with no explicit override, so its resolved
+> containment must equal what its container booted with. **Both halves are false**, and both
+> were checked:
+>
+> - A child does **not** necessarily get a freshly allocated id. `claim-session.ts` (~356)
+>   reuses the repo's existing `warmSessionId`, and `PUT /api/egress/session/:id`
+>   (`api-routes-egress.ts` ~331) writes an override with **no check** that the session
+>   exists, is graduated, or is visible. So an override can already be sitting on the id a
+>   child claims.
+> - Flipping the global toggle (`api-routes-egress.ts` ~208) does not retire standbys, so a
+>   container created before the flip disagrees with the current global even when nobody set
+>   an override at all.
+>
+> This also names a hazard the feature *creates*: writing per-session overrides to
+> claimed-but-ungraduated warm ids becomes routine, so a warm session's override must be
+> **cleared when that id is claimed or recycled** — otherwise one user's "Open" leaks onto
+> whatever unrelated session inherits the id.
 
 The service runs under a **per-session admission lock** held across all of it. WebSocket
 callbacks are not serialized, so two near-simultaneous first sends can both observe
@@ -145,12 +154,33 @@ concurrent send race it. So:
   the runner-owned admission `assertCanDispatch` (`ws-handlers/send-message.ts` ~122, docs/243),
   long before its own `running` assignment.
 
-So `admitFirstTurn` returns a **dispatch reservation**: the slot is already claimed, and the
-caller passes the reservation into `dispatch` (or into the WS handler's run path), which
-skips its own claim rather than re-taking it. Callers that decline to dispatch must release
-the reservation, or a failed first turn leaves the session permanently "running". The
-reservation is the whole point of routing every producer through one service — three callers
-each hand-rolling "claim then dispatch" is the bug this is meant to prevent.
+So `admitFirstTurn` returns a **discriminated result, never a bare optional token**:
+
+```
+{ kind: "reserved",        runner, token }   // this caller owns the slot
+{ kind: "already-admitted", runner }          // someone else got there first
+```
+
+Three rules make it safe, and each exists because a simpler version has a hole:
+
+- **The caller must use the returned `runner`, never one it captured earlier.** The HTTP path
+  reads its runner before this point (`services/agent.ts` ~161), so after a replacement it
+  would otherwise dispatch into a disposed runner.
+- **A losing contender gets `already-admitted` and dispatches normally**, so the runner's own
+  queueing applies. Two WS sends can both clear the early admission check
+  (`ws-handlers/send-message.ts` ~122); without this the second reaches the direct run path
+  (~590) and races the reserved turn.
+- **The token is opaque, single-use, and bound to that runner; ownership transfers only when
+  `dispatch` consumes it, and until then a `finally` releases it.** "Callers that decline
+  must release" is not enough, because the work between admission and dispatch can *throw*:
+  Quick Capture does branch work, environment prep and uploads after this point
+  (`services/headless-sessions.ts` ~407), and the WS path can still return early on a
+  missing workspace (~556). An unreleased reservation leaves the session permanently
+  "running" — a worse failure than the race it was added to prevent.
+
+The reservation is the whole point of routing every producer through one service: four
+callers each hand-rolling "claim, then dispatch, and unwind correctly on every throw" is
+precisely the bug this prevents.
 
 ### Replacement is a runner replacement
 
@@ -278,5 +308,7 @@ design is not safe without them.
 | `src/server/orchestrator/ws-handlers/send-message.ts` | First-dispatch caller — awaits `admitFirstTurn`, honours its reservation |
 | `src/server/orchestrator/services/agent.ts` | First-dispatch caller — the HTTP path, which graduates and dispatches on its own |
 | `src/server/orchestrator/services/headless-sessions.ts` | First-dispatch caller — Quick session: persist after the claim, before dispatch |
+| `src/server/orchestrator/services/child-sessions.ts` | First-dispatch caller — child spawns graduate and dispatch on their own |
+| `src/server/orchestrator/services/claim-session.ts` | Warm-id reuse — where a stale per-session override must be cleared |
 | `src/server/orchestrator/services/recovery.ts` | `restartAgent` — the replacement sequence this reuses |
 | `src/server/orchestrator/egress-allowlist-store.ts` | Durable per-session override |
