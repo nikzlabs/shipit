@@ -623,25 +623,30 @@ describe("session worker ownership sentinel", () => {
   });
 
   /**
-   * planning#420 — the workspace walk has to reach a tree it cannot WRITE.
+   * planning#420 — the workspace walk has to reach a tree it cannot WRITE, and
+   * that is every workspace, on every boot.
    *
-   * `chown_workspace` leaves the workspace `2775 <sessionUid>:<sharedGid>`, and
-   * the entrypoint's root is neither its owner nor in its group and has no
-   * CAP_DAC_OVERRIDE. So on every boot after the first, `test -w` failed and the
-   * loop `continue`d — without ever reading the versioned sentinel. A
-   * HANDOFF_SCHEME bump therefore reached no EXISTING workspace, which is the
-   * only kind that can already contain the `0755` directories a foreign-uid
-   * Compose service left behind.
+   * The orchestrator hands the workspace to the session uid at CLONE time,
+   * before this container first boots, so it is already
+   * `2775 <sessionUid>:<sharedGid>` when the loop reaches it — a tree root
+   * neither owns nor shares a group with, with CAP_DAC_OVERRIDE dropped. The
+   * probe therefore failed on boot #1, not merely on later ones, and the loop
+   * `continue`d without ever reading the versioned sentinel.
+   *
+   * Verified on a live host rather than inferred: `/workspace` carried NO
+   * sentinel of any version while `/persist` and `/session-state` beside it each
+   * carried `.shipit-uid-<uid>-<gid>-v2`. Absent, not stale — so `mkdir` never
+   * ran and this walk has never claimed a workspace at all. The fixture below
+   * therefore starts with no sentinel, which is the production state; the stale
+   * one is covered by the scheme-rotation tests elsewhere in this file.
    *
    * A 0555 dir is the stand-in a non-root test has for "the acting process
    * cannot write this mount" — the same stand-in the `:ro` test above uses, and
    * skipped under root for the same reason.
    */
-  it.skipIf(isRoot)("walks a workspace it cannot write, so a scheme bump reaches existing sessions", () => {
+  it.skipIf(isRoot)("walks a workspace it cannot write, which is the only kind there is", () => {
     const ws = workspaceMount();
     writeFileSync(join(ws, "a.ts"), "");
-    // The sentinel an earlier image left: right uid and gid, superseded scheme.
-    mkdirSync(join(ws, ".shipit-uid-1000-1000-v2"));
     chmodSync(ws, 0o555);
     restoreWritable.push(ws);
 
@@ -656,6 +661,24 @@ describe("session worker ownership sentinel", () => {
       .toBe(true);
     // And not the generic recursive handoff, which is the other mounts' path.
     expect(result.chowns).not.toContain(`-R 1000:1000 ${ws}`);
+  });
+
+  // The other half of the same fact, and the reason the probe stays for every
+  // mount but this one: a mount the orchestrator creates root-owned IS claimed
+  // by this walk, which is what the live host shows — `/persist` and
+  // `/session-state` carry their sentinel while `/workspace` carries none.
+  // Asserted here so "the workspace is the exception" is a tested statement
+  // rather than a comment.
+  it("still claims a root-owned per-session mount through the generic path", () => {
+    const mount = tempDir();
+    const uid = String(process.getuid?.() ?? 0);
+    const gid = String(process.getgid?.() ?? 0);
+
+    const result = runEntrypoint([mount], uid, { workerGid: gid });
+
+    expect(result.status).toBe(0);
+    expect(result.chowns).toContain(`-R ${uid}:${gid} ${mount}`);
+    expect(existsSync(join(mount, uidSentinel(uid, gid)))).toBe(true);
   });
 
   it("skips a workspace already handed over under the CURRENT scheme", () => {

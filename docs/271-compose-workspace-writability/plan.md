@@ -192,19 +192,40 @@ one agree, as half B's two passes already do:
 The bump above was written on the assumption that a versioned sentinel is what
 decides whether the walk re-runs. For the workspace it was not, and the
 independent review caught it: the mount loop's `[ -w "$d" ]` probe runs **before**
-the sentinel is read, and `chown_workspace` leaves the workspace `2775
-<sessionUid>:<sharedGid>` — a tree the entrypoint's root is neither the owner of
-nor in the group of, with no `CAP_DAC_OVERRIDE` to bypass either. So on every
-boot after the first, the probe failed, the loop `continue`d, and the versioned
-sentinel was never even looked at. A bump reached **no existing workspace at
-all** — precisely inverting the intent, since an existing workspace is the only
-kind that can already hold a foreign service's `0755` directories.
+the sentinel is read, and the workspace is already `2775
+<sessionUid>:<sharedGid>` by the time the loop reaches it — a tree the
+entrypoint's root is neither the owner of nor in the group of, with no
+`CAP_DAC_OVERRIDE` to bypass either. So the probe fails, the loop `continue`s,
+and the versioned sentinel is never looked at. A bump reached **no existing
+workspace at all** — precisely inverting the intent, since an existing workspace
+is the only kind that can already hold a foreign service's `0755` directories.
 
-The probe's own comment recorded the assumption that made this invisible: *"once
-handed over, a later boot fails the probe and skips — which is the correct
-outcome there, because the sentinel says the handoff is done."* True while the
-walk is fixed, false the moment it learns to do something new — the same
-self-latching shape docs/272 already had to fix for `/dep-cache`, one mount over.
+**Stronger than "after the first boot": this walk has never claimed a workspace
+at all.** The ops session that reported the incident measured it on a live host —
+`/workspace` is `2775 <sessionUid>:1000` and holds **no sentinel of any
+version**, while `/persist` and `/session-state` beside it each hold
+`.shipit-uid-<uid>-<gid>-v2`. Absent, not stale: `prune_stale_sentinels` keeps
+the current marker, so nothing there means `mkdir "$marker"` never ran. The cause
+is a step earlier than "a later boot" — the orchestrator hands the workspace to
+the session uid at **clone** time, before the container has ever booted, so the
+probe fails on boot #1. Every live session's workspace ownership has come from
+the orchestrator-side handback; none of it has ever come from the boot walk.
+
+That also settles a contradiction the script had been carrying in two places.
+The `HANDOFF_SCHEME` block claimed *"v2: the mode passes above … and
+`chown_workspace`'s group-write pass now reach trees claimed under v1"*, while
+the probe's justification claimed *"once handed over, a later boot fails the
+probe and skips — which is the correct outcome there, because the sentinel says
+the handoff is done."* Both cannot hold, and the second is the bug written as a
+guarantee: true only while the walk never changes, since after a bump the
+sentinel says the opposite and is never read. Both are corrected in place with
+the superseded text quoted. The probe's underlying premise — "these mounts are
+created root-owned by the orchestrator and handed to the session by this very
+walk" — remains true for the mounts that keep it, which is precisely why
+`/persist` and `/session-state` have sentinels and the workspace does not.
+
+It is the same self-latching shape docs/272 already had to fix for `/dep-cache`,
+one mount over.
 
 So the workspace now takes its own branch **above** the probe, mirroring the
 shared-cache one: `stat` decides the skip (reading needs no write permission),
@@ -264,6 +285,12 @@ the same drift §4b is about.*
 Re-verifying github#2374 found the code fix intact and working — a live session's
 workspace is `2775`/`664` at `sessionUid:1000` — but half A's *deleted* rule still
 stated as current fact in six places, four of them load-bearing:
+
+*(2026-08-28: that observation is correct and its implied mechanism is not. The
+`2775`/`664` came from the ORCHESTRATOR-side handback, not from the entrypoint's
+boot walk — which, per §3, has never claimed a workspace at all. Left in place
+because what it verifies is half B's outcome, which is real; noted here so a
+later reader does not take it as evidence that the boot walk runs.)*
 
 - **`shipit-docs/plugins.md`** — the sharpest one. It told the agent that a
   contained session refuses a service with no `user:` and to "add one". Adding one
