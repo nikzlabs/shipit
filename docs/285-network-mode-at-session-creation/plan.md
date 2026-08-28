@@ -106,15 +106,51 @@ Every client that produces a first dispatch sends the mode through one shared re
 `/review` and the other frame-constructing paths get it from the same helper rather than each
 growing a field.
 
-The service, under a **per-session admission lock** held across all of it — persistence,
-validation, replacement, graduation, and claiming the dispatch slot. WebSocket callbacks are
-not serialized, so two near-simultaneous first sends can both observe `runner.running ===
-false`, persist different modes, and race the replacement:
+**Deliberately NOT in the table: `spawnChildSession`.** It is a genuine fourth first-turn
+producer — it graduates (`services/child-sessions.ts:881`) and dispatches
+(`:948`) without touching any caller above — and it is still excluded, because it cannot
+violate requirement 3. A spawned child is a new session with a new id and therefore **no
+explicit override**; its resolved containment is the global default, which is exactly what
+its container was created with. The rule below ("no explicit override → accept") already
+covers it, so routing it through admission would buy a lock nothing contends for and a
+comparison that cannot fail. **The condition that changes this:** the day a spawn can carry
+a network mode of its own (`shipit session create --network …`, or a role that sets one), it
+joins the table — and the day the exclusion is not written down is the day someone adds that
+flag without noticing.
+
+The service runs under a **per-session admission lock** held across all of it. WebSocket
+callbacks are not serialized, so two near-simultaneous first sends can both observe
+`runner.running === false`, persist different modes, and race the replacement:
 
 1. Persist the desired mode (`PUT`-equivalent into `egress-allowlist-store.ts`).
 2. Resolve containment and compare against the live container's `egressContainedAtStart`.
 3. On a mismatch, **replace the runner and the container** (below), not the container alone.
-4. Graduate, claim the dispatch slot, release the lock, dispatch.
+4. Graduate.
+5. **Claim the dispatch slot while still holding the lock**, and return the claim to the
+   caller — see below. Only then release.
+
+#### The dispatch slot must be claimed inside the lock
+
+The slot is not a flag the caller can set afterwards. `dispatchOnRunner` claims it by
+flipping `running = true` **synchronously** before scheduling the async turn
+(`session-runner.ts` ~463), precisely to close a microtask gap that would otherwise let a
+concurrent send race it. So:
+
+- **Releasing the lock before the claim reopens that race** — a second first-send can enter
+  admission in the gap.
+- **Claiming it inside admission and then letting the caller call `runner.dispatch()`
+  normally is worse** — `dispatch` sees `running === true` and *enqueues* the very message
+  admission just cleared to run (`session-runner.ts` ~413).
+- The WS path adds its own wrinkle: it decides queue-vs-run near the top of the handler via
+  the runner-owned admission `assertCanDispatch` (`ws-handlers/send-message.ts` ~122, docs/243),
+  long before its own `running` assignment.
+
+So `admitFirstTurn` returns a **dispatch reservation**: the slot is already claimed, and the
+caller passes the reservation into `dispatch` (or into the WS handler's run path), which
+skips its own claim rather than re-taking it. Callers that decline to dispatch must release
+the reservation, or a failed first turn leaves the session permanently "running". The
+reservation is the whole point of routing every producer through one service — three callers
+each hand-rolling "claim then dispatch" is the bug this is meant to prevent.
 
 ### Replacement is a runner replacement
 
@@ -125,15 +161,25 @@ worker does not reset that. The shape already exists in `restartAgent`
 (`services/recovery.ts` ~407) and this reuses it:
 
 preserve Compose services → dispose the old runner → destroy the agent container →
-create the new runner → **attach the current WebSocket immediately** → await readiness →
-dispatch.
+create the new runner → **rebind every attached viewer** → await readiness → dispatch.
 
-Attaching before the readiness wait is load-bearing: the idle enforcer treats an unviewed,
-non-running runner as reclaimable under pressure (`idle-enforcer.ts` ~150). The headless
-path has no viewer at all and takes a bounded lifecycle lease instead. This does not touch
-the WebSocket-lifecycle invariant in `CLAUDE.md` — the replacement is caused by a user
-dispatch, never by connect or disconnect — but it must capture the session identity up front
-and must not attach a replacement runner to a socket that has since closed.
+**Every viewer, not just the initiating socket.** Disposal removes the old runner's
+listeners (`container-session-runner.ts` ~3287) while attachment is per WebSocket connection
+(`route-registry.ts` ~1037), so reattaching only the sender would leave every other viewer of
+that session bound to a disposed runner — watching a turn that emits nothing. Replacement
+therefore needs a runner-replaced broadcast that rebinds all attached connections, not a
+single `attachToRunner` call.
+
+**And a bounded hold for callers with no transport.** Attaching before the readiness wait is
+load-bearing because the idle enforcer treats an unviewed, non-running runner as reclaimable
+under pressure (`idle-enforcer.ts` ~150). The HTTP dispatch path has no socket to attach at
+all, and Quick Capture's headless dispatch has no viewer — so *every* transportless caller
+takes a bounded lifecycle lease from replacement until the reservation's dispatch flips
+`running`, not just Quick Capture as an earlier draft said.
+
+This does not touch the WebSocket-lifecycle invariant in `CLAUDE.md` — the replacement is
+caused by a user dispatch, never by connect or disconnect — but it must capture the session
+identity up front and must not rebind to sockets that have since closed.
 
 ### What `egressContainedAtStart === undefined` means
 
@@ -229,7 +275,8 @@ design is not safe without them.
 | `src/client/components/QuickCaptureOverlay.tsx` | Creation params carry the mode |
 | `src/client/components/SessionSidebar/SessionSettingsDialog.tsx` | Loses its network half; its enforcement warning moves into the menu |
 | `src/client/stores/egress-store.ts` | Single-scope store — needs explicit ownership before the composer shares it |
-| `src/server/orchestrator/ws-handlers/send-message.ts` | **The first-turn gate** — persist, validate, recreate, then dispatch |
-| `src/server/orchestrator/services/headless-sessions.ts` | Quick session: persist after the claim, before dispatch |
-| `src/server/orchestrator/app-lifecycle.ts` | Standby adoption — optional optimisation only, gated on `isStandby` |
+| `src/server/orchestrator/ws-handlers/send-message.ts` | First-dispatch caller — awaits `admitFirstTurn`, honours its reservation |
+| `src/server/orchestrator/services/agent.ts` | First-dispatch caller — the HTTP path, which graduates and dispatches on its own |
+| `src/server/orchestrator/services/headless-sessions.ts` | First-dispatch caller — Quick session: persist after the claim, before dispatch |
+| `src/server/orchestrator/services/recovery.ts` | `restartAgent` — the replacement sequence this reuses |
 | `src/server/orchestrator/egress-allowlist-store.ts` | Durable per-session override |
