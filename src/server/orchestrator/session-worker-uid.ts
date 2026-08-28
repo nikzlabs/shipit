@@ -25,6 +25,7 @@
  *     Rollout step 3).
  */
 
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../shared/shipit-config.js";
@@ -423,6 +424,90 @@ function addGroupWrite(p: string, stat: fs.Stats): void {
   }
 }
 
+/**
+ * How many directories go to one `setfacl`. Path lists here are bounded by the
+ * source tree, not the dependency count (the walk prunes the dep dirs), so a
+ * few hundred per exec keeps a large repo at single-digit spawns and stays two
+ * orders of magnitude under `ARG_MAX`.
+ */
+const DEFAULT_ACL_BATCH = 256;
+
+/** Seam for {@link applyDefaultGroupAcl}'s tests; production spawns `setfacl`. */
+export type DefaultAclRunner = (dirs: readonly string[]) => void;
+
+function spawnSetfacl(dirs: readonly string[]): void {
+  execFileSync("setfacl", ["-d", "-m", "g::rwx", "--", ...dirs], { stdio: "ignore" });
+}
+
+/**
+ * docs/271 §3 — give each worktree directory a POSIX **default ACL** granting
+ * the group `rwx`, so what a *foreign-uid* Compose service creates inside it is
+ * group-writable too.
+ *
+ * ## Why the mode passes above are not enough, and why this is not more of them
+ *
+ * {@link addGroupWrite} fixes the nodes that exist when it runs. It cannot fix
+ * the ones a service creates afterwards: a service that declares its own `user:`
+ * keeps that uid (docs/271 req 4), runs under its own umask — 022 on every
+ * ordinary image — and so lands `0644`/`0755` owned by that uid. Setgid
+ * propagates the shared GROUP to those nodes and not the group WRITE bit, so the
+ * agent could read a file the service wrote and not modify it, and could traverse
+ * a directory the service created but not add to or delete from it. That second
+ * half is the sharper one and it is what reached production: a plugin service at
+ * `1000:1000` created `.assetgen/` cache directories at `0755`, and orchestrator
+ * git — dropped to the session uid by docs/266 — could not unlink their contents,
+ * so `git rebase origin/main` failed the checkout and then aborted on
+ * "untracked working tree files would be overwritten", every time, with no
+ * recovery short of a root intervention on the host.
+ *
+ * A default ACL is the one mechanism that reaches those future nodes. It is a
+ * property of the *directory*, applied by the kernel at creation time, and it
+ * **replaces the umask** rather than being masked by it — so it works on a
+ * writer ShipIt does not own, at a uid ShipIt did not choose, without the image
+ * needing a shell, an `entrypoint` ShipIt may rewrite, or anything else. It also
+ * inherits: a directory created under one gets the same default, so this walk is
+ * a one-time repair of the tree that exists and every later `mkdir` — by git, by
+ * the agent, by any service — carries it forward on its own.
+ *
+ * Measured on the ext4 that backs a session workspace, with a writer at umask
+ * 022 and no relation to the tree's owner: a new directory lands `2775` and a
+ * new file `664`. That is exactly what {@link addGroupWrite} produces, which is
+ * the point — this widens nothing, it makes the existing rule apply to nodes
+ * that did not exist yet.
+ *
+ * ## Why this costs no isolation
+ *
+ * The same argument as the mode passes, unchanged: the session directory is
+ * `0700` ({@link sealSessionDir}), so a group-writable node inside a session is
+ * unreachable to every uid outside it, and the entrypoint's `umask 002` already
+ * rests on that reasoning for everything created after boot. The default ACL
+ * copies the directory's own `other` bits, so nothing becomes world-anything
+ * that was not already.
+ *
+ * ## Best-effort, loudly
+ *
+ * `setfacl` may be missing (an older session-worker image) and a backing
+ * filesystem may refuse ACLs. Either way this warns once for the walk and
+ * returns, leaving precisely the pre-docs/271-§3 behaviour: the tree is still
+ * chowned and still group-writable, and only what a foreign-uid service creates
+ * later is not. It never throws — a handback that fails takes a turn's work
+ * with it (`CLAUDE.md` invariant 2), and an ACL is not worth that.
+ */
+export function applyDefaultGroupAcl(dirs: readonly string[], run: DefaultAclRunner = spawnSetfacl): void {
+  for (let i = 0; i < dirs.length; i += DEFAULT_ACL_BATCH) {
+    try {
+      run(dirs.slice(i, i + DEFAULT_ACL_BATCH));
+    } catch (err) {
+      console.warn(
+        "[session-worker-uid] default-ACL pass skipped — what a foreign-uid Compose service "
+        + "creates in this workspace will not be group-writable (docs/271 §3):",
+        err instanceof Error ? err.message : String(err),
+      );
+      return;
+    }
+  }
+}
+
 function shareRecursive(p: string, gid: number): void {
   const stat = shareOne(p, gid);
   if (!stat?.isDirectory()) return;
@@ -736,7 +821,12 @@ export function chownWorktreeToSessionWorker(workspaceDir: string, excludeRelDir
   const owner = identityForTarget(workspaceDir);
   if (owner === null) return;
   const exclude = new Set<string>([".git", ...excludeRelDirs.map((d) => path.normalize(d))]);
-  chownWorktreeRecursive(workspaceDir, owner, workspaceDir, exclude);
+  // docs/271 §3 — the walk collects the directories it moded so the default-ACL
+  // pass can run over exactly the same set, with exactly the same prunes, in one
+  // batched sweep rather than a spawn per node. See {@link applyDefaultGroupAcl}.
+  const dirs: string[] = [];
+  chownWorktreeRecursive(workspaceDir, owner, workspaceDir, exclude, dirs);
+  applyDefaultGroupAcl(dirs);
 }
 
 /**
@@ -973,8 +1063,20 @@ function groupWriteRecursive(p: string): void {
  * skipped too). Mirrors {@link chownRecursive} otherwise: chown every node,
  * descend real directories only (a symlink lstats as a non-directory, so it's
  * chowned in place and never followed out of the tree).
+ *
+ * Appends every real directory it visits to `dirs`, for the default-ACL pass the
+ * caller runs afterwards ({@link applyDefaultGroupAcl}). Collected here rather
+ * than re-walked because "which directories did this handoff mode" is one
+ * question with one answer, and a second walk with its own copy of the prune set
+ * is exactly how the two would drift.
  */
-function chownWorktreeRecursive(p: string, owner: SessionIdentity, root: string, exclude: Set<string>): void {
+function chownWorktreeRecursive(
+  p: string,
+  owner: SessionIdentity,
+  root: string,
+  exclude: Set<string>,
+  dirs: string[],
+): void {
   const rel = path.relative(root, p);
   if (rel !== "" && exclude.has(rel)) return; // skip .git + declared dep dirs
   let stat: fs.Stats;
@@ -1006,6 +1108,7 @@ function chownWorktreeRecursive(p: string, owner: SessionIdentity, root: string,
   // rule to the ones root created before it.
   addGroupWrite(p, stat);
   if (stat.isDirectory()) {
+    dirs.push(p);
     let entries: string[];
     try {
       entries = fs.readdirSync(p);
@@ -1013,7 +1116,7 @@ function chownWorktreeRecursive(p: string, owner: SessionIdentity, root: string,
       return;
     }
     for (const entry of entries) {
-      chownWorktreeRecursive(path.join(p, entry), owner, root, exclude);
+      chownWorktreeRecursive(path.join(p, entry), owner, root, exclude, dirs);
     }
   }
 }

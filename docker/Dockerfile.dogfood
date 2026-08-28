@@ -26,7 +26,7 @@ WORKDIR /workspace
 # orch's GitManager shells out to it for clone/commit/diff. The others keep the
 # inner orch's behavior at parity with a real session container.
 RUN apt-get update \
-    && apt-get install -y git git-lfs curl python3 make g++ zip unzip ripgrep bubblewrap \
+    && apt-get install -y acl git git-lfs curl python3 make g++ zip unzip ripgrep bubblewrap \
     && rm -rf /var/lib/apt/lists/*
 
 # docs/231 — Git LFS for the inner orchestrator. `--skip-smudge` matches the

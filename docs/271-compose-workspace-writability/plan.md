@@ -88,21 +88,28 @@ into the shared bare cache and every sibling clone — a mode belongs to the ino
 and `.pnpm-store` (shared per runtime, and group-shared by the orchestrator).
 Object *directories* are moded, so the worker can still add an object.
 
-## 3. Known residual
+## 3. The residual, and its close (2026-08-28)
 
-**What a foreign-UID service creates is still not agent-writable.** With
-`group_add` the service can write the tree, but its own umask is 022, so what it
-creates lands `0644`/`0755` owned by that UID. The setgid bit fixes group
-*ownership*, not group *write*. So the agent can read a file the service wrote and
-not modify it — **and can traverse a directory the service created but not add to
-or delete from it**, which is the sharper half: `rm -rf build` or `./gradlew clean`
-EACCESes as the agent.
+**What a foreign-UID service creates is now agent-writable too, via a POSIX
+default ACL on every workspace directory.**
 
-This is pre-existing — true of any declared `user:` since docs/150 — and it does
-not arise for a service that declares nothing, which after this change is every
-service whose image tolerates it. It does still arise for the declared-user shape
-this change sets out to keep working. Requirement 1 as written does not carve it
-out; it is named here rather than rounded off.
+*Until 2026-08-28 this section read "Known residual" and ended: "The durable fix
+is a group-writable umask inside the service, which means wrapping a command
+ShipIt does not own, or default POSIX ACLs on the workspace, which need `acl`
+support on every backing filesystem including the overlay. Both are larger than
+this fix and neither is attempted here." The residual it described was real and
+it reached production; what follows is that fix, and the objection to the second
+option turned out not to hold. Corrected in place rather than deleted, because
+the residual's shape is what the fix is answering.*
+
+### What the residual was
+
+With `group_add` the service can write the tree, but its own umask is 022, so
+what it creates lands `0644`/`0755` owned by that UID. The setgid bit fixes group
+*ownership*, not group *write*. So the agent could read a file the service wrote
+and not modify it — **and could traverse a directory the service created but not
+add to or delete from it**, which is the sharper half: `rm -rf build` or
+`./gradlew clean` EACCESed as the agent.
 
 *This paragraph ended "including the three services this repo itself ships that
 way (see §4)" until 2026-08-19. Since docs/272 that is one, not three —
@@ -111,10 +118,81 @@ real but unreachable here. The residual itself is unchanged for any project that
 does declare a workspace-writing `user:`; only this repo's exposure to it went
 away.*
 
-The durable fix is a group-writable umask inside the service, which means
-wrapping a command ShipIt does not own, or default POSIX ACLs on the workspace,
-which need `acl` support on every backing filesystem including the overlay. Both
-are larger than this fix and neither is attempted here.
+### How it reached production (planning#420)
+
+A third-party plugin's compose fragment declared `user: "1000:1000"` — the value
+this repo's own `plugin-authoring.md` shipped in two copyable examples before
+docs/272 removed it. Req 4 keeps a declared uid, so the service ran at 1000 while
+the session ran at 2000559, and its `.assetgen/` cache directories landed `0755`
+owned by 1000.
+
+The sharper half then hit a consumer §3 had not named: **orchestrator-side git**.
+Since docs/266 it drops to the uid that owns the tree, and unlinking a file needs
+write+execute on its *parent* — so `git rebase origin/main` could not remove
+those cache files during the checkout, replayed the commit that re-adds them,
+and aborted on `The following untracked working tree files would be overwritten
+by merge`. Every attempt, with no recovery short of a root intervention on the
+host. `GitManager.rebase()` did abort cleanly, so the tree was never stranded;
+the sync simply could never succeed.
+
+### The fix, and why the other candidate lost
+
+Each workspace directory gets a POSIX **default ACL** granting the group `rwx`.
+The kernel applies a default ACL at creation time **in place of the creator's
+umask**, and a directory created under one inherits it — so a writer ShipIt
+neither owns nor wraps produces group-writable nodes, forever, and the walk that
+sets it is a one-time repair of the tree that already exists.
+
+Measured on the ext4 backing a session workspace, writer at umask 022 and
+unrelated to the tree's owner: a new directory lands `2775`, a new file `664`,
+and a directory created three levels below the one that was given the ACL still
+carries its own default — which is what makes "one-time repair" a fact rather
+than a hope. That is exactly what half B's `chmod` produces, which is the point
+— this widens nothing, it makes the existing rule apply to nodes that did not
+exist yet. It costs no isolation for the same reason half B does not: the
+session directory is `0700`, and the default ACL copies the directory's own
+`other` bits.
+
+The umask candidate — *(a)* above — was rejected on evidence rather than on the
+"wrapping a command ShipIt does not own" objection, which
+`plugin-install.ts`'s `umask 002; ${command}` and the entrypoint's own `umask
+002` had already weakened. Docker exposes no umask setting, so the only way to
+set one is to replace the service's `entrypoint`, and that **discards the
+image's own `ENTRYPOINT`**: an image with `ENTRYPOINT ["docker-entrypoint.sh"]`
+would silently stop running it, and an image with no shell would not start at
+all. Both are worse than the residual. Restricting the wrap to services that
+declare an `entrypoint` of their own would be safe and would not have fixed the
+production case, which declares none.
+
+The objection to *(b)* was that ACLs need filesystem support "including the
+overlay dep-store overlayfs". That does not apply: the dep dirs are **pruned**
+from this pass, exactly as they are from the chown and the mode passes, and
+precisely to avoid the overlay copy-up. The workspace itself is an ordinary
+directory on the host filesystem. Where support is genuinely absent — an older
+image with no `setfacl`, a filesystem that refuses ACLs — both passes warn and
+continue, leaving exactly the pre-fix behaviour.
+
+Applied on both sides, so the container-side handoff and the orchestrator-side
+one agree, as half B's two passes already do:
+
+- **`applyDefaultGroupAcl`** (`session-worker-uid.ts`), fed by the directories
+  `chownWorktreeRecursive` already visits, so the ACL pass and the mode pass
+  cannot drift over which nodes they cover. Batched, best-effort, never throws —
+  a failed handback would take a turn's work with it.
+- **`chown_workspace`** (`docker/session-worker/entrypoint.sh`), a fourth `find`
+  pass with the same prunes, guarded on `command -v setfacl`.
+- **`HANDOFF_SCHEME` 2 → 3**, or a workspace an earlier image already claimed
+  would keep the old treatment for good — and those are the long-lived sessions
+  where a plugin service has had the most time to leave such directories behind.
+- **`acl` added** to `Dockerfile.prod`, `.dev`, `.dogfood`,
+  `.session-worker.prod` and `.session-worker.dev`.
+
+**No migration pass is owed.** A directory a service already created `1000:1000`
+`0755` is repaired by the boot walk on the next container CREATE — the scheme
+bump rotates the sentinel, so that walk runs once per tree per deployment and
+chowns, re-modes and ACLs everything it finds. `compose-generator.ts` is
+untouched, so req 4, the docs/128 `docker-socket-proxy` carve-out and
+`emulator`'s baked-in `1300:1301` all stand exactly as they were.
 
 ## 4. Deploy ordering
 
@@ -191,9 +269,17 @@ decides what the test means.
 ## 5. Key files
 
 - `src/server/orchestrator/session-worker-uid.ts` — `addGroupWrite`, called from
-  the worktree handoff and from the cross-session group share.
+  the worktree handoff and from the cross-session group share; and
+  `applyDefaultGroupAcl`, the §3 pass over the same directories.
 - `src/server/orchestrator/compose-generator.ts` — the relaxed contained-`user:`
   rule and the `group_add` injection.
-- `docker/session-worker/entrypoint.sh` — `chown_workspace`'s mode passes.
+- `docker/session-worker/entrypoint.sh` — `chown_workspace`'s mode passes and
+  its default-ACL pass, plus the `HANDOFF_SCHEME` that reaches already-claimed
+  trees.
+- `src/server/orchestrator/git-config.ts` — `pinGlobalExcludesFile`, unrelated to
+  the residual but found beside it: the dropped-uid git's
+  `/root/.config/git/ignore` warning was the first line of the stderr that
+  reported the §3 failure, so the rebase banner named a `/root` permission
+  problem instead of the untracked files that actually aborted it.
 - `src/server/shipit-docs/compose.md` — the agent-facing contract, no longer
   self-contradictory.

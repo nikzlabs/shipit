@@ -55,7 +55,11 @@ ENV BASE_IMAGE_DIGEST=${BASE_IMAGE_DIGEST}
 # `git-lfs` (docs/231): a repo that tracks assets with Git LFS checks its images,
 # audio and other binaries out as ~130-byte pointer stubs unless the LFS filters
 # are installed — broken previews with no error anywhere (nikzlabs/shipit#1729).
-RUN apt-get update && apt-get install -y git git-lfs curl python3 python3-pip python3-venv make g++ zip unzip ripgrep bubblewrap gosu && rm -rf /var/lib/apt/lists/*
+# docs/271 §3 — `acl` for `setfacl`. `chown_workspace` gives each workspace
+# directory a default ACL at boot, so a Compose service running at a uid the
+# project declared creates group-writable files there and the agent can still
+# `rm -rf` what it wrote.
+RUN apt-get update && apt-get install -y acl git git-lfs curl python3 python3-pip python3-venv make g++ zip unzip ripgrep bubblewrap gosu && rm -rf /var/lib/apt/lists/*
 
 # docs/231 — register the LFS filters in /etc/gitconfig, which is the only
 # writable place for them: the container's GIT_CONFIG_GLOBAL points at

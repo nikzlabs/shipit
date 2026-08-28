@@ -984,7 +984,7 @@ describe("host journal readability (#1917)", () => {
    * `""` = an explicitly empty list, anything else = the colon-joined
    * `agent.dep-dirs` value.
    */
-  function runChownWorkspace(tree: string, shipitDepDirs?: string): string[] {
+  function runChownWorkspace(tree: string, shipitDepDirs?: string): { chowns: string[]; acls: string[] } {
     const source = readFileSync(ENTRYPOINT, "utf8");
     const start = source.indexOf("chown_workspace() {");
     expect(start).toBeGreaterThan(-1);
@@ -1002,18 +1002,33 @@ describe("host journal readability (#1917)", () => {
       '#!/bin/sh\nshift 2\nfor a in "$@"; do printf "%s\\n" "$a" >> "$CHOWN_LOG"; done\n',
       { mode: 0o755 },
     );
+    // docs/271 §3 — `setfacl` is stubbed for the same reason `chown` is: the
+    // thing under test is which nodes the `find` selects, and a real ACL would
+    // make that depend on whether the host running the suite has the `acl`
+    // package and a filesystem that accepts one. The kernel semantics are pinned
+    // separately, against the real tool, in `session-worker-uid.test.ts`.
+    // Stubbing it also satisfies the `command -v` guard, so the branch runs.
+    const aclLog = join(root, "setfacl.log");
+    writeFileSync(aclLog, "");
+    writeFileSync(
+      join(bin, "setfacl"),
+      '#!/bin/sh\nshift 4\nfor a in "$@"; do printf "%s\\n" "$a" >> "$SETFACL_LOG"; done\n',
+      { mode: 0o755 },
+    );
     const script = join(root, "fragment.sh");
     writeFileSync(script, `set -eu\nUID_GID=2000001\nWORKER_GID=1000\n${fn}\nchown_workspace "$1"\n`);
     const run = spawnSync("sh", [script, tree], {
       env: {
         PATH: `${bin}:${process.env.PATH ?? ""}`,
         CHOWN_LOG: log,
+        SETFACL_LOG: aclLog,
         ...(shipitDepDirs === undefined ? {} : { SHIPIT_DEP_DIRS: shipitDepDirs }),
       },
       encoding: "utf8",
     });
     expect(run.status).toBe(0);
-    return readFileSync(log, "utf8").split("\n").filter(Boolean).sort();
+    const lines = (p: string): string[] => readFileSync(p, "utf8").split("\n").filter(Boolean).sort();
+    return { chowns: lines(log), acls: lines(aclLog) };
   }
 
   it("chowns object DIRECTORIES but never the hardlinked object FILES", () => {
@@ -1035,7 +1050,7 @@ describe("host journal readability (#1917)", () => {
       ".git/lfs/objects/ab/cd/oid", ".pnpm-store/v3/blob", "src/a.ts",
     ]) writeFileSync(join(tree, f), "");
 
-    const chowned = runChownWorkspace(tree);
+    const { chowns: chowned } = runChownWorkspace(tree);
 
     // The object FILES are absent…
     expect(chowned).not.toContain(join(tree, ".git/objects/4d/deadbeef"));
@@ -1092,6 +1107,45 @@ describe("host journal readability (#1917)", () => {
     expect(mode(".git/objects/4d")).toBe(0o2775);
   });
 
+  // docs/271 §3 / planning#420 — the mode passes above fix the nodes that exist.
+  // A Compose service that kept a declared `user:` (req 4) then creates NEW ones
+  // under its own umask 022, so they land 0755 owned by that uid: setgid gives
+  // them the shared group and not the group WRITE bit, and the agent can traverse
+  // such a directory while being unable to add to or delete from it. That is what
+  // stopped orchestrator git — dropped to the session uid by docs/266 — from
+  // unlinking a plugin's stale cache files during a rebase checkout. A default
+  // ACL is applied by the kernel at creation time IN PLACE of the umask, so it is
+  // the one channel that reaches a writer ShipIt neither owns nor wraps.
+  it("gives every workspace directory a default group ACL, with the same prunes", () => {
+    const tree = tempDir();
+    mkdirSync(join(tree, ".git/objects/4d"), { recursive: true });
+    mkdirSync(join(tree, ".pnpm-store/v3"), { recursive: true });
+    mkdirSync(join(tree, "node_modules/left-pad"), { recursive: true });
+    mkdirSync(join(tree, "src"), { recursive: true });
+    for (const f of ["src/a.ts", ".git/objects/4d/deadbeef", ".pnpm-store/v3/blob"]) {
+      writeFileSync(join(tree, f), "");
+    }
+
+    const { acls } = runChownWorkspace(tree, "node_modules");
+
+    // Directories only — a default ACL exists on nothing else.
+    expect(acls).toContain(tree);
+    expect(acls).toContain(join(tree, "src"));
+    // `.git` is NOT pruned from the workspace walk (only its object FILES are),
+    // so its directories take the ACL too — a new loose object being
+    // group-writable inside a 0700 session dir costs nothing, and the alternative
+    // is a second prune set that can drift from the chown's.
+    expect(acls).toContain(join(tree, ".git/objects/4d"));
+    expect(acls).not.toContain(join(tree, "src/a.ts"));
+    // The pruned trees stay pruned: `.pnpm-store` is shared per runtime and a dep
+    // dir may be an overlay lowerdir, where writing an attribute on a lower-only
+    // entry forces the copy-up docs/183 exists to avoid.
+    expect(acls).not.toContain(join(tree, ".pnpm-store"));
+    expect(acls).not.toContain(join(tree, ".pnpm-store/v3"));
+    expect(acls).not.toContain(join(tree, "node_modules"));
+    expect(acls).not.toContain(join(tree, "node_modules/left-pad"));
+  });
+
   it("does not descend into the shared pnpm store", () => {
     // Mounted NESTED under /workspace and shared per runtime, so it gets the
     // group treatment from the orchestrator instead. A `chown -R` here would
@@ -1101,7 +1155,7 @@ describe("host journal readability (#1917)", () => {
     writeFileSync(join(tree, ".pnpm-store/v3/blob"), "");
     writeFileSync(join(tree, "keep.txt"), "");
 
-    const chowned = runChownWorkspace(tree);
+    const { chowns: chowned } = runChownWorkspace(tree);
 
     expect(chowned.some((p) => p.includes(".pnpm-store"))).toBe(false);
     expect(chowned).toContain(join(tree, "keep.txt"));
@@ -1130,7 +1184,7 @@ describe("host journal readability (#1917)", () => {
     chmodSync(join(tree, "node_modules/react"), 0o755);
     chmodSync(join(tree, "node_modules/react/package.json"), 0o644);
 
-    const chowned = runChownWorkspace(tree, "node_modules");
+    const { chowns: chowned } = runChownWorkspace(tree, "node_modules");
 
     // Exactly ONE node_modules entry — the root, from the shallow pass. The
     // deep walk never reached react/ or its contents.
@@ -1157,7 +1211,7 @@ describe("host journal readability (#1917)", () => {
       writeFileSync(join(tree, d, "f"), "");
     }
 
-    const chowned = runChownWorkspace(tree, "node_modules:client/node_modules:vendor");
+    const { chowns: chowned } = runChownWorkspace(tree, "node_modules:client/node_modules:vendor");
 
     // No entry INSIDE any declared dep dir was chowned…
     for (const inside of ["node_modules/x/f", "client/node_modules/y/f", "vendor/z/f"]) {
@@ -1181,7 +1235,7 @@ describe("host journal readability (#1917)", () => {
     chmodSync(target, 0o755);
     symlinkSync(target, join(tree, "vendor"));
 
-    const chowned = runChownWorkspace(tree, "vendor");
+    const { chowns: chowned } = runChownWorkspace(tree, "vendor");
 
     // Neither the link nor what it points at. `chown -h` alone would be safe on
     // the link itself, but the shallow pass also chmods, and `chmod` FOLLOWS a
@@ -1201,7 +1255,7 @@ describe("host journal readability (#1917)", () => {
     writeFileSync(join(tree, "node_modules/react/package.json"), "");
 
     for (const depDirs of [undefined, ""]) {
-      const chowned = runChownWorkspace(tree, depDirs);
+      const { chowns: chowned } = runChownWorkspace(tree, depDirs);
       expect(chowned).toContain(join(tree, "node_modules/react/package.json"));
     }
   });

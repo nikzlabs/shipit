@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import {
   initGlobalGitConfig,
   setGlobalCredentialHelper,
@@ -67,6 +67,99 @@ describe("git-config: initGlobalGitConfig", () => {
     process.env.LC_ALL = "fr_FR.UTF-8";
     initGlobalGitConfig(tmpDir);
     expect(execSync("printenv LC_ALL", { encoding: "utf-8" }).trim()).toBe("C");
+  });
+
+  /**
+   * planning#420 — with no `core.excludesFile`, git probes
+   * `$HOME/.config/git/ignore`. Since docs/266 orchestrator-side git runs as the
+   * uid that owns the tree, and the orchestrator's `HOME` is a `0700` `/root`,
+   * so that probe returns EACCES — which git WARNS about, on every command,
+   * where an ENOENT would have been silent. It is harmless to git and expensive
+   * to a reader: it is the first line of the captured stderr, so it became the
+   * headline of a production rebase failure whose real cause ("untracked working
+   * tree files would be overwritten") sat six lines below it.
+   *
+   * Reproduced by the only means available to an unprivileged test: a `HOME`
+   * whose `.config` this very process cannot read.
+   */
+  describe("the global excludes file (planning#420)", () => {
+    const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
+    const opened: string[] = [];
+
+    afterEach(() => {
+      for (const d of opened.splice(0)) fs.chmodSync(d, 0o755);
+      if (prevUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+      else process.env.SHIPIT_SESSION_WORKER_UID = prevUid;
+    });
+
+    /** `git status` in a throwaway repo under an unreadable HOME. Returns stderr. */
+    function gitStderrUnderSealedHome(): string {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-home-"));
+      fs.mkdirSync(path.join(home, ".config", "git"), { recursive: true });
+      fs.chmodSync(path.join(home, ".config"), 0o000);
+      opened.push(path.join(home, ".config"));
+      const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-repo-"));
+      execSync("git init -q .", { cwd: repo });
+      const run = spawnSync("git", ["status", "--porcelain"], {
+        cwd: repo,
+        encoding: "utf-8",
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: home,
+          // Or git would resolve the excludes path from XDG instead of HOME and
+          // the fixture would test nothing on a machine that sets it.
+          XDG_CONFIG_HOME: path.join(home, ".config"),
+          GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL ?? "",
+        },
+      });
+      fs.rmSync(repo, { recursive: true, force: true });
+      return run.stderr;
+    }
+
+    it("silences the /root/.config/git/ignore warning that buried the real error", () => {
+      if (process.getuid?.() === 0) return; // root reads a 0000 dir — no fixture
+      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+
+      // Without the key, the warning is there — the state this fixes. Asserted
+      // first so the test cannot pass by failing to reproduce the problem.
+      process.env.GIT_CONFIG_GLOBAL = path.join(tmpDir, "empty.gitconfig");
+      fs.writeFileSync(process.env.GIT_CONFIG_GLOBAL, "");
+      expect(gitStderrUnderSealedHome()).toMatch(/unable to access .*git\/ignore/);
+
+      initGlobalGitConfig(tmpDir);
+
+      expect(gitStderrUnderSealedHome()).not.toMatch(/unable to access/);
+    });
+
+    it("points the key at a file every uid can reach, and keeps an operator's patterns", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+      initGlobalGitConfig(tmpDir);
+
+      const target = execSync("git config --global core.excludesFile", { encoding: "utf-8" }).trim();
+      expect(target).toBe(path.join(tmpDir, "gitignore-global"));
+      // World-readable inside the credentials dir, which is 0711: a dropped uid
+      // that knows the name can open it, and nothing can list the directory.
+      expect(fs.statSync(target).mode & 0o777).toBe(0o644);
+
+      // A re-init must not truncate it — this is persistent state on a volume
+      // that survives every deploy, exactly like the `.gitconfig` beside it.
+      fs.writeFileSync(target, "*.local\n");
+      initGlobalGitConfig(tmpDir);
+      expect(fs.readFileSync(target, "utf-8")).toBe("*.local\n");
+    });
+
+    it("leaves a deployment with no worker uid to its own global excludes", () => {
+      // No uid to drop to means git runs as root, reads its own HOME without
+      // complaint, and there is nothing here to repair — so a local-mode or
+      // single-uid install keeps whatever excludes its user configured.
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      initGlobalGitConfig(tmpDir);
+
+      expect(fs.existsSync(path.join(tmpDir, "gitignore-global"))).toBe(false);
+      expect(
+        spawnSync("git", ["config", "--global", "core.excludesFile"], { encoding: "utf-8" }).status,
+      ).not.toBe(0);
+    });
   });
 
   it("sets GIT_EDITOR=true so git rebase --continue does not try to open an editor", () => {

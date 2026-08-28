@@ -1,8 +1,10 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  applyDefaultGroupAcl,
   sessionWorkerUid,
   assertWorkerUidNotReserved,
   ReservedWorkerUidError,
@@ -919,5 +921,193 @@ describe("per-session identities (docs/270)", () => {
       expect(identityForTarget("/anything")).toBeNull();
       expect(sessionWorkerGid()).toBeNull();
     });
+  });
+});
+
+/**
+ * docs/271 §3 (planning#420) — the handoff's mode passes fix the nodes that
+ * exist; the default-ACL pass is what reaches the ones a foreign-uid Compose
+ * service creates afterwards.
+ *
+ * The exec is driven through a `setfacl` shim on `PATH` rather than a module
+ * mock, so what these assert is the production call path — including the batch
+ * loop and the argv — and not a stand-in for it. One test on top of that uses
+ * the REAL `setfacl` to pin the kernel semantics the whole design rests on.
+ */
+describe("default group ACLs on the worktree (docs/271 §3)", () => {
+  const prev = process.env.SHIPIT_SESSION_WORKER_UID;
+  const prevPath = process.env.PATH;
+  let tmpDir: string;
+  let binDir: string;
+  let log: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "swacl-"));
+    binDir = fs.mkdtempSync(path.join(os.tmpdir(), "swaclbin-"));
+    log = path.join(binDir, "setfacl.log");
+  });
+
+  afterEach(() => {
+    if (prev === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+    else process.env.SHIPIT_SESSION_WORKER_UID = prev;
+    process.env.PATH = prevPath;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(binDir, { recursive: true, force: true });
+  });
+
+  /** Shadow `setfacl` with a recorder that marks each invocation. */
+  function stubSetfacl(): void {
+    fs.writeFileSync(
+      path.join(binDir, "setfacl"),
+      `#!/bin/sh\necho CALL >> "${log}"\nprintf '%s\\n' "$@" >> "${log}"\n`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${binDir}:${prevPath ?? ""}`;
+  }
+
+  /** Each recorded invocation, as its argv. */
+  function invocations(): string[][] {
+    if (!fs.existsSync(log)) return [];
+    return fs.readFileSync(log, "utf8")
+      .split("CALL\n").slice(1)
+      .map((call) => call.split("\n").filter(Boolean));
+  }
+
+  it("gives every worktree directory a default group ACL, and nothing else one", () => {
+    const myUid = process.getuid?.();
+    if (myUid === undefined) return; // not POSIX — skip
+    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+    stubSetfacl();
+
+    fs.mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "src", "App.tsx"), "x");
+    fs.writeFileSync(path.join(tmpDir, "package.json"), "{}");
+    // `.git` belongs to the object-aware helper, and the dep dirs are pruned to
+    // keep the walk bounded by the source tree — both must stay out of this pass
+    // for the same reasons they stay out of the chown and the chmod.
+    fs.mkdirSync(path.join(tmpDir, ".git", "objects", "4d"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "node_modules", "left-pad"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "client", "node_modules", "x"), { recursive: true });
+
+    chownWorktreeToSessionWorker(tmpDir, ["node_modules", "client/node_modules"]);
+
+    const calls = invocations();
+    expect(calls).toHaveLength(1);
+    const [flags, paths] = [calls[0].slice(0, 4), calls[0].slice(4)];
+    // A DEFAULT ACL (`-d`), group `rwx`, and `--` so a path can never be read as
+    // a flag. The default entry is what the kernel applies at creation time in
+    // place of the creator's umask — an access ACL here would fix only the
+    // directories that already exist, which the chmod pass already does.
+    expect(flags).toEqual(["-d", "-m", "g::rwx", "--"]);
+    expect([...paths].sort()).toEqual([
+      tmpDir,
+      path.join(tmpDir, "client"),
+      path.join(tmpDir, "src"),
+    ].sort());
+    // Files get none: a default ACL exists only on a directory, and the mode
+    // pass already carries the group write bit for the files that exist.
+    expect(paths).not.toContain(path.join(tmpDir, "package.json"));
+    expect(paths).not.toContain(path.join(tmpDir, "src", "App.tsx"));
+  });
+
+  it("batches rather than spawning once per directory", () => {
+    const myUid = process.getuid?.();
+    if (myUid === undefined) return; // not POSIX — skip
+    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+    stubSetfacl();
+
+    const made: string[] = [];
+    for (let i = 0; i < 300; i++) {
+      const d = path.join(tmpDir, `d${i}`);
+      fs.mkdirSync(d);
+      made.push(d);
+    }
+
+    chownWorktreeToSessionWorker(tmpDir, []);
+
+    const calls = invocations();
+    // 301 directories at 256 per exec. Asserted as a count rather than "> 1":
+    // a batch size that silently became 1 would still be "more than one call"
+    // and would spawn a process per directory on every rebase of every session.
+    expect(calls).toHaveLength(2);
+    const seen = calls.flatMap((c) => c.slice(4));
+    expect(seen).toHaveLength(301);
+    for (const d of made) expect(seen).toContain(d);
+  });
+
+  it("still hands the tree over when setfacl is missing", () => {
+    const myUid = process.getuid?.();
+    if (myUid === undefined) return; // not POSIX — skip
+    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+    // An empty PATH: `setfacl` cannot be resolved, so the exec throws ENOENT.
+    // A handback that propagated that would take a turn's work with it
+    // (CLAUDE.md invariant 2), and the tree must still come out group-writable —
+    // i.e. exactly the pre-§3 behaviour, which is a degradation and not a break.
+    process.env.PATH = binDir;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      fs.mkdirSync(path.join(tmpDir, "src"));
+      fs.chmodSync(path.join(tmpDir, "src"), 0o755);
+
+      expect(() => chownWorktreeToSessionWorker(tmpDir, [])).not.toThrow();
+
+      expect(fs.statSync(path.join(tmpDir, "src")).mode & 0o7777).toBe(0o2775);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("stops the whole pass at the first refusal instead of retrying per batch", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const calls: string[][] = [];
+      applyDefaultGroupAcl(
+        Array.from({ length: 600 }, (_, i) => `/w/d${i}`),
+        (dirs) => { calls.push([...dirs]); throw new Error("Operation not supported"); },
+      );
+      // A filesystem that refuses ACLs refuses all of them. Retrying each batch
+      // turns one warning into one per 256 directories, on every handback.
+      expect(calls).toHaveLength(1);
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The kernel semantics the entire fix rests on, against the REAL tool: a
+  // default ACL is applied at creation time INSTEAD of the umask, so a writer
+  // ShipIt does not own — a Compose service that kept its declared `user:` and
+  // its own umask 022 — still creates group-writable nodes. Runs wherever
+  // `setfacl` is installed; the images now install it (docs/Dockerfile.*).
+  it("makes a umask-022 writer create group-writable nodes", () => {
+    const myUid = process.getuid?.();
+    if (myUid === undefined) return; // not POSIX — skip
+    let hasSetfacl = true;
+    try {
+      execFileSync("setfacl", ["--version"], { stdio: "ignore" });
+    } catch {
+      hasSetfacl = false;
+    }
+    if (!hasSetfacl) return; // no `acl` on this host — nothing to measure
+    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+
+    fs.mkdirSync(path.join(tmpDir, "assets"));
+    chownWorktreeToSessionWorker(tmpDir, []);
+
+    const before = process.umask(0o022);
+    try {
+      // What a service's own `mkdir`/`open` would produce inside the tree.
+      fs.mkdirSync(path.join(tmpDir, "assets", ".cache"));
+      fs.writeFileSync(path.join(tmpDir, "assets", ".cache", "x.webp"), "");
+    } finally {
+      process.umask(before);
+    }
+
+    // Group write on the DIRECTORY is the sharper half: without it the agent can
+    // traverse the directory and neither add to nor delete from it, which is how
+    // `git checkout` failed to unlink a stale cache file and aborted the rebase.
+    expect(fs.statSync(path.join(tmpDir, "assets", ".cache")).mode & 0o070).toBe(0o070);
+    expect(fs.statSync(path.join(tmpDir, "assets", ".cache", "x.webp")).mode & 0o060).toBe(0o060);
   });
 });

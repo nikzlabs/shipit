@@ -120,11 +120,13 @@ chown_workspace() {
   # predates this change, or an explicit `agent.dep-dirs: []` — leaves exactly
   # today's prune set, so the legacy boot is byte-for-byte unchanged.
   #
-  # No HANDOFF_SCHEME bump for this: v2's walk already chowned and group-wrote
+  # No HANDOFF_SCHEME bump for THIS: v2's walk already chowned and group-wrote
   # every dep-dir ROOT (it was not pruned, so the root got the full treatment),
   # which is all the shallow pass at the tail of this function applies. A tree
-  # claimed under v2 therefore has nothing to gain from a v3 re-walk — the
-  # copy-ups it already suffered cannot be undone by walking again.
+  # claimed under v2 therefore had nothing to gain from a re-walk on this
+  # account — the copy-ups it already suffered cannot be undone by walking again.
+  # (v3 exists, for the default-ACL pass below, and it does not change that: the
+  # dep dirs stay pruned from it too.)
   set -- -path "$d/.pnpm-store"
   if [ -n "${SHIPIT_DEP_DIRS:-}" ]; then
     old_ifs=$IFS
@@ -149,6 +151,35 @@ chown_workspace() {
     \( "$@" \) -prune -o \
     \( \( -path "$d/.git/objects/*" -o -path "$d/.git/lfs/objects/*" \) -type f \) -prune -o \
     -type f -exec chmod g+rwX {} + || true
+  # docs/271 §3 — and a POSIX DEFAULT ACL on each directory, which is what the
+  # two mode passes above cannot do: they fix the nodes that exist, and a Compose
+  # service running at a uid the project declared (docs/271 req 4 keeps it) then
+  # creates NEW ones under its own umask 022 — `0644`/`0755`, owned by that uid.
+  # Setgid propagates the shared group to them and not the group write bit, so
+  # the agent can traverse a directory such a service created and neither add to
+  # nor delete from it, and orchestrator git (dropped to the session uid by
+  # docs/266) cannot unlink its contents during a checkout. A default ACL is
+  # applied by the kernel at creation time and REPLACES the umask, so it reaches
+  # a writer ShipIt does not own without wrapping a command ShipIt does not own;
+  # and it is inherited, so every later `mkdir` carries it forward and this walk
+  # only ever has to repair the tree that already exists.
+  #
+  # Same prunes as the mode passes and `-type d` for the same reason: a default
+  # ACL exists only on a directory, and `setfacl` follows a symlink.
+  #
+  # Guarded and best-effort. `setfacl` is in the image (`acl`), but a session may
+  # boot on an older one or on a filesystem that refuses ACLs — either way the
+  # tree is still chowned and still group-writable, which is exactly the
+  # pre-docs/271-§3 behaviour, and a boot must not fail over it.
+  if command -v setfacl >/dev/null 2>&1; then
+    find "$d" \( "$@" \) -prune -o \
+      -type d -exec setfacl -d -m g::rwx -- {} + 2>/dev/null || true
+  else
+    # Said out loud rather than skipped in silence: this is the one degradation
+    # here that a reader can act on (rebuild the image), and its symptom — a
+    # service's output being undeletable — surfaces far from its cause.
+    echo "shipit-entrypoint: setfacl not found; what a foreign-uid Compose service creates in $d will not be group-writable (docs/271 §3)" >&2
+  fi
   # planning#415 — the dep-dir ROOTS still get a handoff, SHALLOWLY: one chown
   # and one chmod on the root, never a descent. In overlay mode the merged dep
   # dir's root IS the per-session upperdir's root, so these are in-place upper
@@ -259,7 +290,14 @@ prune_stale_sentinels() {
 #
 # v2: the mode passes above (`chmod -R g+rwX`, setgid on directories, and
 # `chown_workspace`'s group-write pass) now reach trees claimed under v1.
-HANDOFF_SCHEME=2
+# v3: `chown_workspace`'s default-ACL pass (docs/271 §3). A workspace claimed
+# under v1 or v2 has directories with no default ACL, so what a foreign-uid
+# Compose service creates in them stays unwritable to the agent and to
+# orchestrator git — and those are the long-lived sessions where a plugin
+# service has had the most time to leave such directories behind. Bumping is the
+# only thing that reaches them; the cost is one extra walk per tree per
+# deployment.
+HANDOFF_SCHEME=3
 
 # Only the writable runtime mounts + the runtime home. NEVER chown /app,
 # /opt/agent-cli, /usr/local/bin, or system dirs — those stay root-owned and

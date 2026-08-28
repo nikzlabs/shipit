@@ -249,6 +249,10 @@ export function initGlobalGitConfig(credentialsDir: string): void {
     }
   }
 
+  // planning#420 — and give git an excludes file it can read, so a dropped-uid
+  // git stops warning about `/root/.config/git/ignore` on every command.
+  pinGlobalExcludesFile(credentialsDir);
+
   // Force git to never open an editor. The orchestrator runs git non-interactively
   // (e.g. `git rebase --continue` after agent-driven conflict resolution), and the
   // container has no editor installed. Without this, `git rebase --continue` fails
@@ -399,6 +403,71 @@ function reshareGlobalGitConfig(): void {
   const configPath = process.env.GIT_CONFIG_GLOBAL;
   if (!configPath) return;
   shareGlobalGitConfigWithWorker(path.dirname(configPath));
+}
+
+/**
+ * Filename, beside `.gitconfig`, of the global excludes file `core.excludesFile`
+ * points at. Empty by default; an operator may put patterns in it.
+ */
+const GLOBAL_EXCLUDES_FILENAME = "gitignore-global";
+
+/**
+ * Point `core.excludesFile` at a file the dropped uid can actually reach.
+ *
+ * ## The noise this removes, and why it was worse than noise
+ *
+ * With no `core.excludesFile` set, git probes `$XDG_CONFIG_HOME/git/ignore` —
+ * `$HOME/.config/git/ignore`, and the orchestrator's `HOME` is `/root`. Since
+ * docs/266 orchestrator-side git runs as the uid that OWNS the tree, so that
+ * probe is a non-root process `access(2)`-ing a path under a `0700` `/root`: it
+ * gets EACCES rather than the ENOENT that would be silent, and git prints
+ * `warning: unable to access '/root/.config/git/ignore': Permission denied` on
+ * **every command**. The warning is harmless to git and costly to a reader: it
+ * is the FIRST line of the captured stderr, so it becomes the headline of any
+ * error ShipIt surfaces from a git failure. A production rebase failure led with
+ * it while the actual cause — `error: The following untracked working tree files
+ * would be overwritten by merge` — sat six lines down, and the banner the user
+ * saw named a permission problem in `/root` that had nothing to do with it.
+ *
+ * ## Why the key, and not a filter on the message
+ *
+ * Stripping the line where the message is built would fix one call site and
+ * leave the warning in every other capture, log and classifier — including the
+ * stderr matchers docs/266 E5-detect relies on. Setting the key removes the
+ * probe itself, for root-side and dropped git alike, once.
+ *
+ * The path is inside `credentialsDir`, which is `0711`: traversable by any uid,
+ * listable by none — the same property that lets the dropped git read
+ * `.gitconfig` there. Behaviour is preserved rather than changed, because
+ * nothing in any ShipIt image creates `/root/.config/git/ignore`, so the probe
+ * this replaces has never found a file.
+ *
+ * Gated on a worker uid for the same reason {@link shareGlobalGitConfigWithWorker}
+ * is: with no uid to drop to, git runs as root, reads its own `HOME` without
+ * complaint, and there is nothing here to fix — so a local-mode or single-uid
+ * deployment keeps whatever global excludes its user configured.
+ */
+function pinGlobalExcludesFile(credentialsDir: string): void {
+  if (sessionWorkerUid() === null) return;
+  const target = path.join(credentialsDir, GLOBAL_EXCLUDES_FILENAME);
+  try {
+    // Created empty and only when absent, so an operator's patterns survive a
+    // restart. Root-owned and never chowned: read by every uid, written by one.
+    if (!fs.existsSync(target)) fs.writeFileSync(target, "", { mode: 0o644 });
+    tightenMode(target, 0o644);
+  } catch (err) {
+    console.warn(
+      `[git-config] could not create the global excludes file at ${target}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return;
+  }
+  try {
+    execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "core.excludesFile", target]));
+  } catch {
+    // git may not be installed yet (unlikely but safe) — the warning is noise,
+    // never a failure, so this must not be one either.
+  }
 }
 
 function shareGlobalGitConfigWithWorker(credentialsDir: string): void {

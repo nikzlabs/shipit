@@ -49,7 +49,11 @@ RUN --mount=type=cache,target=/root/.npm npm prune --omit=dev && npm install tsx
 FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
 ARG SHIPIT_BUILD_ID
 
-RUN apt-get update && apt-get install -y git git-lfs curl ca-certificates gnupg \
+# docs/271 §3 — `acl` for `setfacl`. The orchestrator's workspace handoff gives
+# each worktree directory a default ACL so what a foreign-uid Compose service
+# creates there is group-writable; without the binary the handoff degrades to the
+# mode passes alone and says so, but the residual §3 describes stays open.
+RUN apt-get update && apt-get install -y acl git git-lfs curl ca-certificates gnupg \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
