@@ -175,9 +175,38 @@ of that.
 
 So the caller passes a **`graduate` thunk** it has already closed over its own options, and
 admission calls it at step 4 — inside the lock, after any replacement, before the slot is
-claimed. Callers keep their preparation (branch identity, role metadata, session fields) in
-front of the call, exactly as they do today; what moves is only the *moment* graduation runs,
-which is the thing ordering depends on.
+claimed. What moves is only the *moment* graduation runs, which is the thing ordering depends
+on. But the split between what a caller does before the call and what it must do after is not
+free choice:
+
+- **Before admission:** branch identity, role metadata, issue pins, and building the
+  graduation options. These do not depend on which runner ends up serving the turn.
+- **After admission, against the runner it RETURNED:** anything runner-specific, in
+  particular `prepareSessionAgentEnvironment()` in the headless and child paths
+  (`services/headless-sessions.ts` ~426, `services/child-sessions.ts` ~921). Admission may
+  have replaced the runner, so preparation against the one the caller held before is
+  preparation of a disposed object.
+
+#### Admission state is not `session.warm`
+
+`graduateSession` clears `warm` **first** and then performs several independent writes and a
+broadcast (`services/graduate-session.ts` ~186). So a thunk that throws part-way leaves a
+session that *reads* as graduated but is not — and at step 4 there is no reservation yet to
+release. Keying "is this a first turn?" on `warm` would then let the next contender skip
+admission entirely, against a session whose graduation never finished.
+
+Admission therefore owns **its own state**, distinct from `warm`:
+
+- A session is `admitted` only when graduation **and** the reservation have both succeeded.
+- Any throw anywhere in the locked sequence leaves it **`not-admitted`**, so a retry re-enters
+  admission rather than bypassing it — and unwinds what was acquired: the replacement
+  lifecycle lease taken before the thunk ran, and the reservation if one was claimed.
+- Re-entry is safe because `graduateSession`'s steps are individually idempotent — `setWarm`
+  is a no-op when already active, `track` is idempotent on existing rows, and the rename and
+  metadata writes overwrite.
+
+A `finally` releases the lock; it does not by itself repair a partial graduation, which is
+exactly why the state is separate and retryable rather than inferred.
 
 #### The dispatch slot must be claimed inside the lock
 
@@ -358,6 +387,24 @@ design is not safe without them.
   creation (docs/211, docs/279), and a sandbox's network access IS that grant — so the
   combined control offers no network section for a sandbox, the same mutual exclusion
   `SessionSettingsDialog` enforces today.
+
+## Where the tests go
+
+Guard the mechanism, not the menu. Three, in priority order:
+
+1. **Reservation state machine.** A reserved-but-unstarted runner survives
+   `verifyRunningState` with its reservation intact; release is single-use and drains the
+   queue.
+2. **Concurrent failure.** One contender reserves, a second queues, the owner throws before
+   start — every lease and reservation releases, and the queued loser starts on the
+   *replacement* runner.
+3. **Table-driven integration across all four producers** (WS, HTTP dispatch, Quick Capture,
+   child spawn), each forcing a containment mismatch and asserting the first actual turn runs
+   on the replacement runner in the requested mode.
+
+Explicitly **not** a source guard that greps for a fifth producer. Make the first-start
+primitive itself require admission — a structural requirement fails a new caller by
+construction, where a textual check only fails the ones it thought to look for.
 
 ## Key files
 
