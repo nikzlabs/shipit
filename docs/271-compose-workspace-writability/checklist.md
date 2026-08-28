@@ -37,3 +37,10 @@
 - [x] Silence the dropped-uid git's `/root/.config/git/ignore` warning
       (`pinGlobalExcludesFile`) — it was the first line of the stderr that
       reported the §3 rebase failure and made the banner name the wrong cause.
+      Leaves an operator's own `core.excludesFile` alone.
+- [x] Make the scheme bump actually reach an existing workspace: the mount
+      loop's `[ -w "$d" ]` probe ran ahead of the sentinel, and a handed-over
+      workspace is unwritable to the entrypoint's root, so a bump reached no
+      existing session. The workspace now has its own stat-gated branch above
+      the probe, with the sentinel written through `gosu` after the walk.
+      (Independent review finding.)

@@ -167,17 +167,20 @@ chown_workspace() {
   # Same prunes as the mode passes and `-type d` for the same reason: a default
   # ACL exists only on a directory, and `setfacl` follows a symlink.
   #
-  # Guarded and best-effort. `setfacl` is in the image (`acl`), but a session may
-  # boot on an older one or on a filesystem that refuses ACLs — either way the
-  # tree is still chowned and still group-writable, which is exactly the
-  # pre-docs/271-§3 behaviour, and a boot must not fail over it.
+  # Guarded and best-effort, but NOT silently: a missing `setfacl` makes this
+  # function report failure (see its tail), so the caller declines to stamp the
+  # scheme sentinel and the next boot retries. Without that, a session that
+  # happened to boot on an image predating the `acl` install would remember an
+  # incomplete walk as a finished one and never get the pass again — the
+  # self-latching shape `share_cache_with_all_sessions` was fixed for. The tree
+  # is still chowned and still group-writable meanwhile, which is exactly the
+  # pre-docs/271-§3 behaviour, and a boot must never fail over this.
+  acl_ok=1
   if command -v setfacl >/dev/null 2>&1; then
     find "$d" \( "$@" \) -prune -o \
       -type d -exec setfacl -d -m g::rwx -- {} + 2>/dev/null || true
   else
-    # Said out loud rather than skipped in silence: this is the one degradation
-    # here that a reader can act on (rebuild the image), and its symptom — a
-    # service's output being undeletable — surfaces far from its cause.
+    acl_ok=0
     echo "shipit-entrypoint: setfacl not found; what a foreign-uid Compose service creates in $d will not be group-writable (docs/271 §3)" >&2
   fi
   # planning#415 — the dep-dir ROOTS still get a handoff, SHALLOWLY: one chown
@@ -209,6 +212,12 @@ chown_workspace() {
     done
     IFS=$old_ifs
   fi
+  # The ONLY thing that makes this function report failure. The chown and the two
+  # mode passes stay best-effort — a file another process unlinked mid-walk must
+  # not cost the tree its sentinel — but "this image cannot do ACLs at all" is a
+  # whole capability the walk did not deliver, and stamping it as done is what
+  # would make it permanent.
+  [ "$acl_ok" = "1" ]
 }
 
 # docs/272 — hand a SHARED mount (/dep-cache) to every session of its repo:
@@ -394,6 +403,49 @@ for d in /workspace /uploads /persist /session-state /dep-cache /credentials /ho
       ;;
   esac
 
+  # docs/271 §3 — the WORKSPACE is handled before the writability probe below,
+  # for exactly the reason the shared cache is, and this is a fix rather than a
+  # tidy-up.
+  #
+  # The probe's reasoning (see below) ends "once handed over, a later boot fails
+  # the probe and skips — which is the correct outcome there, because the
+  # sentinel says the handoff is done." That last clause is what a HANDOFF_SCHEME
+  # bump falsifies: after a bump the sentinel says the handoff is NOT done, and
+  # the probe skips anyway, because `chown_workspace` has already made the tree
+  # `2775 <sessionUid>:<sharedGid>` and root — without CAP_DAC_OVERRIDE — is
+  # neither its owner nor in its group. So `test -w` fails on every boot after
+  # the first, the versioned sentinel is never even read, and the bump reaches no
+  # existing workspace at all. That is precisely backwards: an existing workspace
+  # is the one a foreign-uid Compose service has had time to leave `0755`
+  # directories in.
+  #
+  # Handled the same way the shared cache is, and for the same three reasons:
+  # `stat` only READS, so the skip works without write permission; the walk needs
+  # CAP_CHOWN and CAP_FOWNER rather than write permission, and both are in the
+  # bounding set; and the sentinel is written AS THE WORKER, after the walk,
+  # because root cannot create a directory in a tree it does not own and the walk
+  # has just made that tree writable by the uid that can.
+  #
+  # Only the workspace, deliberately. The other per-session mounts take the
+  # generic `chown -R`, which v3 did not change, so re-reaching them would buy
+  # nothing and cost a walk.
+  case "$d" in
+    */workspace)
+      marker="$d/.shipit-uid-${UID_GID}-${WORKER_GID}-v${HANDOFF_SCHEME}"
+      if [ "$(stat -c '%u' "$marker" 2>/dev/null || true)" = "$UID_GID" ] \
+        && [ "$(stat -c '%g' "$marker" 2>/dev/null || true)" = "$WORKER_GID" ]; then
+        continue
+      fi
+      if chown_workspace "$d"; then
+        gosu "${UID_GID}:${WORKER_GID}" mkdir "$marker" 2>/dev/null || true
+        prune_stale_sentinels "$d" ".shipit-uid-" "$marker" worker
+      else
+        echo "shipit-entrypoint: workspace handoff for $d did not complete; it will be retried on the next boot" >&2
+      fi
+      continue
+      ;;
+  esac
+
   # A read-only mount (/uploads) can neither hold the sentinel nor be chowned, so
   # there is nothing to hand off — skip it before the sentinel logic runs. This
   # MUST stay ahead of the ownership check below: that check treats a missing
@@ -408,7 +460,9 @@ for d in /workspace /uploads /persist /session-state /dep-cache /credentials /ho
   # created root-owned by the orchestrator and are handed to the session by this
   # very walk, so on the boot where the walk is owed, root still owns them and
   # passes. Once handed over, a later boot fails the probe and skips — which is
-  # the correct outcome there, because the sentinel says the handoff is done.
+  # correct only for as long as the sentinel it never reads would have said the
+  # handoff was done. It stops being correct the moment the walk learns to do
+  # something new, which is why the workspace branch above does not use it.
   # Do NOT reuse this reasoning for a tree ShipIt does not create root-owned.
   [ -w "$d" ] || continue
   # Atomic-claim the chown via `mkdir` of a UID-stamped sentinel: on warm reuse
@@ -444,10 +498,9 @@ for d in /workspace /uploads /persist /session-state /dep-cache /credentials /ho
   if mkdir "$marker" 2>/dev/null \
     || [ "$(stat -c '%u' "$marker" 2>/dev/null || true)" != "$UID_GID" ] \
     || [ "$(stat -c '%g' "$marker" 2>/dev/null || true)" != "$WORKER_GID" ]; then
-    case "$d" in
-      */workspace) chown_workspace "$d" ;;
-      *) chown -R "${UID_GID}:${WORKER_GID}" "$d" ;;
-    esac
+    # The workspace never reaches here — it took its own branch above, which is
+    # the only one whose skip survives the tree being handed over.
+    chown -R "${UID_GID}:${WORKER_GID}" "$d"
     prune_stale_sentinels "$d" ".shipit-uid-" "$marker"
   fi
 done

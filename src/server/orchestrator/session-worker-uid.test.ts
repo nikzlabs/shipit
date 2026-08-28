@@ -934,6 +934,15 @@ describe("per-session identities (docs/270)", () => {
  * loop and the argv — and not a stand-in for it. One test on top of that uses
  * the REAL `setfacl` to pin the kernel semantics the whole design rests on.
  */
+const HAS_SETFACL = (() => {
+  try {
+    execFileSync("setfacl", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
 describe("default group ACLs on the worktree (docs/271 §3)", () => {
   const prev = process.env.SHIPIT_SESSION_WORKER_UID;
   const prevPath = process.env.PATH;
@@ -1058,16 +1067,46 @@ describe("default group ACLs on the worktree (docs/271 §3)", () => {
     }
   });
 
-  it("stops the whole pass at the first refusal instead of retrying per batch", () => {
+  it("keeps going after a refused batch, so one vanished path costs only itself", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const calls: string[][] = [];
       applyDefaultGroupAcl(
         Array.from({ length: 600 }, (_, i) => `/w/d${i}`),
-        (dirs) => { calls.push([...dirs]); throw new Error("Operation not supported"); },
+        (dirs) => {
+          calls.push([...dirs]);
+          // Only the first batch fails — a service unlinking its own cache
+          // directory between the walk collecting it and `setfacl` opening it.
+          if (calls.length === 1) throw new Error("No such file or directory");
+        },
       );
-      // A filesystem that refuses ACLs refuses all of them. Retrying each batch
-      // turns one warning into one per 256 directories, on every handback.
+      // The later batches must still run. Aborting here was the defect: on a
+      // large repo it would leave hundreds of directories without defaults,
+      // which is the undeletable-cache failure this pass exists to prevent.
+      expect(calls).toHaveLength(3);
+      expect(calls.flat()).toHaveLength(600);
+      // One line for the walk, naming how much was lost rather than just that
+      // something was.
+      expect(warn).toHaveBeenCalledOnce();
+      expect(String(warn.mock.calls[0]?.[0])).toContain("256 of 600");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("stops at the first batch when the tool itself is missing", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const calls: string[][] = [];
+      applyDefaultGroupAcl(
+        Array.from({ length: 600 }, (_, i) => `/w/d${i}`),
+        (dirs) => {
+          calls.push([...dirs]);
+          throw Object.assign(new Error("spawnSync setfacl ENOENT"), { code: "ENOENT" });
+        },
+      );
+      // A missing binary is the one failure a later batch cannot resolve, so
+      // spawning 3 processes to watch each fail identically buys nothing.
       expect(calls).toHaveLength(1);
       expect(warn).toHaveBeenCalledOnce();
     } finally {
@@ -1078,18 +1117,16 @@ describe("default group ACLs on the worktree (docs/271 §3)", () => {
   // The kernel semantics the entire fix rests on, against the REAL tool: a
   // default ACL is applied at creation time INSTEAD of the umask, so a writer
   // ShipIt does not own — a Compose service that kept its declared `user:` and
-  // its own umask 022 — still creates group-writable nodes. Runs wherever
-  // `setfacl` is installed; the images now install it (docs/Dockerfile.*).
-  it("makes a umask-022 writer create group-writable nodes", () => {
+  // its own umask 022 — still creates group-writable nodes.
+  //
+  // `skipIf`, not an early `return`: on a host with no `acl` this has nothing to
+  // measure, and reporting that as a PASS would let a wrong `setfacl` invocation
+  // sit green everywhere. The images install the package (docs/Dockerfile.*), so
+  // this runs where it matters; the argv and the pruning are pinned separately
+  // by the shim tests above, which always run.
+  it.skipIf(!HAS_SETFACL)("makes a umask-022 writer create group-writable nodes", () => {
     const myUid = process.getuid?.();
     if (myUid === undefined) return; // not POSIX — skip
-    let hasSetfacl = true;
-    try {
-      execFileSync("setfacl", ["--version"], { stdio: "ignore" });
-    } catch {
-      hasSetfacl = false;
-    }
-    if (!hasSetfacl) return; // no `acl` on this host — nothing to measure
     process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
 
     fs.mkdirSync(path.join(tmpDir, "assets"));

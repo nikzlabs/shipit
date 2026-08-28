@@ -187,12 +187,52 @@ one agree, as half B's two passes already do:
 - **`acl` added** to `Dockerfile.prod`, `.dev`, `.dogfood`,
   `.session-worker.prod` and `.session-worker.dev`.
 
-**No migration pass is owed.** A directory a service already created `1000:1000`
-`0755` is repaired by the boot walk on the next container CREATE — the scheme
-bump rotates the sentinel, so that walk runs once per tree per deployment and
-chowns, re-modes and ACLs everything it finds. `compose-generator.ts` is
-untouched, so req 4, the docs/128 `docker-socket-proxy` carve-out and
-`emulator`'s baked-in `1300:1301` all stand exactly as they were.
+### The scheme bump did not work, and that is a second fix (review finding)
+
+The bump above was written on the assumption that a versioned sentinel is what
+decides whether the walk re-runs. For the workspace it was not, and the
+independent review caught it: the mount loop's `[ -w "$d" ]` probe runs **before**
+the sentinel is read, and `chown_workspace` leaves the workspace `2775
+<sessionUid>:<sharedGid>` — a tree the entrypoint's root is neither the owner of
+nor in the group of, with no `CAP_DAC_OVERRIDE` to bypass either. So on every
+boot after the first, the probe failed, the loop `continue`d, and the versioned
+sentinel was never even looked at. A bump reached **no existing workspace at
+all** — precisely inverting the intent, since an existing workspace is the only
+kind that can already hold a foreign service's `0755` directories.
+
+The probe's own comment recorded the assumption that made this invisible: *"once
+handed over, a later boot fails the probe and skips — which is the correct
+outcome there, because the sentinel says the handoff is done."* True while the
+walk is fixed, false the moment it learns to do something new — the same
+self-latching shape docs/272 already had to fix for `/dep-cache`, one mount over.
+
+So the workspace now takes its own branch **above** the probe, mirroring the
+shared-cache one: `stat` decides the skip (reading needs no write permission),
+the walk itself needs only `CAP_CHOWN`/`CAP_FOWNER`, and the sentinel is written
+**as the worker** through `gosu` after the walk, because root cannot create a
+directory in a tree the walk has just given away. Every other mount keeps the
+probe unchanged — the exemption is the workspace's alone, and a test asserts the
+probe still skips a `:ro` mount so that stays true.
+
+`chown_workspace` also now **reports failure when `setfacl` is absent**, and the
+caller stamps the sentinel only on success. Otherwise a session that happened to
+boot on an image predating the `acl` install would record an incomplete walk as a
+finished v3 handoff and never get the pass again. Everything else in the walk
+stays best-effort: a file another process unlinked mid-walk must not cost the
+tree its sentinel.
+
+**No separate migration pass is owed** once those two hold: a directory a service
+already created `1000:1000` `0755` is repaired by the boot walk on the next
+container CREATE, which now actually runs. `compose-generator.ts` is untouched,
+so req 4, the docs/128 `docker-socket-proxy` carve-out and `emulator`'s baked-in
+`1300:1301` all stand exactly as they were.
+
+**Known cost, accepted rather than designed around.** `HANDOFF_SCHEME` is one
+number for every mount, so bumping it also re-walks each repo's shared
+`/dep-cache` once per deployment even though v3 changed only the workspace. That
+is the price the mechanism's own docstring already names — "one extra walk per
+tree per deployment, what the walk costs on a cold tree anyway" — and splitting
+the version per mount is a larger change than this one, with its own migration.
 
 ## 4. Deploy ordering
 

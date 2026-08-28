@@ -87,7 +87,13 @@ describe("git-config: initGlobalGitConfig", () => {
     const opened: string[] = [];
 
     afterEach(() => {
-      for (const d of opened.splice(0)) fs.chmodSync(d, 0o755);
+      // Re-opened before removal: a 0000 directory cannot be walked, so
+      // `rm -rf` on its parent fails and the fixture would leak a `vibe-home-*`
+      // tree per run into the machine's temp dir.
+      for (const d of opened.splice(0)) {
+        fs.chmodSync(d, 0o755);
+        fs.rmSync(path.dirname(d), { recursive: true, force: true });
+      }
       if (prevUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
       else process.env.SHIPIT_SESSION_WORKER_UID = prevUid;
     });
@@ -146,6 +152,24 @@ describe("git-config: initGlobalGitConfig", () => {
       fs.writeFileSync(target, "*.local\n");
       initGlobalGitConfig(tmpDir);
       expect(fs.readFileSync(target, "utf-8")).toBe("*.local\n");
+    });
+
+    it("leaves an operator's own core.excludesFile exactly where it points", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+      // The same persistence argument as the file's contents, one level up: the
+      // gitconfig survives every deploy, so overwriting a key ShipIt did not set
+      // is a silent one-way loss — and the loss is ignored build output becoming
+      // auto-committed output.
+      const theirs = path.join(tmpDir, "operator-excludes");
+      fs.writeFileSync(theirs, "dist/\n");
+      process.env.GIT_CONFIG_GLOBAL = path.join(tmpDir, ".gitconfig");
+      execSync(`git config --global core.excludesFile ${theirs}`);
+
+      initGlobalGitConfig(tmpDir);
+
+      expect(execSync("git config --global core.excludesFile", { encoding: "utf-8" }).trim())
+        .toBe(theirs);
+      expect(fs.existsSync(path.join(tmpDir, "gitignore-global"))).toBe(false);
     });
 
     it("leaves a deployment with no worker uid to its own global excludes", () => {

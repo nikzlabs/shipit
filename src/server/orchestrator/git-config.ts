@@ -449,6 +449,24 @@ const GLOBAL_EXCLUDES_FILENAME = "gitignore-global";
  */
 function pinGlobalExcludesFile(credentialsDir: string): void {
   if (sessionWorkerUid() === null) return;
+  // An operator who already pointed the key somewhere keeps it. This config is
+  // PERSISTENT state on a volume that survives every deploy, not generated
+  // state, so an unconditional write here is a silent one-way overwrite of a
+  // choice ShipIt did not make — and the cost of getting it wrong is build
+  // output that stops being ignored and starts being auto-committed. Absent is
+  // the case this exists for, and it is the case in production: no ShipIt image
+  // sets the key and none creates `/root/.config/git/ignore` either, so git was
+  // probing a path that never held a file.
+  try {
+    const existing = execFileSync(
+      "git",
+      gitArgsWithHooksDisabled(["config", "--global", "core.excludesFile"]),
+      { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim();
+    if (existing) return;
+  } catch {
+    // Exit 1 is "not set", which is the path that continues below.
+  }
   const target = path.join(credentialsDir, GLOBAL_EXCLUDES_FILENAME);
   try {
     // Created empty and only when absent, so an operator's patterns survive a

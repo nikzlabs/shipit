@@ -484,27 +484,47 @@ function spawnSetfacl(dirs: readonly string[]): void {
  * copies the directory's own `other` bits, so nothing becomes world-anything
  * that was not already.
  *
- * ## Best-effort, loudly
+ * ## Best-effort, loudly — and the two failures are not the same failure
  *
- * `setfacl` may be missing (an older session-worker image) and a backing
- * filesystem may refuse ACLs. Either way this warns once for the walk and
- * returns, leaving precisely the pre-docs/271-§3 behaviour: the tree is still
- * chowned and still group-writable, and only what a foreign-uid service creates
- * later is not. It never throws — a handback that fails takes a turn's work
- * with it (`CLAUDE.md` invariant 2), and an ACL is not worth that.
+ * **The tool is missing** (an older image, a host without `acl`): nothing here
+ * can work, so the pass stops at the first batch. Spawning `setfacl` once per
+ * 256 directories to watch every one fail with ENOENT buys nothing.
+ *
+ * **A batch is refused**: keep going. The obvious reading — "a filesystem that
+ * refuses ACLs refuses all of them" — is false for a *live* workspace, which is
+ * exactly what this walks. A Compose service deleting its own cache mid-rebase
+ * removes a directory this walk collected moments earlier, `setfacl` exits
+ * non-zero on that one path, and treating it as fatal would drop every
+ * remaining batch — leaving hundreds of directories without defaults and
+ * re-creating the undeletable-cache failure this exists to prevent. One warning
+ * for the walk either way; the count says how much was lost.
+ *
+ * Whatever happens, the tree is still chowned and still group-writable, so the
+ * floor is precisely the pre-docs/271-§3 behaviour. It never throws — a handback
+ * that fails takes a turn's work with it (`CLAUDE.md` invariant 2), and an ACL
+ * is not worth that.
  */
 export function applyDefaultGroupAcl(dirs: readonly string[], run: DefaultAclRunner = spawnSetfacl): void {
+  let refused = 0;
+  let firstError = "";
   for (let i = 0; i < dirs.length; i += DEFAULT_ACL_BATCH) {
+    const batch = dirs.slice(i, i + DEFAULT_ACL_BATCH);
     try {
-      run(dirs.slice(i, i + DEFAULT_ACL_BATCH));
+      run(batch);
     } catch (err) {
-      console.warn(
-        "[session-worker-uid] default-ACL pass skipped — what a foreign-uid Compose service "
-        + "creates in this workspace will not be group-writable (docs/271 §3):",
-        err instanceof Error ? err.message : String(err),
-      );
-      return;
+      refused += batch.length;
+      if (!firstError) firstError = err instanceof Error ? err.message : String(err);
+      // `execFileSync` reports a missing binary as ENOENT on the spawn itself,
+      // which is the one failure that cannot come right on a later batch.
+      if ((err as NodeJS.ErrnoException | undefined)?.code === "ENOENT") break;
     }
+  }
+  if (refused > 0) {
+    console.warn(
+      `[session-worker-uid] default-ACL pass failed for ${refused} of ${dirs.length} directories — `
+      + "what a foreign-uid Compose service creates in those will not be group-writable "
+      + `(docs/271 §3): ${firstError}`,
+    );
   }
 }
 
