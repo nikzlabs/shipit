@@ -100,7 +100,7 @@ are four ways to dispatch a first turn, and all four are real.
 |---|---|---|
 | WebSocket send | `ws-handlers/send-message.ts` | Must run **before** graduation (~485), or capture "was ungraduated" first — graduation clears the flag the gate keys on. |
 | HTTP dispatch | `services/agent.ts` (~213) | `POST /api/sessions/:id/agent/dispatch` graduates and dispatches on its own, never entering `send-message.ts`. `App.tsx` (~816) uses it from the `/new` route for compose-error and preview-setup messages, so it genuinely carries first turns. It accepts no network mode today. |
-| Quick Capture | `services/headless-sessions.ts` | Between `claim()` (~403) and runner creation (~426). It cannot persist "before the claim" — there is no session id until the claim returns. |
+| Quick Capture | `services/headless-sessions.ts` | Calls admission between `claim()` (~403) and runner creation (~426) — it has no session id until the claim returns, and admission is what writes the mode. |
 | Child spawn | `services/child-sessions.ts` | Graduates (~881) and dispatches (~948) without touching any caller above. |
 
 These four are the whole set: every other `runner.dispatch()` site is a follow-up, a queue
@@ -354,7 +354,7 @@ design is not safe without them.
 | `src/client/stores/egress-store.ts` | Single-scope store — needs explicit ownership before the composer shares it |
 | `src/server/orchestrator/ws-handlers/send-message.ts` | First-dispatch caller — awaits `admitFirstTurn`, honours its reservation |
 | `src/server/orchestrator/services/agent.ts` | First-dispatch caller — the HTTP path, which graduates and dispatches on its own |
-| `src/server/orchestrator/services/headless-sessions.ts` | First-dispatch caller — Quick session: persist after the claim, before dispatch |
+| `src/server/orchestrator/services/headless-sessions.ts` | First-dispatch caller — Quick session: passes `desiredMode` into `admitFirstTurn` after claiming; no independent persistence |
 | `src/server/orchestrator/services/child-sessions.ts` | First-dispatch caller — child spawns graduate and dispatch on their own |
 | `src/server/orchestrator/services/claim-session.ts` | Warm-id reuse — why a stale override can exist; nothing is written here |
 | `src/server/orchestrator/services/recovery.ts` | `restartAgent` — the replacement sequence this reuses |
