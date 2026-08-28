@@ -92,7 +92,7 @@ no override.
 
 ### One serialized admission service
 
-The guarantee is **`admitFirstTurn(sessionId, desiredMode)`** — a single service every
+The guarantee is **`admitFirstTurn({ sessionId, desiredMode, graduate })`** — a single service every
 first-dispatch path awaits before the turn runs. Not a check bolted onto one handler: there
 are four ways to dispatch a first turn, and all four are real.
 
@@ -158,9 +158,26 @@ callbacks are not serialized, so two near-simultaneous first sends can both obse
 1. Persist the desired mode (`PUT`-equivalent into `egress-allowlist-store.ts`).
 2. Resolve containment and compare against the live container's `egressContainedAtStart`.
 3. On a mismatch, **replace the runner and the container** (below), not the container alone.
-4. Graduate.
+4. Invoke the caller's `graduate` thunk (below).
 5. **Claim the dispatch slot while still holding the lock**, and return the claim to the
    caller — see below. Only then release.
+
+#### Graduation is the caller's, executed under admission's lock
+
+Admission **owns when graduation happens, not what it says.** `graduateSession` takes
+thirteen caller-specific fields — `userText`, `agentId`, `explicitTitle`, `explicitBranch`,
+`skipBranchRename`, the model/service/billing triple, `reasoning`, `parentSessionId`,
+`spawnedByTurn`, `rootSessionId`, `originRoleName` (`services/graduate-session.ts` ~192) —
+and no two callers supply the same set: Quick Capture seeds the model triple from the browser
+slot, child spawn passes the parent linkage and `skipBranchRename`, the WS path pins issue
+refs before graduating. A service reduced to `(sessionId, desiredMode)` cannot construct any
+of that.
+
+So the caller passes a **`graduate` thunk** it has already closed over its own options, and
+admission calls it at step 4 — inside the lock, after any replacement, before the slot is
+claimed. Callers keep their preparation (branch identity, role metadata, session fields) in
+front of the call, exactly as they do today; what moves is only the *moment* graduation runs,
+which is the thing ordering depends on.
 
 #### The dispatch slot must be claimed inside the lock
 
