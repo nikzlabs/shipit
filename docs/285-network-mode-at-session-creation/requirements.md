@@ -20,8 +20,9 @@ description: Fold network containment into the composer's existing permission-mo
    holds the permission mode (Plan / Guarded / Auto).
 6. That combined control changes both settings for **new and already-running**
    sessions, and is the **same control on desktop and on mobile**.
-7. A session's network mode is changed in exactly one place. Folding it into the
-   composer control means no second control describes the same session's egress.
+7. A session's network mode has **one authoritative value, consistently represented**.
+   The composer control and the session's own settings dialog may both show and change
+   it, but they show the same value and neither is a second source of truth.
 8. The pick never carries over to the next new session — every new session starts
    at "Inherit workspace".
 9. The composer's settings menu never keeps a level of nesting that exists only to
@@ -46,3 +47,16 @@ description: Fold network containment into the composer's existing permission-mo
 - 2026-08-28 — *Should the pick carry over to the next new session, like the model
   seed does?* No — reset every time, as the Quick Capture auto-merge checkbox does.
   → req 8.
+- 2026-08-28 — *Is a live runner and preview before the first Send a product
+  requirement?* No. The `/new` page may hold a plain draft until Send, giving up the
+  preview and the warm container while the first message is being composed. Accepted
+  deliberately: it removes the need for a first-turn admission protocol entirely,
+  because no runner exists before the choice is made. The warm pool still pre-builds
+  standby containers, so this is not a cold start.
+- 2026-08-28 — *Must the network setting live in exactly ONE place, so the Session
+  settings dialog loses its network section?* No — that was an agent inference from
+  "one control", not a stated requirement. The dialog keeps its network section for
+  existing sessions; requirement 7 now asks for one authoritative value rather than one
+  location. Removing it added special cases (a composer control that must work while the
+  composer is inert, a dialog that vanishes for non-sandbox sessions, an enforcement
+  warning needing relocation) without removing any underlying state. → req 7.

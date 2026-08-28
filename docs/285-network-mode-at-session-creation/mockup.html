@@ -183,9 +183,9 @@
           <span class="ctl mode-on">
             <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M208 40H48a16 16 0 0 0-16 16v58.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c15.2-5.05 91-34.78 91-124.39V56a16 16 0 0 0-16-16Z"/></svg><span class="txt">Guarded</span>
             <span class="div"></span>
-            <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M128 24a104 104 0 1 0 104 104A104.11 104.11 0 0 0 128 24Zm88 104a87.61 87.61 0 0 1-3.33 24h-38.51a157.44 157.44 0 0 0 0-48h38.51a87.61 87.61 0 0 1 3.33 24ZM128 214.8a115.06 115.06 0 0 1-20.24-46.8h40.48A115.06 115.06 0 0 1 128 214.8ZM104.62 152a140.5 140.5 0 0 1 0-48h46.76a140.5 140.5 0 0 1 0 48ZM40 128a87.61 87.61 0 0 1 3.33-24h38.51a157.44 157.44 0 0 0 0 48H43.33A87.61 87.61 0 0 1 40 128Zm88-86.8a115.06 115.06 0 0 1 20.24 46.8h-40.48A115.06 115.06 0 0 1 128 41.2Z"/></svg>
+            <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M128 24a104 104 0 1 0 104 104A104.11 104.11 0 0 0 128 24Zm88 104a87.61 87.61 0 0 1-3.33 24h-38.51a157.44 157.44 0 0 0 0-48h38.51a87.61 87.61 0 0 1 3.33 24ZM128 214.8a115.06 115.06 0 0 1-20.24-46.8h40.48A115.06 115.06 0 0 1 128 214.8ZM104.62 152a140.5 140.5 0 0 1 0-48h46.76a140.5 140.5 0 0 1 0 48ZM40 128a87.61 87.61 0 0 1 3.33-24h38.51a157.44 157.44 0 0 0 0 48H43.33A87.61 87.61 0 0 1 40 128Zm88-86.8a115.06 115.06 0 0 1 20.24 46.8h-40.48A115.06 115.06 0 0 1 128 41.2Z"/></svg><span class="txt">Contained</span>
           </span>
-          <div style="font-size:11px;color:var(--color-text-tertiary);margin-top:7px;max-width:130px">Both non-default —<br>glyph only, no second word</div>
+          <div style="font-size:11px;color:var(--color-text-tertiary);margin-top:7px;max-width:140px">Both non-default — each<br>named in words, not glyphs</div>
         </div>
 
       </div>
@@ -486,43 +486,27 @@
 </div>
 
 <!-- ═══════════════════════════════════════════ -->
-<h2>7 · And what leaves Session settings (req 7)</h2>
+<h2>7 · Session settings is unchanged (req 7)</h2>
 <p class="note">
-  The composer control now serves running sessions too, so the dialog's network radio group would be a second
-  control over one session's egress. It goes. What remains there is the sandbox capability grants (docs/279),
-  which are a different question — so for a non-sandbox session the sidebar's <b>Session settings</b> item
-  has nothing left to open and disappears with it.
+  An earlier draft deleted the dialog's network radio group, on the reasoning that one setting should live in
+  one place. That was an inference, not a request, and it cost more than it saved — it forced a composer control
+  that had to keep working while the composer was otherwise dead, a dialog that vanished for non-sandbox
+  sessions, and a relocation of the “not enforced on this deployment” warning, all to remove a <em>surface</em>
+  and no <em>state</em>. Requirement 7 now asks for one authoritative <b>value</b>: both surfaces read and write
+  the same per-session override, so neither is a second source of truth.
 </p>
 <div class="row">
-  <div class="ba">
-    <div>
-      <p class="cap">Before</p>
-      <div class="frame" style="width:330px">
-        <div style="padding:14px 16px 10px">
-          <div style="font-size:14px;font-weight:600">Session settings</div>
-          <div style="font-size:11.5px;color:var(--color-text-secondary);margin-top:2px">Network access for this session only.</div>
-        </div>
-        <div style="padding:0 16px 14px" class="strike">
-          <div style="border:1px solid var(--color-border-secondary);background:var(--color-bg-secondary);border-radius:9px;padding:9px 11px;margin-bottom:6px;font-size:12.5px">Inherit global</div>
-          <div style="border:1px solid var(--color-border-secondary);background:var(--color-bg-secondary);border-radius:9px;padding:9px 11px;margin-bottom:6px;font-size:12.5px">Contained</div>
-          <div style="border:1px solid var(--color-accent);background:var(--color-accent-subtle);border-radius:9px;padding:9px 11px;font-size:12.5px">Open</div>
-        </div>
+  <div>
+    <p class="cap">Unchanged — the same dialog, for sessions that already exist</p>
+    <div class="frame" style="width:330px">
+      <div style="padding:14px 16px 10px">
+        <div style="font-size:14px;font-weight:600">Session settings</div>
+        <div style="font-size:11.5px;color:var(--color-text-secondary);margin-top:2px">Network access for this session only. Applies the next time its container starts.</div>
       </div>
-    </div>
-    <div class="arrow">→</div>
-    <div>
-      <p class="cap">After — sandboxes only</p>
-      <div class="frame" style="width:330px">
-        <div style="padding:14px 16px 10px">
-          <div style="font-size:14px;font-weight:600">Session settings</div>
-          <div style="font-size:11.5px;color:var(--color-text-secondary);margin-top:2px">What the agent in this sandbox may use.</div>
-        </div>
-        <div style="padding:0 16px 14px;font-size:12.5px;color:var(--color-text-secondary)">
-          <div style="display:flex;justify-content:space-between;padding:7px 0">GitHub access <span style="color:var(--color-text-tertiary)">off</span></div>
-          <div style="display:flex;justify-content:space-between;padding:7px 0">Docker <span style="color:var(--color-text-tertiary)">off</span></div>
-          <div style="display:flex;justify-content:space-between;padding:7px 0">Network access <span style="color:var(--color-accent)">on</span></div>
-          <p style="font-size:11px;color:var(--color-text-tertiary);margin-top:6px">A sandbox's network access is a capability grant, not a containment mode — it stays here.</p>
-        </div>
+      <div style="padding:0 16px 14px">
+        <div style="border:1px solid var(--color-border-secondary);background:var(--color-bg-secondary);border-radius:9px;padding:9px 11px;margin-bottom:6px;font-size:12.5px">Inherit global</div>
+        <div style="border:1px solid var(--color-border-secondary);background:var(--color-bg-secondary);border-radius:9px;padding:9px 11px;margin-bottom:6px;font-size:12.5px">Contained</div>
+        <div style="border:1px solid var(--color-accent);background:var(--color-accent-subtle);border-radius:9px;padding:9px 11px;font-size:12.5px">Open</div>
       </div>
     </div>
   </div>
