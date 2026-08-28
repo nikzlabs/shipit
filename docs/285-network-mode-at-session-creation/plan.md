@@ -94,19 +94,19 @@ no override.
 
 The guarantee is **`admitFirstTurn(sessionId, desiredMode?)`** — a single service every
 first-dispatch path awaits before the turn runs. Not a check bolted onto one handler: there
-is more than one way to dispatch a first turn, and the two below are both real.
+are four ways to dispatch a first turn, and all four are real.
 
 | Caller | Where | Note |
 |---|---|---|
 | WebSocket send | `ws-handlers/send-message.ts` | Must run **before** graduation (~485), or capture "was ungraduated" first — graduation clears the flag the gate keys on. |
 | HTTP dispatch | `services/agent.ts` (~213) | `POST /api/sessions/:id/agent/dispatch` graduates and dispatches on its own, never entering `send-message.ts`. `App.tsx` (~816) uses it from the `/new` route for compose-error and preview-setup messages, so it genuinely carries first turns. It accepts no network mode today. |
 | Quick Capture | `services/headless-sessions.ts` | Between `claim()` (~403) and runner creation (~426). It cannot persist "before the claim" — there is no session id until the claim returns. |
-
-Every client that produces a first dispatch sends the mode through one shared request shape;
-`/review` and the other frame-constructing paths get it from the same helper rather than each
-growing a field.
-
 | Child spawn | `services/child-sessions.ts` | Graduates (~881) and dispatches (~948) without touching any caller above. |
+
+These four are the whole set: every other `runner.dispatch()` site is a follow-up, a queue
+drain, or remediation, none of which can be a session's *first* turn. Every client that
+produces a first dispatch sends the mode through one shared request shape; `/review` and the
+other frame-constructing paths get it from the same helper rather than each growing a field.
 
 > **A rejected exclusion, kept as the reason.** An earlier draft left child spawns out,
 > arguing that a child is a new session with no explicit override, so its resolved
@@ -123,9 +123,28 @@ growing a field.
 >   an override at all.
 >
 > This also names a hazard the feature *creates*: writing per-session overrides to
-> claimed-but-ungraduated warm ids becomes routine, so a warm session's override must be
-> **cleared when that id is claimed or recycled** — otherwise one user's "Open" leaks onto
-> whatever unrelated session inherits the id.
+> claimed-but-ungraduated warm ids becomes routine, so a stale override can leak onto
+> whatever unrelated session later inherits that id. See below for how it is handled —
+> **not** by clearing on claim.
+
+#### Stale overrides: write a concrete mode, clear only on permanent deletion
+
+The obvious fix — clear the override whenever `claim()` returns an id — is wrong. The browser
+can issue both an imperative claim and the route's auto-claim
+(`useSessionActivation.ts` ~96 and ~143), so a second, later claim result would erase a
+selection the user had already made against the first. Instead:
+
+- **Every first-turn admission carries a concrete mode**, and `Inherit` is a value, not an
+  omission: it writes `setSessionOverride(id, null)`. Child spawn supplies `Inherit`
+  explicitly rather than leaving the field out. A stale override is therefore overwritten by
+  the very act of admitting the first turn, which is the only moment it could matter.
+- **The client persists its current local selection when it adopts a claimed id** — including
+  `Inherit` — and does not reset that selection on a duplicate claim result.
+- **Egress state is cleared on permanent session deletion**, through the `deleteSession`
+  cascade, which covers warm retirement, zombie cleanup and repo deletion.
+- **Not on archive, and not on ordinary runner or container disposal.** The session still
+  owns its id and should keep its setting. Full reset needs nothing new: `clearAll`
+  (`database.ts` ~1616) already drops both egress tables.
 
 The service runs under a **per-session admission lock** held across all of it. WebSocket
 callbacks are not serialized, so two near-simultaneous first sends can both observe
@@ -170,10 +189,10 @@ Three rules make it safe, and each exists because a simpler version has a hole:
   queueing applies. Two WS sends can both clear the early admission check
   (`ws-handlers/send-message.ts` ~122); without this the second reaches the direct run path
   (~590) and races the reserved turn.
-- **The token is opaque, single-use, and bound to that runner; ownership transfers only when
-  `dispatch` consumes it, and until then a `finally` releases it.** "Callers that decline
-  must release" is not enough, because the work between admission and dispatch can *throw*:
-  Quick Capture does branch work, environment prep and uploads after this point
+- **The token is opaque, single-use, and bound to that runner; it is consumed by the start
+  operation, and until then a `finally` releases it.** "Callers that decline must release"
+  is not enough, because the work between admission and dispatch can *throw*: Quick Capture
+  does branch work, environment prep and uploads after this point
   (`services/headless-sessions.ts` ~407), and the WS path can still return early on a
   missing workspace (~556). An unreleased reservation leaves the session permanently
   "running" — a worse failure than the race it was added to prevent.
@@ -181,6 +200,28 @@ Three rules make it safe, and each exists because a simpler version has a hole:
 The reservation is the whole point of routing every producer through one service: four
 callers each hand-rolling "claim, then dispatch, and unwind correctly on every throw" is
 precisely the bug this prevents.
+
+#### The reservation is first-class runner state
+
+It cannot be "`running = true` plus a promise the caller holds". Three things in the existing
+runner would otherwise walk over it:
+
+- **It must be immune to `verifyRunningState`.** The WS handler probes any `running` runner
+  (`ws-handlers/send-message.ts` ~137) by asking the worker whether an agent is actually up
+  (`container-session-runner.ts` ~3102). A reserved-but-not-yet-started runner has no worker
+  agent, so that probe would conclude the flag is stranded and clear it — erasing the
+  reservation and admitting the very race it holds shut. The check exists to un-strand a
+  genuinely stuck flag; a reservation must read as legitimately busy, not as stuck.
+- **Release must hand off the queue.** If a losing contender queues behind the reservation
+  and the owner then throws, clearing the reservation alone leaves a queued turn with no
+  completed turn to drain it. Release therefore goes through the existing queued-turn
+  release path, so the loser runs.
+- **`dispatch` is not the only consumer.** The WS path starts a turn *interactively*, never
+  calling `runner.dispatch()` — so the contract needs an explicit token-consuming **start**
+  operation that both paths use. "Only `dispatch` consumes it" does not cover the caller
+  this feature exists for.
+
+With those three, an immediate `finally` covers every early return and every throw.
 
 ### Replacement is a runner replacement
 
