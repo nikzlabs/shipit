@@ -120,11 +120,13 @@ chown_workspace() {
   # predates this change, or an explicit `agent.dep-dirs: []` — leaves exactly
   # today's prune set, so the legacy boot is byte-for-byte unchanged.
   #
-  # No HANDOFF_SCHEME bump for this: v2's walk already chowned and group-wrote
+  # No HANDOFF_SCHEME bump for THIS: v2's walk already chowned and group-wrote
   # every dep-dir ROOT (it was not pruned, so the root got the full treatment),
   # which is all the shallow pass at the tail of this function applies. A tree
-  # claimed under v2 therefore has nothing to gain from a v3 re-walk — the
-  # copy-ups it already suffered cannot be undone by walking again.
+  # claimed under v2 therefore had nothing to gain from a re-walk on this
+  # account — the copy-ups it already suffered cannot be undone by walking again.
+  # (v3 exists, for the default-ACL pass below, and it does not change that: the
+  # dep dirs stay pruned from it too.)
   set -- -path "$d/.pnpm-store"
   if [ -n "${SHIPIT_DEP_DIRS:-}" ]; then
     old_ifs=$IFS
@@ -149,6 +151,38 @@ chown_workspace() {
     \( "$@" \) -prune -o \
     \( \( -path "$d/.git/objects/*" -o -path "$d/.git/lfs/objects/*" \) -type f \) -prune -o \
     -type f -exec chmod g+rwX {} + || true
+  # docs/271 §3 — and a POSIX DEFAULT ACL on each directory, which is what the
+  # two mode passes above cannot do: they fix the nodes that exist, and a Compose
+  # service running at a uid the project declared (docs/271 req 4 keeps it) then
+  # creates NEW ones under its own umask 022 — `0644`/`0755`, owned by that uid.
+  # Setgid propagates the shared group to them and not the group write bit, so
+  # the agent can traverse a directory such a service created and neither add to
+  # nor delete from it, and orchestrator git (dropped to the session uid by
+  # docs/266) cannot unlink its contents during a checkout. A default ACL is
+  # applied by the kernel at creation time and REPLACES the umask, so it reaches
+  # a writer ShipIt does not own without wrapping a command ShipIt does not own;
+  # and it is inherited, so every later `mkdir` carries it forward and this walk
+  # only ever has to repair the tree that already exists.
+  #
+  # Same prunes as the mode passes and `-type d` for the same reason: a default
+  # ACL exists only on a directory, and `setfacl` follows a symlink.
+  #
+  # Guarded and best-effort, but NOT silently: a missing `setfacl` makes this
+  # function report failure (see its tail), so the caller declines to stamp the
+  # scheme sentinel and the next boot retries. Without that, a session that
+  # happened to boot on an image predating the `acl` install would remember an
+  # incomplete walk as a finished one and never get the pass again — the
+  # self-latching shape `share_cache_with_all_sessions` was fixed for. The tree
+  # is still chowned and still group-writable meanwhile, which is exactly the
+  # pre-docs/271-§3 behaviour, and a boot must never fail over this.
+  acl_ok=1
+  if command -v setfacl >/dev/null 2>&1; then
+    find "$d" \( "$@" \) -prune -o \
+      -type d -exec setfacl -d -m g::rwx -- {} + 2>/dev/null || true
+  else
+    acl_ok=0
+    echo "shipit-entrypoint: setfacl not found; what a foreign-uid Compose service creates in $d will not be group-writable (docs/271 §3)" >&2
+  fi
   # planning#415 — the dep-dir ROOTS still get a handoff, SHALLOWLY: one chown
   # and one chmod on the root, never a descent. In overlay mode the merged dep
   # dir's root IS the per-session upperdir's root, so these are in-place upper
@@ -178,6 +212,12 @@ chown_workspace() {
     done
     IFS=$old_ifs
   fi
+  # The ONLY thing that makes this function report failure. The chown and the two
+  # mode passes stay best-effort — a file another process unlinked mid-walk must
+  # not cost the tree its sentinel — but "this image cannot do ACLs at all" is a
+  # whole capability the walk did not deliver, and stamping it as done is what
+  # would make it permanent.
+  [ "$acl_ok" = "1" ]
 }
 
 # docs/272 — hand a SHARED mount (/dep-cache) to every session of its repo:
@@ -257,9 +297,30 @@ prune_stale_sentinels() {
 # on a cold tree anyway — and the alternative is a repair that reaches only new
 # sessions.
 #
-# v2: the mode passes above (`chmod -R g+rwX`, setgid on directories, and
-# `chown_workspace`'s group-write pass) now reach trees claimed under v1.
-HANDOFF_SCHEME=2
+# v2: the mode passes above (`chmod -R g+rwX` and setgid on directories) now
+# reach shared caches claimed under v1.
+#
+# *That entry read "the mode passes above (`chmod -R g+rwX`, setgid on
+# directories, and `chown_workspace`'s group-write pass) now reach trees claimed
+# under v1" until 2026-08-28. The workspace half of it was never true, and it is
+# corrected rather than deleted because it is half of a contradiction worth
+# keeping visible: it promised the bump reached claimed WORKSPACES, while the
+# probe's justification below promised the opposite — that a handed-over mount
+# skips and that this is correct. Both could not hold. Measured on a live host:
+# `/workspace` is `2775 <sessionUid>:1000` with NO sentinel of any version, while
+# `/persist` and `/session-state` beside it carry `.shipit-uid-<uid>-<gid>-v2`.
+# So the workspace was never claimed by this walk at all — not stale, absent —
+# and every bump before v3 reached only the other mounts. docs/271 §3 has the
+# full account.*
+#
+# v3: `chown_workspace`'s default-ACL pass (docs/271 §3), plus the workspace
+# branch below that makes a bump reach the workspace for the first time. A
+# workspace handed over before v3 has directories with no default ACL, so what a
+# foreign-uid Compose service creates in them stays unwritable to the agent and
+# to orchestrator git — and those are the long-lived sessions where a plugin
+# service has had the most time to leave such directories behind. The cost is one
+# extra walk per tree per deployment.
+HANDOFF_SCHEME=3
 
 # Only the writable runtime mounts + the runtime home. NEVER chown /app,
 # /opt/agent-cli, /usr/local/bin, or system dirs — those stay root-owned and
@@ -356,6 +417,56 @@ for d in /workspace /uploads /persist /session-state /dep-cache /credentials /ho
       ;;
   esac
 
+  # docs/271 §3 — the WORKSPACE is handled before the writability probe below,
+  # for exactly the reason the shared cache is, and this is a fix rather than a
+  # tidy-up.
+  #
+  # The probe below rests on "these mounts are created root-owned by the
+  # orchestrator and are handed to the session by this very walk". For the
+  # workspace that is false, and not merely stale: the orchestrator hands the
+  # workspace to the session uid at CLONE time (`handWorkspaceBackToWorker`),
+  # before this container has ever booted. So the workspace is already
+  # `2775 <sessionUid>:<sharedGid>` on boot #1 — a tree root neither owns nor
+  # shares a group with, and CAP_DAC_OVERRIDE is dropped — and `test -w` has
+  # failed on EVERY boot this walk has ever run, not merely on the ones after
+  # some first success.
+  #
+  # Measured on a live host: `/workspace` is `2775 <sessionUid>:1000` and holds
+  # NO sentinel of any version, while `/persist` and `/session-state` beside it
+  # each hold `.shipit-uid-<uid>-<gid>-v2`. Absent, not stale — `mkdir "$marker"`
+  # never ran, so the loop `continue`d here. Every live session's workspace
+  # ownership came from the orchestrator-side handback; none of it came from this
+  # walk, and a HANDOFF_SCHEME bump therefore reached no workspace at all. That
+  # is precisely backwards: an existing workspace is the only kind a foreign-uid
+  # Compose service has had time to leave `0755` directories in.
+  #
+  # Handled the same way the shared cache is, and for the same three reasons:
+  # `stat` only READS, so the skip works without write permission; the walk needs
+  # CAP_CHOWN and CAP_FOWNER rather than write permission, and both are in the
+  # bounding set; and the sentinel is written AS THE WORKER, after the walk,
+  # because root cannot create a directory in a tree it does not own and the walk
+  # has just made that tree writable by the uid that can.
+  #
+  # Only the workspace, deliberately. The other per-session mounts take the
+  # generic `chown -R`, which v3 did not change, so re-reaching them would buy
+  # nothing and cost a walk.
+  case "$d" in
+    */workspace)
+      marker="$d/.shipit-uid-${UID_GID}-${WORKER_GID}-v${HANDOFF_SCHEME}"
+      if [ "$(stat -c '%u' "$marker" 2>/dev/null || true)" = "$UID_GID" ] \
+        && [ "$(stat -c '%g' "$marker" 2>/dev/null || true)" = "$WORKER_GID" ]; then
+        continue
+      fi
+      if chown_workspace "$d"; then
+        gosu "${UID_GID}:${WORKER_GID}" mkdir "$marker" 2>/dev/null || true
+        prune_stale_sentinels "$d" ".shipit-uid-" "$marker" worker
+      else
+        echo "shipit-entrypoint: workspace handoff for $d did not complete; it will be retried on the next boot" >&2
+      fi
+      continue
+      ;;
+  esac
+
   # A read-only mount (/uploads) can neither hold the sentinel nor be chowned, so
   # there is nothing to hand off — skip it before the sentinel logic runs. This
   # MUST stay ahead of the ownership check below: that check treats a missing
@@ -364,13 +475,62 @@ for d in /workspace /uploads /persist /session-state /dep-cache /credentials /ho
   # exist on a :ro mount, so every boot would take that path.
   #
   # `test -w` remains the probe for the PER-SESSION mounts below, and the reason
-  # it is sound here is narrower than the reason first written down. It is not
-  # that root passes W_OK on every read-write mount — without CAP_DAC_OVERRIDE it
-  # does not (see the shared-cache branch above). It is that these mounts are
-  # created root-owned by the orchestrator and are handed to the session by this
-  # very walk, so on the boot where the walk is owed, root still owns them and
-  # passes. Once handed over, a later boot fails the probe and skips — which is
-  # the correct outcome there, because the sentinel says the handoff is done.
+  # it is sound is narrower than the reason first written down. It is not that
+  # root passes W_OK on every read-write mount — without CAP_DAC_OVERRIDE it does
+  # not (see the shared-cache branch above). It is that THESE mounts are created
+  # root-owned by the orchestrator and are handed to the session by this very
+  # walk, so on the boot where the walk is owed, root still owns them and passes.
+  #
+  # That premise is the whole argument, and it is a claim about each specific
+  # mount rather than a property of the probe. Do NOT extend it to a mount
+  # without checking which group that mount is in. Census, measured on two live
+  # hosts rather than reasoned about — the sentinel is the evidence, because it
+  # exists only where this walk has actually run:
+  #
+  #   CLAIMED by the walk (the premise holds — created root-owned here):
+  #     /persist, /session-state   `.shipit-uid-<uid>-<gid>-v<scheme>`
+  #     /dep-cache                 `.shipit-gid-<gid>-v<scheme>`, via its own
+  #                                branch above, which skips this probe already.
+  #
+  #   NEVER claimed (the premise is false — handed over BEFORE this container
+  #   boots, so the probe fails on boot #1 and every boot after):
+  #     /workspace     `2775 <sessionUid>:<sharedGid>`, no sentinel. The
+  #                    orchestrator hands it over at CLONE time.
+  #     /credentials   `0700 <sessionUid>:<sharedGid>`, no sentinel. The
+  #                    orchestrator seals it before the container starts
+  #                    (`chownSessionCredentialsTree` -> `sealDirMode`) — the
+  #                    OpenCode block near the bottom of this script is a bug
+  #                    report about someone believing otherwise, and says "THE
+  #                    LOOP DOES NO SUCH THING" in as many words.
+  #
+  #   /uploads is `:ro` and excluded by design, above.
+  #
+  #   /home/shipit is in the list and is usually not a mount at all: an image
+  #   directory owned by the image's own `shipit` account, so root is in its
+  #   `other` class and the probe fails there too. Its ownership comes from
+  #   `usermod -u` further down instead, which re-chowns the account's home —
+  #   measured: image files baked at build time carry the SESSION's uid, and
+  #   nothing else in this script touches them. That lands the same pair the
+  #   walk would have (`usermod` keeps the primary gid, which is already
+  #   WORKER_GID), so the skip costs nothing today. Under SHIPIT_READONLY_HOME=1
+  #   it IS a root-owned tmpfs, the probe passes, and the loop claims it.
+  #
+  # Only `/workspace` is exempted from this probe, because only its walk changed
+  # in v3. `/credentials` shares the shape and keeps the probe deliberately: its
+  # walk is the generic `chown -R`, which v3 did not touch, and the orchestrator
+  # refreshes that subtree every turn (docs/150 §7). A future bump that changes
+  # the generic walk would need to give it the same branch `/workspace` has.
+  #
+  # *This paragraph ended "Once handed over, a later boot fails the probe and
+  # skips — which is the correct outcome there, because the sentinel says the
+  # handoff is done" until 2026-08-28. That sentence is the bug written as a
+  # guarantee. It is true only while the walk never changes: after a
+  # HANDOFF_SCHEME bump the sentinel says the OPPOSITE, and the probe skips
+  # without ever reading it — which is why every bump before v3 reached no
+  # workspace at all, and why the workspace now has its own stat-gated branch
+  # above. Corrected in place rather than deleted, because the premise it rests
+  # on is still the reason the probe is safe for the mounts that keep it.*
+  #
   # Do NOT reuse this reasoning for a tree ShipIt does not create root-owned.
   [ -w "$d" ] || continue
   # Atomic-claim the chown via `mkdir` of a UID-stamped sentinel: on warm reuse
@@ -406,10 +566,9 @@ for d in /workspace /uploads /persist /session-state /dep-cache /credentials /ho
   if mkdir "$marker" 2>/dev/null \
     || [ "$(stat -c '%u' "$marker" 2>/dev/null || true)" != "$UID_GID" ] \
     || [ "$(stat -c '%g' "$marker" 2>/dev/null || true)" != "$WORKER_GID" ]; then
-    case "$d" in
-      */workspace) chown_workspace "$d" ;;
-      *) chown -R "${UID_GID}:${WORKER_GID}" "$d" ;;
-    esac
+    # The workspace never reaches here — it took its own branch above, which is
+    # the only one whose skip survives the tree being handed over.
+    chown -R "${UID_GID}:${WORKER_GID}" "$d"
     prune_stale_sentinels "$d" ".shipit-uid-" "$marker"
   fi
 done

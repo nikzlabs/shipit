@@ -106,9 +106,12 @@ now actively harmful, in two ways that look nothing alike:
 **If your image genuinely needs its own user** — it keeps startup scripts in that
 account's home, or drops privileges itself — declare it, and the service still
 runs: ShipIt adds the session's group to it, and the workspace is group-writable,
-so it can write the tree the agent shares with it. Accept the two costs above in
-exchange, and keep such a service away from git and from the workspace's
-dependency directories.
+so it can write the tree the agent shares with it. What it *creates* there is
+group-writable too — every workspace directory carries a POSIX default ACL, so a
+file or directory the service makes under its own umask is still one the agent
+can edit and `rm -rf` (docs/271 §3). Accept the two costs above in exchange, and
+keep such a service away from git and from the workspace's dependency
+directories, which are deliberately outside that guarantee.
 
 ## Hot reload (HMR) needs polling
 

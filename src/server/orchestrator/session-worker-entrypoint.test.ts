@@ -131,6 +131,20 @@ const UNCREATABLE_PLUGIN_DIR = "/proc/shipit-no-such-dir/plugins";
 
 const isRoot = process.getuid?.() === 0;
 
+/**
+ * Whether this host has a real `setfacl`. The harness stubs one onto PATH, so
+ * only the tests that must observe its ABSENCE care — and they can only do that
+ * where the host has none, since PATH still has to reach `find` and `chmod`.
+ */
+const hasRealSetfacl = (() => {
+  try {
+    execFileSync("sh", ["-c", "command -v setfacl"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
 /** Dirs chmod'ed 0555 must be restored, or temp cleanup can't unlink them. */
 const restoreWritable: string[] = [];
 afterEach(() => {
@@ -200,6 +214,12 @@ interface RunOpts {
    */
   workerGid?: string;
   /**
+   * docs/271 §3 — leave `setfacl` off PATH entirely, so the workspace walk takes
+   * its cannot-do-ACLs path. Default is the stub, so no other assertion here
+   * depends on whether the host has the `acl` package.
+   */
+  hideSetfacl?: boolean;
+  /**
    * Make the stubbed `usermod` fail, standing in for a read-only `/etc`
    * (`SESSION_READONLY_ROOTFS=1`). That is the one boot where the entrypoint
    * genuinely cannot give an allocated uid a passwd entry, so it must fall back
@@ -258,6 +278,14 @@ function runEntrypoint(dirs: string[], workerUid: string, opts: RunOpts = {}): R
     '#!/bin/sh\nprintf "%s\\n" "$*" >> "$GOSU_LOG"\nshift\nexec "$@"\n',
     { mode: 0o755 },
   );
+  // docs/271 §3 — stubbed so the workspace branch behaves the same whether or
+  // not the host running the suite has the `acl` package. It matters beyond
+  // noise: a missing `setfacl` makes `chown_workspace` report failure, which is
+  // the whole point of that signal, so without this stub every workspace
+  // assertion below would depend on the machine.
+  if (!opts.hideSetfacl) {
+    writeFileSync(join(bin, "setfacl"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  }
 
   // #1917 journal-group alignment. `groupadd`/`usermod` are recorded rather than
   // performed (both need root). `stat` and `getent` delegate to the real binaries
@@ -429,6 +457,17 @@ function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "shipit-mount-"));
 }
 
+/**
+ * A mount whose basename is `workspace`, so the entrypoint's workspace-suffix
+ * branches match it. The loop selects on the path, so a `shipit-mount-XXXX`
+ * temp dir takes the generic `chown -R` and can never exercise them.
+ */
+function workspaceMount(): string {
+  const dir = join(mkdtempSync(join(tmpdir(), "shipit-ws-")), "workspace");
+  mkdirSync(dir);
+  return dir;
+}
+
 describe("session worker ownership sentinel", () => {
   it("keeps valid shell syntax", () => {
     expect(() => execFileSync("sh", ["-n", ENTRYPOINT])).not.toThrow();
@@ -571,11 +610,131 @@ describe("session worker ownership sentinel", () => {
 
     const result = runEntrypoint([readOnly, writable], "1000");
 
+    // planning#420 — asserted beside the workspace tests below on purpose: the
+    // workspace branch deliberately does NOT use this probe, and the guarantee
+    // that the probe still holds for every other mount is what keeps that a
+    // narrow exemption rather than a deletion.
+    //
     // The prod regression: this exited 1 with "chown: changing ownership of
     // '/uploads': Read-only file system", so no session container could boot.
     expect(result.status).toBe(0);
     expect(result.stderr).not.toMatch(/Read-only|Permission denied/);
     expect(result.chowns).toEqual([`-R 1000:1000 ${writable}`, ...result.prepChowns]);
+  });
+
+  /**
+   * planning#420 — the workspace walk has to reach a tree it cannot WRITE, and
+   * that is every workspace, on every boot.
+   *
+   * The orchestrator hands the workspace to the session uid at CLONE time,
+   * before this container first boots, so it is already
+   * `2775 <sessionUid>:<sharedGid>` when the loop reaches it — a tree root
+   * neither owns nor shares a group with, with CAP_DAC_OVERRIDE dropped. The
+   * probe therefore failed on boot #1, not merely on later ones, and the loop
+   * `continue`d without ever reading the versioned sentinel.
+   *
+   * Verified on a live host rather than inferred: `/workspace` carried NO
+   * sentinel of any version while `/persist` and `/session-state` beside it each
+   * carried `.shipit-uid-<uid>-<gid>-v2`. Absent, not stale — so `mkdir` never
+   * ran and this walk has never claimed a workspace at all. The fixture below
+   * therefore starts with no sentinel, which is the production state; the stale
+   * one is covered by the scheme-rotation tests elsewhere in this file.
+   *
+   * A 0555 dir is the stand-in a non-root test has for "the acting process
+   * cannot write this mount" — the same stand-in the `:ro` test above uses, and
+   * skipped under root for the same reason.
+   */
+  it.skipIf(isRoot)("walks a workspace it cannot write, which is the only kind there is", () => {
+    const ws = workspaceMount();
+    writeFileSync(join(ws, "a.ts"), "");
+    chmodSync(ws, 0o555);
+    restoreWritable.push(ws);
+
+    const result = runEntrypoint([ws], "1000");
+
+    expect(result.status).toBe(0);
+    // `chown_workspace`'s find-based `-h` form reached the tree's contents —
+    // the walk ran. Matched on the leading form plus the file rather than on the
+    // whole argv, because `find` decides how many paths ride one `chown` and in
+    // what order.
+    expect(result.chowns.some((c) => c.startsWith("-h 1000:1000 ") && c.includes(join(ws, "a.ts"))))
+      .toBe(true);
+    // And not the generic recursive handoff, which is the other mounts' path.
+    expect(result.chowns).not.toContain(`-R 1000:1000 ${ws}`);
+  });
+
+  // The other half of the same fact, and the reason the probe stays for every
+  // mount but this one: a mount the orchestrator creates root-owned IS claimed
+  // by this walk, which is what the live host shows — `/persist` and
+  // `/session-state` carry their sentinel while `/workspace` carries none.
+  // Asserted here so "the workspace is the exception" is a tested statement
+  // rather than a comment.
+  it("still claims a root-owned per-session mount through the generic path", () => {
+    const mount = tempDir();
+    const uid = String(process.getuid?.() ?? 0);
+    const gid = String(process.getgid?.() ?? 0);
+
+    const result = runEntrypoint([mount], uid, { workerGid: gid });
+
+    expect(result.status).toBe(0);
+    expect(result.chowns).toContain(`-R ${uid}:${gid} ${mount}`);
+    expect(existsSync(join(mount, uidSentinel(uid, gid)))).toBe(true);
+  });
+
+  it("skips a workspace already handed over under the CURRENT scheme", () => {
+    const ws = workspaceMount();
+    writeFileSync(join(ws, "a.ts"), "");
+    // Owned by the running user, which the harness also passes as the worker
+    // uid, so the stat probe reads its own uid/gid back and skips.
+    const uid = String(process.getuid?.() ?? 0);
+    const gid = String(process.getgid?.() ?? 0);
+    mkdirSync(join(ws, uidSentinel(uid, gid)));
+
+    const result = runEntrypoint([ws], uid, { workerGid: gid });
+
+    expect(result.status).toBe(0);
+    expect(result.chowns).toEqual(result.prepChowns);
+  });
+
+  it("stamps the current scheme AS THE WORKER after a cold walk", () => {
+    const ws = workspaceMount();
+    writeFileSync(join(ws, "a.ts"), "");
+    const uid = String(process.getuid?.() ?? 0);
+    const gid = String(process.getgid?.() ?? 0);
+
+    const result = runEntrypoint([ws], uid, { workerGid: gid });
+
+    expect(result.status).toBe(0);
+    // Root cannot create a directory in a tree the walk has just given away, so
+    // the sentinel goes through gosu — the same shape the shared cache uses.
+    expect(result.gosuPreps).toContain(`${uid}:${gid} mkdir ${join(ws, uidSentinel(uid, gid))}`);
+    expect(existsSync(join(ws, uidSentinel(uid, gid)))).toBe(true);
+  });
+
+  // Omitting the stub only hides `setfacl` on a host that has none of its own —
+  // PATH still reaches the system directories, and shortening it would take
+  // `find`, `chmod` and `stat` with it. So this is `skipIf`, reported as skipped
+  // rather than passing vacuously, on the one kind of host where the fixture
+  // cannot hold. The behaviour it guards is asserted directly on the function's
+  // exit status in `chown_workspace reports failure…` below, which always runs.
+  it.skipIf(hasRealSetfacl)("stamps nothing when the ACL step could not run, so the next boot retries", () => {
+    const ws = workspaceMount();
+    writeFileSync(join(ws, "a.ts"), "");
+    const uid = String(process.getuid?.() ?? 0);
+    const gid = String(process.getgid?.() ?? 0);
+
+    // No `setfacl` anywhere on PATH: the walk delivers the chown and the modes
+    // and NOT the ACLs. Recording that as a finished v3 handoff would make the
+    // gap permanent — the next boot, on an image that has the tool, would read
+    // the sentinel and skip.
+    const result = runEntrypoint([ws], uid, { workerGid: gid, hideSetfacl: true });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toMatch(/setfacl not found/);
+    expect(result.stderr).toMatch(/will be retried on the next boot/);
+    expect(existsSync(join(ws, uidSentinel(uid, gid)))).toBe(false);
+    // The rest of the handoff still happened — this is a degradation, not a skip.
+    expect(result.chowns).toContain(`-h ${uid}:${gid} ${ws} ${join(ws, "a.ts")}`);
   });
 });
 
@@ -984,7 +1143,11 @@ describe("host journal readability (#1917)", () => {
    * `""` = an explicitly empty list, anything else = the colon-joined
    * `agent.dep-dirs` value.
    */
-  function runChownWorkspace(tree: string, shipitDepDirs?: string): string[] {
+  function runChownWorkspace(
+    tree: string,
+    shipitDepDirs?: string,
+    opts: { setfaclExits?: number; omitSetfacl?: boolean } = {},
+  ): { chowns: string[]; acls: string[]; status: number } {
     const source = readFileSync(ENTRYPOINT, "utf8");
     const start = source.indexOf("chown_workspace() {");
     expect(start).toBeGreaterThan(-1);
@@ -1002,18 +1165,49 @@ describe("host journal readability (#1917)", () => {
       '#!/bin/sh\nshift 2\nfor a in "$@"; do printf "%s\\n" "$a" >> "$CHOWN_LOG"; done\n',
       { mode: 0o755 },
     );
+    // docs/271 §3 — `setfacl` is stubbed for the same reason `chown` is: the
+    // thing under test is which nodes the `find` selects, and a real ACL would
+    // make that depend on whether the host running the suite has the `acl`
+    // package and a filesystem that accepts one. The kernel semantics are pinned
+    // separately, against the real tool, in `session-worker-uid.test.ts`.
+    // Stubbing it also satisfies the `command -v` guard, so the branch runs.
+    const aclLog = join(root, "setfacl.log");
+    writeFileSync(aclLog, "");
+    if (!opts.omitSetfacl) {
+      writeFileSync(
+        join(bin, "setfacl"),
+        `#!/bin/sh\nshift 4\nfor a in "$@"; do printf "%s\\n" "$a" >> "$SETFACL_LOG"; done\nexit ${opts.setfaclExits ?? 0}\n`,
+        { mode: 0o755 },
+      );
+    }
+    // With `omitSetfacl` the PATH is narrowed to the two real binaries this
+    // fragment needs, so the tool is absent no matter what the host has
+    // installed. The boot-level test cannot do that — the whole entrypoint needs
+    // far more of the system — which is why the exit-status contract is pinned
+    // HERE, where it always runs, and only its consequence is `skipIf`'d there.
+    for (const tool of ["find", "chmod"]) {
+      const real = execFileSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" }).trim();
+      symlinkSync(real, join(bin, tool));
+    }
     const script = join(root, "fragment.sh");
-    writeFileSync(script, `set -eu\nUID_GID=2000001\nWORKER_GID=1000\n${fn}\nchown_workspace "$1"\n`);
-    const run = spawnSync("sh", [script, tree], {
+    writeFileSync(
+      script,
+      `set -eu\nUID_GID=2000001\nWORKER_GID=1000\n${fn}\nrc=0\nchown_workspace "$1" || rc=$?\nexit $rc\n`,
+    );
+    const run = spawnSync("/bin/sh", [script, tree], {
       env: {
-        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        PATH: opts.omitSetfacl ? bin : `${bin}:${process.env.PATH ?? ""}`,
         CHOWN_LOG: log,
+        SETFACL_LOG: aclLog,
         ...(shipitDepDirs === undefined ? {} : { SHIPIT_DEP_DIRS: shipitDepDirs }),
       },
       encoding: "utf8",
     });
-    expect(run.status).toBe(0);
-    return readFileSync(log, "utf8").split("\n").filter(Boolean).sort();
+    // The walk must succeed for every caller that is not deliberately removing
+    // the tool — kept here so the existing assertions below still rest on it.
+    if (!opts.omitSetfacl) expect(run.status).toBe(0);
+    const lines = (p: string): string[] => readFileSync(p, "utf8").split("\n").filter(Boolean).sort();
+    return { chowns: lines(log), acls: lines(aclLog), status: run.status ?? 1 };
   }
 
   it("chowns object DIRECTORIES but never the hardlinked object FILES", () => {
@@ -1035,7 +1229,7 @@ describe("host journal readability (#1917)", () => {
       ".git/lfs/objects/ab/cd/oid", ".pnpm-store/v3/blob", "src/a.ts",
     ]) writeFileSync(join(tree, f), "");
 
-    const chowned = runChownWorkspace(tree);
+    const { chowns: chowned } = runChownWorkspace(tree);
 
     // The object FILES are absent…
     expect(chowned).not.toContain(join(tree, ".git/objects/4d/deadbeef"));
@@ -1092,6 +1286,63 @@ describe("host journal readability (#1917)", () => {
     expect(mode(".git/objects/4d")).toBe(0o2775);
   });
 
+  // docs/271 §3 / planning#420 — the mode passes above fix the nodes that exist.
+  // A Compose service that kept a declared `user:` (req 4) then creates NEW ones
+  // under its own umask 022, so they land 0755 owned by that uid: setgid gives
+  // them the shared group and not the group WRITE bit, and the agent can traverse
+  // such a directory while being unable to add to or delete from it. That is what
+  // stopped orchestrator git — dropped to the session uid by docs/266 — from
+  // unlinking a plugin's stale cache files during a rebase checkout. A default
+  // ACL is applied by the kernel at creation time IN PLACE of the umask, so it is
+  // the one channel that reaches a writer ShipIt neither owns nor wraps.
+  it("gives every workspace directory a default group ACL, with the same prunes", () => {
+    const tree = tempDir();
+    mkdirSync(join(tree, ".git/objects/4d"), { recursive: true });
+    mkdirSync(join(tree, ".pnpm-store/v3"), { recursive: true });
+    mkdirSync(join(tree, "node_modules/left-pad"), { recursive: true });
+    mkdirSync(join(tree, "src"), { recursive: true });
+    for (const f of ["src/a.ts", ".git/objects/4d/deadbeef", ".pnpm-store/v3/blob"]) {
+      writeFileSync(join(tree, f), "");
+    }
+
+    const { acls } = runChownWorkspace(tree, "node_modules");
+
+    // Directories only — a default ACL exists on nothing else.
+    expect(acls).toContain(tree);
+    expect(acls).toContain(join(tree, "src"));
+    // `.git` is NOT pruned from the workspace walk (only its object FILES are),
+    // so its directories take the ACL too — a new loose object being
+    // group-writable inside a 0700 session dir costs nothing, and the alternative
+    // is a second prune set that can drift from the chown's.
+    expect(acls).toContain(join(tree, ".git/objects/4d"));
+    expect(acls).not.toContain(join(tree, "src/a.ts"));
+    // The pruned trees stay pruned: `.pnpm-store` is shared per runtime and a dep
+    // dir may be an overlay lowerdir, where writing an attribute on a lower-only
+    // entry forces the copy-up docs/183 exists to avoid.
+    expect(acls).not.toContain(join(tree, ".pnpm-store"));
+    expect(acls).not.toContain(join(tree, ".pnpm-store/v3"));
+    expect(acls).not.toContain(join(tree, "node_modules"));
+    expect(acls).not.toContain(join(tree, "node_modules/left-pad"));
+  });
+
+  // planning#420 — the contract the caller's stamping rests on. A walk that could
+  // not do ACLs at all delivered less than a v3 handoff, and the sentinel may only
+  // record what actually happened: stamping it would make the gap permanent,
+  // because the next boot — on an image that HAS the tool — would read the marker
+  // and skip. Everything else in the walk stays best-effort, so a file another
+  // process unlinked mid-walk still costs the tree nothing.
+  it("chown_workspace reports failure when it cannot do ACLs at all, and only then", () => {
+    const tree = tempDir();
+    mkdirSync(join(tree, "src"), { recursive: true });
+    writeFileSync(join(tree, "src/a.ts"), "");
+
+    expect(runChownWorkspace(tree, undefined, { omitSetfacl: true }).status).not.toBe(0);
+    // A per-directory refusal — an unlinked path, a filesystem that rejects one
+    // ACL — is not the same thing and must not cost the tree its sentinel.
+    expect(runChownWorkspace(tree, undefined, { setfaclExits: 1 }).status).toBe(0);
+    expect(runChownWorkspace(tree).status).toBe(0);
+  });
+
   it("does not descend into the shared pnpm store", () => {
     // Mounted NESTED under /workspace and shared per runtime, so it gets the
     // group treatment from the orchestrator instead. A `chown -R` here would
@@ -1101,7 +1352,7 @@ describe("host journal readability (#1917)", () => {
     writeFileSync(join(tree, ".pnpm-store/v3/blob"), "");
     writeFileSync(join(tree, "keep.txt"), "");
 
-    const chowned = runChownWorkspace(tree);
+    const { chowns: chowned } = runChownWorkspace(tree);
 
     expect(chowned.some((p) => p.includes(".pnpm-store"))).toBe(false);
     expect(chowned).toContain(join(tree, "keep.txt"));
@@ -1130,7 +1381,7 @@ describe("host journal readability (#1917)", () => {
     chmodSync(join(tree, "node_modules/react"), 0o755);
     chmodSync(join(tree, "node_modules/react/package.json"), 0o644);
 
-    const chowned = runChownWorkspace(tree, "node_modules");
+    const { chowns: chowned } = runChownWorkspace(tree, "node_modules");
 
     // Exactly ONE node_modules entry — the root, from the shallow pass. The
     // deep walk never reached react/ or its contents.
@@ -1157,7 +1408,7 @@ describe("host journal readability (#1917)", () => {
       writeFileSync(join(tree, d, "f"), "");
     }
 
-    const chowned = runChownWorkspace(tree, "node_modules:client/node_modules:vendor");
+    const { chowns: chowned } = runChownWorkspace(tree, "node_modules:client/node_modules:vendor");
 
     // No entry INSIDE any declared dep dir was chowned…
     for (const inside of ["node_modules/x/f", "client/node_modules/y/f", "vendor/z/f"]) {
@@ -1181,7 +1432,7 @@ describe("host journal readability (#1917)", () => {
     chmodSync(target, 0o755);
     symlinkSync(target, join(tree, "vendor"));
 
-    const chowned = runChownWorkspace(tree, "vendor");
+    const { chowns: chowned } = runChownWorkspace(tree, "vendor");
 
     // Neither the link nor what it points at. `chown -h` alone would be safe on
     // the link itself, but the shallow pass also chmods, and `chmod` FOLLOWS a
@@ -1201,7 +1452,7 @@ describe("host journal readability (#1917)", () => {
     writeFileSync(join(tree, "node_modules/react/package.json"), "");
 
     for (const depDirs of [undefined, ""]) {
-      const chowned = runChownWorkspace(tree, depDirs);
+      const { chowns: chowned } = runChownWorkspace(tree, depDirs);
       expect(chowned).toContain(join(tree, "node_modules/react/package.json"));
     }
   });
