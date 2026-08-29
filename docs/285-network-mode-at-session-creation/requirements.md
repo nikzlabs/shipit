@@ -58,6 +58,14 @@ description: Fold network containment into the composer's existing permission-mo
   deliberately: it removes the need for a first-turn admission protocol entirely,
   because no runner exists before the choice is made. The warm pool still pre-builds
   standby containers, so this is not a cold start.
+- 2026-08-29 — *A sessionless `/new` would also lose `@file` autocomplete and the `/skills`
+  list while composing — a regression the preview decision never covered. Accept it, or
+  claim the workspace and withhold the WebSocket?* Neither: **read them from the repo's
+  existing warm session without claiming it.** A warm session already has a `workspaceDir`,
+  `RepoInfo.warmSessionId` already reaches the client (`repo-store.ts` ~140), and
+  `resolveSessionDir` (`api-routes.ts` ~391) has no warm-session guard — it returns the
+  session's workspace directory, so `GET /api/sessions/<warmSessionId>/files` serves that
+  tree today. Nothing is claimed, no runner exists, and the guarantee is untouched.
 - 2026-08-28 — *A review argued that the running-session half of requirement 6 is the
   largest remaining cost and should be cut, leaving the composer control on creation
   surfaces only.* No — requirement 6 stands as written: one menu, new and existing
