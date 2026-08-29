@@ -119,90 +119,19 @@ resolution, agent creation and parameter assembly happen afterwards
 dispatch returned (~561). An HTTP 200 can precede a crash that loses the turn. Making that
 honest needs durable idempotent admission — the subsystem this design exists to avoid.
 
-### A prerequisite worth naming: "the first send creates the session"
+### The prerequisite: docs/286
 
-Everything in the next three sections — the Send transaction, the session-keyed pending
-message, the correlated acceptance echo, the idempotent draft claim — is **not about network
-modes**. It is the contract for *creating a session at first send instead of on page load*,
-and it is the whole remaining cost of this feature.
+Claiming at Send needs a contract of its own — transaction ownership, delivery, acceptance,
+idempotency, recovery — and **none of it is about network modes**. It is extracted to
+[docs/286-first-send-creates-the-session](../286-first-send-creates-the-session/plan.md) so it
+can be reviewed on its own terms, and it is a **prerequisite**: this feature cannot land
+before it, and the honest cost of this feature is the sum of both docs.
 
-It is stated here because this feature is the first thing to need it, and it cannot ship
-without it. If it grows further under implementation, it deserves its own `docs/NNN` folder
-and its own change, with the network control landing on top — but it does not get skipped,
-and the network control cannot land before it.
+Two open questions in that doc block implementation — how far recovery must reach, and
+whether the composer freezes while a Send is in flight.
 
-### Send is one async transaction, and the draft is its state
-
-Today `onSend` is synchronous and the composer clears text, dictation and uploads immediately
-(`MessageInput.tsx` ~640), with `App` clearing pending files unconditionally (~696). Send now
-has real steps that can fail, so it becomes one **single-flight async operation per
-generation**:
-
-1. **Claim once**, with the network mode, and **retain the claimed session id** — a retry
-   after a later failure reuses it rather than claiming again.
-2. **Drain uploads into that session.** `useFileUpload` buffers raw `File`s and uploads them
-   in an effect on `sessionId` change (~124), while `MessageInput` captures `uploadRefs`
-   *before* calling Send (~640) — so without an awaitable
-   **`drainDeferredUploads(claimedSessionId)`** the first frame leaves without the
-   attachments.
-3. **Connect that session's socket, enqueue the frame, and wait for acceptance.**
-4. **Clear the draft only then** — and clear it whole: text, dictation, upload chips, pending
-   files, issue seed, the network pick.
-
-Any failure preserves the entire draft and keeps the claimed session for the retry.
-**Double Send is refused while the transaction is in flight**, which is what single-flight
-buys beyond ordinary debouncing.
-
-### The first message belongs to the session that was claimed for it
-
-A send that arrives before the socket is open is stashed in **one global
-`pendingWsMessage`** (`App.tsx` ~658) with no owning session (`session-store.ts` ~117), and
-flushed onto whichever session is active — overwriting its `sessionId`
-(`useConnectionSync.ts` ~165, ~173). Today that is a narrow race; this design makes the stash
-the normal first-send path. So the stash is **keyed by its claimed session, flushed only by
-that session's socket, and its id is never rewritten**.
-
-That stops mis-delivery but not non-delivery, and holding the transaction open does **not**
-fix it: `useSessionWebSocket` owns exactly one connection derived from the current session id
-(`useSessionWebSocket.ts` ~13), so switching to B tears down A's socket and no connection
-exists to flush A. Route activation deliberately respects that navigation rather than letting
-a late claim drag the user back (`useSessionActivation.ts` ~144).
-
-So the guarantee is stated at its true strength rather than overpromised: **the transaction
-navigates to the claimed session as part of itself**, which is the normal path, and if the
-user deliberately navigates elsewhere before acceptance the message **stays queued against
-its own session and is delivered when that session next connects**. It is never delivered to
-the session they switched to. A background one-shot socket would buy immediate delivery for a
-user who chose to leave, and is not worth a second connection lifecycle.
-
-### Acceptance needs a correlated ack, not a resolved `send()`
-
-`send()` returning means only that bytes went to an apparently-open socket — its own contract
-says so and asks for a `requestId`-keyed acknowledgment (`useWebSocket.ts` ~8), and
-`sendUserMessage` currently treats wire-or-stash as success (`send-user-message.ts` ~61).
-The signal already exists: after persistence the server emits `system_user_message` carrying
-`clientRequestId` (`turn-executor.ts` ~493).
-
-- **That echo is the acceptance event**, matched on a **stable request id** the transaction
-  retains across retries.
-- **Rejections must be correlated too.** Today the failure paths emit generic, uncorrelated
-  errors — auth, invalid images, attachments, uploads, missing workspace
-  (`ws-handlers/send-message.ts` ~68, ~423, ~556) — so a rejection cannot currently be tied
-  to the send it belongs to.
-- **Resend must be safe.** `persistUserMessageOnce` dedups only within one dispatch
-  invocation (`turn-executor.ts` ~486), not across a second received frame. Without
-  server-side dedup on `clientRequestId`, a lost echo followed by a retry sends the first
-  message twice — the draft was kept precisely because acceptance was never observed.
-
-**Two things this design must change that are not about network at all**, because it moves
-the first send:
-
-- The new-session composer is disabled today when there is neither a session nor an open
-  socket (`App.tsx` ~2224). That condition has to become "a repo is selected".
-- Issue seeding records the issue only when a session id exists (`App.tsx` ~1415), and
-  `/review` refuses without one (~531). Both bind to the **generation** and are applied after
-  the claim — or, for `/review`, stay unavailable before the first message, which is what it
-  does today.
+What this design needs from it, and nothing more: **a claimed session id, with the network
+mode applied and the standby reconciled, before any runner exists.**
 
 ### Standby reconciliation: evict, never create
 
@@ -230,103 +159,47 @@ to now*, and a container created afterwards resolves again; for an explicit Cont
 those are the same answer, which is why explicit picks keep the hard guarantee and `Inherit`
 means what the word says.
 
-### Pre-Send autocomplete: a repo-scoped endpoint, not a client-held warm id
-
-The settled decision keeps `@file` and `/skills` while composing, but reading
-`RepoInfo.warmSessionId` directly from the client is unsafe:
-
-- Claim clears the repo's warm pointer (`claim-session.ts` ~356) **without broadcasting it**;
-  the client keeps the old id until a replacement emits `repo_warm_ready`
-  (`warm-pool-manager.ts` ~331, `useServerEvents.ts` ~303). So the id does not merely 404 —
-  it can by then be **another tab's active session**.
-- The file and skill store setters are unkeyed (`file-store.ts` ~431, ~487), so a slow warm
-  read can overwrite the next repo's or the active session's data — the bug class
-  `session-data.ts` ~260 already documents.
-
-So: a **repo-scoped draft-context endpoint**. Resolving the pointer server-side at request
-start is necessary but not sufficient — a concurrent claim can rotate it *while* the tree is
-being read, and a client generation guard cannot see that. The endpoint
-**resolves, reads, re-checks the pointer and retries** (or holds a short lease), and it
-defines the case the plan previously ignored: **when no warm session exists** it answers with
-an explicit "no draft context", and the composer degrades to no autocomplete rather than
-erroring or hanging. It also states **which harness** determines the skill list, and echoes
-the repo and generation so a response can be matched to the draft that asked for it.
-
-Codex's built-in skills are out of reach either way: that route requires a **runner** from
-the registry (`api-routes-files.ts` ~328), and warming creates a container but no runner
-(`warm-pool-manager.ts` ~224, ~296). Pre-Send skills therefore cover the repo's own
-`.claude/skills` / `.codex/skills`, not Codex built-ins.
-
-### The new-session generation
-
-Requirement 8 needs one. The new-session key is `new:${repoSlug}` (`App.tsx` ~1692) and
-`useMessageDraft` only swaps state when it changes (~34), so a second new session **in the
-same repo** produces no new identity and the pick would persist into it. An in-memory
-`newSessionGeneration`, incremented on every deliberate new-session action, resets the mode
-to `Inherit`, owns single-flight submission, and guards late completion. It does **not** go
-into the text-draft key — per-repo text retention is deliberate.
+**What "hard guarantee" means, precisely.** It is about *policy*: an explicit Contained or
+Open cannot be moved by a workspace-default race. It is **not** a promise of physical
+enforcement — the record is set to the resolved policy before the firewall install, which
+only runs when enforcement is enabled (`container-lifecycle.ts` ~1435 vs ~1440), so on a
+deployment with `SESSION_EGRESS_ENFORCE=0` a "Contained" session is contained by policy and
+open in fact. That is exactly what the enforcement warning above exists to say, and the two
+statements must not drift apart.
 
 ### Rollout
-
-The legacy claim route is **left alone**. A cached old client has no network control, so
-there is nothing to reconcile for it; the new behaviour lives on a new, explicit draft-claim
-endpoint. No `skipReuse` change there either — that flag belongs on the new path, where
-reusing another tab's server-side draft would be dangerous.
 
 `PUT /api/egress/session/:id` gains strict validation: it currently accepts an invalid body
 and an arbitrary session id (`api-routes-egress.ts` ~331). Narrow fix, not a subsystem.
 
-### Failure semantics, stated
-
-A lost response after a successful claim leaves an ungraduated session behind. An earlier
-draft said the warm pool reclaims those — **it does not**, once the new path passes
-`skipReuse: true`, which is precisely what stops a later claim from reusing them
-(`claim-session.ts` ~340).
-
-Retaining the claimed id does **not** give idempotency, which an earlier draft claimed: if
-the response is lost there is no id to retain. So the claim carries an **opaque, globally
-unique draft-claim key** — not the in-memory generation counter, which can collide across
-tabs — and the server keeps an atomic key → session mapping, so the same key returns the same
-session through a lost response, a reload, or concurrent retries. The mapping is durable for
-the life of the draft and retired when the session graduates or after a bounded expiry;
-without an expiry it becomes a table that only grows.
-
-There is deliberately no rollback machinery, and the egress deletion cascade
-(`services/session.ts` ~924) stays separable hygiene.
+The legacy claim route is **left alone** — a cached old client has no network control, so
+there is nothing to reconcile for it, and the new behaviour lives on docs/286's draft-claim
+endpoint.
 
 ## Where the tests go
 
+Only what is network-specific; docs/286 owns the transaction, delivery and idempotency tests.
+
 1. **Mode in force on the first turn**, for explicit Contained and Open, on `/new` and Quick
-   Capture — and the `Inherit` case decided above, tested to whichever promise it lands on.
+   Capture.
 2. **Reconciliation in every state** — matching leaves the container; mismatching, `starting`
-   and unknown all evict. Must fail if the implementation reads `isEgressContained()`.
-3. **The first message never reaches the wrong session.** Switch sessions between claim and
-   socket-open: the message is not delivered to the session switched to, and is delivered to
-   its own when that session next connects.
-3b. **A lost acceptance echo does not duplicate the first message** — the retry carries the
-   same request id and the server persists it once.
-4. **Attachments arrive with the first message** after a claim — the drain is awaited. This
-   test must fail against an implementation that captures upload refs before the claim.
-5. **A failed claim preserves the whole draft** (text, dictation, chips, pending files, issue
-   seed, mode); a **retry with the same draft-claim key returns the same session** even when
-   the first response was lost entirely; a second new session in the *same repo* resets the mode to Inherit; and Quick
-   Capture resets it on every opening.
-6. **Composer and dialog agree** after a change in either, including in a second tab.
-7. **Pre-Send autocomplete** survives a warm-pointer rotation without reading another
-   session.
+   and unknown all evict. Must fail if the implementation reads `isEgressContained()` instead
+   of the raw boot value.
+3. **`Inherit` follows the workspace at container start**, and an explicit pick does not move
+   when the workspace default changes between Send and boot.
+4. **Reset**: a second new session in the *same* repo starts at `Inherit`, and Quick Capture
+   resets on every opening.
+5. **Composer and dialog agree** after a change in either, including in a second tab.
+6. **No audit card** for the creation-time choice; a card **is** written for a later change.
 
 ## Key files
 
 | File | Role |
 |---|---|
 | `src/client/components/PermissionModeSelector.tsx` | The combined mode + network control |
-| `src/client/components/MessageInput/MessageInput.tsx` | Renders it everywhere; awaits the upload drain; preserves the draft on failure |
+| `src/client/components/MessageInput/MessageInput.tsx` | Renders the combined control on every viewport |
 | `src/client/components/MessageInput/ComposerSettingsMenu.tsx` | Loses its Mode row; role list opens directly |
-| `src/client/App.tsx`, `src/client/stores/session-store.ts`, `src/client/hooks/useConnectionSync.ts` | Scope the pending first message to its claimed session |
-| `src/client/hooks/useSessionActivation.ts` | Stops claiming on `/new`; owns the generation |
-| `src/client/hooks/useFileUpload.ts` | `drainDeferredUploads(sessionId)` |
-| *new* draft-claim endpoint | Claim with the network mode, persist, reconcile, return the id |
-| *new* repo-scoped draft-context endpoint | Warm-pointer-resolved file tree and skills for `/new` |
+| *new* draft-claim endpoint (docs/286) | Carries the network mode; persists and reconciles before returning |
 | `src/server/orchestrator/session-container.ts` | Evict-only reconciliation on the container record; raw `egressContainedAtStart` |
 | `src/server/orchestrator/container-lifecycle.ts` | Teardown-epoch cancellation; where `Inherit` is re-resolved (~1435) |
 | `src/server/orchestrator/api-routes-egress.ts` | Strict validation; dedicated session GET for hydration |
