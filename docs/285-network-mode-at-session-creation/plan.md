@@ -57,8 +57,10 @@ The dialog fetches on open and consumes its `PUT` response; no store, no SSE
   (`api-routes-egress.ts` ~319) rather than the full effective-allowlist view. Without this
   the always-visible trigger would not know an existing session has an override *before its
   first open* — wrong, not merely stale.
-- **Every fetch is owned by its session id *and* a local mutation revision**, and a response
-  is applied only if both still match. Session-id ownership alone stops A's response landing
+- **Every fetch is owned by its session id *and* a mutation revision held by one shared
+  coordinator**, and a response is applied only if both still match. Two component-local
+  revisions would not order the dialog's mutations against the composer's — they have to
+  count the same clock. Session-id ownership alone stops A's response landing
   in B, but not an older GET for A landing after a newer PUT or change-card refresh for A.
   The stale-response class is already documented in `session-data.ts` ~260.
 - **Session-filtered refetch on the existing `session_settings_change_card` event.** No new
@@ -117,6 +119,18 @@ resolution, agent creation and parameter assembly happen afterwards
 dispatch returned (~561). An HTTP 200 can precede a crash that loses the turn. Making that
 honest needs durable idempotent admission — the subsystem this design exists to avoid.
 
+### A prerequisite worth naming: "the first send creates the session"
+
+Everything in the next three sections — the Send transaction, the session-keyed pending
+message, the correlated acceptance echo, the idempotent draft claim — is **not about network
+modes**. It is the contract for *creating a session at first send instead of on page load*,
+and it is the whole remaining cost of this feature.
+
+It is stated here because this feature is the first thing to need it, and it cannot ship
+without it. If it grows further under implementation, it deserves its own `docs/NNN` folder
+and its own change, with the network control landing on top — but it does not get skipped,
+and the network control cannot land before it.
+
 ### Send is one async transaction, and the draft is its state
 
 Today `onSend` is synchronous and the composer clears text, dictation and uploads immediately
@@ -148,11 +162,37 @@ flushed onto whichever session is active — overwriting its `sessionId`
 the normal first-send path. So the stash is **keyed by its claimed session, flushed only by
 that session's socket, and its id is never rewritten**.
 
-That stops mis-delivery but not non-delivery: the app maintains only the **active** session's
-socket, so switching away right after the claim would leave the message queued until the user
-returns. **The Send transaction therefore holds through acceptance** — the composer stays in
-its sending state, and the navigation to the new session completes as part of it. A
-background one-shot socket would be the alternative and is disproportionate.
+That stops mis-delivery but not non-delivery, and holding the transaction open does **not**
+fix it: `useSessionWebSocket` owns exactly one connection derived from the current session id
+(`useSessionWebSocket.ts` ~13), so switching to B tears down A's socket and no connection
+exists to flush A. Route activation deliberately respects that navigation rather than letting
+a late claim drag the user back (`useSessionActivation.ts` ~144).
+
+So the guarantee is stated at its true strength rather than overpromised: **the transaction
+navigates to the claimed session as part of itself**, which is the normal path, and if the
+user deliberately navigates elsewhere before acceptance the message **stays queued against
+its own session and is delivered when that session next connects**. It is never delivered to
+the session they switched to. A background one-shot socket would buy immediate delivery for a
+user who chose to leave, and is not worth a second connection lifecycle.
+
+### Acceptance needs a correlated ack, not a resolved `send()`
+
+`send()` returning means only that bytes went to an apparently-open socket — its own contract
+says so and asks for a `requestId`-keyed acknowledgment (`useWebSocket.ts` ~8), and
+`sendUserMessage` currently treats wire-or-stash as success (`send-user-message.ts` ~61).
+The signal already exists: after persistence the server emits `system_user_message` carrying
+`clientRequestId` (`turn-executor.ts` ~493).
+
+- **That echo is the acceptance event**, matched on a **stable request id** the transaction
+  retains across retries.
+- **Rejections must be correlated too.** Today the failure paths emit generic, uncorrelated
+  errors — auth, invalid images, attachments, uploads, missing workspace
+  (`ws-handlers/send-message.ts` ~68, ~423, ~556) — so a rejection cannot currently be tied
+  to the send it belongs to.
+- **Resend must be safe.** `persistUserMessageOnce` dedups only within one dispatch
+  invocation (`turn-executor.ts` ~486), not across a second received frame. Without
+  server-side dedup on `clientRequestId`, a lost echo followed by a retry sends the first
+  message twice — the draft was kept precisely because acceptance was never observed.
 
 **Two things this design must change that are not about network at all**, because it moves
 the first send:
@@ -241,10 +281,15 @@ and an arbitrary session id (`api-routes-egress.ts` ~331). Narrow fix, not a sub
 A lost response after a successful claim leaves an ungraduated session behind. An earlier
 draft said the warm pool reclaims those — **it does not**, once the new path passes
 `skipReuse: true`, which is precisely what stops a later claim from reusing them
-(`claim-session.ts` ~340). So the draft-claim endpoint is either **idempotent per
-generation** — the same generation re-claiming returns the session it already made — or
-ungraduated draft claims get an explicit expiry. Idempotency-per-generation is the smaller of
-the two and falls out of the transaction above, which already retains the claimed id.
+(`claim-session.ts` ~340).
+
+Retaining the claimed id does **not** give idempotency, which an earlier draft claimed: if
+the response is lost there is no id to retain. So the claim carries an **opaque, globally
+unique draft-claim key** — not the in-memory generation counter, which can collide across
+tabs — and the server keeps an atomic key → session mapping, so the same key returns the same
+session through a lost response, a reload, or concurrent retries. The mapping is durable for
+the life of the draft and retired when the session graduates or after a bounded expiry;
+without an expiry it becomes a table that only grows.
 
 There is deliberately no rollback machinery, and the egress deletion cascade
 (`services/session.ts` ~924) stays separable hygiene.
@@ -255,13 +300,16 @@ There is deliberately no rollback machinery, and the egress deletion cascade
    Capture — and the `Inherit` case decided above, tested to whichever promise it lands on.
 2. **Reconciliation in every state** — matching leaves the container; mismatching, `starting`
    and unknown all evict. Must fail if the implementation reads `isEgressContained()`.
-3. **The first message reaches its own session** when the user switches sessions between
-   claim and socket-open — and is not delivered to the session switched to.
+3. **The first message never reaches the wrong session.** Switch sessions between claim and
+   socket-open: the message is not delivered to the session switched to, and is delivered to
+   its own when that session next connects.
+3b. **A lost acceptance echo does not duplicate the first message** — the retry carries the
+   same request id and the server persists it once.
 4. **Attachments arrive with the first message** after a claim — the drain is awaited. This
    test must fail against an implementation that captures upload refs before the claim.
 5. **A failed claim preserves the whole draft** (text, dictation, chips, pending files, issue
-   seed, mode); a **retry after a claim succeeded reuses that session** rather than making a
-   second one; a second new session in the *same repo* resets the mode to Inherit; and Quick
+   seed, mode); a **retry with the same draft-claim key returns the same session** even when
+   the first response was lost entirely; a second new session in the *same repo* resets the mode to Inherit; and Quick
    Capture resets it on every opening.
 6. **Composer and dialog agree** after a change in either, including in a second tab.
 7. **Pre-Send autocomplete** survives a warm-pointer rotation without reading another
