@@ -11,7 +11,10 @@ description: Fold network containment into the composer's existing permission-mo
 2. The Quick Capture (quick session) UI lets me set the new session's network mode
    before I send its first message.
 3. The mode I pick is in force for the session's **first** turn. I never have to
-   start the session, stop it, change Session settings, and continue it.
+   start the session, stop it, change Session settings, and continue it. An explicit
+   **Contained** or **Open** is a hard guarantee; **Inherit workspace** means the
+   workspace setting as it stands when the session's container starts — which is what
+   "inherit" says, and the only case a workspace-default change during Send can move.
 4. "Network mode" is the same choice the session's own Session settings dialog
    offers — Inherit workspace / Contained / Open. It is not the host allowlist,
    which stays where it is (Settings → Network, and the blocked-egress card).
@@ -30,7 +33,9 @@ description: Fold network containment into the composer's existing permission-mo
    opens straight onto the role list instead of a root row that opens another panel.
 10. The control states what it will do before I commit to it: which mode the session
     will run in, and — when that is not the inherited default — that it is a
-    deliberate change from the workspace setting.
+    deliberate change from the workspace setting. While **Inherit workspace** is
+    selected it names the value currently inherited, and does not present that value
+    as pinned (req 3).
 
 11. The control does not claim that a session's *setup* ran under the chosen mode. If the
     workspace default is Open, a trusted repository's `agent.install` may already have run
@@ -58,6 +63,12 @@ description: Fold network containment into the composer's existing permission-mo
   deliberately: it removes the need for a first-turn admission protocol entirely,
   because no runner exists before the choice is made. The warm pool still pre-builds
   standby containers, so this is not a cold start.
+- 2026-08-29 — *Should `Inherit` be snapshotted at Send, so a workspace-default change
+  during Send cannot move it?* No. Containment is resolved when the container is created
+  (`container-lifecycle.ts` ~1435), so snapshotting would mean new claim-owned boot state
+  carried through materialization — machinery for a race nobody would hit except during a
+  concurrent workspace-default change. `Inherit` means what it says: the workspace setting
+  at container start. Explicit Contained/Open keep the hard guarantee. → reqs 3, 10.
 - 2026-08-29 — *A sessionless `/new` would also lose `@file` autocomplete and the `/skills`
   list while composing — a regression the preview decision never covered. Accept it, or
   claim the workspace and withhold the WebSocket?* Neither: **read them from the repo's
