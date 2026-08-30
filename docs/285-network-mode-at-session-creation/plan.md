@@ -164,6 +164,19 @@ merely during the restart, or it cannot fail on this.
   SSE, not `runner.emitMessage`** — the old viewers are attached to the disposed runner and
   the new one has no viewers yet — and it fires once the winning sender has attached to the
   new runner and claimed its dispatch slot.
+
+  **But that live signal must be an optimization, not the recovery path.** A viewer that
+  misses it during an SSE interruption would stay attached to the dead runner indefinitely:
+  disposal removes the old runner's listeners without closing that socket
+  (`container-session-runner.ts` ~3281), reattachment only happens when `attachToRunner` runs
+  with the replacement (`route-registry.ts` ~1037), and the reconnect snapshot carries only
+  `{ sessionIds }` (~130) which the client uses merely to replace the active-runner set
+  (`useServerEvents.ts` ~222) — nothing in it says an attachment is stale. So the invariant
+  is: **the authoritative reconnect snapshot exposes the runner incarnation** (or equivalent
+  durable comparison state), and a viewer holding an older incarnation reconnects on its own.
+  Recovery then converges whether or not the live event arrived. The representation, who owns
+  the counter, and the event shape are implementer decisions; that the snapshot is sufficient
+  by itself is not.
 - **It can interrupt a warm preinstall.** Warm readiness is announced without waiting for the
   fire-and-forget `agent.install` (`warm-pool-manager.ts` ~297, ~331), so a changed-mode
   first Send can destroy an install in flight. The replacement reruns setup; the cost is a
