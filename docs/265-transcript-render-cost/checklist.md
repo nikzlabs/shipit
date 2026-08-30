@@ -26,10 +26,11 @@ From independent review (all fixed, each with a regression test):
 Still open:
 
 - [ ] Re-trace a **streaming turn on a long session** and compare against the table in
-      `plan.md`. A post-merge trace was taken (2026-08-16) and is recorded below, but it
-      does **not** close reqs 1–4: it is a different session with a 20x smaller
-      transcript and no token stream, so it cannot tell the fixed build from the
-      unfixed one.
+      `plan.md`. Two post-merge traces exist (2026-08-16, 2026-08-30) and are recorded
+      below. **Neither closes reqs 1–4**, and for the same reason both times: no token
+      stream. The 2026-08-30 one carried 12 WebSocket frames in 15 s. Until a trace is
+      taken *while an agent is writing a reply*, this stays open — a trace of an idle or
+      scrolling session cannot tell the fixed build from the unfixed one.
 - [ ] Decide from that measurement whether explicit event batching is still needed
       (design 2) — blocked on the item above; deliberately not built on speculation.
 - [ ] Hand-check Ctrl+F, select-all, pin-to-bottom, search jump-to-match on a long
@@ -40,7 +41,10 @@ Still open:
 - [ ] Record one production trace **with the `cc` category enabled**, during a streaming turn on a
       large session. It serves two open questions at once: the reqs 1–4 measurement above, and the
       `visible_layers` reading that decides between the two readings in *Separate finding*
-      correction 2 below.
+      correction 2 below. Attempted again 2026-08-30 and **missed again** — that trace has 0
+      events whose category is exactly `cc`, and no draw-property event on any thread. Whoever
+      records the next one must enable `cc` explicitly in the Performance panel; it is off by
+      default, and the naive check for "cc" in a category string will wrongly say it is on.
 
 ## Post-merge trace, 2026-08-16
 
@@ -72,6 +76,65 @@ consistent with the fix and evidence of nothing.
 
 What would close reqs 1–4: a trace of an agent **streaming a reply** into a session with a
 transcript comparable to the baseline's.
+
+## Second post-merge trace, 2026-08-30
+
+A 14.9 s production trace of `nikz.win`. Recorded while the user scrolled the transcript and
+typed; **not** a streaming turn (12 WebSocket frames in 15 s), and a mid-size session.
+
+| | baseline (2026-08-15) | 2026-08-16 | 2026-08-30 |
+|---|---|---|---|
+| trace length | 17.7 s | 21.8 s | 14.9 s |
+| main thread blocked | 5.28 s (30%) | 3.81 s (18%) | **10.39 s (70%)** |
+| DOM nodes | 53,628 | 3,986 | 14,532 |
+| heap peak | 461 MB | 109 MB | 164 MB |
+| live listeners peak | 206,457 | 2,993 | 41,274 |
+
+**Does not close reqs 1–4.** Same defect as 2026-08-16 — no token stream — so it still cannot
+distinguish the fixed build from the unfixed one. It is recorded because it establishes
+something else.
+
+### The dominant cost is now syntax highlighting, not row rendering
+
+`hljs.highlightAuto()` is **52% of the trace**: 7,786 ms of self time in the `_highlight`
+leaf, 8,847 ms across the whole highlight.js module, out of 14,897 ms. 35 calls, all
+synchronous inside a React render. Reconstructed stack, leaf first: `_highlight` ← the
+`.map()` arrow inside `highlightAuto` ← a `useMemo` callback ← a function component ←
+`renderWithHooks` ← `beginWork` ← `renderRootSync`.
+
+`highlightAuto` is not told the language, so it highlights the text once per registered
+language — all 192 — and compares relevance. Measured in a browser on 12 KB (11,975 chars):
+
+| call | cost |
+|---|---|
+| `highlightAuto(code)` — all 192 languages | 248.9 ms |
+| `highlightAuto(code, subset)` — 13 languages | 19.6 ms |
+| `highlight(code, {language})` | 4.1 ms |
+
+248.9 ms reproduces the 274 ms in the trace. Two of the three call sites can know the language
+and do not: `ToolResult.tsx:190` (its `extractFilePathFromReadContent` helper is dead code —
+every path returns `null`, and line 185 discards the result) and `DiffBlock.tsx:259` (the
+parent's `filePath` is not passed to `WriteContent`). Tracked separately.
+
+**One payload, ~35 times — mechanism NOT established.** Cost per call is near-constant
+(p50 274 ms, p90 276 ms, max 277 ms) while `highlightAuto` cost scales with input size
+(13 ms at 1 line, 172 ms at 200, 396 ms at 600). So the same content is highlighted over and
+over. `useMemo` compares strings by value and cannot retrigger on an unchanged one, which
+points at a remount rather than a re-render — supported by listeners more than doubling
+(19,521 → 41,274) while DOM nodes stayed flat (14,524 → 14,532) and never falling across
+several GCs. Whether the row memo of this design is implicated is **not** established.
+
+### Idle compositing persists, and `cc` was missed again
+
+`Layerize` 0.5590 ms/call and `Commit` 0.1211 ms/call over 638 frames, against the
+*Separate finding* section's 0.6500 and 0.1113 — the phenomenon reproduces on a second
+production recording, so correction 2's open question is not an artifact of one trace.
+42.8 main-thread frames/s with nothing streaming.
+
+The `visible_layers` reading is still missing: 0 events with category exactly `cc`, and the
+renderer's Compositor thread carries the same 21 PipelineReporter-family event names as
+before, with no draw-property event under any name. **This trace cannot decide between
+readings (a) and (b) either.**
 
 ## Separate finding — continuous idle compositing
 
