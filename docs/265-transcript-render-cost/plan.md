@@ -104,6 +104,14 @@ A later production trace (2026-08-30, 14.9 s) found `hljs.highlightAuto` called 
 — i.e. the *same* payload, over and over. Every call site already wraps it in a `useMemo` keyed
 on the block's text, which is why that reads as impossible.
 
+**Two independent changes came out of that trace, and they compose.** `syntax-highlight.ts` bounds
+highlight.js to a registered subset, which makes each auto-detect cheaper (roughly 20 ms for this
+block rather than 274) and is the single place language policy lives. This section makes the answer
+survive a fiber that does not, so a *repeat* costs nothing. `highlightCached` therefore delegates to
+`highlightCode` and decides nothing itself — adding a language still reaches every call site with no
+edit in the cache. The absolute milliseconds below are from before the subset landed; the counts,
+which is what everything here rests on, are unaffected.
+
 It is not, because **a `useMemo` is not a cache**: React discards a memoized value when the fiber
 does not survive. Two cases, and the second is narrower than it is tempting to write:
 

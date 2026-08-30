@@ -26,9 +26,15 @@
  *     → http://127.0.0.1:5199/transcript-highlight-probe.html
  *
  * Drive it from the console or Playwright. `window.__probe` holds
- * `{ auto, lang, autoBytes, autoAt, listRenders }`; `autoAt` is a timestamp per
- * call, so the gaps between calls reconstruct the burst structure the trace
- * showed. `window.__tick()` forces a `MessageList` re-render with a changed prop.
+ * `{ auto, lang, autoBytes, autoAt, listRenders, blockMounts, blockUnmounts }`;
+ * `autoAt` is a timestamp per call, so the gaps between calls reconstruct the
+ * burst structure the trace showed. `window.__tick()` forces a `MessageList`
+ * re-render with a changed prop, and `window.__setLead(n)` prepends `n` messages
+ * to churn every row's key.
+ *
+ * **To ask "did this remount?", read `blockMounts`, not `auto`.** `highlightCached`
+ * makes a remount of an already-seen block a map lookup, so a remount costs zero
+ * highlights by design.
  *
  * **Check `getComputedStyle(row).contentVisibility === "auto"` before trusting a
  * run.** The first version of this fixture measured `visible`, because Tailwind
@@ -46,11 +52,24 @@
  * becomes a surface: `WriteContent` highlights a WHOLE file body (16,979 bytes
  * for the 400-line fixture here — the trace's ~274 ms), while `ReadResult`
  * highlights only its `READ_MAX_LINES` preview unless the user expanded it.
+ *
+ * Note the trace's 274 ms was measured against the unbounded grammar set. Since
+ * `syntax-highlight.ts` bounded it, one auto-detect of that block is roughly
+ * 20 ms — so the absolute numbers here are historical, while the counts, which
+ * are what the eliminations rest on, are not.
  */
 
 import { createRoot } from "react-dom/client";
 import { useState } from "react";
-import hljs from "highlight.js";
+// `highlight.js/lib/core`, NOT `highlight.js`. They are different module
+// instances, and only the core one is what the app calls: `syntax-highlight.ts`
+// imports core and registers a bounded set of grammars on it. Patching the full
+// build instead intercepts nothing at all, so `__probe.auto` reads 0 forever and
+// every elimination this fixture records becomes a false negative. That is the
+// third time an instrument here was blind by construction (see the
+// `contentVisibility` and listener-counting notes) — check a probe reports a
+// non-zero baseline at mount before trusting a zero anywhere else.
+import hljs from "highlight.js/lib/core";
 import "./transcript-highlight-probe.css";
 import { MessageList } from "../../src/client/components/MessageList/MessageList.js";
 import { useSessionStore } from "../../src/client/stores/session-store.js";
@@ -102,7 +121,7 @@ hljs.highlight = (...args) => {
 // `window.__listeners` is installed by an INLINE script in the HTML, not here —
 // see the comment there for why a module-scope patch would count too little.
 
-/** ~400 lines, i.e. the ~274 ms `highlightAuto` the production trace measured. */
+/** ~400 lines — the block size the production trace measured at ~274 ms. */
 const BIG = Array.from({ length: 400 }, (_, i) => `  const value_${i} = compute(${i}) + offset;`).join("\n");
 const REPORT = `## Findings\n\nProse long enough that the report overflows its clamp.\n\n${"- a finding line\n".repeat(30)}\n\n\`\`\`\n${BIG}\n\`\`\`\n\nEnd of report.`;
 

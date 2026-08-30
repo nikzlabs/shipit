@@ -83,6 +83,11 @@ Still open:
       message shifts every bubble's `m-${el.index}`, but React reconciles keyed children across the
       whole list, so the key *set* is unchanged except at its ends: each fiber is reused and
       re-rendered with the next row's props. Six flips produced **0** `CodeBlock` mounts.
+- [x] Point the probe at `highlight.js/lib/core`, the instance `syntax-highlight.ts` actually calls.
+      Patching the full `highlight.js` build intercepts nothing, so `__probe.auto` read 0 forever and
+      every elimination became a false negative — the **third** instrument in this investigation that
+      was blind by construction. Each run now checks for a non-zero baseline at mount before any zero
+      elsewhere is believed.
 - [x] Give the probe a mount counter that does not go through `highlight.js`. Counting
       `highlightAuto` can no longer detect a remount at all, because `highlightCached` makes one a
       map lookup — the fix blinds the obvious probe, which is the same masking review caught in
