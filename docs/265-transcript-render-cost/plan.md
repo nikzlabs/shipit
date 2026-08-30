@@ -472,3 +472,30 @@ one payload is being highlighted ~35 times, which is a memoization or remount fa
 same family this design set out to remove. Whether the row memo is implicated is not
 established here; only 12 WebSocket frames arrived, so nothing was streaming, and the trace
 shows scrolling instead. Tracked separately.
+
+## A second, separate highlight cost: one 8.3 s call (2026-08-30)
+
+A different trace the same day (17.3 s, main thread busy 10.8 s) holds a **single**
+`FunctionCall` of **8,264 ms** with 162 minor GCs inside it — one uninterrupted synchronous
+`highlightAuto`. That is not the loop above and nothing in this design addresses it: the loop
+is 35 repeats of one ~274 ms payload, this is one call that never returns in time. Neither
+the row memo nor `highlightCached` can help, because the *first* call is already too slow.
+
+The cause is per-grammar, not per-call: `c`, `cpp` and `csharp` are **quadratic in input
+length** on prose-like text — measured on repeated punctuation-free English, auto-detecting
+over all 27 registered grammars costs 537 ms at 5.2 KB, 1,367 ms at 10.4 KB, 5,490 ms at
+20.8 KB and 21,088 ms at 41.6 KB, while the other 24 cost 32 / 89 / 230 / 696 ms. On 15.6 KB
+they are cpp 1,539 ms, c 1,574 ms, csharp 1,327 ms against 138 ms for all 24 others combined.
+The full 192-grammar build costs 8,747 ms on 20.8 KB, which both matches the traced 8,264 ms
+and shows this **predates** the subset change rather than being caused by it — bounding the
+set made it strictly better, just not better enough.
+
+Fixed by splitting the auto-detect set from the registered set (the three stay registered, so
+an explicit ` ```c ` fence still highlights) and capping auto-detection at 12,000 characters
+as a backstop against the next such grammar. See `src/client/syntax-highlight.ts`.
+
+The payload was a large unlabelled code block, ~20-30 KB inferred from the curve above rather
+than captured. Which surface supplied it is **not** settled — the docs tab was open, but
+`/api/sessions/:id/docs` returns metadata only and `DocsViewer.tsx` highlights nothing, so the
+docs list cannot be the source; the chat transcript is the only surface that loaded a large
+body in that window.

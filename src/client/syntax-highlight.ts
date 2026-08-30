@@ -11,12 +11,19 @@
  * smaller download, and a cheaper fallback for the one call site that still has
  * to guess.
  *
- * **The behaviour change this carries.** A language absent from
+ * **Two lists, not one.** {@link HIGHLIGHT_LANGUAGES} is what is *registered* —
+ * what a fence may name. {@link AUTO_DETECT_SUBSET} is what is *guessed* across
+ * when a fence names nothing, and it is deliberately smaller: three registered
+ * grammars are quadratic on prose and cost ~95% of a guess, so they are
+ * excluded from guessing while staying available by name.
+ *
+ * **The behaviour changes this carries.** A language absent from
  * {@link HIGHLIGHT_LANGUAGES} is no longer highlighted at all: a ```haskell fence
  * renders as plain monospace rather than colored (see {@link highlightCode} for
- * why plain rather than guessed). That is the deliberate trade, and this list is
- * the whole of it — add a language here and every call site gets it, with no
- * other edit anywhere.
+ * why plain rather than guessed). An **unlabelled** fence holding C, C++ or C#
+ * is no longer detected, and one longer than {@link AUTO_DETECT_MAX_CHARS} is
+ * not guessed at either. Those are the deliberate trades, and these two lists
+ * plus that bound are the whole of them.
  *
  * Prefer {@link languageFromPath} over auto-detection wherever a file path is in
  * hand. Measured on 12 KB of ShipIt source: `highlight` with a known language is
@@ -94,18 +101,7 @@ for (const [name, definition] of Object.entries(LANGUAGE_DEFINITIONS)) {
   hljs.registerLanguage(name, definition);
 }
 
-/**
- * The language names to auto-detect across, for the one call site that has no
- * file path or fence label to go on.
- *
- * Identical to what is registered, and passed explicitly anyway: the cost of
- * `highlightAuto` is linear in the subset, so the call site says out loud how
- * many grammars it is willing to pay for rather than inheriting whatever the
- * registry happens to hold.
- */
-const AUTO_DETECT_SUBSET: string[] = Object.keys(LANGUAGE_DEFINITIONS);
-
-export const HIGHLIGHT_LANGUAGES: readonly string[] = AUTO_DETECT_SUBSET;
+export const HIGHLIGHT_LANGUAGES: readonly string[] = Object.keys(LANGUAGE_DEFINITIONS);
 
 /**
  * A language ShipIt registered. Typing the two maps below with this is what
@@ -114,6 +110,60 @@ export const HIGHLIGHT_LANGUAGES: readonly string[] = AUTO_DETECT_SUBSET;
  * the auto-detection it replaced — and here it simply does not compile.
  */
 type RegisteredLanguage = keyof typeof LANGUAGE_DEFINITIONS;
+
+/**
+ * The grammars to *guess* across — the registered set minus `c`, `cpp` and
+ * `csharp`. They stay registered, so a ```c fence still highlights normally;
+ * only guessing changes.
+ *
+ * **Why those three.** All three are quadratic in input length on prose whose
+ * words are not broken up by sentence punctuation, which their declaration
+ * matchers backtrack across. On 15.6 KB of it: c 1,574 ms, cpp 1,539 ms,
+ * csharp 1,327 ms — **all 24 below combined are 138 ms.** A production trace
+ * caught that as one 8,264 ms synchronous highlight that froze the UI. Full
+ * measurements, and why this predates bounding the registered set rather than
+ * being caused by it, are in `docs/265-transcript-render-cost/plan.md`.
+ *
+ * **The trade.** An *unlabelled* fence containing C, C++ or C# is no longer
+ * detected and renders as plain monospace. An easy trade: those three grammars
+ * are also the ones most prone to claiming prose that is not code at all.
+ *
+ * Kept as an explicit list rather than a filter over
+ * {@link LANGUAGE_DEFINITIONS}, so a grammar added there is a deliberate
+ * decision here too — the test asserting the two differ by exactly these three
+ * names is what makes the omission loud.
+ */
+const AUTO_DETECT_SUBSET: RegisteredLanguage[] = [
+  "bash", "css", "dart", "diff", "dockerfile", "go", "ini", "java",
+  "javascript", "json", "kotlin", "markdown", "php", "plaintext", "python",
+  "ruby", "rust", "scss", "shell", "sql", "swift", "typescript", "xml", "yaml",
+];
+
+/**
+ * Above this many characters, an unlabelled block is not guessed at.
+ *
+ * A backstop, not the fix: dropping the three grammars above solves the case we
+ * measured, and this stops the *next* one — a grammar that turns quadratic on
+ * some input nobody has tried, or a pathological input to a linear one. A guess
+ * is inherently N passes over the whole block, so its cost can only be bounded
+ * by bounding what goes in.
+ *
+ * 12,000 comes from the worst prose found: the 24 grammars above cost ~90 ms at
+ * 12 KB, ~138 ms at 16 KB and ~255 ms at 24 KB. It keeps the worst case inside
+ * roughly a tenth of a second while sitting far above any ordinary unlabelled
+ * fence.
+ *
+ * **A named language is deliberately not capped.** `hljs.highlight` with an
+ * explicit grammar is one linear pass — 41 ms on 200 KB of the same input — so
+ * capping it would strip highlighting from big files to save nothing.
+ */
+const AUTO_DETECT_MAX_CHARS = 12_000;
+
+/** Test-only: the auto-detect policy, so a guard cannot drift from it. */
+export const AUTO_DETECT = {
+  LANGUAGES: AUTO_DETECT_SUBSET as readonly string[],
+  MAX_CHARS: AUTO_DETECT_MAX_CHARS,
+} as const;
 
 /** Extension → registered language name. */
 const EXTENSION_LANGUAGES: Record<string, RegisteredLanguage> = {
@@ -183,7 +233,9 @@ export function languageFromPath(filePath: string): RegisteredLanguage | null {
  *   caller told us what this is; not having the grammar does not license us to
  *   overrule them.
  * - **No language at all** (`null`, `undefined`, `""`) → auto-detected across
- *   {@link HIGHLIGHT_LANGUAGES}, because there is nothing else to go on.
+ *   {@link AUTO_DETECT_SUBSET}, because there is nothing else to go on — unless
+ *   the block is longer than {@link AUTO_DETECT_MAX_CHARS}, in which case `null`
+ *   again: past that size, guessing is worth less than the frame it costs.
  *
  * Also `null` when highlighting throws — highlighting is decoration, and a
  * grammar that chokes on one file must not take the transcript with it.
@@ -191,8 +243,10 @@ export function languageFromPath(filePath: string): RegisteredLanguage | null {
 export function highlightCode(code: string, language?: string | null): string | null {
   try {
     if (language) {
+      // No size cap here on purpose: one named grammar is a linear pass.
       return hljs.getLanguage(language) ? hljs.highlight(code, { language }).value : null;
     }
+    if (code.length > AUTO_DETECT_MAX_CHARS) return null;
     // The same array every call: this runs inside a React render, and the
     // allocation a spread would add is on exactly the path being made cheaper.
     // `highlightAuto` only filters and maps it, never mutates.

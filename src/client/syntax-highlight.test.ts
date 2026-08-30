@@ -1,5 +1,18 @@
 import { describe, it, expect } from "vitest";
-import { hljs, HIGHLIGHT_LANGUAGES, highlightCode, languageFromPath } from "./syntax-highlight.js";
+import { AUTO_DETECT, hljs, HIGHLIGHT_LANGUAGES, highlightCode, languageFromPath } from "./syntax-highlight.js";
+
+/**
+ * Prose that the `c`, `cpp` and `csharp` grammars are quadratic on: words with
+ * no sentence punctuation to break the run, which their declaration matchers
+ * backtrack across. Sentence-ending punctuation makes the same length cheap, so
+ * a guard built on ordinary sentences would pass no matter what is registered.
+ */
+function pathologicalProse(chars: number): string {
+  const unit = "the quick brown fox jumps over the lazy dog ";
+  let text = "";
+  while (text.length < chars) text += unit;
+  return text.slice(0, chars);
+}
 
 describe("HIGHLIGHT_LANGUAGES", () => {
   it("registers every language it names", () => {
@@ -26,6 +39,75 @@ describe("HIGHLIGHT_LANGUAGES", () => {
     expect(hljs.getLanguage("html")?.name).toBe("HTML, XML");
     expect(hljs.getLanguage("sh")?.name).toBe("Bash");
     expect(hljs.getLanguage("toml")?.name).toBe("TOML, also INI");
+  });
+});
+
+describe("the auto-detect subset", () => {
+  it("excludes the three grammars that are quadratic on prose", () => {
+    // Guessing across these cost a production session an 8.3 s synchronous
+    // freeze; they are ~95% of a guess and every other grammar combined is the
+    // remaining 5%. See the module doc for the measurements.
+    for (const quadratic of ["c", "cpp", "csharp"]) {
+      expect(AUTO_DETECT.LANGUAGES).not.toContain(quadratic);
+    }
+  });
+
+  it("still registers those three, so a fence naming one highlights normally", () => {
+    // Only *guessing* changed. A ```c fence is one linear pass and stays colored.
+    expect(highlightCode("int main(void) { return 0; }", "c")).toContain("hljs-keyword");
+    expect(highlightCode("auto x = std::move(y);", "cpp")).toContain("hljs-");
+    expect(highlightCode("public class A { }", "csharp")).toContain("hljs-keyword");
+  });
+
+  it("is the registered set minus exactly those three", () => {
+    // Both directions matter and neither is visible at the call site. A name
+    // guessed at but not registered is silently dropped by `highlightAuto`,
+    // shrinking detection with no error anywhere; and a grammar added to the
+    // registered set but forgotten here would never be detected. This is what
+    // makes either omission a red build rather than a quiet loss.
+    const expected = HIGHLIGHT_LANGUAGES.filter((n) => !["c", "cpp", "csharp"].includes(n));
+    expect([...AUTO_DETECT.LANGUAGES].sort()).toEqual([...expected].sort());
+  });
+
+  it("still detects a real language it does cover", () => {
+    // Removing three grammars must not cost detection quality on what is left.
+    const ts = "export function add(a: number, b: number): number {\n  return a + b;\n}\n";
+    expect(highlightCode(ts, null)).toContain("hljs-keyword");
+  });
+});
+
+describe("the auto-detect size cap", () => {
+  it("does not guess at a block larger than the cap", () => {
+    const oversized = pathologicalProse(AUTO_DETECT.MAX_CHARS + 1);
+    expect(highlightCode(oversized, null)).toBeNull();
+  });
+
+  it("still guesses at a block at the cap", () => {
+    expect(highlightCode(pathologicalProse(AUTO_DETECT.MAX_CHARS), null)).not.toBeNull();
+  });
+
+  it("does not cap a named language", () => {
+    // `hljs.highlight` with an explicit grammar is one linear pass — 41 ms on
+    // 200 KB — so capping it would strip highlighting from big files to save
+    // nothing.
+    const big = `const x = 1;\n`.repeat(AUTO_DETECT.MAX_CHARS);
+    expect(highlightCode(big, "typescript")).toContain("hljs-keyword");
+  });
+
+  it("guesses at prose below the cap without freezing the frame", () => {
+    // The real guard. Before the three quadratic grammars were dropped, this
+    // input cost ~1,650 ms in one synchronous call — the shape that froze a
+    // production session for 8.3 s at a larger size. It is now ~90 ms.
+    const code = pathologicalProse(AUTO_DETECT.MAX_CHARS - 500);
+    highlightCode("warm up the regex compiler", null);
+
+    const started = performance.now();
+    highlightCode(code, null);
+    const elapsed = performance.now() - started;
+
+    // Generous against a loaded CI box, and still an order of magnitude under
+    // what the excluded grammars cost on this input.
+    expect(elapsed).toBeLessThan(500);
   });
 });
 
