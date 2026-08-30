@@ -259,7 +259,11 @@ export function languageFromPath(filePath: string): RegisteredLanguage | null {
 export function highlightCode(code: string, language?: string | null): string | null {
   try {
     if (language) {
-      // No size cap here on purpose: one named grammar is a linear pass.
+      // No size cap here on purpose — see AUTO_DETECT_MAX_CHARS above for why.
+      // NOT because a named grammar is a linear pass: it is the same
+      // `_highlight` routine, and on prose-shaped text `c`/`cpp`/`csharp` are
+      // quadratic whether or not the caller named them. What makes this path
+      // safe is the content real callers pass, not the call.
       return hljs.getLanguage(language) ? hljs.highlight(code, { language }).value : null;
     }
     if (code.length > AUTO_DETECT_MAX_CHARS) return null;

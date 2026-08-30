@@ -135,7 +135,16 @@ Still open:
       **Every named engine is now eliminated too**: periodic re-render (any cadence, by
       construction), `@formkit/auto-animate`, keyed ancestors, `useNarrowContainer`, history
       rehydration, SSE, click/focus, and — on the viewport measurement — the `AppLayout`
-      `isMobile` swap. What would close it: a trace whose `useMemo` frame carries the React
+      `isMobile` swap. **The Docs-tab trigger did not close it either, and this is the trap to
+      avoid repeating.** A second trace (2026-08-30 12:00, 17.3 s) has an 8,264 ms synchronous
+      call that the user reproduced as Docs-tab-conditional, which looked like the handle this
+      item needs. It is not: the leaf is `highlight.js` (twenty sampled functions align at a
+      constant −1/−2 column offset with the first trace's module, and the 8,264 ms reproduces
+      as 8,747 ms on 20.8 KB of prose), while the genuinely tab-conditional bug found in that
+      trace — `DocsViewer`'s O(u²·n) grouping — accounts for **≤90 ms** there and is a
+      *different* cost. The user then confirmed the freeze also occurs on a repo with few
+      markdown files, where the grouping bug cannot bite. So a tab-conditional trigger for a
+      transcript highlight is real and still unexplained. What would close it: a trace whose
       component name (record with "Highlight updates when components render" on, or use the React
       Profiler). Whoever picks this up starts from an empty candidate list, not from these.
 - [x] **The Docs tab's own freeze is identified and fixed** — a *different* cost from the loop above,
