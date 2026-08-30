@@ -23,11 +23,28 @@ From independent review (all fixed, each with a regression test):
 - [x] The history cache was FIFO despite the LRU intent — a 304 did not count as a use,
       so the most-revisited session was the one that aged out
 
-- [x] Cache syntax highlighting outside React render state, so a remount or an abandoned
-      concurrent render stops re-paying 274 ms for unchanged text (design 2b), with an
-      end-to-end guard that counts `hljs` calls through the real row → markdown →
+- [x] Cache syntax highlighting outside React render state, so a remount stops re-paying 274 ms
+      for unchanged text (design 2b), with an end-to-end guard through the real row → markdown →
       `CodeBlock` chain (`transcript-highlight-cost.test.tsx`) — `transcript-row-memo.test.tsx`
       mocks the row and is blind to everything below it
+
+From independent review of that change (all fixed, each with a regression test):
+
+- [x] The write-up attributed the 35 calls to abandoned concurrent renders under
+      `useDeferredValue`, on the strength of the trace's 2,515 scroll events. Refuted: the
+      transcript's scroll handler only mutates refs, so scrolling schedules no React update, and
+      yielding to input can pause work without discarding it. The claim is now the narrow one
+      (a mount always runs the factory; an update compares against the last *commit*), and the
+      trigger is recorded as unidentified rather than explained.
+- [x] The cache was not actually LRU: replacing an entry (same code, different language)
+      overwrote the `Map` value without moving its insertion position, so a just-recomputed
+      block stayed the oldest and was the next evicted
+- [x] 64 entries bounds cardinality, not memory — nothing caps how long a code block may be. A
+      character budget is enforced alongside the entry cap, with the most recent entry always kept
+- [x] The transcript guards were masked by the cache they validate: counting `hljs` calls, a broken
+      memo chain would have shown up as *zero* extra highlights. The probe moved to the memo
+      boundary (`highlightCached`), so they measure the chain independently of the cache, plus a
+      guard at more distinct blocks than the cache can hold
 
 Still open:
 
@@ -37,6 +54,9 @@ Still open:
       cache makes the cost mechanism-independent; it does not identify the trigger. What would close
       it: a trace whose `useMemo` frame carries the React component name, or a recording with
       "Highlight updates when components render" on.
+- [ ] The two modal-only `highlightAuto` sites (`ReadResult`, `WriteContent`) still re-highlight on
+      every modal open. Deliberately not wired here — a concurrent session is changing language
+      selection in exactly those files — so this is a one-line follow-up for whoever lands that.
 
 - [ ] Re-trace a **streaming turn on a long session** and compare against the table in
       `plan.md`. Two post-merge traces exist (2026-08-16, 2026-08-30) and are recorded

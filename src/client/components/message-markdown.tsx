@@ -580,8 +580,14 @@ export const CodeBlock = memo(({ code, language }: { code: string; language: str
   // unlabeled fence is still guessed at over the registered subset, and an
   // unknown one still renders plain (see syntax-highlight.ts, which stays the
   // one place that policy lives). What the wrapper adds is that the answer
-  // survives a fiber that does not — a remount re-runs this `useMemo`, and
-  // before the cache it re-ran the auto-detection with it.
+  // survives a fiber that does not — a REMOUNT re-runs this `useMemo`, and
+  // before the cache it re-ran the auto-detection with it: every time a modal,
+  // tooltip or disclosure holding a code block reopens, and for the whole
+  // conversation if anything remounts transcript rows. See
+  // `utils/highlight-cache.ts` for the exact guarantee and for what is still
+  // unexplained about the trace that prompted it. The `useMemo` stays as the
+  // cheap first line: an unchanged render of a surviving fiber skips even the
+  // map lookup.
   const html = useMemo(() => highlightCached(code, language), [code, language]);
 
   return (

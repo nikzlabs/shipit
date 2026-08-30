@@ -11,8 +11,10 @@ import { highlightCode } from "../syntax-highlight.js";
  * the answer outlives the fiber that asked for it.
  *
  * **Why that is needed.** Every call site already wraps the call in a `useMemo`
- * keyed on the block's text, which is not a cache — React discards a memoized
- * value when the fiber does not survive:
+ * keyed on the block's text, which is why the repetition below reads as
+ * impossible. It is not, because a `useMemo` is not a cache — React's own
+ * documentation says a memoized value may be thrown away. Precisely, and this is
+ * narrower than it is tempting to write:
  *
  *   - A **mounting** component always runs the factory. So every remount pays
  *     the full cost again — a code block behind a modal, a tooltip or a
@@ -26,17 +28,22 @@ import { highlightCode } from "../syntax-highlight.js";
  *     — but an *unchanged* block is not recomputed merely because a render was
  *     interrupted.
  *
+ * Keeping the answer outside render state removes the cost in both cases: it
+ * becomes a property of the *content* rather than of the render lifecycle.
+ *
  * The production trace that prompted this (2026-08-30) measured 35
  * `highlightAuto` calls on one payload for 9.5 s of a 10.4 s busy main thread,
  * at ~274 ms each. Bounding the grammar set has since cut a single auto-detect
  * of that block to roughly 20 ms, so what is saved per remount is much smaller
  * than it was — but it is still a synchronous render-blocking pass over the
- * whole block, repeated for text that has not changed, and the loop that
- * repeated it 29 times is still unidentified (see
- * `docs/265-transcript-render-cost`).
+ * whole block, repeated for text that has not changed.
  *
- * **This is a mitigation, not an identification**: it removes the cost of a
- * remount whatever causes one, and does not name what does.
+ * **This is a mitigation, not an identification.** Which surface produced those
+ * 35 calls is still open — see `docs/265-transcript-render-cost`. A real-browser
+ * harness ruled out scrolling, parent re-renders and message-object churn as
+ * triggers, and no key collision or render-declared component type was found in
+ * the transcript chain. What this changes is that the cost no longer depends on
+ * which of them it turns out to be.
  *
  * Keyed by the code string itself (not by a `language + code` concatenation,
  * which would retain a second copy of every block). A block's language is fixed
@@ -82,6 +89,7 @@ let cachedChars = 0;
 
 /** Both halves of an entry are retained, so both count against the budget. */
 function weigh(code: string, entry: Entry): number {
+  // `?? 0` because `html` is legitimately null for an unregistered language.
   return code.length + (entry.html?.length ?? 0);
 }
 

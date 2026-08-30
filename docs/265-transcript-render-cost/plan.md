@@ -105,25 +105,42 @@ A later production trace (2026-08-30, 14.9 s) found `hljs.highlightAuto` called 
 on the block's text, which is why that reads as impossible.
 
 It is not, because **a `useMemo` is not a cache**: React discards a memoized value when the fiber
-does not survive. Two ordinary things do that here. A **remount** — a modal, tooltip or
-disclosure reopening; a transcript row whose key changed — and an **abandoned concurrent render**:
-step 1 renders the transcript behind `useDeferredValue`, so React renders it at low priority and
-throws the work in progress away when higher-priority work arrives. On an update React compares
-`useMemo` deps against the last *committed* value — verified in React 19.2.8 at
-`updateWorkInProgressHook`, which clones the hook from `currentlyRenderingFiber.alternate`, and
-`updateMemo`, which compares against that clone's deps — so every restart between a text change
-and its commit recomputes the identical new payload and discards it again. At 274 ms a highlight,
-one delivered token can cost several, which is why the durations are constant rather than growing.
+does not survive. Two cases, and the second is narrower than it is tempting to write:
+
+- A **mounting** component always runs the factory, so every remount pays the full cost again — a
+  modal, tooltip or disclosure holding a code block reopening, or anything that remounts
+  transcript rows.
+- On an **update**, React compares deps against the last *committed* value rather than the last
+  attempt (verified in react-dom 19.2.8: `updateWorkInProgressHook` clones the hook from
+  `currentlyRenderingFiber.alternate`, and `updateMemo` compares against that clone). So a render
+  React abandons and retries recomputes any memo whose deps differ from the commit — but an
+  **unchanged** block is *not* recomputed merely because a render was interrupted.
+
+An earlier draft of this section attributed the 35 calls to the second case, on the grounds that
+step 1 renders the transcript behind `useDeferredValue` and the trace has 2,515 scroll events.
+Independent review refuted it and the refutation holds: the transcript's scroll handler only
+mutates refs (`useMessageScroll.ts`), so scrolling schedules no React update at all, and yielding
+to browser input can pause work without discarding it. 2,515 scroll events are not 2,515
+higher-priority React updates. **The trigger for those 35 calls is therefore still unidentified.**
 
 So the answer moves out of render state into a bounded LRU keyed by the code string
 (`utils/highlight-cache.ts`), making the cost a property of the *content* rather than of the
-render lifecycle. Nothing about which language is chosen changes.
+render lifecycle. That is a **mitigation, not an identification**: it removes the cost of a
+remount whatever causes one, and it does not prove which surface the trace recorded. Nothing about
+which language is chosen changes.
 
 Verified in a real browser (a Vite harness rendering the real `MessageList` over a 120-message
 transcript, so `content-visibility`, `ResizeObserver` and `IntersectionObserver` are real rather
 than jsdom stubs): scrolling hard, 20 parent re-renders, and replacing every `ChatMessage` object
 each produce **zero** extra highlights. So the memo chain from step 1 holds, and the repetition
 the trace recorded is not a defeated row memo.
+
+Whole-transcript remount paths that *do* exist, for whoever picks the trigger question up: history
+being cleared and rehydrated; the onboarding/home panel replacing the conversation (`App.tsx`); and
+crossing the mobile/desktop breakpoint, which swaps two distinct trees in `AppLayout`. Mobile
+Chat/Workspace tab switching is **not** one — `MobileContentPanels` keeps both trees mounted on
+purpose. None of the three is obviously firing 35 times in 15 s, which is why the question is open
+rather than answered.
 
 ### 3. Revalidate instead of re-download (reqs 10, 11)
 
