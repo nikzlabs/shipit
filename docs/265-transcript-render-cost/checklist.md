@@ -94,6 +94,15 @@ Still open:
       `transcript-highlight-cost.test.tsx`. The probe now counts `code.hljs` nodes entering and
       leaving the DOM.
 
+- [x] Eliminate the ~1.8 s cadence hypotheses. A periodic **re-render** cannot be the engine at any
+      cadence — 8 forced re-renders at the real timers' 1 s produce 0 block mounts and 0 highlights,
+      and only a remount can re-highlight. `@formkit/auto-animate` (the closest cadence in the repo,
+      2 s) is sidebar-only and not an ancestor of `MessageList`; the only keyed elements in
+      `App.tsx`/`AppLayout.tsx` are a banner and a dialog; `useNarrowContainer` is Issues-panel only.
+- [x] Give the mount counter a positive control (`window.__swapWrapper`, the `AppLayout`
+      Fragment/div shape), so a "0 mounts" result is falsifiable rather than free. Four flips: 3
+      mounts, and 3 highlight runs with the cache neutered against 0 with it live.
+
 - [ ] **The loop's engine is still unidentified.** The 35 calls are one loop — 29 consecutive calls,
       2.8–6.1 ms apart, 8.2 s long, period = one highlight — that starts 1.8 s *after* scrolling
       begins and outlives the last scroll event by 4.8 s, scheduling each iteration through a

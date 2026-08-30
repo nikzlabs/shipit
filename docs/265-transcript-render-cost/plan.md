@@ -227,6 +227,51 @@ ends — each fiber is reused and re-rendered with the next row's props. Six fli
 `CodeBlock` mounts. That leaves the remount being driven from **above** `MessageList`: the
 whole-transcript paths listed earlier, or something else in the chat panel that unmounts it.
 
+#### The 1.8 s cadence, and what it is not
+
+Before the continuous burst the heavy calls are isolated and roughly evenly spaced — 3 at ~0 ms, 2
+at ~1,874 ms, 1 at ~3,649 ms — then continuous from 6,626 ms to 14,860 ms. Something on a ~1.8 s
+cadence appears to remount transcript rows, and then stops being periodic and self-sustains.
+
+**A periodic re-render cannot be it, whatever its cadence.** Driving the probe with a re-render every
+1 s for 8 s — the cadence of the real timers, `GitHubRateLimitBanner` and `useContainerHealthPoll`,
+both of which force a render every 1,000 ms — produces **0 block mounts and 0 highlights**. Since
+only a remount can re-highlight, no timer that merely re-renders can be the engine.
+
+Eliminated by inspection in the same pass, each for a structural reason rather than a measurement:
+
+- **`@formkit/auto-animate`** (docs/265's own 2 s per-element interval, the closest cadence in the
+  codebase) is used in exactly one place, `SessionSidebar/SessionGroup.tsx` — a *sibling* of the chat
+  panel, not an ancestor of `MessageList`. It cannot remount the conversation.
+- **Keyed ancestors**: the only `key=` in `App.tsx`/`AppLayout.tsx` are on `RepoTrustBanner` and
+  `SessionSettingsDialog`. Neither is an ancestor of the conversation.
+- **`useNarrowContainer`** — the one container-width boolean that could oscillate against its own
+  layout — is used by the Issues panel only.
+- **History rehydration** is out on the trace's own evidence: `/history` was fetched exactly once in
+  the window, and the whole trace contains three requests (`/api/events`, `/files`, `/history`).
+- **A resize-driven breakpoint flip** is out: the trace has zero resize events of any kind. The one
+  door left open is that a `matchMedia` change does not surface as a DOM event, so an `isMobile` flip
+  by that route is not excluded — and it is the one structural path that would genuinely remount
+  everything (see below).
+
+#### The remount class is mitigated, measured rather than argued
+
+`AppLayout` renders `isMobile ? <>…</> : <div>…</div>` — a Fragment against a div at the same
+position, which React treats as a type change and so unmounts and remounts everything beneath,
+`chatPanel` included. The probe reproduces that exact shape (`window.__swapWrapper`), which doubles
+as the **positive control** for the mount counter: without it, every "0 mounts" above would be
+unfalsifiable, since a counter that can never report a mount reports zero for free.
+
+Four flips of that wrapper, with the big block in the transcript:
+
+| | block mounts | highlight runs |
+|---|---|---|
+| cache neutered | 3 | **3** (16,979 bytes each) |
+| cache live | 3 | **0** |
+
+So the remount *class* — the one the trace's surface and payload point at — costs nothing once the
+answer survives the fiber. That does not name the engine, and this section does not claim to.
+
 Measuring that needed a third correction to the instrument, for the same reason the guard test did.
 **Counting `highlightAuto` can no longer detect a remount at all**, because `highlightCached` turns
 one into a map lookup — the fix blinds the obvious probe. The probe now counts `code.hljs` nodes

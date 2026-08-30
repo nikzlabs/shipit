@@ -198,21 +198,32 @@ function Harness() {
   // *objects* cannot reproduce, because element reuse and the row memo absorb
   // that. `window.__setLead(n)` drives it.
   const [lead, setLead] = useState(0);
+  // `AppLayout` renders `isMobile ? <>…</> : <div>…</div>` — a Fragment against a
+  // div at the same position, which React treats as a type change and so
+  // unmounts and remounts everything under it, `chatPanel` included. This
+  // reproduces that exact shape, and it is the POSITIVE CONTROL for the mount
+  // counter: without it, every "0 mounts" result below is unfalsifiable, because
+  // a counter that can never report a mount reports zero for free.
+  const [swap, setSwap] = useState(false);
   window.__tick = () => setTick((t) => t + 1);
   window.__setLead = (n) => setLead(n);
+  window.__swapWrapper = (v) => setSwap(v);
   stats.listRenders += 1;
   const messages = lead
     ? [...Array.from({ length: lead }, (_, i) => ({ role: "user", text: `lead ${i}` })), ...MESSAGES]
     : MESSAGES;
-  return (
-    <div className="flex flex-col h-screen bg-(--color-bg-primary)">
-      <MessageList
+  const list = (
+    <MessageList
         messages={messages}
         isLoading={false}
         onSendFollowUp={() => true}
         {...(REWIND ? { onRewindAtGap: () => {}, onRequestRewindPreview: () => {} } : {})}
-        sessionTitle={`t${tick}`}
-      />
+      sessionTitle={`t${tick}`}
+    />
+  );
+  return (
+    <div className="flex flex-col h-screen bg-(--color-bg-primary)">
+      {swap ? <>{list}</> : <div className="flex flex-col flex-1 min-h-0">{list}</div>}
     </div>
   );
 }
