@@ -195,7 +195,10 @@ function offendsDestructive(seg) {
   // for `reset --hard`. The in-progress verbs are exempt — blocking
   // `git rebase --abort` would trap the agent inside a rebase it cannot leave.
   if (sub === "rebase") {
-    const inProgressVerb = rest.some((t) =>
+    // Exempt: the verbs that steer a rebase already in flight (blocking
+    // `--abort` would trap the agent inside one), and `--help`, which is a
+    // read.
+    const notAStart = rest.some((t) =>
       [
         "--continue",
         "--abort",
@@ -203,11 +206,22 @@ function offendsDestructive(seg) {
         "--quit",
         "--edit-todo",
         "--show-current-patch",
+        "--help",
+        "-h",
       ].includes(t),
     );
-    if (!inProgressVerb) {
+    if (!notAStart) {
       return "`git rebase` rewrites this branch's history";
     }
+  }
+  // `git pull --rebase` starts the same rewrite by another name, and is the
+  // form an agent reaches for when the plain `rebase` is refused. Only the
+  // explicit flags are caught: `git -c pull.rebase=true pull` sets it through
+  // config this hook does not read, which is the same exotic-form false
+  // negative the header already accepts. A plain `git pull` stays allowed —
+  // it merges, which loses nothing.
+  if (sub === "pull" && rest.some((t) => t === "--rebase" || t === "-r" || t.startsWith("--rebase="))) {
+    return "`git pull --rebase` rewrites this branch's history";
   }
   if (sub === "checkout" && rest.some((t) => t === "-f" || t === "--force")) {
     return "`git checkout -f` overwrites the working tree";

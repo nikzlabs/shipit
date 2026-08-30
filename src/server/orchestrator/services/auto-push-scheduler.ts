@@ -111,6 +111,14 @@
  * force a divergence open is untouched — what changed is the quality of the
  * report, which is the defect this and the three incidents above share.
  *
+ * The client's rebase banner had the same defect in UI form, and it is the more
+ * dangerous half: `git_push_rejected` was emitted on every rejection, and the
+ * banner's "Update branch" button rebases onto the base and force-pushes
+ * (`services/rebase-driver.ts`). In the shape above that is one click from
+ * deleting the only copy of the commit. The banner now waits for the
+ * measurement and is armed only when {@link baseRebaseIsSafe} — which fails
+ * closed on anything unmeasured.
+ *
  * **One notice per divergence EPISODE, not per rejection.** Nine identical
  * notices is noise that trains the reader to skip the tenth; the episode flag is
  * cleared by the next successful push, so a divergence that is healed (by
@@ -205,7 +213,12 @@ import type { PersistedMessage } from "../chat-history.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { pushToOrigin, isGitAuthError } from "../git-utils.js";
 import { classifyPushFailure, isNonFastForwardError, isRewriteWindowPushFailure } from "./git.js";
-import { formatDivergedPushNotice, measurePushDivergence, type PushDivergence } from "./push-divergence.js";
+import {
+  baseRebaseIsSafe,
+  formatDivergedPushNotice,
+  measurePushDivergence,
+  type PushDivergence,
+} from "./push-divergence.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import { agentLogAppend } from "../log-emit.js";
 import { getErrorMessage } from "../validation.js";
@@ -688,7 +701,8 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
         //   - `report` — the log ring (durable, replayed to a late viewer) and
         //     the server log. EVERY rejection, so the operator sees the run.
         //   - `git_push_rejected` — transient client state that drives the
-        //     rebase banner. Every rejection too; the client owns its lifetime.
+        //     rebase banner. Once per episode, and ONLY when the measurement
+        //     says the banner's action is safe (see below).
         //   - the persisted notice — the transcript, ONCE per episode.
         // No remedy named here. This line fires on EVERY rejection, ahead of the
         // measurement, so it cannot know which side carries what — and "rebase
@@ -700,31 +714,49 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
           "Auto-push rejected: this session's branch and its remote have diverged."
           + " Measuring which side carries what.",
         );
-        try {
-          deps.getRunner(sessionId)?.emitMessage({
-            type: "git_push_rejected",
-            reason: "non_fast_forward",
-            message: "Branch has diverged from remote. Rebase needed to update.",
-          });
-        } catch (emitErr) {
-          // Isolated for the same reason `report` isolates its two surfaces: the
-          // rebase banner is the LEAST durable of the three, and it sits ahead of
-          // the persisted notice. A wedged transport must not cost the row.
-          console.error(`[auto-push] ${sessionId}: could not emit git_push_rejected:`, emitErr);
-        }
         if (!notifiedDiverged.has(sessionId)) {
           notifiedDiverged.add(sessionId);
           // Measure the shape before saying anything about it. Deliberately
-          // AFTER the two fast surfaces above: this fetches the branch, and a
-          // slow or unreachable remote must not delay the log line or the
-          // client's banner. It is also confined to the once-per-episode path,
-          // so a session rejecting on every turn does not fetch on every turn.
+          // AFTER the fast log line above: this fetches the branch, and a slow
+          // remote must not delay the operator's first signal. It is confined to
+          // the once-per-episode path, so a session rejecting on every turn does
+          // not fetch on every turn — and the fetch is timeout-bounded, because
+          // the episode is already marked notified here and a hung fetch would
+          // otherwise take the notice AND every later attempt with it.
           //
           // `measurePushDivergence` never throws — every read inside it
           // degrades to an "unmeasured" shape, whose notice states plainly that
           // ShipIt could not tell rather than guessing a recovery.
           const shape = await measurePushDivergence(git);
           report(sessionId, describeShape(shape));
+          // The client's rebase banner is not a passive warning: its "Update
+          // branch" button rebases onto the base and force-pushes
+          // (`services/rebase-driver.ts`). That republishes a rewritten branch —
+          // the right remedy for the 2026-08-15 shape — and DESTROYS the remote's
+          // commits in the 2026-08-30 one, where the branch has nothing to
+          // republish and the remote holds the only copy. Arming it used to be
+          // unconditional, which made the same wrong recommendation this fix
+          // removes from the notice available as one click. It now waits for the
+          // measurement and fails closed on anything unmeasured.
+          if (baseRebaseIsSafe(shape)) {
+            try {
+              deps.getRunner(sessionId)?.emitMessage({
+                type: "git_push_rejected",
+                reason: "non_fast_forward",
+                message: "Branch has diverged from remote. Rebase needed to update.",
+              });
+            } catch (emitErr) {
+              // Isolated for the same reason `report` isolates its two surfaces:
+              // the banner is the LEAST durable of the three, and it sits ahead
+              // of the persisted notice. A wedged transport must not cost the row.
+              console.error(`[auto-push] ${sessionId}: could not emit git_push_rejected:`, emitErr);
+            }
+          } else {
+            console.warn(
+              `[auto-push] ${sessionId}: withholding the rebase banner — its force-push could`
+              + " discard commits that exist only on the remote, or the shape could not be measured.",
+            );
+          }
           const runner = deps.getRunner(sessionId);
           try {
             emitNoticePostTurn(

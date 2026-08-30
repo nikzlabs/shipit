@@ -156,6 +156,12 @@ describe("block-branch-ops.mjs", () => {
       "git rebase",
       "git rebase -i origin/main",
       "git rebase --onto origin/main HEAD~3",
+      // The same rewrite under another name — the form an agent reaches for
+      // once the plain `rebase` is refused.
+      "git pull --rebase",
+      "git pull --rebase origin main",
+      "git pull -r",
+      "git pull --rebase=merges origin main",
       // Buried in a compound command / behind an env prefix / after git globals.
       "git fetch origin && git reset --hard origin/main",
       "git fetch origin && git rebase origin/main",
@@ -221,6 +227,10 @@ describe("block-branch-ops.mjs", () => {
         "git rebase --abort",
         "git rebase --skip",
         "git rebase --quit",
+        "git rebase --help", // a read, not a rewrite
+        // A plain pull MERGES; it rewrites nothing and can lose nothing.
+        "git pull",
+        "git pull origin main",
         "git push",
         "git push origin HEAD",
         "git fetch origin",

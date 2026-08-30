@@ -33,7 +33,7 @@
  * advice. That number is now measured, stated, and — when it is non-zero — the
  * commits behind it are named.
  *
- * ## Fetch first, and say so when the fetch failed
+ * ## Fetch first, and name no recovery when the fetch failed
  *
  * The counts are only as good as the remote-tracking ref. This clone's own
  * pushes keep it current, which covers the shape above; a push from anywhere
@@ -41,9 +41,14 @@
  * remote" for a remote that is in fact ahead — turning a warning about a
  * destructive command into a recommendation of one. So the measurement fetches
  * the single branch first and RECORDS whether that succeeded
- * ({@link MeasuredDivergence.refreshed}). A failed fetch degrades the notice —
- * the counts are labelled as last-known and the reader is told to re-check —
- * rather than suppressing it.
+ * ({@link MeasuredDivergence.refreshed}).
+ *
+ * A failed fetch does NOT merely add a caveat to shape-specific advice. Stale
+ * counts understate `behind` in exactly the case where that number is the whole
+ * decision, so an unrefreshed measurement reports its counts and then stops:
+ * the notice states they are last-known and hands over the command that
+ * re-reads them. A caveat the reader skims is not a substitute for not making
+ * the recommendation.
  *
  * ## Absence is not a verdict
  *
@@ -111,6 +116,51 @@ export type PushDivergence = UnmeasuredDivergence | MeasuredDivergence;
 export const MAX_NAMED_COMMITS = 5;
 
 /**
+ * How long the pre-measurement fetch may take before it is abandoned.
+ *
+ * It is the only network call on this path, and the caller has already marked
+ * the divergence episode as notified — so a fetch that never returns would take
+ * the persisted notice with it AND suppress every later attempt for the life of
+ * the episode. `simple-git` has no timeout of its own, so this is the one that
+ * exists. Generous relative to a single-branch fetch, small relative to the
+ * post-turn hold's own deadline, so the notice always lands inside it.
+ *
+ * Abandoning the wait does not kill the underlying git process; it just stops
+ * this path waiting on it. The measurement then reports `refreshed: false`,
+ * which names no recovery.
+ */
+export const FETCH_TIMEOUT_MS = 20_000;
+
+/**
+ * Await `work`, but give up after `ms`. Resolves true when the work finished,
+ * false when the wait was abandoned — never rejects, because the caller reads
+ * the answer as "is this measurement current?" and a thrown timeout would be a
+ * second failure mode for the same question.
+ */
+async function withTimeout(work: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Rejection maps to false rather than propagating, and the handler is
+  // attached HERE rather than after the race — which is also what keeps a
+  // failure arriving after the timeout from becoming an unhandled rejection.
+  const settled = (async () => {
+    try {
+      await work;
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  try {
+    return await Promise.race([
+      settled,
+      new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), ms); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * Measure the divergence behind a just-rejected push.
  *
  * Never throws and never rejects: it runs on a failure path whose whole purpose
@@ -134,11 +184,15 @@ export async function measurePushDivergence(
   // Fetch before counting. A tracking ref this clone last wrote itself is right
   // for the shape this module was written for and wrong for a remote that moved
   // elsewhere — and being wrong in that direction is what would recommend a
-  // destructive force-push. Best-effort: a failure is reported, not fatal.
-  let refreshed = true;
+  // destructive force-push. Best-effort AND bounded: a failure (or a fetch that
+  // never returns) is reported as `refreshed: false`, which makes the notice
+  // name no recovery at all.
+  let refreshed: boolean;
   try {
-    await git.fetchBranch(remote, branch);
+    refreshed = await withTimeout(git.fetchBranch(remote, branch), FETCH_TIMEOUT_MS);
   } catch {
+    // `withTimeout` swallows the promise's rejection; this catches a
+    // `fetchBranch` that throws SYNCHRONOUSLY before returning one.
     refreshed = false;
   }
 
@@ -228,6 +282,35 @@ function nameCommits(d: MeasuredDivergence): string {
 }
 
 /**
+ * Is "rebase onto the base branch, then force-push" — what the client's rebase
+ * banner does when its `git_push_rejected` arrives — safe against THIS
+ * divergence?
+ *
+ * The banner's action publishes the session branch over its remote, so it is
+ * the right remedy for a branch whose history was rewritten and never
+ * republished (the 2026-08-14/15 incident), and it is DESTRUCTION when the
+ * remote carries commits this branch does not and this branch has nothing to
+ * republish — the 2026-08-30 shape, where the one at-risk commit exists nowhere
+ * else. One click is a very short distance to that, so the banner is withheld
+ * unless the measurement rules it out.
+ *
+ * Fails CLOSED: an unmeasured shape returns false. The persisted notice still
+ * carries the recovery, so withholding a button costs a click, while arming it
+ * on a shape nobody measured costs the commit.
+ */
+export function baseRebaseIsSafe(d: PushDivergence): boolean {
+  if (!d.measured) return false;
+  // Unrelated histories: a force-push replaces the remote wholesale.
+  if (!d.sharedBase) return false;
+  // Nothing exists only on the remote ⇒ a force-push can discard nothing.
+  if (d.behind === 0) return true;
+  // The remote has commits this branch lacks. Safe only if this branch has its
+  // own work to republish over them — the rewritten-branch case — and even then
+  // the notice states what is discarded.
+  return d.ahead > 0;
+}
+
+/**
  * The persisted transcript notice for a push rejected as non-fast-forward.
  *
  * Plain prose, no markdown emphasis — `MessageList` renders a `notice` as
@@ -237,23 +320,31 @@ function nameCommits(d: MeasuredDivergence): string {
  *
  * ## One recovery, chosen from the measurement
  *
- * Each shape gets the single command that fits it, and the shapes are told
- * apart by the two counts plus the shared-base bit:
+ * The shapes are told apart by the two counts plus the shared-base bit, and
+ * `behind` — commits reachable only from the remote — is the number that
+ * decides everything, because it is what a force-push destroys:
  *
- *  - **Only the remote is ahead** — the shape of the 2026-08-30 incident: an
- *    already-published commit was dropped locally by a rebase or a reset. The
- *    fix is `git pull --rebase`, and a force-push is the one command that would
- *    make the loss permanent, so it is named as a warning rather than a remedy.
- *  - **Only this branch is ahead** — its history was rewritten after publishing.
- *    Nothing exists solely on the remote, so `--force-with-lease` is safe here
- *    and is the whole remedy (or its brokered equivalent, when the merged-branch
- *    hook would block it).
- *  - **Both** — the two remedies keep opposite sides, so the non-destructive one
- *    leads and the destructive one carries its condition and its cost.
+ *  - **Only the remote is ahead** (`ahead === 0`, `behind > 0`) — the shape of
+ *    the 2026-08-30 incident: an already-published commit was dropped locally by
+ *    a rebase or a reset. The fix is `git pull --rebase`, and a force-push is the
+ *    one command that would make the loss permanent, so it is named as a warning
+ *    rather than a remedy.
+ *  - **Both** — the branch's history was rewritten after publishing. The two
+ *    remedies keep opposite sides, so the non-destructive one leads and the
+ *    destructive one carries its condition and the commits it discards.
  *  - **Unrelated histories** — no default is safe; the notice says to look
  *    before moving either side.
- *  - **Neither side ahead, or unmeasurable** — no shape is claimed at all. The
- *    notice hands over the command that answers the question.
+ *  - **`behind === 0`** — deliberately NOT treated as "the branch was rewritten,
+ *    force-push it". `aheadBehind` counts the symmetric difference, so
+ *    `behind === 0` means every commit on the remote ref is reachable from HEAD,
+ *    i.e. the remote IS an ancestor and a PLAIN push fast-forwards. Those counts
+ *    therefore cannot explain the rejection that got us here — the ref moved, or
+ *    the fetch that should have refreshed it failed — and prescribing a
+ *    force-push on them is how a stale tracking ref would talk someone into
+ *    overwriting a remote that is actually ahead.
+ *  - **Counts that could not be refreshed, or could not be taken at all** — no
+ *    recovery is named. The notice hands over the command that answers the
+ *    question instead.
  */
 export function formatDivergedPushNotice(
   d: PushDivergence,
@@ -266,47 +357,68 @@ export function formatDivergedPushNotice(
   const head =
     `Not pushed — this session's branch${named} and its remote have diverged: `
     + `${d.remote} rejected the push as non-fast-forward.\n\n`;
-  // True in every shape, and the only two facts the old notice got right: ShipIt
-  // will not force a divergence open, so nothing changes on GitHub until someone
-  // resolves this, and every later auto-push fails the same way.
+  // True in every shape. Scoped to the AUTO-push on purpose: ShipIt does force
+  // the remote elsewhere — the docs/218 pre-turn reset heals the branch that
+  // way, and `gh pr create` force-pushes when it re-arms past a merged pull
+  // request — so the flat claim "ShipIt never force-pushes" would be false.
   const tail =
-    `\n\nShipIt never force-pushes on its own, so ${remoteRef} stays exactly where it is `
-    + "and every later auto-push is rejected the same way until this is resolved.";
+    `\n\nThe post-turn auto-push never forces a divergence open, so ${remoteRef} stays exactly `
+    + "where it is and every later auto-push is rejected the same way until this is resolved.";
+
+  // The command that answers the question, for every shape where naming a
+  // recovery would be a guess.
+  const measureItYourself =
+    "No recovery is named, because the two that exist destroy opposite sides when chosen "
+    + "wrongly. Measure it first:\n\n"
+    + `  git fetch ${pushTarget} && git rev-list --left-right --count HEAD...${remoteRef}\n\n`
+    + "The left number is commits only in this session, the right number is commits only on the "
+    + "remote. Anything above zero on the right is work a force-push would destroy.";
 
   if (!d.measured) {
     return join(
       head,
-      `ShipIt could not measure how the two histories differ: ${d.reason}.\n\n`
-      + "No recovery is named, because the two that exist destroy opposite sides when "
-      + "chosen wrongly. Measure it first:\n\n"
-      + `  git fetch ${pushTarget} && git rev-list --left-right --count HEAD...${remoteRef}\n\n`
-      + "The left number is commits only in this session, the right number is commits only "
-      + "on the remote. Anything above zero on the right is work a force-push would destroy.",
+      `ShipIt could not measure how the two histories differ: ${d.reason}.\n\n`,
+      measureItYourself,
       tail,
     );
   }
-
-  const stale = d.refreshed
-    ? ""
-    : `\nShipIt could not refresh its view of ${remoteRef} first, so these counts are against `
-      + `this clone's last-known remote state. Re-check with \`git fetch ${pushTarget}\` before `
-      + "acting on them.\n";
 
   const measurement = join(
     `Measured against ${remoteRef} at the moment of the rejection: `
     + `${plural(d.ahead, "commit")} only in this session, `
     + `${plural(d.behind, "commit")} only on the remote.\n`,
-    stale,
     nameCommits(d),
   );
 
+  // A fetch that failed means the counts describe this clone's LAST-KNOWN view
+  // of the remote, and the direction that matters is that `behind` can be
+  // understated — which is exactly the reading that would recommend a
+  // force-push over commits the remote actually has. So a stale measurement is
+  // reported and then stops: the counts are shown, no recovery is chosen.
+  if (!d.refreshed) {
+    return join(
+      head, measurement,
+      `\nShipIt could not refresh its view of ${remoteRef} before measuring, so those counts are `
+      + "this clone's last-known remote state rather than the remote's. The remote may carry "
+      + "commits they do not show, and that is precisely the case in which a force-push destroys "
+      + `work — so re-read it first with \`git fetch ${pushTarget}\`.\n\n`,
+      measureItYourself,
+      tail,
+    );
+  }
+
+  // The branch on GitHub is what a merge ships. Stated as a fact about the
+  // remote rather than as a prediction about a pull request: `gh pr create`
+  // pushes before it opens or reprints one, and ShipIt's own merge button holds
+  // on a diverged branch (`services/branch-sync.ts`), so "the PR would merge
+  // without them" over-claims. A merge performed on GitHub still would.
   const unpushedWarning = d.ahead > 0
-    ? `\nA pull request on this branch would merge WITHOUT the ${plural(d.ahead, "commit")} `
-      + "that never reached the remote.\n"
+    ? `\nThe branch on ${d.remote} does not contain ${plural(d.ahead, "commit")} from this `
+      + "session, so anything merged from it there ships without them.\n"
     : "";
 
   const forcePush = `\`git push --force-with-lease ${pushTarget}\``;
-  // Appended to the shapes whose recovery IS a force-push, when the
+  // Appended to the shape whose recovery IS a force-push, when the
   // merged-branch hook would refuse one from the agent. Deliberately a note
   // beside the command rather than a substitution: `shipit branch reset-to-base`
   // moves the branch to the BASE and discards this history, so naming it as
@@ -323,28 +435,37 @@ export function formatDivergedPushNotice(
   if (!d.sharedBase) {
     return join(
       head, measurement, unpushedWarning,
-      `\nThe two histories share no commit at all, so neither remedy is safe by default: `
-      + `\`git pull --rebase\` has nothing to replay onto, and a force-push would replace the `
-      + `remote's ${plural(d.behind, "commit")} with unrelated history. Read both sides — `
+      "\nShipIt found no commit common to the two histories — they are unrelated, or the "
+      + "comparison itself failed. Either way no remedy is safe by default: `git pull --rebase` "
+      + "has nothing to replay onto, and a force-push would replace the remote's "
+      + `${plural(d.behind, "commit")} with unrelated history. Read both sides — `
       + `\`git log --oneline HEAD\` and \`git log --oneline ${remoteRef}\` — and decide with the `
       + "user before moving either.",
       tail,
     );
   }
 
-  if (d.ahead === 0 && d.behind === 0) {
+  if (d.behind === 0) {
+    // NOT the "rewritten branch, force-push it" case, however much it looks like
+    // one. See the docstring: `behind === 0` means the remote is an ancestor of
+    // HEAD, so a plain push fast-forwards and these counts contradict the
+    // rejection that produced them.
     return join(
-      head, measurement,
-      "\nThe two histories agree on every commit, so the counts do not explain the rejection — "
-      + "a branch protection rule, a hook on the remote, or a ref that moved between the push and "
-      + "this measurement. Check the push failure logged for this session in the Logs panel before "
-      + "changing either history; nothing here needs a rebase or a force-push.",
+      head, measurement, unpushedWarning,
+      `\nNothing exists only on ${remoteRef} — every commit it has is already in this branch — so `
+      + "a plain push should have fast-forwarded. These counts therefore do not explain the "
+      + "rejection: the remote ref most likely moved between the push and this measurement, or "
+      + "something on the remote (a branch protection rule, a pre-receive hook) refused the push "
+      + "for a reason of its own. Read the push failure in this session's Logs panel before "
+      + "changing either history.\n\n"
+      + `Do not force-push on the strength of these counts. If ${remoteRef} moved after they were `
+      + "taken, a force-push discards whatever moved it.",
       tail,
     );
   }
 
   if (d.ahead === 0) {
-    // The incident's shape. Nothing is unpushed; the remote is strictly ahead,
+    // The 2026-08-30 shape. Nothing is unpushed; the remote is strictly ahead,
     // which is what a rebase or reset run AFTER a commit was published leaves
     // behind. The push was rejected for moving the branch backwards.
     return join(
@@ -361,25 +482,12 @@ export function formatDivergedPushNotice(
     );
   }
 
-  if (d.behind === 0) {
-    // Rewritten-and-republished: nothing exists only on the remote, so the
-    // force-push destroys nothing and is the entire remedy.
-    return join(
-      head, measurement, unpushedWarning,
-      `\nThe remote holds no commit this branch lacks, so nothing on GitHub is at risk. `
-      + `${remoteRef} is simply not an ancestor of this branch any more — its history was `
-      + "rewritten (a rebase, or a reset onto a fresh base) after those commits were published.\n\n"
-      + `Recovery: publish the rewritten history with ${forcePush}.`,
-      blockedNote,
-      tail,
-    );
-  }
-
-  // Both sides carry work the other does not. The two remedies keep opposite
-  // sides, so the non-destructive one leads and the other states its cost.
+  // Both sides carry work the other does not — the rewritten-and-not-yet-
+  // republished branch. The two remedies keep opposite sides, so the
+  // non-destructive one leads and the other states its cost.
   return join(
     head, measurement, unpushedWarning,
-    `\nBoth sides carry work the other does not, so this needs a decision rather than a `
+    "\nBoth sides carry work the other does not, so this needs a decision rather than a "
     + "command.\n\n"
     + `Recovery: \`git pull --rebase ${pushTarget}\` replays this session's `
     + `${plural(d.ahead, "commit")} on top of the remote's ${plural(d.behind, "commit")}, keeping `

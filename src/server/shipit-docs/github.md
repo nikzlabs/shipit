@@ -106,7 +106,7 @@ The shim:
     branch is already on the base, just commit and run `gh pr create`. If it is
     still at the merged tip, run `shipit branch reset-to-base` — never a
     hand-rolled rebase or `git reset --hard`.
-  - **Do not rebase onto the base to catch up.** After a squash merge it hits
+  - **Do not rebase onto the base to catch up.** After a squash merge it can hit
     add/add conflicts rather than dropping the shipped commits, and if any commit
     on the branch was already pushed it rewrites published history: the commits
     stay on the remote, leave your branch, and every later auto-push is rejected

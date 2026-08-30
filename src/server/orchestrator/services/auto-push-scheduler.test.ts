@@ -32,7 +32,10 @@ function fakeGit(overrides: Partial<Record<keyof GitManager, unknown>> = {}): Gi
     // shape assertions below would pass for the wrong reason.
     currentBranchOrNull: vi.fn(async () => "shipit/feature"),
     fetchBranch: vi.fn(async () => {}),
-    aheadBehind: vi.fn(async () => ({ ahead: 1, behind: 0 })),
+    // The default is the rewritten-branch shape — commits on BOTH sides. A
+    // rejected push cannot have `behind: 0`: that would mean the remote is an
+    // ancestor of HEAD, i.e. a plain push fast-forwards.
+    aheadBehind: vi.fn(async () => ({ ahead: 1, behind: 1 })),
     mergeBase: vi.fn(async () => "abc1234"),
     commitSubjects: vi.fn(async () => []),
     ...overrides,
@@ -90,7 +93,7 @@ function appendedNotices(deps: TestDeps): string[] {
  * ordinary rewritten-branch case.
  */
 function divergedGit(
-  counts: { ahead: number; behind: number } = { ahead: 1, behind: 0 },
+  counts: { ahead: number; behind: number } = { ahead: 1, behind: 1 },
   extra: Partial<Record<keyof GitManager, unknown>> = {},
 ): GitManager {
   return fakeGit({
@@ -537,10 +540,8 @@ describe("auto-push scheduler — a rejected push leaves a transcript notice", (
     expect(notice).toContain("shipit/feature");
     // …why…
     expect(notice).toContain("non-fast-forward");
-    // …and how do I ship it. The remedy has to be a command the agent can run,
-    // and — since this branch is the one that is ahead — a force-push here
-    // discards nothing.
-    expect(notice).toContain("git push --force-with-lease origin shipit/feature");
+    // …and how do I ship it. The remedy has to be a command the agent can run.
+    expect(notice).toContain("git pull --rebase origin shipit/feature");
     expect(deps.chatHistory.append).toHaveBeenCalledWith(
       "s1",
       expect.objectContaining({ notice: true, noticeLevel: "warn" }),
@@ -574,7 +575,7 @@ describe("auto-push scheduler — a rejected push leaves a transcript notice", (
     // carries a recorded `mergedHeadSha`. A remedy the agent is refused when it
     // runs it is a dead end it only discovers by being refused.
     const deps = makeDeps({ destructiveGitGuarded: () => true });
-    createAutoPushScheduler(deps).schedule(divergedGit({ ahead: 2, behind: 0 }), "s1");
+    createAutoPushScheduler(deps).schedule(divergedGit({ ahead: 2, behind: 1 }), "s1");
 
     await fireDebounce();
 
@@ -583,22 +584,77 @@ describe("auto-push scheduler — a rejected push leaves a transcript notice", (
     expect(notice).toContain('shipit branch reset-to-base --force --reason "<why>"');
   });
 
-  it("does not consult the guard when the session is not on a merged branch", async () => {
-    const deps = makeDeps({ destructiveGitGuarded: () => false });
-    createAutoPushScheduler(deps).schedule(divergedGit({ ahead: 2, behind: 0 }), "s1");
+  it("omits the blocked note when the guard reports the session is not on a merged branch", async () => {
+    const guard = vi.fn(() => false);
+    const deps = makeDeps({ destructiveGitGuarded: guard });
+    createAutoPushScheduler(deps).schedule(divergedGit({ ahead: 2, behind: 1 }), "s1");
 
     await fireDebounce();
 
+    expect(guard).toHaveBeenCalledWith("s1");
     expect(appendedNotices(deps)[0]).not.toContain("reset-to-base");
   });
 
   it("survives a guard reader that throws, and names the ordinary force-push", async () => {
     const deps = makeDeps({ destructiveGitGuarded: () => { throw new Error("session row gone"); } });
-    createAutoPushScheduler(deps).schedule(divergedGit({ ahead: 2, behind: 0 }), "s1");
+    createAutoPushScheduler(deps).schedule(divergedGit({ ahead: 2, behind: 1 }), "s1");
 
     await fireDebounce();
 
     expect(appendedNotices(deps)[0]).toContain("git push --force-with-lease origin shipit/feature");
+  });
+
+  it("withholds the rebase banner when its force-push would discard the remote's only copy", async () => {
+    // The banner is not a passive warning: its "Update branch" button rebases
+    // onto the base and force-pushes (`services/rebase-driver.ts`). In the
+    // 2026-08-30 shape — nothing unpushed here, the remote holding the one
+    // commit — that is one click from deleting it. Arming it used to be
+    // unconditional, which left the wrong recommendation this fix removes from
+    // the notice available as a button.
+    const runner = fakeRunner();
+    const deps = makeDeps({ getRunner: () => runner });
+    createAutoPushScheduler(deps).schedule(divergedGit({ ahead: 0, behind: 1 }), "s1");
+
+    await fireDebounce();
+
+    const rejected = runner.emitMessage.mock.calls
+      .map((c) => c[0] as { type: string })
+      .filter((m) => m.type === "git_push_rejected");
+    expect(rejected).toHaveLength(0);
+    // …and the durable explanation still lands. Withholding the button must not
+    // cost the notice that says what to do instead.
+    expect(appendedNotices(deps)[0]).toContain("git pull --rebase origin shipit/feature");
+  });
+
+  it("still arms the rebase banner for the rewritten branch it repairs", async () => {
+    // Commits on both sides: the branch was rewritten and never republished, so
+    // the banner's force-push is the remedy rather than the hazard. This is the
+    // 2026-08-15 shape the banner was built for.
+    const runner = fakeRunner();
+    const deps = makeDeps({ getRunner: () => runner });
+    createAutoPushScheduler(deps).schedule(divergedGit({ ahead: 2, behind: 1 }), "s1");
+
+    await fireDebounce();
+
+    expect(runner.emitMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "git_push_rejected", reason: "non_fast_forward" }),
+    );
+  });
+
+  it("withholds the rebase banner when the shape could not be measured", async () => {
+    // Fails closed. Withholding a button costs a click; arming it on a shape
+    // nobody measured costs the commit.
+    const runner = fakeRunner();
+    const deps = makeDeps({ getRunner: () => runner });
+    createAutoPushScheduler(deps).schedule(
+      divergedGit({ ahead: 0, behind: 0 }, { aheadBehind: vi.fn(async () => null) }),
+      "s1",
+    );
+
+    await fireDebounce();
+
+    expect(runner.emitMessage.mock.calls.map((c) => (c[0] as { type: string }).type))
+      .not.toContain("git_push_rejected");
   });
 
   it("logs the measured shape for the operator, not only the transcript", async () => {

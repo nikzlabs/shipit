@@ -497,10 +497,11 @@ history on purpose, it is not finished until you have republished it with
 
 That last point is **enforced, not just advised**: while a session sits on a
 merged branch (ShipIt has recorded the merged head commit), `git reset --hard`,
-`git checkout -f`, force-pushes and starting a `git rebase` are blocked before
-they run, and the refusal points you back here. (`git rebase --continue` /
-`--abort` / `--skip` / `--quit` stay allowed — a rebase you are already inside
-must remain exitable.) `shipit branch reset-to-base` is unaffected — it relays to
+`git checkout -f`, force-pushes, starting a `git rebase`, and `git pull --rebase`
+are blocked before they run, and the refusal points you back here.
+(`git rebase --continue` / `--abort` / `--skip` / `--quit` stay allowed — a
+rebase you are already inside must remain exitable — as does a plain `git pull`,
+which merges rather than rewrites.) `shipit branch reset-to-base` is unaffected — it relays to
 the orchestrator rather than running git in your shell. The block is scoped to
 that window only: on an ordinary session, discarding a local mess with
 `git reset --hard` still works normally.

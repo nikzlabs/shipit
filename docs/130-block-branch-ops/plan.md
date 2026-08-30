@@ -62,7 +62,11 @@ enough" argument that created the hook.
 
 **Blocked when armed:** `git reset --hard`, `git checkout -f` / `--force`,
 `git push -f` / `--force` / `--force-with-lease[=…]` / `--force-if-includes[=…]`,
-and any `git rebase` that STARTS one.
+any `git rebase` that STARTS one, and `git pull --rebase` / `-r` — the same
+rewrite under another name, and the form an agent reaches for once the plain
+`rebase` is refused. (`git -c pull.rebase=true pull` sets it through config the
+hook does not read; that is the same exotic-form false negative the heuristic
+already accepts.)
 
 The rebase clause was added after the 2026-08-30 incident (see
 `docs/218-auto-reset-merged-branch-on-continue/plan.md` → "Continuing after the
@@ -73,7 +77,8 @@ published commits that no later plain auto-push can ever land. CLAUDE.md
 post-turn invariant 4 already said "never a rebase" here; this is the structural
 half of that sentence.
 
-**Not blocked:** a mixed/soft reset, `git checkout -- <path>`, a plain push,
+**Not blocked:** a mixed/soft reset, `git checkout -- <path>`, a plain push, a
+plain `git pull` (it merges, so it loses nothing), `git rebase --help`,
 `git rebase --continue` / `--abort` / `--skip` / `--quit` / `--edit-todo` /
 `--show-current-patch` (a rebase already in flight must stay exitable — blocking
 `--abort` would trap the agent inside it), and `shipit branch reset-to-base`

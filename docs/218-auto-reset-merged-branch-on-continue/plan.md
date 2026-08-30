@@ -437,7 +437,7 @@ fail-safe for the manual-`git reset` path and no-ops here (it has already cleare
 | User card — render | `src/client/components/` (new card component) | Render "Branch updated to latest `<base>`" + `was → now` SHAs |
 | Phase 9 — measure | `src/server/orchestrator/services/push-divergence.ts` (new) | `measurePushDivergence` (fetch → `aheadBehind` → `mergeBase` → name remote-only commits) + `formatDivergedPushNotice`, one recovery per shape |
 | Phase 9 — measure | `src/server/shared/git.ts` | `commitSubjects(range, maxCount)` — the primitive that lets the notice NAME the at-risk commits |
-| Phase 9 — report | `src/server/orchestrator/services/auto-push-scheduler.ts` | Measure at the rejection (once per episode, after the fast surfaces); `destructiveGitGuarded` dep so the notice never names a force-push the hook would block |
+| Phase 9 — report | `src/server/orchestrator/services/auto-push-scheduler.ts` | Measure at the rejection (once per episode, after the fast log line); arm the client's rebase banner only when `baseRebaseIsSafe`; `destructiveGitGuarded` dep so the notice never names a force-push the hook would block |
 | Phase 9 — guidance | `src/server/orchestrator/prompts/pull-requests.md`, `shipit-docs/github.md`, `shipit-docs/sessions.md` | Check the branch's state before moving it; never a hand-rolled rebase/reset onto the base |
 | Phase 9 — hook | `docker/agent-hooks/block-branch-ops.mjs` | `git rebase` joins the guard-armed destructive set; in-progress verbs exempt |
 
@@ -812,8 +812,34 @@ Two defects, neither in the reset itself.
   now measures at the moment of the rejection (fetch the branch, count both sides
   of the symmetric difference, check the merge base, name the remote-only
   commits) and the notice states what it measured and names the ONE recovery that
-  fits. The rule that ShipIt never force-pushes on its own is untouched — the
-  defect was the report, not the refusal.
+  fits. The rule that the auto-push never forces a divergence open is untouched —
+  the defect was the report, not the refusal.
+- **…and the client's rebase banner had the same defect, in its more dangerous
+  form.** `git_push_rejected` was emitted on every rejection, and the banner it
+  arms carries an "Update branch" button that rebases onto the base and
+  force-pushes (`services/rebase-driver.ts`). In this shape that is one click
+  from deleting the commit the notice was being fixed to protect. The banner now
+  waits for the measurement and is armed only when `baseRebaseIsSafe` — true for
+  the rewritten-branch shape it was built to repair (2026-08-15), false when the
+  remote holds commits this branch cannot republish, and false for anything
+  unmeasured.
+
+Three readings the measurement deliberately refuses to turn into advice, each
+because the confident version of it is how someone gets talked into a
+destructive command:
+
+- **`behind === 0` is not "the branch was rewritten, force-push it."**
+  `aheadBehind` counts the symmetric difference, so `behind === 0` means the
+  remote ref is an ancestor of HEAD and a PLAIN push fast-forwards — those counts
+  contradict the rejection that produced them. Reading them as a rewrite is
+  exactly how a stale tracking ref recommends overwriting a remote that is
+  actually ahead. The notice says the counts do not explain the rejection.
+- **A failed fetch names no recovery at all.** Stale counts understate `behind`,
+  the number the whole decision rests on. A caveat the reader skims is not a
+  substitute for not making the recommendation.
+- **"No merge base" may be a failed comparison.** `GitManager.mergeBase` maps
+  every error to `null`, so the notice says "unrelated, or the comparison itself
+  failed" rather than asserting the stronger of the two.
 
 `git rebase` also joined the hook's destructive set
 (`docker/agent-hooks/block-branch-ops.mjs`, docs/130), armed by the same
