@@ -148,8 +148,17 @@ describe("block-branch-ops.mjs", () => {
       "git push --force-with-lease",
       "git push --force-with-lease=refs/heads/x:abc123",
       "git push --force-if-includes --force-with-lease origin HEAD",
+      // A rebase reaches the same end state as the hard reset above, and in this
+      // one state it is the wrong tool twice over: add/add conflicts against a
+      // squash-merged base, and — the 2026-08-30 incident — stranded published
+      // commits that no later plain auto-push can ever land.
+      "git rebase origin/main",
+      "git rebase",
+      "git rebase -i origin/main",
+      "git rebase --onto origin/main HEAD~3",
       // Buried in a compound command / behind an env prefix / after git globals.
       "git fetch origin && git reset --hard origin/main",
+      "git fetch origin && git rebase origin/main",
       "GIT_PAGER=cat git reset --hard origin/main",
       "git -C /workspace reset --hard origin/main",
     ];
@@ -205,6 +214,13 @@ describe("block-branch-ops.mjs", () => {
         "git reset HEAD -- src/index.ts",
         "git checkout -- src/index.ts", // discard one file, still allowed
         "git checkout src/index.ts",
+        // The in-progress verbs. Blocking these would trap the agent inside a
+        // rebase it started before the guard armed, or one the conflict flow
+        // left it in — with `--abort`, the way out, refused.
+        "git rebase --continue",
+        "git rebase --abort",
+        "git rebase --skip",
+        "git rebase --quit",
         "git push",
         "git push origin HEAD",
         "git fetch origin",

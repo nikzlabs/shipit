@@ -113,7 +113,7 @@ describe("Integration: Ops session logs (docs/264)", () => {
       {
         ts: "2026-08-14T22:11:03.000Z",
         source: "server",
-        text: "Auto-push rejected: branch has diverged from remote. Rebase needed to update.",
+        text: "Auto-push rejected: this session's branch and its remote have diverged. Measuring which side carries what.",
       },
     ]);
   }

@@ -61,12 +61,24 @@ and reproduce the loss in one line. This is the same "prompt precedence is not
 enough" argument that created the hook.
 
 **Blocked when armed:** `git reset --hard`, `git checkout -f` / `--force`,
-`git push -f` / `--force` / `--force-with-lease[=…]` / `--force-if-includes[=…]`.
+`git push -f` / `--force` / `--force-with-lease[=…]` / `--force-if-includes[=…]`,
+and any `git rebase` that STARTS one.
 
-**Not blocked:** a mixed/soft reset, `git checkout -- <path>`, a plain push, and
-`shipit branch reset-to-base` itself (it relays to the orchestrator, so no `git`
-runs in the agent's shell — and the hook only matches segments whose command
-token is `git`).
+The rebase clause was added after the 2026-08-30 incident (see
+`docs/218-auto-reset-merged-branch-on-continue/plan.md` → "Continuing after the
+reset"). It closes a gap rather than widening the rule: a rebase reaches the same
+end state as the hard reset beside it, and in this exact window it is the wrong
+tool twice over — add/add conflicts against a squash-merged base, plus stranded
+published commits that no later plain auto-push can ever land. CLAUDE.md
+post-turn invariant 4 already said "never a rebase" here; this is the structural
+half of that sentence.
+
+**Not blocked:** a mixed/soft reset, `git checkout -- <path>`, a plain push,
+`git rebase --continue` / `--abort` / `--skip` / `--quit` / `--edit-todo` /
+`--show-current-patch` (a rebase already in flight must stay exitable — blocking
+`--abort` would trap the agent inside it), and `shipit branch reset-to-base`
+itself (it relays to the orchestrator, so no `git` runs in the agent's shell —
+and the hook only matches segments whose command token is `git`).
 
 **Scoping — deliberately not a blanket block.** `git reset --hard` has
 legitimate uses (throwing away a local mess the user asked to discard), so the

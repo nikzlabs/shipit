@@ -486,10 +486,21 @@ conflicts rather than dropping the already-shipped commits. And a hand-rolled
 `git reset --hard` is worse than the `--force` above, not equivalent: no
 clean-tree check, no recorded reason, no transcript card. It is also blocked.
 
+There is a second, quieter cost, and it has happened: if **any commit on the
+branch has already been pushed**, a rebase rewrites *published* history. Those
+commits stay on the remote and leave your branch, so ShipIt's next plain
+auto-push is rejected as non-fast-forward — and stays rejected, because ShipIt
+never force-pushes on its own. The session is then left with no pull request, no
+diff, and work that exists only on GitHub. If you ever do rewrite published
+history on purpose, it is not finished until you have republished it with
+`git push --force-with-lease`.
+
 That last point is **enforced, not just advised**: while a session sits on a
 merged branch (ShipIt has recorded the merged head commit), `git reset --hard`,
-`git checkout -f` and force-pushes are blocked before they run, and the refusal
-points you back here. `shipit branch reset-to-base` is unaffected — it relays to
+`git checkout -f`, force-pushes and starting a `git rebase` are blocked before
+they run, and the refusal points you back here. (`git rebase --continue` /
+`--abort` / `--skip` / `--quit` stay allowed — a rebase you are already inside
+must remain exitable.) `shipit branch reset-to-base` is unaffected — it relays to
 the orchestrator rather than running git in your shell. The block is scoped to
 that window only: on an ordinary session, discarding a local mess with
 `git reset --hard` still works normally.

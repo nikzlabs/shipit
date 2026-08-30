@@ -1566,6 +1566,40 @@ export class GitManager {
   }
 
   /**
+   * The commits in `range` (`git log --format=%h %s <range>`), newest first, at
+   * most `maxCount` of them.
+   *
+   * Written for the diverged-push notice, which has to NAME the commits that
+   * exist only on the remote before it tells anyone a force-push would discard
+   * them. A count alone cannot do that: "1 commit only on the remote" reads as
+   * bookkeeping, while its subject line is the thing a reader recognises as
+   * their own work.
+   *
+   * Returns `[]` when either endpoint does not resolve — the caller is reporting
+   * a failure already, and an empty list degrades the notice rather than
+   * replacing it with an error.
+   */
+  async commitSubjects(range: string, maxCount = 10): Promise<{ sha: string; subject: string }[]> {
+    try {
+      const out = await this.git.raw([
+        "log", `--max-count=${maxCount}`, "--format=%h %s", range,
+      ]);
+      return out
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const sep = line.indexOf(" ");
+          return sep === -1
+            ? { sha: line, subject: "" }
+            : { sha: line.slice(0, sep), subject: line.slice(sep + 1) };
+        });
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * docs/214 — the text of `filePath` as it exists at `ref` (`git show ref:path`),
    * or null when the ref or path can't be resolved. Used by the release cold-start
    * guard to read `.github/workflows/release.yml` on the maintenance branch and

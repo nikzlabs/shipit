@@ -405,6 +405,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     // were invisible on every surface the user or the agent reads.
     chatHistory: chatHistoryManager,
     notifyAutoPush: (sessionId) => prStatusPollerRef.ref?.notifyAutoPush(sessionId),
+    // Derived exactly as the CLI env is (`session-agent-run-params.ts`:
+    // `Boolean(sessionInfo?.mergedHeadSha)`), so the notice never names a
+    // force-push the PreToolUse hook would refuse when the agent runs it.
+    destructiveGitGuarded: (sessionId) => Boolean(sessionManager.get(sessionId)?.mergedHeadSha),
   });
 
   // planning#266 — the same forward-ref shape for the merge-watch manager, which is

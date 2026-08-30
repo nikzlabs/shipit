@@ -45,7 +45,7 @@ const ALL_SOURCES = Object.keys({
 } satisfies Record<LogSource, true>) as LogSource[];
 
 /** A line every ops-safe template test can rely on being returned. */
-const SAFE_LINE = "Auto-push rejected: branch has diverged from remote. Rebase needed to update.";
+const SAFE_LINE = "Auto-push rejected: this session's branch and its remote have diverged. Measuring which side carries what.";
 
 const SUBJECT = "7bc72326-c1ad-48fd-ac95-12149a000000";
 
@@ -177,6 +177,32 @@ describe("the content boundary (the one that matters)", () => {
     expect(isOpsSafeLine(SAFE_LINE)).toBe(true);
     expect(isOpsSafeLine(`${SAFE_LINE} extra text`)).toBe(false);
     expect(isOpsSafeLine(`prefix ${SAFE_LINE}`)).toBe(false);
+  });
+
+  it("passes the measured divergence shape — the line that says which side is at risk", () => {
+    // The 2026-08-30 incident was diagnosed from the orchestrator's own log. The
+    // counts are what distinguish "your commit is unpushed" from "your commit is
+    // only on the remote", so an ops session that cannot read them cannot tell
+    // the two apart — which is the mistake the notice itself used to make.
+    expect(isOpsSafeLine(
+      "Divergence shape: 0 commit(s) only in this session, 1 commit(s) only on the remote branch."
+      + " A force-push would discard 1 commit(s) from the remote.",
+    )).toBe(true);
+    expect(isOpsSafeLine(
+      "Divergence shape: 2 commit(s) only in this session, 0 commit(s) only on the remote branch.",
+    )).toBe(true);
+    expect(isOpsSafeLine(
+      "Divergence shape (against a remote view that could not be refreshed): 1 commit(s) only in"
+      + " this session, 1 commit(s) only on the remote branch; the two histories share no common"
+      + " commit. A force-push would discard 1 commit(s) from the remote.",
+    )).toBe(true);
+  });
+
+  it("withholds the unmeasured shape, whose reason clause can carry git's own text", () => {
+    expect(isOpsSafeLine(
+      "Divergence shape: could not be measured — the two histories could not be compared"
+      + " (fatal: ambiguous argument 'refs/remotes/origin/secret-branch-name')",
+    )).toBe(false);
   });
 });
 

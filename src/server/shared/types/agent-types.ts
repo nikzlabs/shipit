@@ -1178,7 +1178,7 @@ export interface AgentRunParams {
    * planning#267 — when true, the Claude adapter sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1
    * in the CLI environment, which arms the managed-settings.json PreToolUse
    * hook's destructive-git rule (`git reset --hard`, `git checkout -f`,
-   * force-push). Set only when the session is merged with a recorded
+   * force-push, starting a `git rebase`). Set only when the session is merged with a recorded
    * `mergedHeadSha` — the state `shipit branch reset-to-base` guards — so a
    * refused reset can't be worked around with hand-rolled git. Claude-only;
    * other adapters ignore it. See docs/130-block-branch-ops/plan.md.

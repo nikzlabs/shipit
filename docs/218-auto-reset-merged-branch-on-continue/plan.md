@@ -435,6 +435,11 @@ fail-safe for the manual-`git reset` path and no-ops here (it has already cleare
 | User card — persist | `shared/types/*`, `chat-history.ts`, `session-data.ts`, `database.ts` | `branchAutoReset` `PersistedMessage` field + column + `toRow`/`fromRow` + migration; rehydrate in `loadSessionHistory` |
 | User card — register | `visual-elements.ts` | Add to `CARD_MESSAGE_FIELDS`; extend `EVERY_OPTIONAL_FIELD_MESSAGE` |
 | User card — render | `src/client/components/` (new card component) | Render "Branch updated to latest `<base>`" + `was → now` SHAs |
+| Phase 9 — measure | `src/server/orchestrator/services/push-divergence.ts` (new) | `measurePushDivergence` (fetch → `aheadBehind` → `mergeBase` → name remote-only commits) + `formatDivergedPushNotice`, one recovery per shape |
+| Phase 9 — measure | `src/server/shared/git.ts` | `commitSubjects(range, maxCount)` — the primitive that lets the notice NAME the at-risk commits |
+| Phase 9 — report | `src/server/orchestrator/services/auto-push-scheduler.ts` | Measure at the rejection (once per episode, after the fast surfaces); `destructiveGitGuarded` dep so the notice never names a force-push the hook would block |
+| Phase 9 — guidance | `src/server/orchestrator/prompts/pull-requests.md`, `shipit-docs/github.md`, `shipit-docs/sessions.md` | Check the branch's state before moving it; never a hand-rolled rebase/reset onto the base |
+| Phase 9 — hook | `docker/agent-hooks/block-branch-ops.mjs` | `git rebase` joins the guard-armed destructive set; in-progress verbs exempt |
 
 ## Testing
 
@@ -770,6 +775,55 @@ tries to fix.
   (`isClean()` then `uncommittedPaths()`). Deriving cleanliness from the path list
   would collapse them into one, but that changes what the *gate* means by clean,
   and this phase does not touch the gate.
+
+### Phase 9 — continuing after the reset: the guidance that undid it, and a notice that measures
+
+The 2026-08-30 incident (session e48417b0). Everything this feature owns worked:
+the pre-turn reset moved the branch to the fresh base, the heal force-push
+re-created the remote, and `detectAndReArmResetSession` cleared the merged state
+so the destructive-git guard disarmed for later turns. A later turn then
+committed and pushed one commit that belonged to no pull request. Inside the
+container, the agent rebased — and the branch LOST that already-published
+commit. Every auto-push after it was rejected as non-fast-forward, for 23 hours,
+leaving the session with no pull request, no diff, and its only work sitting on
+the remote.
+
+Two defects, neither in the reset itself.
+
+- **The agent instructions still described the pre-reset world.**
+  `prompts/pull-requests.md` told the agent, unconditionally, to
+  `git fetch origin && git rebase origin/<base>` before opening a follow-up PR.
+  That was right when the branch sat at the merged tip and nothing moved it; once
+  *this* feature became the common path it is wrong (the branch is already on the
+  base), and once a commit has been pushed it is actively harmful — a rebase then
+  rewrites published history with no `--force-with-lease` to finish it. The
+  paragraph now says to LOOK first (`git status -sb`, `git log`) and branches on
+  what it finds: already on the base ⇒ just commit; still at the merged tip ⇒
+  `shipit branch reset-to-base`; commits made after the merge ⇒ stop and ask the
+  user. It matches CLAUDE.md post-turn invariant 4 instead of contradicting it.
+  The same correction landed in the agent-facing copies
+  (`shipit-docs/github.md`, `shipit-docs/sessions.md`).
+- **The rejection notice guessed the shape instead of measuring it.**
+  `services/auto-push-scheduler.ts` emitted a fixed three-case menu that opened
+  with "the commit is safe in this session's local history" and emphasised
+  `shipit branch reset-to-base --force`. In this incident there *was* no local
+  commit, and that command — which resets to the base and force-pushes the heal —
+  would have deleted the one commit that existed anywhere. `services/push-divergence.ts`
+  now measures at the moment of the rejection (fetch the branch, count both sides
+  of the symmetric difference, check the merge base, name the remote-only
+  commits) and the notice states what it measured and names the ONE recovery that
+  fits. The rule that ShipIt never force-pushes on its own is untouched — the
+  defect was the report, not the refusal.
+
+`git rebase` also joined the hook's destructive set
+(`docker/agent-hooks/block-branch-ops.mjs`, docs/130), armed by the same
+`SHIPIT_GUARD_DESTRUCTIVE_GIT=1` as its siblings and exempting the in-progress
+verbs. That does not cover this incident — the guard was already disarmed by the
+re-arm above — but it closes the gap where the one rewrite ShipIt's own docs
+forbid in that window was also the only one the hook did not mention. A broader
+block was rejected: a rebase is legitimate nearly always, and deciding otherwise
+would mean shelling out to git from a PreToolUse hook to compare the branch with
+its own remote.
 
 ## Review notes
 

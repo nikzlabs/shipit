@@ -130,7 +130,7 @@ export async function handleBranchResetToBase(args: string[], deps: RunDeps): Pr
  */
 const REFUSAL_GUIDANCE =
   "Do NOT work around this — do not run `git reset --hard`, `git checkout -f`, `git push --force`, "
-  + "or any other manual reset. It refused because a reset here would destroy work that cannot be "
+  + "`git rebase`, or any other manual reset or rewrite. It refused because a reset here would destroy work that cannot be "
   + "recovered (uncommitted edits have no reflog entry; unmerged commits would be discarded). "
   + "Stop, report what this said, and let the user decide. If they tell you to proceed anyway, the "
   + "sanctioned override is `shipit branch reset-to-base --force --reason \"<why>\"` — it keeps the "

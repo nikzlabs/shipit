@@ -26,6 +26,15 @@ function fakeGit(overrides: Partial<Record<keyof GitManager, unknown>> = {}): Gi
     // The default workspace is not mid-rewrite, so a rejection here is a real
     // divergence and takes the loud path.
     isRebaseInProgress: vi.fn(async () => false),
+    // The reads `services/push-divergence.ts` makes at a rejection. Supplied
+    // even on the happy-path fake: the measurement never throws, so a fake
+    // missing them degrades every notice to "could not be measured" and the
+    // shape assertions below would pass for the wrong reason.
+    currentBranchOrNull: vi.fn(async () => "shipit/feature"),
+    fetchBranch: vi.fn(async () => {}),
+    aheadBehind: vi.fn(async () => ({ ahead: 1, behind: 0 })),
+    mergeBase: vi.fn(async () => "abc1234"),
+    commitSubjects: vi.fn(async () => []),
     ...overrides,
   } as unknown as GitManager;
 }
@@ -75,14 +84,23 @@ function appendedNotices(deps: TestDeps): string[] {
   return deps.appended.filter((m) => m.notice).map((m) => m.text ?? "");
 }
 
-/** A push that fails the way a diverged branch fails. */
-function divergedGit(): GitManager {
+/**
+ * A push that fails the way a diverged branch fails. `counts` is the shape the
+ * rejection-time measurement finds; the default (1 here, 0 there) is the
+ * ordinary rewritten-branch case.
+ */
+function divergedGit(
+  counts: { ahead: number; behind: number } = { ahead: 1, behind: 0 },
+  extra: Partial<Record<keyof GitManager, unknown>> = {},
+): GitManager {
   return fakeGit({
     push: vi.fn(async () => {
       throw new Error(
         "Updates were rejected because the tip of your current branch is behind (non-fast-forward)",
       );
     }),
+    aheadBehind: vi.fn(async () => counts),
+    ...extra,
   });
 }
 
@@ -519,24 +537,102 @@ describe("auto-push scheduler — a rejected push leaves a transcript notice", (
     expect(notice).toContain("shipit/feature");
     // …why…
     expect(notice).toContain("non-fast-forward");
-    expect(notice).toContain("WITHOUT this commit");
-    // …and how do I ship it. The remedy has to be a command the agent can run.
-    expect(notice).toContain("git pull --rebase origin shipit/feature");
+    // …and how do I ship it. The remedy has to be a command the agent can run,
+    // and — since this branch is the one that is ahead — a force-push here
+    // discards nothing.
     expect(notice).toContain("git push --force-with-lease origin shipit/feature");
-    // planning#267 arms a hook that BLOCKS the force-push on a merged branch —
-    // the state this notice routinely fires in — and a PLAIN reset-to-base
-    // refuses there too (`head-moved`) once commits sit on the merged tip. So
-    // the merged case must name the `--force --reason` escape, or the remedy is
-    // a dead end the agent only discovers by being refused.
-    expect(notice).toContain('shipit branch reset-to-base --force --reason "<why>"');
-    // `gh pr create` force-pushes ONLY when re-arming past a merged PR; against
-    // an open one it plain-pushes and is rejected identically. Promising it as a
-    // blanket escape hatch would send the agent at a command that fails.
-    expect(notice).toContain("force-pushes only when it re-arms past a merged pull request");
     expect(deps.chatHistory.append).toHaveBeenCalledWith(
       "s1",
       expect.objectContaining({ notice: true, noticeLevel: "warn" }),
     );
+  });
+
+  it("measures the shape at the rejection and names the recovery that fits it", async () => {
+    // The 2026-08-30 incident: nothing unpushed here, one already-published
+    // commit only on the REMOTE, dropped locally by an agent-side rebase. The
+    // fixed three-case notice this replaces asserted the opposite (the commit is
+    // safe locally, further commits stay local) and emphasised
+    // `reset-to-base --force`, which would have deleted it.
+    const deps = makeDeps();
+    const git = divergedGit({ ahead: 0, behind: 1 }, {
+      commitSubjects: vi.fn(async () => [{ sha: "d4f3ff4", subject: "Add the exporter" }]),
+    });
+    createAutoPushScheduler(deps).schedule(git, "s1");
+
+    await fireDebounce();
+
+    const notice = appendedNotices(deps)[0];
+    expect(notice).toContain("1 commit only on the remote");
+    expect(notice).toContain("d4f3ff4 Add the exporter");
+    expect(notice).toContain("git pull --rebase origin shipit/feature");
+    expect(notice).toContain("Do NOT force-push");
+    expect(notice).not.toContain("reset-to-base");
+  });
+
+  it("tells the reader the agent is blocked from the force-push it just named", async () => {
+    // `block-branch-ops.mjs` refuses a hand-rolled force-push while the session
+    // carries a recorded `mergedHeadSha`. A remedy the agent is refused when it
+    // runs it is a dead end it only discovers by being refused.
+    const deps = makeDeps({ destructiveGitGuarded: () => true });
+    createAutoPushScheduler(deps).schedule(divergedGit({ ahead: 2, behind: 0 }), "s1");
+
+    await fireDebounce();
+
+    const notice = appendedNotices(deps)[0];
+    expect(notice).toContain("the user can run it from the terminal");
+    expect(notice).toContain('shipit branch reset-to-base --force --reason "<why>"');
+  });
+
+  it("does not consult the guard when the session is not on a merged branch", async () => {
+    const deps = makeDeps({ destructiveGitGuarded: () => false });
+    createAutoPushScheduler(deps).schedule(divergedGit({ ahead: 2, behind: 0 }), "s1");
+
+    await fireDebounce();
+
+    expect(appendedNotices(deps)[0]).not.toContain("reset-to-base");
+  });
+
+  it("survives a guard reader that throws, and names the ordinary force-push", async () => {
+    const deps = makeDeps({ destructiveGitGuarded: () => { throw new Error("session row gone"); } });
+    createAutoPushScheduler(deps).schedule(divergedGit({ ahead: 2, behind: 0 }), "s1");
+
+    await fireDebounce();
+
+    expect(appendedNotices(deps)[0]).toContain("git push --force-with-lease origin shipit/feature");
+  });
+
+  it("logs the measured shape for the operator, not only the transcript", async () => {
+    // Counts only, no branch or remote name — that is what lets this line be an
+    // ops-safe template (`services/host-session-logs.ts`), so an ops session
+    // diagnosing this incident can read which side is at risk.
+    const deps = makeDeps();
+    createAutoPushScheduler(deps).schedule(divergedGit({ ahead: 0, behind: 3 }), "s1");
+
+    await fireDebounce();
+
+    expect(deps.broadcastLog).toHaveBeenCalledWith(
+      "s1",
+      "server",
+      "Divergence shape: 0 commit(s) only in this session, 3 commit(s) only on the remote branch."
+      + " A force-push would discard 3 commit(s) from the remote.",
+    );
+  });
+
+  it("still persists a notice when the shape cannot be measured", async () => {
+    // Every measurement read is best-effort. A second failure must degrade the
+    // explanation, never replace it with silence — and it must not let the
+    // notice guess a recovery, because the two destroy opposite sides.
+    const deps = makeDeps();
+    createAutoPushScheduler(deps).schedule(
+      divergedGit({ ahead: 0, behind: 0 }, { aheadBehind: vi.fn(async () => null) }),
+      "s1",
+    );
+
+    await fireDebounce();
+
+    const notice = appendedNotices(deps)[0];
+    expect(notice).toContain("could not measure");
+    expect(notice).not.toContain("--force-with-lease");
   });
 
   it("persists the notice even when the session has no runner left to emit to", async () => {

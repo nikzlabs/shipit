@@ -16,8 +16,8 @@
  * structural enforcement layer that doesn't depend on prompt precedence.
  *
  * planning#267 adds a SECOND, narrowly-scoped rule on top of the same mechanism:
- * when `SHIPIT_GUARD_DESTRUCTIVE_GIT=1`, `git reset --hard`, `git checkout -f`
- * and force-pushes are blocked too. That env var is set only when the session
+ * when `SHIPIT_GUARD_DESTRUCTIVE_GIT=1`, `git reset --hard`, `git checkout -f`,
+ * force-pushes and starting a `git rebase` are blocked too. That env var is set only when the session
  * is merged with a recorded `mergedHeadSha` — i.e. exactly the state
  * `shipit branch reset-to-base` guards (docs/239). That command fails closed on
  * a safety gate (HEAD === mergedHeadSha, clean tree, on the session branch, no
@@ -166,9 +166,10 @@ function offends(seg) {
  * when the session is in the merged state `shipit branch reset-to-base` guards
  * (see `guardDestructiveGit` below). Returns a reason string or null.
  *
- * Scoped to the three forms that can silently discard this branch's work:
- * a hard reset, a forced checkout, and a force-push. Everything else — a mixed
- * or soft reset, `git checkout -- <path>`, a plain push — stays allowed.
+ * Scoped to the four forms that can silently discard this branch's work:
+ * a hard reset, a forced checkout, a force-push, and starting a rebase.
+ * Everything else — a mixed or soft reset, `git checkout -- <path>`, a plain
+ * push — stays allowed.
  */
 function offendsDestructive(seg) {
   const parsed = parseGit(seg);
@@ -177,6 +178,36 @@ function offendsDestructive(seg) {
 
   if (sub === "reset" && rest.includes("--hard")) {
     return "`git reset --hard` discards this branch's state";
+  }
+  // A rebase reaches the same end state as the hard reset above, and in this
+  // one state it is provably the wrong tool: CLAUDE.md post-turn invariant 4
+  // and /shipit-docs/sessions.md both say a branch whose work shipped under a
+  // different SHA returns to base via `shipit branch reset-to-base`, never a
+  // rebase — after a squash merge the base holds the branch's FINAL state while
+  // the branch's first commit adds the same paths in their INITIAL state, so
+  // the rebase hits add/add conflicts instead of dropping shipped patches. It
+  // also strands anything already pushed: the commits stay on the remote, leave
+  // the branch, and every later plain auto-push is rejected as non-fast-forward
+  // (the 2026-08-30 incident).
+  //
+  // Deliberately NOT a blanket rule. Outside this window a rebase is ordinary
+  // and useful, and this hook is the same narrow-scope bargain planning#267 made
+  // for `reset --hard`. The in-progress verbs are exempt — blocking
+  // `git rebase --abort` would trap the agent inside a rebase it cannot leave.
+  if (sub === "rebase") {
+    const inProgressVerb = rest.some((t) =>
+      [
+        "--continue",
+        "--abort",
+        "--skip",
+        "--quit",
+        "--edit-todo",
+        "--show-current-patch",
+      ].includes(t),
+    );
+    if (!inProgressVerb) {
+      return "`git rebase` rewrites this branch's history";
+    }
   }
   if (sub === "checkout" && rest.some((t) => t === "-f" || t === "--force")) {
     return "`git checkout -f` overwrites the working tree";
