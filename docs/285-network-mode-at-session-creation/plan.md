@@ -88,8 +88,17 @@ network containment" card above the first message describes something that never
 
 Egress is plumbed when the container is *created* (`container-lifecycle.ts`); a running
 container cannot be re-plumbed. `/new` claims a session on arrival
-(`useSessionActivation.ts` ~96), which opens the WS and materializes a runner — so by the
-time a mode is picked, a container already exists, created under the *inherited* default.
+(`useSessionActivation.ts` ~96), which opens the WS and materializes a runner.
+
+**But the claim is asynchronous, and the control works before it lands.** `disabled` blocks
+Send without making the selector inert (`App.tsx` ~2222, `MessageInput.tsx` ~1338), so a mode
+can be picked with no session id to write it to. An earlier draft of this plan assumed a
+container always exists by then; it does not. So the selection is held as a **non-sticky,
+claim-generation-scoped draft**, written the moment the claim returns, with **Send disabled
+until that write succeeds** — the same barrier as below, extended over the claim. It resets
+on abandonment or route change. (Disabling the network section until the claim completes
+would be simpler and is worse: the one moment the user is most likely to set it is while the
+page is still settling.)
 
 **So the container is reconciled at first Send, using the restart path that already exists.**
 
@@ -115,6 +124,15 @@ callbacks are independently asynchronous — so with an 8-second restart in betw
 near-simultaneous first Sends (two tabs, or a fast double Enter) can both pass the idle check
 and both attempt reconciliation. One reconciles; the others wait and then **re-enter the
 ordinary send-or-queue path** rather than proceeding on a stale decision.
+
+**The override write joins that section too.** The section as first drafted covered competing
+Sends but not the independent `PUT /api/egress/session/:id` (`api-routes-egress.ts` ~331) —
+and the control stays deliberately editable during the restart. So a change from this tab or
+another can land *after* the comparison, or after the replacement container has booted, and
+the first turn runs under a mode different from the one now displayed. **Once first Send is
+admitted its target is frozen**: later PUTs take the same session admission lock and become
+ordinary post-first-turn changes, showing the normal pending state. A test changes the mode
+during the restart and during pre-spawn preparation.
 
 **And the winner's claim has to be one a probe cannot revoke.** Releasing the section once
 `running = true` is not enough: the ordinary second-send path probes a running runner with
@@ -181,6 +199,13 @@ merely during the restart, or it cannot fail on this.
   fire-and-forget `agent.install` (`warm-pool-manager.ts` ~297, ~331), so a changed-mode
   first Send can destroy an install in flight. The replacement reruns setup; the cost is a
   longer Send, and it is stated rather than discovered.
+- **It resets the OOM breaker and the restart-loop detector**, deliberately: Rescue is the
+  explicit user opt-in to retry, so it clears them "so the new container actually gets
+  created" (`recovery.ts` ~226–233). A network-mode change must **not** silently inherit that
+  privilege — a session that has been OOM-killed repeatedly would gain a free retry by
+  toggling a setting, while an *unchanged* first Send stays blocked. So reconciliation reuses
+  the teardown/recreate path with the breakers **left alone**, and a tripped breaker aborts
+  the Send with the existing Rescue guidance rather than quietly overriding it.
 - **It is container-runtime only.** In `RUNTIME_MODE=local` there is no container manager and
   the call throws 503 (`recovery.ts` ~235). So "anything else → restart" is scoped to the
   container runtime; local mode persists the override, reports the policy/enforcement
@@ -293,9 +318,15 @@ reuse branch itself, not in the composer, because the composer is not involved i
 2d. **A failed replacement aborts the Send** with a correlated error rather than dispatching,
    and a still-`starting` replacement waits on the *new* runner's readiness gate.
 2e. **Send is barred while the network write is in flight**, and after a failed write until
-   the shown value reverts.
+   the shown value reverts — including a pick made **before the claim lands**, which is
+   written when it does.
 2f. **Local runtime** (`RUNTIME_MODE=local`) persists the override and reconciles nothing,
    rather than failing the first Send on a 503.
+2g. **A mode changed during the restart or pre-spawn preparation** does not move the first
+   turn: the admitted target is frozen and the late change becomes an ordinary pending
+   post-first-turn change.
+2h. **A tripped OOM or restart-loop breaker aborts the Send** with the Rescue guidance, and
+   reconciliation does not clear either — toggling a setting must not buy a free retry.
 3. **`Inherit` follows the workspace at container start**, and an explicit pick does not move
    when the workspace default changes between Send and boot.
 4. **Reset**: a second new session in the *same* repo starts at `Inherit` — including the
