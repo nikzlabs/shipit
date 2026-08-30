@@ -38,6 +38,7 @@ import type { FastifyInstance } from "fastify";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import { ServiceManager, type ComposeRunner, type ComposeQuery } from "../service-manager.js";
 import { SESSION_WORKSPACE_SUBDIR } from "../session-state-dir.js";
+import { serializeStackOp } from "../stack-op-queue.js";
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -569,5 +570,343 @@ describe("Integration: install gate — resolution without SSE install_done (doc
       await mgr.stop();
       fs.rmSync(sessionDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The gate-liveness watchdog (docs/286)
+// ---------------------------------------------------------------------------
+
+/**
+ * docs/283 closed two routes to "the install gate never reopens". A third was
+ * then observed in production on build `3780af7e`, which already carried that
+ * fix: session `064ea640` released its gate correctly on its FIRST install and
+ * then wedged on all five subsequent mid-session re-installs, leaving its
+ * `preview: auto` services `game` and `debug` stopped. Four other sessions on
+ * the same host were in the same state.
+ *
+ * The branch that dropped the release was never identified — every candidate
+ * returned with no log at all — so these tests deliberately do NOT model a
+ * route. They put the manager in the wedged STATE and assert on what the
+ * watchdog does with it, which is exactly the contract: a gate no gate event
+ * will ever open is decidable without knowing what failed to open it.
+ *
+ * The negative tests all end by REMOVING the one condition that was holding the
+ * watchdog back and watching it fire. Without that, "nothing happened for 300ms"
+ * is equally consistent with "the poll loop was never running", and a deleted
+ * guard could pass for the wrong reason on a loaded box.
+ */
+describe("Integration: install gate — liveness watchdog (docs/286)", () => {
+  const cleanups: (() => void)[] = [];
+
+  afterEach(() => {
+    for (const fn of cleanups.splice(0)) fn();
+  });
+
+  const SETTLE_MS = 150;
+  const POLL_MS = 25;
+  /** Comfortably past the settle window plus several heartbeats. */
+  const PAST_SETTLE_MS = SETTLE_MS + POLL_MS * 10;
+
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+  /**
+   * A real `ServiceManager` over a fake compose CLI. `stop` can be parked, which
+   * is how a teardown is held in flight for the docs/239 case, and the session's
+   * stack queue can be parked, which is how a queued gated start is held.
+   */
+  function makeManager(sessionId: string, compose = "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n") {
+    const { sessionDir, workspaceDir } = makeSessionWorkspace(compose);
+    const upCalls: string[] = [];
+    const stopCalls: string[] = [];
+    let parkStops = false;
+    const parkedStops: (() => void)[] = [];
+
+    const composeRunner: ComposeRunner = (args) => {
+      const upIdx = args.indexOf("up");
+      if (upIdx >= 0) {
+        for (const a of args.slice(upIdx)) {
+          if (a !== "up" && !a.startsWith("-")) upCalls.push(a);
+        }
+      }
+      const stopIdx = args.indexOf("stop");
+      if (stopIdx >= 0) {
+        stopCalls.push(args[stopIdx + 1]);
+        if (parkStops) return new Promise<void>((resolve) => { parkedStops.push(resolve); });
+      }
+      return Promise.resolve();
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
+      if (key === "ps") {
+        return Promise.resolve(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+      }
+      if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId,
+      workspaceDir,
+      serviceEnvDir: path.resolve(workspaceDir, "..", "service-env"),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: POLL_MS,
+      gateWatchdogSettleMs: SETTLE_MS,
+    });
+
+    cleanups.push(() => {
+      for (const r of parkedStops.splice(0)) r();
+      void mgr.stop();
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    });
+
+    return {
+      mgr,
+      /** How many times `web` has been named in a `docker compose up`. */
+      webUps: () => upCalls.filter(a => a === "web").length,
+      /** Every service name passed to a `docker compose stop`. */
+      stopCalls,
+      /** Services the gate is currently holding. */
+      gated: () => [...(mgr as unknown as { gatedServices: Set<string> }).gatedServices],
+      parkStops: () => { parkStops = true; },
+      releaseStops: () => { parkStops = false; for (const r of parkedStops.splice(0)) r(); },
+    };
+  }
+
+  /** Capture `console.warn` / `console.log` for the duration of a test. */
+  function captureConsole(): { lines: () => string[] } {
+    const lines: string[] = [];
+    const warn = console.warn;
+    const log = console.log;
+    const push = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+    console.warn = push;
+    console.log = push;
+    cleanups.push(() => { console.warn = warn; console.log = log; });
+    return { lines: () => [...lines] };
+  }
+
+  /**
+   * Model a LOST gate release: the install has finished, the services are still
+   * held, and no `releaseInstallGate` will ever complete.
+   *
+   * Both fields, because both are what the manager looks like AFTER any of the
+   * five candidate branches returned. `releaseInstallGate` nulls `_gatedTeardown`
+   * on its first line and only then reaches the branches that can drop the
+   * open, so a wedge that came through any of them has a null teardown and a
+   * cleared `_installRunning`.
+   *
+   * Reaching for the fields directly is the point. Every candidate branch
+   * returned silently, so no public call reproduces "the release was dropped"
+   * without also deciding WHICH branch dropped it — and the incident
+   * deliberately left that unknown.
+   */
+  function loseTheGateRelease(mgr: ServiceManager): void {
+    const priv = mgr as unknown as { _installRunning: boolean; _gatedTeardown: Promise<void> | null };
+    priv._installRunning = false;
+    priv._gatedTeardown = null;
+  }
+
+  it("reopens a gate whose release was lost mid-reinstall, and the held services start", async () => {
+    const h = makeManager("gate-watchdog-reopen");
+    const con = captureConsole();
+
+    // Steady state, through the real bracket: install runs, gate opens, the
+    // `preview: auto` service is up.
+    h.mgr.setInstallRunning(true);
+    await h.mgr.start();
+    h.mgr.setInstallRunning(false);
+    await flushMicrotasks();
+    await waitFor(() => h.mgr.getService("web")?.status === "running", 3000, "first start");
+    expect(h.webUps()).toBe(1);
+
+    // A dependency input changed → the mid-session re-install bracket. This is
+    // the real hold: the service is re-gated and OUR OWN `docker compose stop`
+    // goes out — the exit 137 the user reported as a crash.
+    h.mgr.setInstallRunning(true);
+    await flushMicrotasks();
+    expect(h.stopCalls).toContain("web");
+    expect(h.gated()).toEqual(["web"]);
+
+    // ...and then the release is lost. Nothing polls a held service, so without
+    // the watchdog this is where the preview stays for the rest of the session.
+    loseTheGateRelease(h.mgr);
+
+    await waitFor(() => h.webUps() === 2, 3000, "watchdog reopened the gate");
+    await waitFor(() => h.mgr.getService("web")?.status === "running", 3000, "web running again");
+    expect(h.gated()).toEqual([]);
+    // Requirement 4: the recovery says why it happened. Until docs/286 the hold
+    // was logged and nothing else was.
+    expect(con.lines().some(l => l.includes("install gate watchdog:") && l.includes("web"))).toBe(true);
+  });
+
+  it("does nothing while the install is still running", async () => {
+    const h = makeManager("gate-watchdog-install-running");
+
+    h.mgr.setInstallRunning(true);
+    await h.mgr.start();
+
+    // A running install OWNS the gate — its completion is the release. Firing
+    // here would start the service against a half-written dependency tree,
+    // which is the docs/137 race the gate exists to remove.
+    await sleep(PAST_SETTLE_MS);
+    expect(h.webUps()).toBe(0);
+    expect(h.gated()).toEqual(["web"]);
+    expect(h.mgr.getService("web")?.status).toBe("starting");
+
+    // Drop that one condition and the watchdog fires — which is what proves the
+    // heartbeat was running all along and `_installRunning` was the only thing
+    // holding it back.
+    loseTheGateRelease(h.mgr);
+    await waitFor(() => h.webUps() === 1, 3000, "watchdog fired once install stopped running");
+  });
+
+  it("does nothing while the teardown's compose stop is still in flight (docs/239)", async () => {
+    const h = makeManager("gate-watchdog-teardown-pending");
+
+    h.mgr.setInstallRunning(true);
+    await h.mgr.start();
+    h.mgr.setInstallRunning(false);
+    await flushMicrotasks();
+    await waitFor(() => h.webUps() === 1, 3000, "first start");
+
+    // Mid-session re-install: hold + `compose stop`, and park that stop. The
+    // release is now awaiting a teardown, so `_gatedTeardown` has ALREADY been
+    // nulled by `releaseInstallGate` — the field cannot tell the watchdog the
+    // bracket is still closing, which is what `_gateReleasesInFlight` is for.
+    h.parkStops();
+    h.mgr.setInstallRunning(true);
+    h.mgr.setInstallRunning(false);
+    await flushMicrotasks();
+    expect(h.gated()).toEqual(["web"]);
+    expect(h.mgr.installRunning).toBe(false);
+
+    // Reopening here would let the gate open before our own SIGKILL lands, and
+    // our teardown would surface to the user as a service crash (docs/239).
+    await sleep(PAST_SETTLE_MS);
+    expect(h.webUps()).toBe(1);
+    expect(h.gated()).toEqual(["web"]);
+
+    // The teardown lands → the REAL release opens the gate, exactly once.
+    h.releaseStops();
+    await waitFor(() => h.webUps() === 2, 3000, "release started web");
+    await sleep(PAST_SETTLE_MS);
+    expect(h.webUps()).toBe(2);
+  });
+
+  it("clears a wedged gate that holds only services the user stopped, and starts nothing", async () => {
+    const h = makeManager("gate-watchdog-stopped-by-user");
+    const con = captureConsole();
+
+    h.mgr.setInstallRunning(true);
+    await h.mgr.start();
+    // The user stops the service while it is held. Requirement 5: their last
+    // instruction is the one that holds, and the watchdog is an automatic
+    // lifecycle event, not a newer instruction.
+    await h.mgr.stopService("web");
+    expect(h.mgr.getService("web")?.status).toBe("stopped");
+
+    loseTheGateRelease(h.mgr);
+
+    // The gate is still cleared — leaving the name in the set would look like
+    // the same wedge forever, and re-report it on every heartbeat.
+    await waitFor(() => h.gated().length === 0, 3000, "watchdog cleared the gate");
+    await sleep(PAST_SETTLE_MS);
+    expect(h.webUps()).toBe(0);
+    expect(con.lines().some(l => l.includes("stopped by the user"))).toBe(true);
+  });
+
+  it("does not resurrect a service the user stops while the gated start waits on the stack queue", async () => {
+    // The `stoppedByUser` filter in `startGatedServices` runs BEFORE the batch
+    // is queued, and the queue can hold that batch for as long as the
+    // `compose up` ahead of it takes. A Stop landing inside that window records
+    // itself and finds no `up` in flight to chase, so without the re-check in
+    // `startGatedBatch` the queued start walks the service straight back up.
+    // Review finding on docs/286.
+    const sessionId = "gate-watchdog-stop-races-queue";
+    const h = makeManager(sessionId);
+
+    h.mgr.setInstallRunning(true);
+    await h.mgr.start();
+    expect(h.webUps()).toBe(0);
+
+    // Stand in for the plugin-service reconcile a session activation runs
+    // concurrently with `agent.install`: it holds the session's stack op.
+    let release!: () => void;
+    const queued = serializeStackOp(sessionId, () => new Promise<void>((r) => { release = r; }));
+
+    try {
+      loseTheGateRelease(h.mgr);
+      // The watchdog fires and queues the batch behind the parked op.
+      await waitFor(() => h.gated().length === 0, 3000, "watchdog opened the gate");
+      expect(h.webUps()).toBe(0);
+
+      // The user stops the service while the batch is still queued.
+      await h.mgr.stopService("web");
+      expect(h.mgr.getService("web")?.status).toBe("stopped");
+    } finally {
+      release();
+    }
+    await queued;
+    await flushMicrotasks();
+    await sleep(PAST_SETTLE_MS);
+
+    // No `up` for `web` is the whole assertion. Its *status* is not: the fake
+    // `ps` here always answers `running`, so once the gate stops holding the
+    // service the poller reports whatever the fixture says. Asserting on that
+    // would be asserting on the fixture.
+    expect(h.webUps()).toBe(0);
+  });
+
+  it("does not open a gate a newer hold owns", async () => {
+    const h = makeManager("gate-watchdog-newer-hold");
+
+    h.mgr.setInstallRunning(true);
+    await h.mgr.start();
+    loseTheGateRelease(h.mgr);
+
+    // Let the wedge clock start, but not expire.
+    await sleep(Math.round(SETTLE_MS * 0.5));
+    expect(h.webUps()).toBe(0);
+
+    // A newer cycle takes ownership: fresh generation, fresh teardown, and a
+    // release awaiting it. Acting on the older observation would start the very
+    // services that newer teardown is in the middle of stopping.
+    h.parkStops();
+    h.mgr.setInstallRunning(true);
+    h.mgr.setInstallRunning(false);
+    await flushMicrotasks();
+
+    await sleep(PAST_SETTLE_MS);
+    expect(h.webUps()).toBe(0);
+    expect(h.gated()).toEqual(["web"]);
+
+    h.releaseStops();
+    await waitFor(() => h.webUps() === 1, 3000, "newer cycle's release started web");
+  });
+
+  it("leaves a gate held by a FAILED install alone", async () => {
+    const h = makeManager("gate-watchdog-install-failed");
+
+    h.mgr.setInstallRunning(true);
+    await h.mgr.start();
+    h.mgr.setInstallRunning(false, { failed: true });
+    await flushMicrotasks();
+
+    // Held on purpose: latched to `error` with the real cause, kept in the set
+    // so a later SUCCESSFUL re-install starts them. Starting them here walks
+    // them straight into the `vite: not found` the latch exists to prevent —
+    // and the user can already see why they are down.
+    await sleep(PAST_SETTLE_MS);
+    expect(h.webUps()).toBe(0);
+    expect(h.gated()).toEqual(["web"]);
+    expect(h.mgr.getService("web")?.status).toBe("error");
+    expect(h.mgr.getService("web")?.error).toContain("agent.install failed");
+
+    // Same proof as the install-running case: clear only that condition and the
+    // watchdog fires, so the silence above was the latch and not a dead loop.
+    (h.mgr as unknown as { _installFailed: boolean })._installFailed = false;
+    await waitFor(() => h.webUps() === 1, 3000, "watchdog fired once the latch cleared");
   });
 });
