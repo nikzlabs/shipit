@@ -11,7 +11,7 @@ import {
   NotebookIcon,
   PresentationChartIcon,
   ScrollIcon,} from "@phosphor-icons/react";
-import hljs from "highlight.js";
+import { highlightCode } from "../syntax-highlight.js";
 import { DiffBlock } from "./DiffBlock.js";
 import { ToolSpinner } from "./StreamingIndicator.js";
 import { AskUserQuestion, type AskQuestionItem, type AnswerQuestionFn } from "./AskUserQuestion.js";
@@ -498,6 +498,10 @@ function ToolOutputModal({ toolName, input, toolUseId, bodyTruncated, result, on
 }) {
   const lazy = useLazyToolInput(toolUseId, !!bodyTruncated);
   const duration = typeof result?.durationMs === "number" ? formatToolDuration(result.durationMs) : "";
+  // The tool input is right here, so the output panel never has to guess the
+  // language of a file it is already naming one section above.
+  const resolvedInput = lazy.input ?? input;
+  const filePath = typeof resolvedInput.file_path === "string" ? resolvedInput.file_path : undefined;
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
     <DialogContent className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col" aria-label="Tool output">
@@ -507,7 +511,7 @@ function ToolOutputModal({ toolName, input, toolUseId, bodyTruncated, result, on
       <div className="flex-1 overflow-auto p-4">
         <ToolInput
           toolName={toolName}
-          input={lazy.input ?? input}
+          input={resolvedInput}
           loading={lazy.loading}
           error={lazy.error}
         />
@@ -523,7 +527,7 @@ function ToolOutputModal({ toolName, input, toolUseId, bodyTruncated, result, on
           ) : null}
         </div>
         {result ? (
-          <ToolResult tool={toolName} result={result} />
+          <ToolResult tool={toolName} result={result} {...(filePath ? { filePath } : {})} />
         ) : (
           <div className="flex items-center gap-2 text-xs text-(--color-text-tertiary) font-mono italic">
             <ToolSpinner />
@@ -581,11 +585,7 @@ function ToolInputField({ toolName, fieldKey, value }: { toolName: string; field
   const isCommand = fieldKey === "command" && typeof value === "string";
   const highlighted = useMemo(() => {
     if (!isCommand || !isBash || typeof value !== "string") return null;
-    try {
-      return hljs.highlight(value, { language: "bash" }).value;
-    } catch {
-      return null;
-    }
+    return highlightCode(value, "bash");
   }, [isCommand, isBash, value]);
 
   const tone: "add" | "del" | "plain" =

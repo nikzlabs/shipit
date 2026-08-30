@@ -7,6 +7,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useIssuesStore } from "../stores/issues-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import type { TrackerInfo } from "../../server/shared/types.js";
+import { highlightCode } from "../syntax-highlight.js";
 
 afterEach(() => {
   cleanup();
@@ -302,5 +303,48 @@ describe("MarkdownContent tracker-issue links", () => {
 
     await userEvent.click(link);
     expect(openIssue).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A fenced block is the one place ShipIt still has to guess: a fence carries a
+ * label or it carries nothing. The guess is now bounded to the registered
+ * subset rather than every grammar highlight.js ships — see
+ * `src/client/syntax-highlight.ts` for why that mattered.
+ */
+describe("MarkdownContent code blocks", () => {
+  /**
+   * highlight.js escapes `"` as `&quot;`; the DOM serializes it back to a bare
+   * quote. Round-trip the expectation so both sides match on markup.
+   */
+  function asRendered(html: string | null): string | null {
+    if (html === null) return null;
+    const el = document.createElement("code");
+    el.innerHTML = html;
+    return el.innerHTML;
+  }
+
+  const codeIn = (container: HTMLElement) => container.querySelector("pre code.hljs");
+
+  it("highlights a labeled fence with the language the fence names", () => {
+    const { container } = render(<MarkdownContent text={"```python\nx = 1\n```"} />);
+    expect(codeIn(container)?.innerHTML).toBe(asRendered(highlightCode("x = 1", "python")));
+  });
+
+  it("falls back to bounded auto-detection for an unlabeled fence", () => {
+    const code = "SELECT id FROM sessions;";
+    const { container } = render(<MarkdownContent text={`\`\`\`\n${code}\n\`\`\``} />);
+    expect(codeIn(container)?.innerHTML).toBe(asRendered(highlightCode(code, null)));
+  });
+
+  it("renders a fence whose language is outside the subset as plain text", () => {
+    // The deliberate behaviour change: nothing answers to `haskell` any more,
+    // so the block renders uncolored rather than being guessed at as some other
+    // language. The code itself must survive intact.
+    const code = 'main = putStrLn "hi"';
+    const { container } = render(<MarkdownContent text={`\`\`\`haskell\n${code}\n\`\`\``} />);
+    const el = codeIn(container);
+    expect(el?.textContent).toBe(code);
+    expect(el?.querySelector("span")).toBeNull();
   });
 });

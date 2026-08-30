@@ -3,6 +3,7 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { ToolResult, truncateLines, parseContentForImages } from "./ToolResult.js";
 import type { ToolResultBlock } from "./MessageList.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { highlightCode } from "../syntax-highlight.js";
 
 afterEach(() => {
   cleanup();
@@ -13,6 +14,19 @@ afterEach(() => {
 
 function result(content: string, isError?: boolean): ToolResultBlock {
   return { toolUseId: "toolu_test", content, isError };
+}
+
+/**
+ * highlight.js escapes `"` as `&quot;`, and the DOM serializes it straight back
+ * to a bare quote in `innerHTML` — so comparing raw hljs output against rendered
+ * markup fails on that alone. Round-trip the expectation through the DOM so both
+ * sides are in the same form.
+ */
+function asRendered(html: string | null): string | null {
+  if (html === null) return null;
+  const el = document.createElement("code");
+  el.innerHTML = html;
+  return el.innerHTML;
 }
 
 describe("truncateLines", () => {
@@ -148,6 +162,37 @@ describe("ToolResult", () => {
       const longContent = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join("\n");
       render(<ToolResult tool="Read" result={result(longContent)} />);
       expect(screen.getByText(/Show all 40 lines/)).toBeInTheDocument();
+    });
+
+    // The Read tool call names the file it read, so the result panel never has
+    // to auto-detect. Auto-detection re-highlights the body once per registered
+    // grammar and a trace measured it at ~274 ms per call, synchronously inside
+    // the render — these pin that the path is actually used, not just accepted.
+    it("highlights as the language of the file that was read", () => {
+      // Deliberately ambiguous content: as JSON this is an object, as Python a
+      // dict literal, and the two produce different markup — so the assertion
+      // below distinguishes "used the path" from "guessed".
+      const content = '{"a": 1, "b": [2, 3]}';
+      const { container } = render(
+        <ToolResult tool="Read" result={result(content)} filePath="/workspace/config.py" />
+      );
+      const code = container.querySelector("code.hljs");
+      expect(code?.innerHTML).toBe(asRendered(highlightCode(content, "python")));
+      expect(code?.innerHTML).not.toBe(asRendered(highlightCode(content, null)));
+    });
+
+    it("falls back to auto-detection when no file path is known", () => {
+      const content = '{"a": 1, "b": [2, 3]}';
+      const { container } = render(<ToolResult tool="Read" result={result(content)} />);
+      expect(container.querySelector("code.hljs")?.innerHTML).toBe(asRendered(highlightCode(content, null)));
+    });
+
+    it("falls back to auto-detection for a file extension it does not know", () => {
+      const content = "const x = 42;";
+      const { container } = render(
+        <ToolResult tool="Read" result={result(content)} filePath="/workspace/data.parquet" />
+      );
+      expect(container.querySelector("code.hljs")?.innerHTML).toBe(asRendered(highlightCode(content, null)));
     });
   });
 

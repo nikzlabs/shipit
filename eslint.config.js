@@ -187,6 +187,15 @@ export default tseslint.config(
             name: "react",
             importNames: ["useEffect"],
             message: "useEffect is restricted. Prefer event handlers, derived state, useMemo, or key props. If useEffect is genuinely needed (external system sync, browser API subscription, cleanup), add eslint-disable-next-line with a justification.",
+          }, {
+            // The root entry point registers all 192 grammars — ~1 MB of the
+            // main chunk, and a `highlightAuto` that runs every one of them
+            // (52% of a production CPU trace). `syntax-highlight.ts` builds on
+            // `highlight.js/lib/core` with a bounded set; a second importer
+            // here would silently pull the full build back in and no test
+            // would notice, because the output is identical.
+            name: "highlight.js",
+            message: "Import { highlightCode, languageFromPath } from src/client/syntax-highlight.ts instead. The root highlight.js entry bundles all 192 language grammars.",
           }],
         },
       ],

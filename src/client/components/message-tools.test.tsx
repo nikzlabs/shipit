@@ -3,6 +3,7 @@ import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/re
 import { ToolUseItem, formatToolDuration } from "./message-tools.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { ToolUseBlock } from "./MessageList.js";
+import { highlightCode } from "../syntax-highlight.js";
 
 afterEach(() => {
   cleanup();
@@ -357,5 +358,62 @@ describe("ToolUseItem lazy tool input (docs/244)", () => {
 
     await waitFor(() => expect(screen.getByText("command")).toBeInTheDocument());
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The modal draws the tool's input directly above its output, so for a `Read`
+ * it is holding the very `file_path` the output panel would otherwise have to
+ * guess at. Auto-detection re-highlights the body once per registered grammar
+ * — a production trace measured ~274 ms per call, synchronously in a render —
+ * so this wiring is the point of the change, not a convenience.
+ */
+describe("ToolUseItem read-output highlighting", () => {
+  /**
+   * highlight.js escapes `"` as `&quot;`; the DOM serializes it back to a bare
+   * quote. Round-trip the expectation so both sides match on markup.
+   */
+  function asRendered(html: string | null): string | null {
+    if (html === null) return null;
+    const el = document.createElement("code");
+    el.innerHTML = html;
+    return el.innerHTML;
+  }
+
+  // Ambiguous on purpose: JSON object vs Python dict literal highlight
+  // differently, so the assertion can tell "used the path" from "guessed".
+  const content = '{"a": 1, "b": [2, 3]}';
+
+  it("highlights a Read result as the language of the file_path it was given", () => {
+    render(
+      <ToolUseItem
+        tool={tool("Read", { file_path: "/workspace/config.py" })}
+        result={{ toolUseId: "t1", content }}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Show output"));
+
+    const code = screen.getByLabelText("Tool output").querySelector("code.hljs");
+    expect(code?.innerHTML).toBe(asRendered(highlightCode(content, "python")));
+    expect(code?.innerHTML).not.toBe(asRendered(highlightCode(content, null)));
+  });
+
+  it("falls back to auto-detection when the tool input names no file", () => {
+    render(
+      <ToolUseItem
+        tool={tool("Read", {})}
+        result={{ toolUseId: "t1", content }}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Show output"));
+
+    const code = screen.getByLabelText("Tool output").querySelector("code.hljs");
+    expect(code?.innerHTML).toBe(asRendered(highlightCode(content, null)));
   });
 });

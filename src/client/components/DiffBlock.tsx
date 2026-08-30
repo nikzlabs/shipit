@@ -8,7 +8,7 @@
 
 import { useState, useMemo } from "react";
 import { type Icon, NotePencilIcon, PencilSimpleIcon, TrashIcon } from "@phosphor-icons/react";
-import hljs from "highlight.js";
+import { highlightCode, languageFromPath } from "../syntax-highlight.js";
 import { Dialog, DialogContent } from "./ui/dialog.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { sessionRelativePath } from "../path-utils.js";
@@ -187,7 +187,7 @@ function DiffModal({ filePath, oldString, newString, isWrite, unifiedDiff, verb,
         ) : unifiedDiff !== undefined ? (
           <UnifiedDiff diff={unifiedDiff} />
         ) : isWrite ? (
-          <WriteContent content={resolvedNew ?? ""} />
+          <WriteContent content={resolvedNew ?? ""} filePath={filePath} />
         ) : (
           <EditDiff oldString={resolvedOld} newString={resolvedNew} />
         )}
@@ -252,15 +252,16 @@ function EditDiff({ oldString, newString }: { oldString?: string; newString?: st
   );
 }
 
-function WriteContent({ content }: { content: string }) {
-  const highlighted = useMemo(() => {
-    if (!content) return null;
-    try {
-      return hljs.highlightAuto(content).value;
-    } catch {
-      return null;
-    }
-  }, [content]);
+/**
+ * `filePath` is what keeps this off auto-detection: the modal already knows the
+ * file being written, so the grammar is a lookup rather than 26 speculative
+ * highlight passes over a whole file body.
+ */
+function WriteContent({ content, filePath }: { content: string; filePath: string }) {
+  const highlighted = useMemo(
+    () => (content ? highlightCode(content, languageFromPath(filePath)) : null),
+    [content, filePath],
+  );
 
   if (!content) {
     return <div className="text-xs text-(--color-text-secondary) italic">(empty file)</div>;

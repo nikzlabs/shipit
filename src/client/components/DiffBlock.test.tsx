@@ -4,6 +4,19 @@ import { vi } from "vitest";
 import { DiffBlock } from "./DiffBlock.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { highlightCode } from "../syntax-highlight.js";
+
+/**
+ * highlight.js escapes `"` as `&quot;`; the DOM serializes it back to a bare
+ * quote in `innerHTML`. Round-trip the expectation so both sides match on
+ * markup rather than on escaping.
+ */
+function asRendered(html: string | null): string | null {
+  if (html === null) return null;
+  const el = document.createElement("code");
+  el.innerHTML = html;
+  return el.innerHTML;
+}
 
 afterEach(() => {
   cleanup();
@@ -148,6 +161,36 @@ describe("DiffBlock", () => {
       const pre = diffBody();
       expect(pre.className).toMatch(/whitespace-pre-wrap/);
       expect(pre.className).not.toMatch(/overflow-x-auto/);
+    });
+  });
+
+  /**
+   * The modal is already showing the file's path one line above the body, so
+   * the highlighter never has to guess at it. Auto-detection re-highlights the
+   * whole file once per registered grammar, which a production trace measured
+   * at ~274 ms per call inside a synchronous render.
+   */
+  describe("write-content highlighting", () => {
+    const writeBody = () => screen.getByLabelText("Diff view").querySelector("code.hljs");
+
+    it("highlights a written file as the language of its path", () => {
+      // Ambiguous on purpose: as JSON an object, as Python a dict literal. The
+      // two produce different markup, so this can tell "used the path" from
+      // "guessed" — a plain .ts file would auto-detect correctly anyway.
+      const content = '{"a": 1, "b": [2, 3]}';
+      render(<DiffBlock filePath="/workspace/config.py" newString={content} isWrite />);
+      fireEvent.click(screen.getByRole("button", { name: "Show diff" }));
+
+      expect(writeBody()?.innerHTML).toBe(asRendered(highlightCode(content, "python")));
+      expect(writeBody()?.innerHTML).not.toBe(asRendered(highlightCode(content, null)));
+    });
+
+    it("falls back to auto-detection for an extension it does not know", () => {
+      const content = "const x = 42;";
+      render(<DiffBlock filePath="/workspace/data.parquet" newString={content} isWrite />);
+      fireEvent.click(screen.getByRole("button", { name: "Show diff" }));
+
+      expect(writeBody()?.innerHTML).toBe(asRendered(highlightCode(content, null)));
     });
   });
 
