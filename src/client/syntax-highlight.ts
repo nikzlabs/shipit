@@ -21,8 +21,9 @@
  * {@link HIGHLIGHT_LANGUAGES} is no longer highlighted at all: a ```haskell fence
  * renders as plain monospace rather than colored (see {@link highlightCode} for
  * why plain rather than guessed). An **unlabelled** fence holding C, C++ or C#
- * is no longer detected, and one longer than {@link AUTO_DETECT_MAX_CHARS} is
- * not guessed at either. Those are the deliberate trades, and these two lists
+ * is no longer recognised as such — it is colored as whichever of the remaining
+ * grammars comes closest — and one longer than {@link AUTO_DETECT_MAX_CHARS} is
+ * not guessed at at all. Those are the deliberate trades, and these two lists
  * plus that bound are the whole of them.
  *
  * Prefer {@link languageFromPath} over auto-detection wherever a file path is in
@@ -124,9 +125,13 @@ type RegisteredLanguage = keyof typeof LANGUAGE_DEFINITIONS;
  * measurements, and why this predates bounding the registered set rather than
  * being caused by it, are in `docs/265-transcript-render-cost/plan.md`.
  *
- * **The trade.** An *unlabelled* fence containing C, C++ or C# is no longer
- * detected and renders as plain monospace. An easy trade: those three grammars
- * are also the ones most prone to claiming prose that is not code at all.
+ * **The trade, stated precisely.** An *unlabelled* fence containing C, C++ or C#
+ * is no longer detected *as such*. It does not render plain — `highlightAuto`
+ * still returns the best of the 24 below, so it is colored as whatever comes
+ * closest (measured: ordinary C is claimed by `scss`). Only a block over
+ * {@link AUTO_DETECT_MAX_CHARS} renders plain. That is a mild, easy trade: these
+ * three are also the grammars most prone to claiming prose that is not code at
+ * all, so what is lost on unlabelled C is partly won back everywhere else.
  *
  * Kept as an explicit list rather than a filter over
  * {@link LANGUAGE_DEFINITIONS}, so a grammar added there is a deliberate
@@ -153,9 +158,20 @@ const AUTO_DETECT_SUBSET: RegisteredLanguage[] = [
  * roughly a tenth of a second while sitting far above any ordinary unlabelled
  * fence.
  *
- * **A named language is deliberately not capped.** `hljs.highlight` with an
- * explicit grammar is one linear pass — 41 ms on 200 KB of the same input — so
- * capping it would strip highlighting from big files to save nothing.
+ * **A named language is deliberately not capped — and NOT because naming one
+ * makes it linear.** It does not: `highlight` and `highlightAuto` run the same
+ * `_highlight` routine, so explicit `c`/`cpp`/`csharp` on the prose above is
+ * quadratic too (16 KB: c 7.0 s, cpp 5.1 s, csharp 4.4 s). What makes the named
+ * path safe in practice is the *content*, not the call: on real C source those
+ * same grammars are near-linear — 200 KB costs c 744 ms, cpp 321 ms,
+ * csharp 219 ms — because actual code has the punctuation whose absence is what
+ * backtracks.
+ *
+ * So the exposure that remains is prose-shaped text explicitly labelled C, C++
+ * or C#, and no size cap addresses it: the bound would have to be ~4,000
+ * characters to help, which would strip highlighting from ordinary C files to
+ * defend against mislabelled prose. Capping the guess, where the caller told us
+ * nothing and we pay N passes, is the part worth bounding.
  */
 const AUTO_DETECT_MAX_CHARS = 12_000;
 

@@ -72,7 +72,20 @@ describe("the auto-detect subset", () => {
   it("still detects a real language it does cover", () => {
     // Removing three grammars must not cost detection quality on what is left.
     const ts = "export function add(a: number, b: number): number {\n  return a + b;\n}\n";
+    expect(hljs.highlightAuto(ts, [...AUTO_DETECT.LANGUAGES]).language).toBe("typescript");
     expect(highlightCode(ts, null)).toContain("hljs-keyword");
+  });
+
+  it("colors unlabelled C as something else rather than leaving it plain", () => {
+    // The exclusion only stops those three from *winning* detection; the best of
+    // the remaining 24 still wins. So unlabelled C is misclassified, not
+    // un-highlighted — worth asserting because the opposite is the intuitive
+    // reading of "excluded from auto-detect", and the module doc says so.
+    const c = "static int handle(struct conn *c, size_t n) {\n  if (!c) return -EINVAL;\n  return 0;\n}\n";
+    const html = highlightCode(c, null);
+    expect(html).not.toBeNull();
+    expect(html).toContain("<span");
+    expect(hljs.highlightAuto(c, [...AUTO_DETECT.LANGUAGES]).language).not.toBe("c");
   });
 });
 
@@ -95,19 +108,32 @@ describe("the auto-detect size cap", () => {
   });
 
   it("guesses at prose below the cap without freezing the frame", () => {
-    // The real guard. Before the three quadratic grammars were dropped, this
-    // input cost ~1,650 ms in one synchronous call — the shape that froze a
-    // production session for 8.3 s at a larger size. It is now ~90 ms.
+    // The real guard: this is the shape that froze a production session for
+    // 8.3 s at a larger size.
+    //
+    // Measured **against a control on the same input**, not against a
+    // millisecond budget. An absolute budget was tried first and is genuinely
+    // flaky — five isolated runs of this file produced 700 ms and 964 ms
+    // against a 500 ms budget alongside three passes, and CI runs test files
+    // concurrently on a contended runner. A ratio cannot drift that way,
+    // because load slows the control by the same factor it slows the subject.
+    //
+    // The control is five linear passes over the identical text, so the unit is
+    // "what this machine costs to walk this input" and the subject is "how many
+    // of those a guess costs". Separation is wide and not marginal: ~8x with
+    // the three quadratic grammars excluded, ~73-126x with them included.
     const code = pathologicalProse(AUTO_DETECT.MAX_CHARS - 500);
     highlightCode("warm up the regex compiler", null);
 
-    const started = performance.now();
-    highlightCode(code, null);
-    const elapsed = performance.now() - started;
+    const controlStarted = performance.now();
+    for (let i = 0; i < 5; i++) highlightCode(code, "typescript");
+    const control = performance.now() - controlStarted;
 
-    // Generous against a loaded CI box, and still an order of magnitude under
-    // what the excluded grammars cost on this input.
-    expect(elapsed).toBeLessThan(500);
+    const subjectStarted = performance.now();
+    highlightCode(code, null);
+    const subject = performance.now() - subjectStarted;
+
+    expect(subject / control).toBeLessThan(25);
   });
 });
 
