@@ -7,6 +7,8 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useEgressStore } from "../stores/egress-store.js";
+import type { NetworkMode } from "../hooks/useSessionNetworkMode.js";
 import { isSelectionEligibleForAgent } from "../agent-types.js";
 import { startQuickSessionInBackground } from "../stores/actions/session-actions.js";
 import {
@@ -67,6 +69,21 @@ export function QuickCaptureOverlay({
   // irreversible footgun that would silently ship a review-intended PR. It
   // defaults off and the user must opt in every single time.
   const [armAutoMerge, setArmAutoMerge] = useState(false);
+  /**
+   * docs/285 reqs 2, 8 — the network mode for the session this overlay is about
+   * to create.
+   *
+   * Purely local: there is no session yet to write an override to, so the pick
+   * rides the create request and the server persists it before the first turn
+   * is dispatched. Local state is also what makes req 8 true here for free —
+   * closing the overlay drops it, so every quick session starts at Inherit.
+   */
+  const [networkMode, setNetworkMode] = useState<NetworkMode>("inherit");
+  // docs/285 req 10 — `Inherit` names the value it currently inherits, so the
+  // overlay needs the workspace default. Read from the store's cheap global
+  // fields rather than the Settings editor's full provenance view.
+  const egressGlobalEnabled = useEgressStore((s) => s.globalEnabled);
+  const egressEnforcement = useEgressStore((s) => s.enforcementStatus);
   // The harness and model seeds live in localStorage, which React cannot
   // subscribe to — and both this overlay and the pickers inside it read them
   // during render. Bumped after every write below so the read happens again; a
@@ -145,6 +162,12 @@ export function QuickCaptureOverlay({
       setSelectedRepoUrl(defaultRepoUrl);
     }
     wasOpenRef.current = true;
+    // docs/285 req 8 — every quick session starts at Inherit, so the pick is
+    // dropped on each opening rather than carried from the last one. Reading the
+    // workspace default here too, so `Inherit` can name what it inherits; the
+    // store call is idempotent once the value is held.
+    setNetworkMode("inherit");
+    void useEgressStore.getState().loadGlobal();
     setSelectedModel(getSavedModelId());
     // Clear any explicit pick so the picker previews each agent's saved seed.
     setSelectedReasoning(undefined);
@@ -227,6 +250,13 @@ export function QuickCaptureOverlay({
       // second implementation docs/264 keeps out of the browser.
       ...(getSavedRoleName() ? { role: getSavedRoleName()! } : {}),
       ...(armAutoMerge ? { armAutoMerge: true } : {}),
+      // docs/285 req 3 — in force from this session's FIRST turn, which the
+      // server delivers by reconciling the claimed container before it
+      // dispatches. Sent only when the user changed it: absent means inherit,
+      // and that is what every new session starts at (req 8).
+      ...(networkMode !== "inherit"
+        ? { networkMode: networkMode === "contained" }
+        : {}),
       // docs/144 — Mode B is the voice-native path (hold the hotkey, speak a
       // task, it spawns a session), so the dictation hint matters most here.
       ...(payload.dictated ? { dictated: true } : {}),
@@ -323,6 +353,26 @@ export function QuickCaptureOverlay({
             isLoading={false}
             permissionMode={permissionMode}
             onPermissionModeChange={(mode) => useSettingsStore.getState().setPermissionMode(undefined, mode)}
+            /* docs/285 req 2 — the same control the chat composer carries, fed
+               from local state rather than the server: this session does not
+               exist yet, so there is nothing to read a value from and nothing to
+               write one to. `beforeFirstTurn` is unconditionally true for the
+               same reason — the overlay's whole job is the first turn.
+
+               `pendingRestart` is false and cannot be otherwise: it reports that
+               a LIVE container disagrees with the selection, and there is no
+               container here yet. */
+            network={{
+              mode: networkMode,
+              onChange: setNetworkMode,
+              globalEnabled: egressGlobalEnabled,
+              enforcementStatus: egressEnforcement,
+              pendingRestart: false,
+              beforeFirstTurn: true,
+              // Nothing is being written, so nothing can be in flight — the
+              // barrier exists for a round-trip this path does not make.
+              saving: false,
+            }}
             pendingFiles={pendingFiles}
             onRemoveFile={(index) => setPendingFiles((files) => files.filter((_, i) => i !== index))}
             onAddFile={(path) => setPendingFiles((files) => files.some((f) => f.path === path) ? files : [...files, { path }])}

@@ -15,6 +15,7 @@ import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { RepoStore } from "../repo-store.js";
 import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
 import type { SessionContainerManager } from "../session-container.js";
+import type { ReconcileEgressOutcome } from "../services/reconcile-session-egress.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { ReleaseStatusPoller } from "../release-status-poller.js";
 import type { AgentId, AgentProcess } from "../../shared/types.js";
@@ -153,6 +154,23 @@ export interface AppCtx {
    * Optional — null in local/test runtimes (the add still persists).
    */
   containerManager?: SessionContainerManager;
+  /**
+   * docs/285 — bring this session's container in line with the network mode the
+   * user picked before its first message, restarting it only when the two
+   * actually differ. Called once, on the first Send.
+   *
+   * A callback rather than the four recovery dependencies it needs
+   * (`sessionManager`, `runnerRegistry`, `defaultAgentId`, the breakers): the
+   * send handler has no other business with container recovery, and one seam is
+   * also what a test fakes to drive the reconcile paths without Docker.
+   *
+   * Optional — a runtime that wires no reconciliation simply sends as before,
+   * which is the correct behaviour for `RUNTIME_MODE=local`.
+   */
+  reconcileSessionEgress?: (
+    sessionId: string,
+    opts?: { agentSeed?: AgentId },
+  ) => Promise<ReconcileEgressOutcome>;
 
   // Factories
   generateText: GenerateText;

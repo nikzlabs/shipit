@@ -14,7 +14,12 @@ import type { RepoGit } from "./repo-git.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
-import type { AgentId, AgentProcess, LimitsRefreshResult } from "../shared/types.js";
+import type {
+  AgentId,
+  AgentProcess,
+  LimitsRefreshResult,
+  EgressEnforcementStatus,
+} from "../shared/types.js";
 import type { UsageManager } from "./usage.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionContainerManager } from "./session-container.js";
@@ -278,6 +283,18 @@ export interface ApiDeps {
    */
   egressEnforcementActive?: boolean;
   /**
+   * docs/285 — WHICH deployment this is when enforcement is not active, since
+   * the two inactive cases point in opposite directions (a Contained session
+   * runs open, versus refuses to start). The UI names the case and its
+   * remediation, which a boolean cannot support.
+   *
+   * Optional and derived from {@link egressEnforcementActive} when omitted, so
+   * every existing caller keeps working. The derivation can only produce
+   * `active` or `no-sidecar` — it cannot invent the `disabled` case, which is
+   * why production passes the status explicitly.
+   */
+  egressEnforcementStatus?: EgressEnforcementStatus;
+  /**
    * docs/172 Tier B (planning#383) — whether this deployment installs the
    * controlled resolver at all (`egressDnsEnabled()`). False
    * (`SESSION_EGRESS_DNS=0`) means a contained session runs the fixed Tier A IP
@@ -444,6 +461,9 @@ export async function registerApiRoutes(
     ...(deps.waitForWarmSession ? { waitForWarmSession: deps.waitForWarmSession } : {}),
     ...(deps.shouldSkipClaimFetch ? { shouldSkipClaimFetch: deps.shouldSkipClaimFetch } : {}),
     ...(deps.containerManager ? { containerManager: deps.containerManager } : {}),
+    // docs/285 req 8 — the reuse path hands an abandoned `/new` draft back as a
+    // NEW session, so its network override has to be cleared there.
+    ...(deps.egressAllowlistStore ? { egressAllowlistStore: deps.egressAllowlistStore } : {}),
   });
   const deps2: ApiDeps = { ...deps, claimSessionService };
 

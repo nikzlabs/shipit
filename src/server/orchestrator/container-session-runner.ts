@@ -159,6 +159,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _agentId: AgentId;
   private _isRunning = false;
   private _systemTurnInProgress = false;
+  /** docs/285 — see `SessionRunnerInterface.turnStartInProgress`. */
+  private _turnStartInProgress = false;
   private _wasInterrupted = false;
   /** See `SessionRunnerInterface.turnEpoch`. */
   turnEpoch = 0;
@@ -470,6 +472,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   set running(v: boolean) { this._isRunning = v; }
   get systemTurnInProgress(): boolean { return this._systemTurnInProgress; }
   set systemTurnInProgress(v: boolean) { this._systemTurnInProgress = v; }
+  get turnStartInProgress(): boolean { return this._turnStartInProgress; }
+  set turnStartInProgress(v: boolean) { this._turnStartInProgress = v; }
 
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
@@ -3100,6 +3104,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    *     they did not cover.
    */
   async verifyRunningState(): Promise<boolean> {
+    // docs/285 — the claimant is between taking the session and `agent.run()`,
+    // so the worker TRUTHFULLY reports no agent and this probe would "recover"
+    // a turn that is starting normally. Clearing `running` there let a second
+    // near-simultaneous first Send past the busy check and into a concurrent
+    // turn — the reservation exists precisely because this probe cannot see it.
+    if (this._turnStartInProgress) return true;
     if (!this._isRunning) return false;
     let workerRunning: boolean;
     try {

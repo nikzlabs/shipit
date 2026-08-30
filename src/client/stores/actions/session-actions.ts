@@ -228,6 +228,13 @@ export async function createHeadlessSession(opts: {
    */
   armAutoMerge?: boolean;
   /**
+   * docs/285 reqs 2, 3 — the network mode picked in the overlay, in force from
+   * this session's first turn. `true` = Contained, `false` = Open; omitted means
+   * inherit the workspace setting, which is where every new session starts
+   * (req 8). Like `armAutoMerge`, never persisted.
+   */
+  networkMode?: boolean;
+  /**
    * docs/144 — the prompt was dictated by voice. The server folds a
    * `<dictated_input>` note into the first turn's prompt so the agent reads
    * mis-heard terms and missing punctuation as transcription artifacts. Rides

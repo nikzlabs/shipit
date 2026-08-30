@@ -35,7 +35,8 @@ import * as rollbackHandlers from "./ws-handlers/rollback-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import * as bugReportHandlers from "./ws-handlers/bug-report-handlers.js";
 import * as egressHandlers from "./ws-handlers/egress-handlers.js";
-import { egressEnforcementActive } from "./egress-firewall-install.js";
+import { egressEnforcementActive, egressEnforcementStatus } from "./egress-firewall-install.js";
+import { reconcileSessionEgress } from "./services/reconcile-session-egress.js";
 import { egressDnsEnabled } from "./egress-dns-install.js";
 import * as permissionHandlers from "./ws-handlers/permission-handlers.js";
 import * as issueWriteHandlers from "./ws-handlers/issue-write-handlers.js";
@@ -138,8 +139,17 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     // a reload misses every prior event), so without this a page refresh during
     // a long background task would show a session that looks finished.
     const backgroundTaskSessions: string[] = [];
+    // docs/285 — the runner generation each session is on. A viewer holding an
+    // older value is attached to a runner that has since been replaced (a
+    // first-Send network reconciliation, a Rescue) and is receiving nothing; it
+    // reconnects itself on seeing this. Snapshotted for EVERY session, not only
+    // the running ones, because a viewer stranded on a dead runner is precisely
+    // one the server does not see as running.
+    const runnerIncarnations: Record<string, number> = {};
     for (const session of sessions) {
       const runner = runnerRegistry.get(session.id);
+      const incarnation = runnerRegistry.incarnation(session.id);
+      if (incarnation > 0) runnerIncarnations[session.id] = incarnation;
       if (runner?.running) activeRunnerSessions.push(session.id);
       if (runner && runner.awaitingPermissionIds.size > 0) awaitingPermissionSessions.push(session.id);
       // planning#246 — the UNION (`backgroundWorkDescriptions`), not the
@@ -149,7 +159,7 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
       // snapshotted as idle.
       if (runner && runner.backgroundWorkDescriptions.length > 0) backgroundTaskSessions.push(session.id);
     }
-    client.write(`event: active_runners\ndata: ${JSON.stringify({ sessionIds: activeRunnerSessions })}\n\n`);
+    client.write(`event: active_runners\ndata: ${JSON.stringify({ sessionIds: activeRunnerSessions, runnerIncarnations })}\n\n`);
     client.write(`event: session_attention\ndata: ${JSON.stringify({ awaitingPermissionSessionIds: awaitingPermissionSessions, backgroundTaskSessionIds: backgroundTaskSessions })}\n\n`);
 
     // Current PR statuses so inline cards and sidebar icons are correct on
@@ -356,6 +366,11 @@ export async function registerRoutes(
     // docs/172 (planning#92) — honest enforcement signal for the browser: policy vs
     // actual enforcement. Fixed function of the process env.
     egressEnforcementActive: egressEnforcementActive(),
+    // docs/285 — the same env read with the REASON kept. The boolean above
+    // collapses "enforcement switched off" (session runs open) and "no sidecar
+    // image" (session refuses to start) into one false, and the warning copy has
+    // to tell the user which of those is about to happen to them.
+    egressEnforcementStatus: egressEnforcementStatus(),
     // planning#383 — the other honest deployment signal: with Tier B off there
     // is no resolver to pin an allowed name's IPs and no proxy to permit its
     // SNI, so every host surface must stop offering grants that cannot work.
@@ -1459,6 +1474,29 @@ export async function registerRoutes(
         repoStore, warmSessionForRepo, generateText,
         egressAllowlistStore,
         ...(containerManager ? { containerManager } : {}),
+        // docs/285 — the first Send reconciles the container against the network
+        // mode chosen in the composer. Assembled here because this is where the
+        // recovery dependencies live; the handler sees one call.
+        reconcileSessionEgress: (sid, opts) => reconcileSessionEgress(
+          {
+            containerManager: containerManager ?? null,
+            egressAllowlistStore,
+            ...(oomBreaker ? { oomBreaker } : {}),
+            recovery: {
+              sessionManager,
+              containerManager: containerManager ?? null,
+              runnerRegistry,
+              defaultAgentId,
+              ...(oomBreaker ? { oomBreaker } : {}),
+              ...(loopDetector ? { loopDetector } : {}),
+              // docs/285 — so a SECOND tab on this session leaves the runner
+              // the reconcile just disposed.
+              sseBroadcast,
+            },
+          },
+          sid,
+          opts ?? {},
+        ),
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,
         releaseStatusPoller,

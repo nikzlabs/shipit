@@ -335,8 +335,6 @@ function renderMenu(props: Partial<React.ComponentProps<typeof ComposerSettingsM
       onReasoningChange={vi.fn()}
       modelInfo={null}
       hasActiveSession
-      permissionMode="auto"
-      onPermissionModeChange={vi.fn()}
       {...props}
     />,
   );
@@ -715,8 +713,6 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
         onReasoningChange={vi.fn()}
         modelInfo={null}
         hasActiveSession
-        permissionMode="auto"
-        onPermissionModeChange={vi.fn()}
         onRoleChange={vi.fn()}
         sessionRoleName="deep dive"
         roleParamsRevealed
@@ -789,8 +785,6 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
         onReasoningChange={vi.fn()}
         modelInfo={null}
         hasActiveSession
-        permissionMode="auto"
-        onPermissionModeChange={vi.fn()}
         onRoleChange={vi.fn()}
         sessionRoleName="deep dive"
         roleLocked

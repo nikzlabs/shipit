@@ -75,8 +75,6 @@ function renderMenu(props: Partial<React.ComponentProps<typeof ComposerSettingsM
       onReasoningChange={vi.fn()}
       modelInfo={null}
       hasActiveSession
-      permissionMode="auto"
-      onPermissionModeChange={vi.fn()}
       {...props}
     />,
   );
@@ -116,29 +114,20 @@ describe("ComposerSettingsMenu", () => {
       expect(trigger.querySelector(".truncate")).not.toBeNull();
     });
 
-    it("does NOT change with the permission mode (req 12)", async () => {
-      // Decided explicitly: the mode's icon belongs on the menu row, not here.
-      const auto = renderMenu({ permissionMode: "auto" });
-      const autoHtml = screen.getByTestId("composer-settings-trigger").innerHTML;
-      auto.unmount();
-      renderMenu({ permissionMode: "guarded" });
-      expect(screen.getByTestId("composer-settings-trigger").innerHTML).toBe(autoHtml);
-    });
   });
 
   describe("the root", () => {
     it("shows every setting's current value without drilling in", async () => {
       const user = userEvent.setup();
-      renderMenu({ permissionMode: "guarded", sessionReasoning: "high" });
+      renderMenu({ sessionReasoning: "high" });
       await user.click(screen.getByTestId("composer-settings-trigger"));
 
-      expect(screen.getByTestId("composer-settings-row-mode")).toHaveTextContent("Guarded");
       expect(screen.getByTestId("composer-settings-row-harness")).toHaveTextContent("Claude Code");
       expect(screen.getByTestId("composer-settings-row-model")).toHaveTextContent("Opus 5");
       expect(screen.getByTestId("composer-settings-row-reasoning")).toHaveTextContent("High");
     });
 
-    it("stays four rows — it does not inline the choices (req 11)", async () => {
+    it("does not inline the choices — the root stays short (req 11)", async () => {
       // The whole reason for two levels: the root must not grow with the
       // catalogue. Sonnet 5 exists but must not be on the root.
       const user = userEvent.setup();
@@ -159,22 +148,6 @@ describe("ComposerSettingsMenu", () => {
       expect(screen.getByTestId("composer-settings-menu")).toHaveTextContent(/fixed after the first message/i);
     });
 
-    it("stays open and keeps the mode changeable while a turn runs", async () => {
-      // The wide row disables the harness/model/reasoning triggers during a turn
-      // but leaves the permission mode alone. Disabling the whole anchor here
-      // would have silently taken the mode away too, and made every setting
-      // unreadable mid-turn.
-      const user = userEvent.setup();
-      const onPermissionModeChange = vi.fn();
-      renderMenu({ pickersLocked: true, onPermissionModeChange });
-      await user.click(screen.getByTestId("composer-settings-trigger"));
-      expect(screen.getByTestId("composer-settings-menu")).toBeInTheDocument();
-
-      await user.click(screen.getByTestId("composer-settings-row-mode"));
-      await user.click(screen.getByTestId("composer-settings-mode-plan"));
-      expect(onPermissionModeChange).toHaveBeenCalledWith("plan");
-    });
-
     it("locks harness, model and reasoning while a turn runs, and says so", async () => {
       const user = userEvent.setup();
       renderMenu({ pickersLocked: true });
@@ -187,14 +160,6 @@ describe("ComposerSettingsMenu", () => {
       expect(screen.queryByTestId("composer-settings-reasoning-high")).toBeNull();
     });
 
-    it("omits the mode row's drill-down for a harness with no modes to pick", async () => {
-      const user = userEvent.setup();
-      setSession({ agentId: "codex" });
-      renderMenu({ activeAgentId: "codex" });
-      await user.click(screen.getByTestId("composer-settings-trigger"));
-      await user.click(screen.getByTestId("composer-settings-row-mode"));
-      expect(screen.queryByTestId("composer-settings-mode-plan")).toBeNull();
-    });
   });
 
   describe("drilling in", () => {
@@ -222,28 +187,6 @@ describe("ComposerSettingsMenu", () => {
       await user.click(screen.getByTestId("composer-settings-row-model"));
       expect(screen.getByTestId("composer-settings-menu")).toHaveTextContent("Anthropic");
       expect(screen.getByTestId("composer-settings-menu")).toHaveTextContent("Subscription");
-    });
-
-    it("changes the permission mode", async () => {
-      const user = userEvent.setup();
-      const onPermissionModeChange = vi.fn();
-      renderMenu({ onPermissionModeChange });
-      await user.click(screen.getByTestId("composer-settings-trigger"));
-      await user.click(screen.getByTestId("composer-settings-row-mode"));
-      await user.click(screen.getByTestId("composer-settings-mode-plan"));
-      expect(onPermissionModeChange).toHaveBeenCalledWith("plan");
-    });
-
-    it("refuses guarded when the model cannot run it, with the reason", async () => {
-      const user = userEvent.setup();
-      const onPermissionModeChange = vi.fn();
-      renderMenu({ onPermissionModeChange, guardedModelOk: false });
-      await user.click(screen.getByTestId("composer-settings-trigger"));
-      await user.click(screen.getByTestId("composer-settings-row-mode"));
-      const guarded = screen.getByTestId("composer-settings-mode-guarded");
-      expect(guarded).toHaveTextContent(/needs a Sonnet or Opus model/i);
-      await user.click(guarded);
-      expect(onPermissionModeChange).not.toHaveBeenCalled();
     });
 
     it("changes the reasoning level", async () => {

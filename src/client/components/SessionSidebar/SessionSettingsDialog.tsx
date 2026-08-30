@@ -25,7 +25,12 @@ import { useSessionStore } from "../../stores/session-store.js";
 import { useApi, ApiError } from "../../hooks/useApi.js";
 import { SandboxCapabilityToggles } from "../SandboxCapabilityToggles.js";
 import { DEFAULT_SANDBOX_CAPABILITIES } from "../../../server/shared/types.js";
+import {
+  NETWORK_MODE_LABEL,
+  enforcementWarning,
+} from "../../hooks/useSessionNetworkMode.js";
 import type {
+  EgressEnforcementStatus,
   EgressAllowlistView,
   EgressSessionSettings,
   SandboxCapabilitiesView,
@@ -88,7 +93,10 @@ export function SessionSettingsDialog({
   // containment switch and whether this deployment can actually ENFORCE
   // containment. Optimistic `true` so a capable host never flashes the warning.
   const [globalEnabled, setGlobalEnabled] = useState(true);
-  const [enforcementActive, setEnforcementActive] = useState(true);
+  // docs/285 — the STATUS, not the boolean: the warning below has to name
+  // which inactive deployment this is, and those two cases point in opposite
+  // directions.
+  const [enforcementStatus, setEnforcementStatus] = useState<EgressEnforcementStatus>("active");
   // Server-computed: the now-resolved containment differs from what this
   // session's live container was created with, so the change applies only on the
   // next container start. Null while loading / when no container is running.
@@ -126,7 +134,11 @@ export function SessionSettingsDialog({
         if (!cancelled) {
           setMode(modeFromOverride(view?.session?.override ?? null));
           setGlobalEnabled(view?.globalEnabled ?? true);
-          setEnforcementActive(view?.session?.enforcementActive ?? view?.enforcementActive ?? true);
+          setEnforcementStatus(
+            view?.session?.enforcementStatus
+            ?? view?.enforcementStatus
+            ?? ((view?.session?.enforcementActive ?? view?.enforcementActive ?? true) ? "active" : "no-sidecar"),
+          );
           setPendingRestart(view?.session?.pendingRestart ?? false);
         }
       } catch {
@@ -255,7 +267,14 @@ export function SessionSettingsDialog({
   const sessionContained = mode === "open" ? false : mode === "contained" ? true : globalEnabled;
   // Policy says contain but the deployment can't enforce → warn instead of
   // silently implying protection. Mirrors the Settings → Network egress banner.
-  const showEnforcementWarning = mode !== undefined && sessionContained && !enforcementActive;
+  //
+  // docs/285 — the WORDING comes from the shared helper, which names which of
+  // the two inactive deployments this is. The old copy here said "contained
+  // sessions fail to start", which is true only when the sidecar image is
+  // missing; with `SESSION_EGRESS_ENFORCE=0` the session starts fine and runs
+  // wide open — the opposite failure, reported as the one it is not.
+  const enforcementNotice =
+    mode !== undefined && sessionContained ? enforcementWarning(enforcementStatus) : null;
 
   const globalLabel = globalEnabled ? "Contained" : "Open";
 
@@ -292,7 +311,7 @@ export function SessionSettingsDialog({
           <div className="px-5 pt-2 pb-1" role="radiogroup" aria-label="Network access">
             <ModeOption
               icon={<ShieldCheckIcon size={ICON_SIZE.SM} />}
-              title="Inherit global"
+              title={NETWORK_MODE_LABEL.inherit}
               desc={`Follow the workspace setting (currently ${globalLabel}). Change it in Settings → Network.`}
               selected={mode === "inherit"}
               disabled={mode === undefined}
@@ -358,16 +377,14 @@ export function SessionSettingsDialog({
           </div>
         )}
 
-        {showEnforcementWarning && (
+        {enforcementNotice && (
           <Alert
             variant="warning"
             className="mx-5 mb-1"
             data-testid="session-settings-enforcement-warning"
           >
             <span className="mt-0.5 shrink-0 text-(--color-warning)"><WarningIcon size={ICON_SIZE.SM} weight="fill" /></span>
-            <p>
-              Not enforced on this deployment — contained sessions fail to start. See the install notes.
-            </p>
+            <p>{enforcementNotice}</p>
           </Alert>
         )}
 

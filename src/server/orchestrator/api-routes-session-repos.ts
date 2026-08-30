@@ -53,6 +53,9 @@ export async function registerSessionReposRoutes(
     ...(deps.waitForWarmSession ? { waitForWarmSession: deps.waitForWarmSession } : {}),
     ...(deps.shouldSkipClaimFetch ? { shouldSkipClaimFetch: deps.shouldSkipClaimFetch } : {}),
     ...(deps.containerManager ? { containerManager: deps.containerManager } : {}),
+    // docs/285 req 8 — the reuse path hands an abandoned `/new` draft back as a
+    // NEW session, so its network override has to be cleared there.
+    ...(deps.egressAllowlistStore ? { egressAllowlistStore: deps.egressAllowlistStore } : {}),
   });
 
   // GET /api/repos — list all added repos

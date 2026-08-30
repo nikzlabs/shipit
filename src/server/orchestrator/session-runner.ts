@@ -1181,6 +1181,23 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * false in the `done` handler.
    */
   systemTurnInProgress: boolean;
+  /**
+   * docs/285 — the session is claimed for a turn that has NOT reached
+   * `agent.run()` yet: environment preparation, parameter assembly, and — the
+   * case this was added for — a first-Send container restart.
+   *
+   * `running` alone cannot express that window, because the state it describes
+   * is *checkable against the worker* and this one is not. `verifyRunningState()`
+   * asks the worker whether an agent is up; during pre-spawn preparation the
+   * honest answer is "no", so the probe cleared `running` and a second, near-
+   * simultaneous first Send fell straight through into a concurrent turn against
+   * the one already being started. Both probes return early while this is set.
+   *
+   * Owned by whoever claims the turn, set in the SAME synchronous tick as
+   * `running`, and cleared in a `finally` — a leak here reads as a permanently
+   * busy session, so it must never be cleared on a path the claimant can miss.
+   */
+  turnStartInProgress: boolean;
   wasInterrupted: boolean;
   /**
    * planning#318 follow-up — monotonic per-runner TURN identity, bumped by
@@ -1771,6 +1788,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _agentId: AgentId;
   private _isRunning = false;
   private _systemTurnInProgress = false;
+  /** docs/285 — see `SessionRunnerInterface.turnStartInProgress`. */
+  private _turnStartInProgress = false;
   private _wasInterrupted = false;
   /** See `SessionRunnerInterface.turnEpoch`. */
   turnEpoch = 0;
@@ -1844,6 +1863,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set running(v: boolean) { this._isRunning = v; }
   get systemTurnInProgress(): boolean { return this._systemTurnInProgress; }
   set systemTurnInProgress(v: boolean) { this._systemTurnInProgress = v; }
+  get turnStartInProgress(): boolean { return this._turnStartInProgress; }
+  set turnStartInProgress(v: boolean) { this._turnStartInProgress = v; }
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
   get lastTurnErrored(): boolean { return this._lastTurnErrored; }
@@ -2138,6 +2159,10 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
    * events. Just return the local flag.
    */
   async verifyRunningState(): Promise<boolean> {
+    // docs/285 — a claimed-but-not-yet-spawned turn reads as running. Nothing
+    // is probed here, but the two implementations must answer this the same way
+    // or the concurrency guarantee holds only on the container path.
+    if (this._turnStartInProgress) return true;
     return this._isRunning;
   }
 
@@ -2232,6 +2257,28 @@ export type SessionRunnerFactory = (opts: {
 
 export class SessionRunnerRegistry {
   private runners = new Map<string, SessionRunnerInterface>();
+  /**
+   * docs/285 — how many runners this session has had, bumped on every creation.
+   *
+   * The number itself is meaningless; **changing** is the whole signal. Runner
+   * disposal removes the old runner's listeners without closing the viewer's
+   * socket, and reattachment only happens when `attachToRunner` runs with the
+   * replacement — so a viewer that was attached when a container was rebuilt
+   * sits on a dead runner and receives nothing, forever, with no error anywhere.
+   * Nothing in the reconnect snapshot used to say an attachment was stale.
+   *
+   * Published in the `active_runners` snapshot so a viewer holding an older
+   * value reconnects on its own. That makes recovery converge from the
+   * AUTHORITATIVE state rather than from a live event: the session-scoped signal
+   * emitted at restart is an optimization, and a viewer that misses it during an
+   * SSE interruption still recovers on its next snapshot.
+   *
+   * Kept on the registry rather than the runner for the obvious reason — the
+   * runner whose replacement we need to detect is exactly the one that is gone.
+   * Retained after disposal so a session that goes idle and comes back does not
+   * restart the count and collide with a value a stale viewer still holds.
+   */
+  private incarnations = new Map<string, number>();
   private _runnerFactory: SessionRunnerFactory;
   private _depCacheDirResolver?: (sessionId: string) => string | undefined;
   private _onRunnerIdle?: (sessionId: string) => void;
@@ -2278,6 +2325,7 @@ export class SessionRunnerRegistry {
       defaultAgentId,
       depCacheDir: this._depCacheDirResolver?.(sessionId),
     });
+    this.incarnations.set(sessionId, (this.incarnations.get(sessionId) ?? 0) + 1);
     runner.on("disposed", () => this.runners.delete(sessionId));
     if (this._onRunnerIdle) {
       const cb = this._onRunnerIdle;
@@ -2286,6 +2334,14 @@ export class SessionRunnerRegistry {
     this._onRunnerCreated?.(runner);
     this.runners.set(sessionId, runner);
     return runner;
+  }
+
+  /**
+   * docs/285 — which runner generation this session is on. `0` for a session
+   * that has never had one. See {@link incarnations}.
+   */
+  incarnation(sessionId: string): number {
+    return this.incarnations.get(sessionId) ?? 0;
   }
 
   /** Get existing runner (if any). */

@@ -6,11 +6,8 @@ import {
   CaretLeftIcon,
   CaretRightIcon,
   CheckIcon,
-  FastForwardIcon,
   LockIcon,
-  NotepadIcon,
   RobotIcon,
-  ShieldCheckIcon,
   SlidersHorizontalIcon,
   SparkleIcon,
 } from "@phosphor-icons/react";
@@ -36,7 +33,7 @@ import {
   roleUnavailableDetail,
   useRolePickerState,
 } from "./RoleSelector.js";
-import type { AgentId, PermissionMode } from "../../../server/shared/types.js";
+import type { AgentId } from "../../../server/shared/types.js";
 import type { AgentOption, ModelChoice } from "../../agent-types.js";
 import type { ModelInfo } from "../../utils/model-info.js";
 
@@ -58,28 +55,8 @@ import type { ModelInfo } from "../../utils/model-info.js";
  * `docs/260-composer-toolbar-layout/requirements.md`.
  */
 
-const MODE_META: Record<PermissionMode, { label: string; icon: typeof NotepadIcon; description: string }> = {
-  plan: {
-    label: "Plan",
-    icon: NotepadIcon,
-    description: "Read-only — research and plan, no edits.",
-  },
-  guarded: {
-    label: "Guarded",
-    icon: ShieldCheckIcon,
-    description: "Autonomous — commands are safety-checked before running.",
-  },
-  auto: {
-    label: "Auto",
-    icon: FastForwardIcon,
-    description: "Autonomous — no command safety check.",
-  },
-};
 
-/** Display order: most → least oversight, matching `PermissionModeSelector`. */
-const LADDER: PermissionMode[] = ["plan", "guarded", "auto"];
-
-type Panel = "root" | "mode" | "harness" | "model" | "reasoning" | "role";
+type Panel = "root" | "harness" | "model" | "reasoning" | "role";
 
 /** One root row: an icon, a label, the current value, and a chevron when it drills down. */
 function RootRow({
@@ -213,10 +190,6 @@ export function ComposerSettingsMenu({
   modelInfo,
   hasActiveSession = false,
   seedFromHistory = false,
-  permissionMode,
-  onPermissionModeChange,
-  modeInRow = false,
-  guardedModelOk = true,
   disabled = false,
   pickersLocked = false,
   onRoleChange,
@@ -245,17 +218,6 @@ export function ComposerSettingsMenu({
    * happened to be active behind it.
    */
   seedFromHistory?: boolean;
-  permissionMode: PermissionMode;
-  onPermissionModeChange?: (mode: PermissionMode) => void;
-  /**
-   * docs/260 req 19 — the composer row is carrying the mode control itself, so
-   * this menu drops its Mode row rather than offering the same setting twice.
-   * Only the quick-capture overlay on a desktop viewport does this; everywhere
-   * else the compact layout owns the mode, as req 3 says.
-   */
-  modeInRow?: boolean;
-  /** False when the effective model cannot run guarded (Haiku) — same gate the standalone selector applies. */
-  guardedModelOk?: boolean;
   /** The composer is dead as a whole (docs/257 `disabledReason`) — the anchor does not open. */
   disabled?: boolean;
   /**
@@ -329,17 +291,6 @@ export function ComposerSettingsMenu({
     // different questions and the wide row splits them the same way.
     seedFromHistory: !hasActiveSession,
   });
-
-  // Only modes the harness advertises, plus `auto`, which every harness runs.
-  const supported = harness.displayAgent?.supportedPermissionModes ?? [];
-  const availableModes = LADDER.filter((m) => m === "auto" || supported.includes(m));
-  const displayMode: PermissionMode = availableModes.includes(permissionMode)
-    ? permissionMode
-    : "auto";
-  const modeMeta = MODE_META[displayMode];
-  const ModeIcon = modeMeta.icon;
-  const modeIsDefault = displayMode === "auto";
-  const canPickMode = !!onPermissionModeChange && availableModes.length > 1;
 
   // `displayName` is never empty — it answers "loading" and "nothing to pick"
   // itself, so this layout cannot label the second one as the first.
@@ -423,26 +374,15 @@ export function ComposerSettingsMenu({
       >
         {panel === "root" && (
           <>
-            {/* docs/260 req 19 — absent, not inert, when the row carries the
-                control: a Mode row here as well would be a second place to
-                change one setting, and the two would have to agree about which
-                is the real one. */}
-            {!modeInRow && (
-            <RootRow
-              testId="composer-settings-row-mode"
-              icon={
-                <ModeIcon
-                  size={ICON_SIZE.SM}
-                  weight={modeIsDefault ? "regular" : "fill"}
-                  className={`shrink-0 ${modeIsDefault ? "" : "text-(--color-accent)"}`}
-                />
-              }
-              label="Mode"
-              value={modeMeta.label}
-              valueAccent={!modeIsDefault}
-              onSelect={canPickMode ? () => setPanel("mode") : undefined}
-            />
-            )}
+            {/* docs/285 req 9 — the Mode row is GONE, on every viewport. The
+                composer row carries the permission mode itself now (alongside
+                network access, in one control), and a row here as well would be
+                a second place to change one setting.
+
+                Removing it is what collapses the nesting this menu had under a
+                role: the root used to exist to hold Mode and Role, so a session
+                running as a role opened onto a two-row panel whose only purpose
+                was to lead somewhere else. */}
             {showRole && (
               <RootRow
                 testId="composer-settings-row-role"
@@ -581,38 +521,6 @@ export function ComposerSettingsMenu({
                 />
               </>
             )}
-          </>
-        )}
-
-        {panel === "mode" && (
-          <>
-            <PanelHeader title="Permission mode" onBack={() => setPanel("root")} />
-            <DropdownMenuSeparator />
-            {availableModes.map((m) => {
-              const meta = MODE_META[m];
-              const Icon = meta.icon;
-              const blocked = m === "guarded" && !guardedModelOk;
-              return (
-                <ChoiceRow
-                  key={m}
-                  testId={`composer-settings-mode-${m}`}
-                  icon={
-                    <Icon
-                      size={ICON_SIZE.SM}
-                      className="mt-0.5 shrink-0"
-                      weight={m === displayMode ? "fill" : "regular"}
-                    />
-                  }
-                  label={`${meta.label} mode`}
-                  description={
-                    blocked ? "Guarded mode needs a Sonnet or Opus model." : meta.description
-                  }
-                  isCurrent={m === displayMode}
-                  disabled={blocked}
-                  onSelect={() => onPermissionModeChange?.(m)}
-                />
-              );
-            })}
           </>
         )}
 

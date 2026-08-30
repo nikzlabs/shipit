@@ -27,6 +27,7 @@ import type { RepoGit } from "../repo-git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { RepoStore } from "../repo-store.js";
 import type { SessionContainerManager } from "../session-container.js";
+import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
 import { ServiceError } from "./types.js";
 import {
   generateBranchPrefix,
@@ -56,6 +57,18 @@ export interface ClaimSessionDeps {
   waitForWarmSession?: (repoUrl: string) => Promise<void> | undefined;
   shouldSkipClaimFetch?: (repoUrl: string) => boolean;
   containerManager?: SessionContainerManager;
+  /**
+   * docs/285 req 8 — every new session starts at "Inherit workspace", and the
+   * REUSE path below is the one place that would quietly break it: an
+   * interactive claim recycles an ungraduated warm session from the same repo,
+   * so an abandoned `/new` draft carrying an explicit Contained/Open would hand
+   * that setting to the next new session in that repo — through a path with
+   * nothing to do with the composer that set it.
+   *
+   * Optional, like `containerManager`: a runtime with no egress store has no
+   * override to clear.
+   */
+  egressAllowlistStore?: EgressAllowlistStore;
 }
 
 export interface ClaimSessionResult {
@@ -349,6 +362,17 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
           existsSync(path.join(reusable.workspaceDir, ".git"))
         ) {
           claimPath = "reuse";
+          // docs/285 req 8 — this session is being handed out as a NEW one, so
+          // it must start at "Inherit workspace". Without this, picking Open on
+          // `/new`, walking away without sending, and then starting another new
+          // session in that repo hands back the same session still carrying
+          // Open. The reset belongs here rather than in the composer: the
+          // composer is not involved in the reuse flow at all.
+          //
+          // No audit card and no pending state: the session is still warm, so
+          // there is no prior state for a card to describe (the same reason the
+          // creation-time choice itself is silent).
+          deps.egressAllowlistStore?.setSessionOverride(reusable.id, null);
           const fetchDurationMs = await refreshClaimedSession(url, reusable.workspaceDir, forceFetch);
           return { sessionId: reusable.id, workspaceDir: reusable.workspaceDir, fetchDurationMs };
         }

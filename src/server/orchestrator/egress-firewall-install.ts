@@ -32,6 +32,7 @@ import {
   buildIpsetMembers,
   isValidCidr,
 } from "./egress-firewall.js";
+import type { EgressEnforcementStatus } from "../shared/types.js";
 
 const GITHUB_META_URL = "https://api.github.com/meta";
 const META_FETCH_TIMEOUT_MS = 5_000;
@@ -58,6 +59,26 @@ export function egressEnforceEnabled(env: NodeJS.ProcessEnv = process.env): bool
  */
 export function egressEnforcementActive(env: NodeJS.ProcessEnv = process.env): boolean {
   return egressEnforceEnabled(env) && Boolean(env.SESSION_EGRESS_SIDECAR_IMAGE);
+}
+
+/**
+ * docs/285 — WHICH of the two inactive deployments this is. `enforcementActive:
+ * false` covers both, and they have **opposite** consequences: with enforcement
+ * switched off a Contained session runs **open**, while a missing sidecar image
+ * makes it **fail closed** and not start at all. One boolean cannot say which,
+ * so every warning built on it alone either overstates one case or hedges into
+ * uselessness — and a user cannot tell whether their contained session is about
+ * to run wide open or refuse to start.
+ *
+ * Ordered deliberately: `SESSION_EGRESS_ENFORCE=0` wins when both hold, because
+ * the switch is what actually decides the outcome — the missing image only
+ * matters once enforcement is back on.
+ */
+export function egressEnforcementStatus(
+  env: NodeJS.ProcessEnv = process.env,
+): EgressEnforcementStatus {
+  if (!egressEnforceEnabled(env)) return "disabled";
+  return env.SESSION_EGRESS_SIDECAR_IMAGE ? "active" : "no-sidecar";
 }
 
 // --- GitHub meta CIDR fetch (cached + fallback) ----------------------------

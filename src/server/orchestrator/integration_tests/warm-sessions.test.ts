@@ -397,6 +397,44 @@ describe("Integration: warm session lifecycle", () => {
       }
     }, 30000);
 
+    it("resets an abandoned draft's network override when the claim reuses it (docs/285 req 8)", async () => {
+      // req 8 — every new session starts at "Inherit workspace". The REUSE path
+      // is the one place that would quietly break it, through machinery with
+      // nothing to do with the composer: pick Open on `/new`, walk away without
+      // sending, start another new session in that repo, and the recycled
+      // session still carries Open.
+      await waitFor(
+        () => !!repoStore.get(REPO_URL)?.warmSessionId,
+        10000,
+        "first warm session",
+      );
+      const encodedUrl = encodeURIComponent(REPO_URL);
+
+      const first = (await app.inject({
+        method: "POST",
+        url: `/api/repos/${encodedUrl}/claim-session`,
+      })).json();
+      // The user picks Open, then abandons the draft without sending.
+      await app.inject({
+        method: "PUT",
+        url: `/api/egress/session/${first.sessionId}`,
+        payload: { override: false },
+      });
+
+      // The next new session in this repo recycles that very session.
+      const second = (await app.inject({
+        method: "POST",
+        url: `/api/repos/${encodedUrl}/claim-session`,
+      })).json();
+      expect(second.sessionId).toBe(first.sessionId);
+
+      const view = (await app.inject({
+        method: "GET",
+        url: `/api/egress/session/${second.sessionId}`,
+      })).json();
+      expect(view.override).toBeNull();
+    }, 30000);
+
     it("claim → graduate → claim yields a fresh, distinct usable session (docs/144 fix #1)", async () => {
       // The complement to the collapse case: once a claimed session graduates
       // (the user sends a message), the next claim must NOT reuse it — it gets a

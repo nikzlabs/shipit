@@ -109,6 +109,21 @@ export interface RecoveryDeps {
    * test setups that don't care about commit can omit them.
    */
   postInterruptCommitDeps?: PostInterruptCommitDeps;
+  /**
+   * docs/285 — announce the replacement runner to every viewer, not just the one
+   * that asked for it.
+   *
+   * Attachment is per connection, and nothing migrates it: disposal drops the
+   * old runner's listeners while leaving the socket open, so a second tab keeps
+   * a live-looking connection that will never deliver another event. The manual
+   * Rescue button hid this because only the tab that pressed it reconnects.
+   *
+   * It goes over GLOBAL SSE rather than `runner.emitMessage` for a structural
+   * reason: the viewers that need telling are attached to the runner that was
+   * just disposed, and the new one has no viewers yet — so there is no runner
+   * channel that reaches them.
+   */
+  sseBroadcast?: (event: string, data: unknown) => void;
 }
 
 export interface KillAgentResult {
@@ -216,9 +231,36 @@ export async function killAgent(
  * the destroy step is a no-op and the next attach still creates a
  * fresh one.
  */
+export interface RestartContainerOpts {
+  /**
+   * docs/285 — whether this restart carries **Rescue's privilege** of clearing
+   * the OOM breaker and the loop detector's event window.
+   *
+   * True for Rescue itself, where the user explicitly asked to retry. False for
+   * the first-Send egress reconciliation, which is a side effect of changing a
+   * setting: a session that has been OOM-killed repeatedly would otherwise gain
+   * a free retry by toggling the network mode, while an *unchanged* first Send
+   * on the same session stays blocked. The caller checks `isTripped` and offers
+   * Rescue instead, rather than quietly becoming it.
+   */
+  resetBreakers?: boolean;
+  /**
+   * docs/285 — the agent to seed the replacement runner with, when the caller
+   * knows one the session record does not yet carry.
+   *
+   * Quick Capture is the case: it has RESOLVED the requested harness but
+   * deliberately has not persisted it (`session-agent-env.ts`), so
+   * `session.agentId` is undefined and the default below would build a Claude
+   * runner for a turn the user asked Codex to run. The later `getOrCreate`
+   * cannot repair that — an existing runner is returned unchanged.
+   */
+  agentSeed?: AgentId;
+}
+
 export async function restartContainer(
   deps: RecoveryDeps,
   sessionId: string,
+  opts: RestartContainerOpts = {},
 ): Promise<RestartContainerResult> {
   const session = deps.sessionManager.get(sessionId);
   if (!session) throw new ServiceError(404, "Session not found");
@@ -229,8 +271,14 @@ export async function restartContainer(
   // for the very restart the user just requested. The loop detector
   // keeps an independent event window that can re-`forceTrip` the
   // breaker, so it must be forgotten in the same breath.
-  deps.oomBreaker?.reset(sessionId);
-  deps.loopDetector?.forget(sessionId);
+  //
+  // docs/285 — and that is a PRIVILEGE, not a step: a restart the user did not
+  // ask for as a retry opts out (`resetBreakers: false`) so it cannot launder a
+  // tripped breaker into a fresh attempt.
+  if (opts.resetBreakers !== false) {
+    deps.oomBreaker?.reset(sessionId);
+    deps.loopDetector?.forget(sessionId);
+  }
 
   if (!deps.containerManager) {
     throw new ServiceError(503, "Container manager not available");
@@ -335,7 +383,25 @@ export async function restartContainer(
   // wrong here stays wrong for every turn that never goes through a WS connect
   // (child follow-up, wake, CI fix) — see `reconcile-runner-agent.ts`, which is
   // the backstop for runners this path already created.
-  deps.runnerRegistry.getOrCreate(sessionId, session.workspaceDir, session.agentId ?? deps.defaultAgentId);
+  //
+  // docs/285 — `agentSeed` outranks the record: a caller that has RESOLVED the
+  // harness but deliberately not persisted it (Quick Capture) knows better than
+  // the session row does, and the later `getOrCreate` cannot repair a wrong seed
+  // because an existing runner is returned unchanged.
+  deps.runnerRegistry.getOrCreate(
+    sessionId,
+    session.workspaceDir,
+    opts.agentSeed ?? session.agentId ?? deps.defaultAgentId,
+  );
+
+  // docs/285 — tell every viewer the runner was replaced, before the readiness
+  // wait rather than after it: the wait is bounded at 8s and can expire with the
+  // container still starting, and a viewer stranded on the disposed runner
+  // should not be made to sit out a timeout that has nothing to do with it.
+  deps.sseBroadcast?.("runner_replaced", {
+    sessionId,
+    incarnation: deps.runnerRegistry.incarnation(sessionId),
+  });
 
   const { newContainerState, error } = await waitForContainerReady(
     deps.containerManager,

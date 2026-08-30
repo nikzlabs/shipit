@@ -1,6 +1,25 @@
 // ---- Egress settings (docs/172 / planning#92) ----
 
 /**
+ * docs/285 — whether this deployment enforces containment, and when it does not,
+ * **which** of the two very different reasons applies.
+ *
+ *  - `active` — enforcement is on and the sidecar image is configured. A
+ *    Contained session is actually contained.
+ *  - `disabled` — an operator set `SESSION_EGRESS_ENFORCE=0`. A Contained
+ *    session **starts, and runs with open egress**, whatever the UI says.
+ *  - `no-sidecar` — enforcement is on but `SESSION_EGRESS_SIDECAR_IMAGE` is
+ *    unset, so the install gate fails closed and a Contained session **will not
+ *    start at all**.
+ *
+ * The two inactive cases have opposite consequences — silently open versus
+ * refusing to start — which is exactly why `enforcementActive: boolean` is not
+ * enough to write a warning from: it forces copy that either overstates one case
+ * or asserts neither. The UI names the case and its remediation inline.
+ */
+export type EgressEnforcementStatus = "active" | "disabled" | "no-sidecar";
+
+/**
  * Global egress containment settings surfaced to the browser Settings panel.
  * `globalEnabled` is the default-on containment switch (true = Contained =
  * default-deny + allowlist + prompts; false = Open = unrestricted egress).
@@ -21,6 +40,13 @@ export interface EgressSettings {
    * contained. Distinguishes policy from enforcement (docs/172, planning#92).
    */
   enforcementActive: boolean;
+  /**
+   * docs/285 — WHICH deployment this is when `enforcementActive` is false, since
+   * the two cases point in opposite directions. `enforcementActive` is kept
+   * beside it rather than derived away: it is what every existing reader uses,
+   * and one of them is an older client that will never know this field exists.
+   */
+  enforcementStatus: EgressEnforcementStatus;
 }
 
 /**
@@ -43,6 +69,8 @@ export interface EgressSessionSettings {
    * deployment": policy says contain but the container would fail closed at start.
    */
   enforcementActive: boolean;
+  /** docs/285 — see {@link EgressSettings.enforcementStatus}. */
+  enforcementStatus: EgressEnforcementStatus;
   /**
    * docs/172 — the resolved containment the session's LIVE container actually
    * started with (the egress topology — firewall/resolver/proxy sidecars — is
@@ -201,6 +229,8 @@ export interface EgressAllowlistView {
    * enforcement warning.
    */
   enforcementActive: boolean;
+  /** docs/285 — see {@link EgressSettings.enforcementStatus}. */
+  enforcementStatus: EgressEnforcementStatus;
   /** The in-scope session's settings, or null for the global-only view. */
   session: EgressSessionSettings | null;
   /** True when the user has removed any built-in default (drives "Restore defaults"). */

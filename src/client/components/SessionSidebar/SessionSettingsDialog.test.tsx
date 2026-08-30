@@ -3,7 +3,12 @@ import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SessionSettingsDialog } from "./SessionSettingsDialog.js";
 import { useSessionStore } from "../../stores/session-store.js";
-import type { EgressAllowlistView, SessionCapabilities, SessionInfo } from "../../../server/shared/types.js";
+import type {
+  EgressAllowlistView,
+  EgressEnforcementStatus,
+  SessionCapabilities,
+  SessionInfo,
+} from "../../../server/shared/types.js";
 
 function renderDialog(sessionId = "s1") {
   return render(<SessionSettingsDialog sessionId={sessionId} open onOpenChange={() => {}} />);
@@ -12,10 +17,18 @@ function renderDialog(sessionId = "s1") {
 function stubFetch(opts: {
   initialOverride?: boolean | null;
   enforcementActive?: boolean;
+  /**
+   * docs/285 — WHICH inactive deployment, when enforcement is off. Defaulting it
+   * from the boolean would make the fixture unable to tell the two cases apart,
+   * and the whole point of the field is that they read differently.
+   */
+  enforcementStatus?: EgressEnforcementStatus;
   startedContained?: boolean | null;
   pendingRestart?: boolean;
 } = {}) {
   const { initialOverride = null, enforcementActive = true, startedContained = null } = opts;
+  const enforcementStatus: EgressEnforcementStatus =
+    opts.enforcementStatus ?? (enforcementActive ? "active" : "no-sidecar");
   let override = initialOverride;
   // Pending is recomputed server-side as startedContained !== effectiveContained.
   // With global Contained (globalEnabled=true) the effective containment is:
@@ -29,6 +42,7 @@ function stubFetch(opts: {
     effectiveContained: effectiveContained(),
     globalEnabled: true,
     enforcementActive,
+    enforcementStatus,
     startedContained,
     pendingRestart: pending(),
   });
@@ -36,6 +50,7 @@ function stubFetch(opts: {
     entries: [],
     globalEnabled: true,
     enforcementActive,
+    enforcementStatus,
     session: sessionView(),
     defaultsCustomized: false,
   });
@@ -74,7 +89,7 @@ describe("SessionSettingsDialog (docs/172)", () => {
     stubFetch({ initialOverride: null });
     renderDialog();
     await waitFor(() =>
-      expect(screen.getByRole("radio", { name: "Inherit global" })).toHaveAttribute("aria-checked", "true"),
+      expect(screen.getByRole("radio", { name: "Inherit workspace" })).toHaveAttribute("aria-checked", "true"),
     );
   });
 
@@ -130,7 +145,7 @@ describe("SessionSettingsDialog (docs/172)", () => {
       // Live container started Contained; inherit (global Contained) → no delta.
       stubFetch({ initialOverride: null, startedContained: true });
       renderDialog();
-      await waitFor(() => expect(screen.getByRole("radio", { name: "Inherit global" })).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole("radio", { name: "Inherit workspace" })).toBeInTheDocument());
       expect(screen.queryByTestId("session-settings-pending")).not.toBeInTheDocument();
     });
 

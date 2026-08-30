@@ -43,6 +43,10 @@ describe("egress settings routes", () => {
   // Typed as the real shape rather than a hand-written subset, so a fixture can
   // never describe a config the resolver could not produce (planning#380).
   let resolvedEgress: Map<string, ResolvedEgressConfig>;
+  /** docs/285 — which session ids exist, and whether each has graduated. */
+  let knownSessions: Map<string, { id: string; warm: boolean }>;
+  /** docs/285 — persisted transcript cards, so the audit rule can be asserted. */
+  let appendedCards: unknown[];
 
   beforeEach(async () => {
     db = new DatabaseManager(":memory:");
@@ -51,6 +55,11 @@ describe("egress settings routes", () => {
     broadcasts = [];
     liveContainers = new Map();
     resolvedEgress = new Map();
+    appendedCards = [];
+    knownSessions = new Map([
+      ["session-1", { id: "session-1", warm: false }],
+      ["s1", { id: "s1", warm: false }],
+    ]);
     app = Fastify();
     const deps = {
       egressAllowlistStore: store,
@@ -64,7 +73,11 @@ describe("egress settings routes", () => {
         resolveEgress: (id: string) => resolvedEgress.get(id),
       } as unknown,
       runnerRegistry: { get: () => undefined },
-      chatHistoryManager: { append: () => {} },
+      chatHistoryManager: { append: (_id: string, m: unknown) => appendedCards.push(m) },
+      // docs/285 — both session routes now refuse an id no session owns, so the
+      // fixture has to say which ids exist. `warm` matters too: the audit card is
+      // suppressed while a session has not graduated.
+      sessionManager: { get: (id: string) => knownSessions.get(id) },
     } as unknown as ApiDeps;
     await registerEgressRoutes(app, deps);
     await app.ready();
@@ -104,7 +117,12 @@ describe("egress settings routes", () => {
   it("GET /api/egress/settings returns the default-on toggle + empty allowlist + enforcement", async () => {
     const res = await app.inject({ method: "GET", url: "/api/egress/settings" });
     expect(res.statusCode).toBe(200);
-    expect(res.json<EgressSettings>()).toEqual({ globalEnabled: true, globalHosts: [], enforcementActive: true });
+    expect(res.json<EgressSettings>()).toEqual({
+      globalEnabled: true,
+      globalHosts: [],
+      enforcementActive: true,
+      enforcementStatus: "active",
+    });
   });
 
   it("PUT /api/egress/settings flips the global toggle + broadcasts (with enforcement)", async () => {
@@ -118,7 +136,7 @@ describe("egress settings routes", () => {
     expect(store.getGlobalEnabled()).toBe(false);
     expect(broadcasts).toContainEqual({
       event: "egress_settings",
-      data: { globalEnabled: false, globalHosts: [], enforcementActive: true },
+      data: { globalEnabled: false, globalHosts: [], enforcementActive: true, enforcementStatus: "active" },
     });
   });
 
@@ -301,6 +319,7 @@ describe("egress settings routes", () => {
           } as unknown,
           runnerRegistry: { get: () => undefined },
           chatHistoryManager: { append: () => {} },
+          sessionManager: { get: (id: string) => knownSessions.get(id) },
         } as unknown as ApiDeps);
         await floorApp.ready();
       });
@@ -457,6 +476,7 @@ describe("egress settings routes", () => {
       sessionId: "session-1",
       override: null,
       hosts: ["session.example.com"],
+      enforcementStatus: "active",
       effectiveContained: true,
       globalEnabled: true,
       enforcementActive: true,
@@ -478,11 +498,20 @@ describe("egress settings routes", () => {
       containerManager: { reloadEgress, get: () => undefined } as unknown,
       runnerRegistry: { get: () => undefined },
       chatHistoryManager: { append: () => {} },
+      sessionManager: { get: (id: string) => knownSessions.get(id) },
     } as unknown as ApiDeps);
     await app2.ready();
     try {
       const settings = (await app2.inject({ method: "GET", url: "/api/egress/settings" })).json<EgressSettings>();
-      expect(settings).toEqual({ globalEnabled: true, globalHosts: [], enforcementActive: false });
+      // docs/285 — with no explicit status, the deps-derived one can only be the
+      // sidecar case; the `disabled` case is reported by production, which
+      // passes the status rather than the boolean.
+      expect(settings).toEqual({
+        globalEnabled: true,
+        globalHosts: [],
+        enforcementActive: false,
+        enforcementStatus: "no-sidecar",
+      });
       const view = (await app2.inject({ method: "GET", url: "/api/egress/allowlist" })).json<EgressAllowlistView>();
       expect(view.enforcementActive).toBe(false);
     } finally {
@@ -507,6 +536,66 @@ describe("egress settings routes", () => {
     });
     expect(res.json<EgressSessionSettings>().override).toBeNull();
     expect(res.json<EgressSessionSettings>().effectiveContained).toBe(true);
+  });
+
+  // docs/285 — both session routes used to answer for any id at all, and the PUT
+  // used to accept any body. The composer hydrates from the GET on mount and
+  // releases its Send barrier on the PUT's response, so a confident answer about
+  // a session that does not exist, or a 200 for a write that changed nothing, is
+  // worse than an error.
+  describe("session-route validation", () => {
+    it("GET refuses an unknown session instead of inventing a view for it", async () => {
+      const res = await app.inject({ method: "GET", url: "/api/egress/session/nope" });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("PUT refuses an unknown session and writes nothing", async () => {
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/egress/session/nope",
+        payload: { override: true },
+      });
+      expect(res.statusCode).toBe(404);
+      expect(store.getSessionOverride("nope")).toBeNull();
+    });
+
+    it("writes NO audit card for the creation-time choice, and one for a later change", async () => {
+      // docs/285 — the docs/279 card records a CHANGE. A session that has not
+      // graduated has no prior state for one to describe: "changed network
+      // containment" above the first message would report an edit to a session
+      // the user experiences as still being created.
+      knownSessions.set("warm-1", { id: "warm-1", warm: true });
+      appendedCards.length = 0;
+      await app.inject({
+        method: "PUT",
+        url: "/api/egress/session/warm-1",
+        payload: { override: false },
+      });
+      expect(appendedCards).toHaveLength(0);
+      expect(store.getSessionOverride("warm-1")).toBe(false);
+
+      // The same write on a graduated session still carries the audit card.
+      await app.inject({
+        method: "PUT",
+        url: "/api/egress/session/session-1",
+        payload: { override: false },
+      });
+      expect(appendedCards).toHaveLength(1);
+    });
+
+    it("PUT refuses a body whose override is not one of the three values", async () => {
+      // The old route IGNORED this and returned 200 with the unchanged view —
+      // indistinguishable, to the caller, from a write that took effect.
+      for (const payload of [{ override: "open" }, { override: 1 }, {}]) {
+        const res = await app.inject({
+          method: "PUT",
+          url: "/api/egress/session/session-1",
+          payload,
+        });
+        expect(res.statusCode).toBe(400);
+      }
+      expect(store.getSessionOverride("session-1")).toBeNull();
+    });
   });
 
   // docs/172 — pending-restart diff: the resolved containment vs what the LIVE
@@ -653,6 +742,7 @@ describe("egress settings routes", () => {
           get: () => ({ emitMessage: (m: unknown) => emitted.push(m), running: false }),
         },
         chatHistoryManager: { append: (_id: string, m: unknown) => appended.push(m) },
+        sessionManager: { get: (id: string) => knownSessions.get(id) },
       } as unknown as ApiDeps);
       await app.ready();
     });

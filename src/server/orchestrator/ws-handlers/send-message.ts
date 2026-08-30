@@ -13,6 +13,7 @@ import { shouldSteerMessage } from "../dispatch-steering.js";
 import { resetSubAgentSpawnBudget } from "../session-runner.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { agentAdmissionError } from "../services/agent-auth-gate.js";
+import { withFirstTurnAdmission } from "../services/first-turn-admission.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
 
 // Re-export all public symbols from sub-modules for backwards compatibility
@@ -65,9 +66,47 @@ function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
 // Exported handlers
 // ---------------------------------------------------------------------------
 
+/**
+ * docs/285 — the first-Send reservation, and the guarantee that it is released.
+ *
+ * `turnStartInProgress` is claimed deep inside the handler and must be dropped
+ * on EVERY exit from it, including the half-dozen early returns between the
+ * claim and the dispatch (a missing workspace, a failed attachment read, a
+ * rejected upload) and any throw. A leaked claim reads as a permanently busy
+ * session that no probe can recover — strictly worse than the race it prevents —
+ * so the release lives in a `finally` wrapped around the whole handler rather
+ * than at the paths someone remembered.
+ */
+class FirstTurnClaim {
+  private runner: { turnStartInProgress: boolean } | null = null;
+
+  take(runner: { turnStartInProgress: boolean }): void {
+    runner.turnStartInProgress = true;
+    this.runner = runner;
+  }
+
+  release(): void {
+    if (this.runner) this.runner.turnStartInProgress = false;
+    this.runner = null;
+  }
+}
+
 export async function handleSendMessage(
   ctx: FullCtx,
   msg: WsSendMessage,
+): Promise<void> {
+  const firstTurnClaim = new FirstTurnClaim();
+  try {
+    await sendMessage(ctx, msg, firstTurnClaim);
+  } finally {
+    firstTurnClaim.release();
+  }
+}
+
+async function sendMessage(
+  ctx: FullCtx,
+  msg: WsSendMessage,
+  firstTurnClaim: FirstTurnClaim,
 ): Promise<void> {
   // Check auth before spawning — some CLIs hang if not authenticated.
   if (!ensureActiveAgentAuthenticated(ctx)) return;
@@ -134,7 +173,15 @@ export async function handleSendMessage(
   // resolution agent's slot in production and stranded the workspace
   // mid-rebase. The dispatch fall-through below enqueues it instead; the flow
   // releases the queue when it settles.
-  if (runnerForQueue?.running || runnerForQueue?.systemTurnInProgress) {
+  // docs/285 — `turnStartInProgress` joins them: a first Send that has claimed
+  // the session but not yet reached `agent.run()` (it may be waiting on a
+  // container restart) is busy, and the probe below cannot discover that by
+  // asking the worker.
+  if (
+    runnerForQueue?.running
+    || runnerForQueue?.systemTurnInProgress
+    || runnerForQueue?.turnStartInProgress
+  ) {
     // Verify with the worker that an agent is actually running. The local
     // `running` flag can get stranded `true` if the orchestrator missed a
     // terminal SSE event (drop mid-turn, container restart, /agent/kill
@@ -150,7 +197,12 @@ export async function handleSendMessage(
     // queues this message behind the entry that was there first (steering and
     // `/compact` both fall through to the queue: the released turn has no
     // resident streaming process yet).
-    if (actuallyRunning || runnerForQueue.running || runnerForQueue.systemTurnInProgress) {
+    if (
+      actuallyRunning
+      || runnerForQueue.running
+      || runnerForQueue.systemTurnInProgress
+      || runnerForQueue.turnStartInProgress
+    ) {
       // docs/178 — `/compact` while a turn is in flight: trigger compaction on
       // the resident live process (streaming Claude injects `/compact`; live
       // Codex sends `thread/compact/start`) rather than queuing the literal text.
@@ -478,6 +530,70 @@ export async function handleSendMessage(
     const session = ctx.sessionManager.get(effectiveSessionId);
     // Only resume if we have a real Claude CLI session ID
     agentSessionId = session?.agentSessionId;
+
+    // docs/285 — FIRST SEND: make the network mode chosen before this message
+    // the mode this turn actually runs under.
+    //
+    // Egress is plumbed when the container is CREATED and a running container
+    // cannot be re-plumbed, while `/new` claims a session (and builds a
+    // container) on arrival — so a mode picked in the composer needs the
+    // container rebuilt before the turn goes out. Only when it actually
+    // differs: the common case costs one comparison and nothing else.
+    //
+    // Placed after activation and before graduation deliberately. `session.warm`
+    // is what identifies a first message, and `graduateSession` below clears it
+    // synchronously, so every later message skips this block entirely.
+    if (session?.warm && ctx.reconcileSessionEgress) {
+      const reconcile = ctx.reconcileSessionEgress;
+      const outcome = await withFirstTurnAdmission(effectiveSessionId, async () => {
+        // Re-read the warm flag INSIDE the section. A competing first Send may
+        // have won it while this one queued, in which case there is nothing left
+        // to decide and this is an ordinary second message.
+        if (ctx.sessionManager.get(effectiveSessionId)?.warm !== true) return null;
+        const result = await reconcile(effectiveSessionId);
+        if (result.action !== "aborted") {
+          // Claim the session before releasing the section, in this same tick.
+          // From here until `agent.run()` the worker truthfully reports no
+          // agent, so `verifyRunningState()` would clear a plain `running` flag
+          // and wave a waiter through into a concurrent first turn — this is the
+          // reservation that probe cannot see. The runner is resolved from the
+          // registry rather than the connection because a restart just replaced it.
+          const claimed = ctx.getRunnerRegistry().get(effectiveSessionId);
+          if (claimed) firstTurnClaim.take(claimed);
+        }
+        return result;
+      });
+
+      if (outcome === null) {
+        // Someone else's first Send owns the turn. Hand this message to the
+        // runner's own send-or-queue rule instead of continuing on a decision
+        // that stopped being true while we waited.
+        const owner = ctx.getRunnerRegistry().get(effectiveSessionId);
+        if (owner) {
+          owner.dispatch(prepareDispatch({
+            text: msg.text,
+            agentInterface: undefined,
+            execution: "interactive",
+            images: msg.images,
+            files: msg.files,
+            uploads: msg.uploads,
+            permissionMode: msg.permissionMode,
+            activity: undefined,
+            postTurn: undefined,
+            systemTurn: undefined,
+            onTurnComplete: undefined,
+            deliveryId: undefined,
+            dictated: msg.dictated,
+          }));
+          return;
+        }
+      } else if (outcome.action === "aborted") {
+        // The container could not be rebuilt, so the turn would run under the
+        // wrong network mode — or in nothing at all. Refuse rather than dispatch.
+        ctx.send({ type: "error", message: outcome.message });
+        return;
+      }
+    }
 
     // Graduate warm session on first message.
     // graduate-session.ts owns the warm → active transition (docs/156). Do

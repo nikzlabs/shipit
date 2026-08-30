@@ -35,6 +35,7 @@ import type { BillingMode } from "../shared/catalogue/index.js";
 import { getErrorMessage } from "./validation.js";
 import { markIssueStartedFromSeed } from "./issue-lifecycle.js";
 import { dismissNonTurnFailure } from "./services/non-turn-work.js";
+import { reconcileSessionEgress } from "./services/reconcile-session-egress.js";
 
 export async function registerSessionCrudRoutes(
   app: FastifyInstance,
@@ -83,6 +84,9 @@ export async function registerSessionCrudRoutes(
     ...(deps.waitForWarmSession ? { waitForWarmSession: deps.waitForWarmSession } : {}),
     ...(deps.shouldSkipClaimFetch ? { shouldSkipClaimFetch: deps.shouldSkipClaimFetch } : {}),
     ...(deps.containerManager ? { containerManager: deps.containerManager } : {}),
+    // docs/285 req 8 — the reuse path hands an abandoned `/new` draft back as a
+    // NEW session, so its network override has to be cleared there.
+    ...(deps.egressAllowlistStore ? { egressAllowlistStore: deps.egressAllowlistStore } : {}),
   });
 
   // GET /api/sessions/:id/status — session runtime status
@@ -557,6 +561,15 @@ export async function registerSessionCrudRoutes(
        * sends it as the string "true"/"false".
        */
       dictated?: boolean;
+      /**
+       * docs/285 reqs 2, 3 — the network mode picked in the Quick Capture
+       * composer, in force from this session's first turn. `true` = Contained,
+       * `false` = Open, `null` = inherit the workspace setting. Absent means the
+       * user did not touch the control, which is the same outcome as `null` and
+       * is what req 8 makes the default for every new session. Multipart sends
+       * it as `"contained"` / `"open"` / `"inherit"`.
+       */
+      networkMode?: boolean | null;
     };
   }>(
     "/api/sessions/headless",
@@ -572,6 +585,12 @@ export async function registerSessionCrudRoutes(
       let issueRef: IssueRef | undefined;
       let armAutoMerge = false;
       let dictated = false;
+      /**
+       * docs/285 req 2 — the network mode picked in the Quick Capture composer.
+       * `undefined` means the user did not touch it, which req 8 makes the
+       * default for every new session; `null` is an explicit "inherit workspace".
+       */
+      let networkMode: boolean | null | undefined;
       const uploadInputs: { filename: string; data: Buffer }[] = [];
 
       if (request.isMultipart()) {
@@ -614,6 +633,16 @@ export async function registerSessionCrudRoutes(
               case "dictated":
                 dictated = value === "true";
                 break;
+              case "networkMode":
+                // The client's multipart serializer stringifies every non-string
+                // field (`String(v)`), so this arrives in the same "true"/"false"
+                // shape `armAutoMerge` and `dictated` do — matched here rather
+                // than given a private vocabulary the generic serializer could
+                // never produce. Anything else leaves it untouched, which is the
+                // inherit default rather than a silent Open.
+                if (value === "true") networkMode = true;
+                else if (value === "false") networkMode = false;
+                break;
               default:
                 break;
             }
@@ -643,6 +672,15 @@ export async function registerSessionCrudRoutes(
           return;
         }
         dictated = body.dictated === true;
+        if (
+          body.networkMode !== undefined
+          && body.networkMode !== null
+          && typeof body.networkMode !== "boolean"
+        ) {
+          reply.code(400).send({ error: "networkMode must be true, false, or null" });
+          return;
+        }
+        networkMode = body.networkMode;
       }
 
       try {
@@ -663,6 +701,7 @@ export async function registerSessionCrudRoutes(
             ...(uploadInputs.length > 0 ? { uploads: uploadInputs } : {}),
             armAutoMerge,
             ...(dictated ? { dictated: true } : {}),
+            ...(networkMode !== undefined ? { networkMode } : {}),
           },
           deps.defaultAgentId,
           deps.credentialsDir,
@@ -673,6 +712,31 @@ export async function registerSessionCrudRoutes(
             githubAuthManager: deps.githubAuthManager,
             prStatusPoller: deps.prStatusPoller,
           },
+          // docs/285 — only when this runtime has an egress store to write to;
+          // without one there is no override to honour and the field is ignored.
+          deps.egressAllowlistStore
+            ? {
+                store: deps.egressAllowlistStore,
+                reconcile: (sid, reconcileOpts) => reconcileSessionEgress(
+                  {
+                    containerManager: deps.containerManager ?? null,
+                    egressAllowlistStore: deps.egressAllowlistStore,
+                    ...(deps.oomBreaker ? { oomBreaker: deps.oomBreaker } : {}),
+                    recovery: {
+                      sessionManager,
+                      containerManager: deps.containerManager ?? null,
+                      runnerRegistry: deps.runnerRegistry,
+                      defaultAgentId: deps.defaultAgentId,
+                      ...(deps.oomBreaker ? { oomBreaker: deps.oomBreaker } : {}),
+                      ...(deps.loopDetector ? { loopDetector: deps.loopDetector } : {}),
+                      sseBroadcast: deps.sseBroadcast,
+                    },
+                  },
+                  sid,
+                  reconcileOpts ?? {},
+                ),
+              }
+            : undefined,
         );
         // session_list SSE broadcast is owned by graduateSession (docs/156).
 

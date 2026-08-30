@@ -8,7 +8,10 @@ import { useNarrowContainer } from "../../hooks/useNarrowContainer.js";
 import { PlusIcon, StopIcon, ArrowUpIcon, GitBranchIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { usePrStore } from "../../stores/pr-store.js";
-import { PermissionModeSelector, isGuardedModelOk } from "../PermissionModeSelector.js";
+import {
+  PermissionModeSelector,
+  type NetworkSectionProps,
+} from "../PermissionModeSelector.js";
 import { HarnessSelector, ModelSelector } from "../ModelPicker.js";
 import { ReasoningSelector } from "../ReasoningSelector.js";
 import { FileAutoComplete } from "../FileAutoComplete.js";
@@ -122,6 +125,7 @@ export function MessageInput({
   focusKey,
   liveSteeringActive = false,
   surface = "chat",
+  network,
 }: {
   onSend: (payload: SendPayload) => void;
   disabled: boolean;
@@ -200,6 +204,26 @@ export function MessageInput({
   /** When true, show both Stop and Send buttons simultaneously (live steering active). */
   liveSteeringActive?: boolean;
   surface?: "chat" | "overlay";
+  /**
+   * docs/285 — the session's network mode, rendered as the second section of the
+   * permission-mode control (reqs 5, 6). Supplied by the caller rather than read
+   * here, because the two surfaces get it from different places: the chat
+   * composer from the server (through `useComposerNetworkMode`), Quick Capture
+   * from a local draft it sends with the create request, since that session does
+   * not exist yet.
+   *
+   * Omitted for a sandbox session, whose network access IS one of its capability
+   * grants (docs/211, docs/279) — two controls over one session's egress.
+   */
+  network?: NetworkSectionProps & {
+    /**
+     * A write is in flight, or a failed one has not yet reverted. **Bars Send**:
+     * without it, picking Contained and pressing Send at once lets the server
+     * resolve the OLD value, see no mismatch, and run the first turn under the
+     * wrong policy — requirement 3 lost to ordinary mutation ordering.
+     */
+     saving: boolean;
+  };
 }) {
   const isMobile = useIsMobile();
   // docs/260-composer-toolbar-layout req 2/3 — measured on the COMPOSER, not the window. The chat panel
@@ -209,26 +233,20 @@ export function MessageInput({
   // so the first paint and every existing test get the wide row.
   const composerRef = useRef<HTMLDivElement>(null);
   const narrowComposer = useNarrowContainer(composerRef, COMPOSER_NARROW_PX);
-  // The same gate `PermissionModeSelector` applies to itself, hoisted so the
-  // narrow row's settings menu offers exactly the modes the wide row would.
-  const guardedModelOk = isGuardedModelOk({ agents, activeAgentId, modelInfo });
-  /**
-   * docs/260 req 19 — the one control the compact layout gives back, and only
-   * in the quick-capture overlay on a desktop viewport.
-   *
-   * Not a width test, deliberately: the overlay's panel is `max-w-2xl` (672px)
-   * at every window size, so it is ALWAYS under the 700px breakpoint and its
-   * measurement never carried req 3's "space is scarce" meaning. The viewport is
-   * what says whether there is room beside it — and below 768px there is not,
-   * which is the ordinary narrow case the fold was designed for.
-   *
-   * Read by the narrow row (which renders the control) and by the settings menu
-   * (which drops its Mode row), so the setting is offered in exactly one place.
-   */
-  const modeInRow = surface === "overlay" && !isMobile;
   // docs/257 req 3 — "disabled as a whole". Every affordance below reads this
   // rather than `disabled`, which guards submission only.
   const inert = !!disabledReason;
+  /**
+   * docs/285 — the network-mode save barrier. Send waits for the write the user
+   * just triggered, because a first turn dispatched before it lands resolves the
+   * OLD mode server-side, finds no mismatch to reconcile, and runs under the
+   * wrong policy.
+   *
+   * Deliberately narrow: it gates Send alone, never the composer as a whole, and
+   * never the network control itself — the user must be able to correct a pick
+   * (or undo one whose write failed) without waiting on anything.
+   */
+  const networkSaving = network?.saving ?? false;
   const [text, setText] = useState("");
   // ── docs/272-user-selectable-roles — the role control's three states ─────────────────────
   // 1. no roles configured → nothing at all, the row exactly as it is today (req 16)
@@ -642,7 +660,11 @@ export function MessageInput({
     // `inert` as well as `disabled`: a retained draft still lives in `text`
     // while the input is dead (it is simply not rendered), so submission has to
     // be refused here and not just hidden behind an empty-looking textarea.
-    if (!trimmed || disabled || inert) return;
+    //
+    // docs/285 — `networkSaving` too, and it must be refused HERE and not only
+    // on the button: Enter reaches this directly, and pressing Contained then
+    // Enter in one breath is precisely the sequence the barrier exists for.
+    if (!trimmed || disabled || inert || networkSaving) return;
     const uploadRefs = getUploadRefs();
     const payload: SendPayload = {
       text: trimmed,
@@ -1026,36 +1048,32 @@ export function MessageInput({
                   </button>
                 </WithTooltip>
 
-                {/* docs/260 req 19 — **the mode comes back out of the menu in
-                    the quick-capture overlay on desktop.**
+                {/* docs/285 reqs 5, 6 — mode AND network access, in one control, on
+                    every viewport. It is offered here and nowhere else: the
+                    settings menu below no longer carries a Mode row, so there is
+                    one place to change one setting.
 
-                    The overlay's composer is under 700px because its PANEL is a
-                    fixed `max-w-2xl` (672px), and it is that width on a 1400px
-                    window as much as on a 900px one. So the measurement that
-                    means "space is scarce" in the chat panel — where the user
-                    chose the width by dragging the split — means nothing here,
-                    and req 3's fold takes a control the surface needs most: this
-                    overlay starts a session and sends its first message in one
-                    act, and the mode is what decides whether the agent asks
-                    before it acts.
-
-                    Only the mode. Everything else stays folded, and it is
-                    offered here INSTEAD of in the menu (`modeInRow` below), never
-                    in both — one setting, one control.
+                    docs/260 req 19 previously gave the mode back to this row
+                    only in the desktop quick-capture overlay, on the reasoning
+                    that a surface which starts a session and sends its first
+                    message in one act needs it most. That reasoning now applies
+                    everywhere, because the network mode has exactly the same
+                    "decided before the first turn" character.
 
                     Placed before the settings anchor rather than after it because
                     the anchor is the group's one elastic item: req 8's clipping
                     depends on it being last, so it truncates before anything is
                     cut at the mic's edge. */}
-                {modeInRow && onPermissionModeChange && (
+                {(onPermissionModeChange ?? network) && (
                   <div className="flex shrink-0 items-center">
                     <PermissionModeSelector
                       mode={permissionMode}
-                      onChange={onPermissionModeChange}
+                      onChange={onPermissionModeChange ?? (() => {})}
                       agents={agents}
                       activeAgentId={activeAgentId}
                       modelInfo={modelInfo}
                       disabled={inert}
+                      {...(network ? { network } : {})}
                     />
                   </div>
                 )}
@@ -1095,14 +1113,10 @@ export function MessageInput({
                   // and model pickers key off "is a session bound", reasoning off
                   // "is a session active".
                   seedFromHistory={!sessionId}
-                  permissionMode={permissionMode}
-                  onPermissionModeChange={onPermissionModeChange}
                   // docs/260 req 19 — the menu drops its Mode row when the row
                   // carries the control. The handler still goes in: the menu
                   // reads the mode for nothing else, and a menu that could not
                   // be told the mode would have to guess it back.
-                  modeInRow={modeInRow}
-                  guardedModelOk={guardedModelOk}
                   // Only `inert` closes the anchor. A running turn locks the
                   // three pickers instead, so the mode stays changeable and the
                   // settings stay readable — matching the wide row exactly.
@@ -1153,7 +1167,7 @@ export function MessageInput({
                   {liveSteeringActive && (
                     <button
                       onClick={handleSubmit}
-                      disabled={disabled || inert || !text.trim()}
+                      disabled={disabled || inert || networkSaving || !text.trim()}
                       className={`ml-1 flex shrink-0 items-center justify-center rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-30`}
                       aria-label="Send message"
                       data-testid="send-button"
@@ -1165,7 +1179,7 @@ export function MessageInput({
               ) : (
                 <button
                   onClick={handleSubmit}
-                  disabled={disabled || inert || !text.trim()}
+                  disabled={disabled || inert || networkSaving || !text.trim()}
                   className={`ml-1 flex shrink-0 items-center justify-center rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-30`}
                   aria-label="Send message"
                   data-testid="send-button"
@@ -1235,16 +1249,22 @@ export function MessageInput({
                 (fixed) and null when idle, so its default order is harmless. */}
             {voiceInputEnabled && !inert && isMobile && <MobileRecordingOverlay voice={voice} />}
 
-            {/* Permission mode selector (3-state, agent-aware — docs/138) */}
-            {onPermissionModeChange && (
+            {/* Permission mode selector (3-state, agent-aware — docs/138), which
+                docs/285 also made the session's network control (reqs 5, 6): one
+                trigger, the same on every viewport, for new and running sessions
+                alike. It renders for a network section alone, so a harness with
+                one permission mode (Codex) keeps the control rather than taking
+                network access down with it. */}
+            {(onPermissionModeChange ?? network) && (
               <div className="flex items-center shrink-0" style={{ order: isMobile ? 20 : 30 }}>
                 <PermissionModeSelector
                   mode={permissionMode}
-                  onChange={onPermissionModeChange}
+                  onChange={onPermissionModeChange ?? (() => {})}
                   agents={agents}
                   activeAgentId={activeAgentId}
                   modelInfo={modelInfo}
                   disabled={inert}
+                  {...(network ? { network } : {})}
                 />
               </div>
             )}
@@ -1402,7 +1422,7 @@ export function MessageInput({
                 {liveSteeringActive && (
                   <button
                     onClick={handleSubmit}
-                    disabled={disabled || inert || !text.trim()}
+                    disabled={disabled || inert || networkSaving || !text.trim()}
                     className={`flex items-center justify-center shrink-0 rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white hover:bg-(--color-accent-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed`}
                     aria-label="Send message"
                     data-testid="send-button"
@@ -1414,7 +1434,7 @@ export function MessageInput({
             ) : (
               <button
                 onClick={handleSubmit}
-                disabled={disabled || inert || !text.trim()}
+                disabled={disabled || inert || networkSaving || !text.trim()}
                 className={`flex items-center justify-center shrink-0 rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white hover:bg-(--color-accent-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed`}
                 aria-label="Send message"
                 data-testid="send-button"

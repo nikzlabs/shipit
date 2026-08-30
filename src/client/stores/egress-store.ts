@@ -2,7 +2,9 @@ import { create } from "zustand";
 import type {
   EgressAllowlistEntry,
   EgressAllowlistView,
+  EgressEnforcementStatus,
   EgressHostGrantOutcome,
+  EgressSettings,
 } from "../../server/shared/types.js";
 
 /**
@@ -45,6 +47,23 @@ interface EgressState {
    * reassuring green state (docs/172, planning#92).
    */
   enforcementActive: boolean;
+  /**
+   * docs/285 — WHICH deployment this is when enforcement is off, so the warning
+   * can name the case and its remediation rather than hedge. See
+   * `EgressSettings.enforcementStatus`.
+   */
+  enforcementStatus: EgressEnforcementStatus;
+  /**
+   * docs/285 — whether the two GLOBAL fields above have been read from the
+   * server, independently of the full allowlist view.
+   *
+   * Deliberately separate from `loaded`. That flag means "the Settings editor's
+   * provenance view is in hand", which is an expensive thing to have and is only
+   * ever true while that dialog is open — and Quick Capture needs to name the
+   * workspace default without opening it. Folding the two would make the cheap
+   * question unanswerable except by paying for the expensive one.
+   */
+  globalLoaded: boolean;
   /** In-scope session override: null = inherit global, true/false = force. */
   override: boolean | null;
   /** Resolved containment for the in-scope session (override ?? global). */
@@ -54,6 +73,12 @@ interface EgressState {
 
   applyView: (v: EgressAllowlistView) => void;
   load: (sessionId?: string | null) => Promise<void>;
+  /**
+   * docs/285 — read just the global switch + enforcement status. Cheap, and
+   * idempotent: a second call while the value is already held does nothing, so a
+   * surface can ask on every open without a round trip each time.
+   */
+  loadGlobal: () => Promise<void>;
   refresh: () => Promise<void>;
   setGlobalEnabled: (enabled: boolean) => Promise<void>;
   setOverride: (override: boolean | null) => Promise<void>;
@@ -90,6 +115,8 @@ export const useEgressStore = create<EgressState>((set, get) => ({
   // Optimistic: assume enforcement is active until the server view loads, so a
   // capable deployment doesn't briefly flash the "not enforced" warning.
   enforcementActive: true,
+  enforcementStatus: "active",
+  globalLoaded: false,
   override: null,
   effectiveContained: true,
   defaultsCustomized: false,
@@ -102,6 +129,8 @@ export const useEgressStore = create<EgressState>((set, get) => ({
       entries: Array.isArray(v?.entries) ? v.entries : [],
       globalEnabled: v?.globalEnabled ?? true,
       enforcementActive: v?.enforcementActive ?? true,
+      enforcementStatus: v?.enforcementStatus ?? (v?.enforcementActive ? "active" : "no-sidecar"),
+      globalLoaded: true,
       override: v?.session?.override ?? null,
       effectiveContained: v?.session?.effectiveContained ?? v?.globalEnabled ?? true,
       defaultsCustomized: v?.defaultsCustomized ?? false,
@@ -115,6 +144,28 @@ export const useEgressStore = create<EgressState>((set, get) => ({
     const res = await fetch(`/api/egress/allowlist${q}`);
     if (!res.ok) throw new Error(`Failed to load egress allowlist: ${res.status}`);
     get().applyView((await res.json()) as EgressAllowlistView);
+  },
+
+  loadGlobal: async () => {
+    if (get().globalLoaded) return;
+    try {
+      const res = await fetch("/api/egress/settings");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const settings = (await res.json()) as EgressSettings;
+      set({
+        globalEnabled: settings.globalEnabled,
+        enforcementActive: settings.enforcementActive,
+        enforcementStatus: settings.enforcementStatus
+          ?? (settings.enforcementActive ? "active" : "no-sidecar"),
+        globalLoaded: true,
+      });
+    } catch (err) {
+      // Leave the optimistic defaults. A surface that shows the workspace
+      // default is describing a setting, not gating on one, so guessing
+      // "Contained and enforced" is the right failure: it neither invents a
+      // warning nor claims protection this store cannot see.
+      console.error("[egress] failed to read the workspace default:", err);
+    }
   },
 
   refresh: async () => {

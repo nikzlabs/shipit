@@ -150,6 +150,11 @@ export async function registerContainerRoutes(
             defaultAgentId: deps.defaultAgentId,
             ...(deps.oomBreaker ? { oomBreaker: deps.oomBreaker } : {}),
             ...(deps.loopDetector ? { loopDetector: deps.loopDetector } : {}),
+            // docs/285 — Rescue has always had the stranded-second-viewer
+            // problem too: only the tab that pressed the button reconnects,
+            // while every other tab keeps an open socket to a disposed runner.
+            // The announcement costs nothing here and fixes both callers.
+            sseBroadcast: deps.sseBroadcast,
           },
           request.params.id,
         );
