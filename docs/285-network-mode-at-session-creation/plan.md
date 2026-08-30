@@ -199,13 +199,18 @@ merely during the restart, or it cannot fail on this.
   fire-and-forget `agent.install` (`warm-pool-manager.ts` ~297, ~331), so a changed-mode
   first Send can destroy an install in flight. The replacement reruns setup; the cost is a
   longer Send, and it is stated rather than discovered.
-- **It resets the OOM breaker and the restart-loop detector**, deliberately: Rescue is the
+- **It resets the OOM breaker and forgets the loop detector's history**, deliberately: Rescue is the
   explicit user opt-in to retry, so it clears them "so the new container actually gets
   created" (`recovery.ts` ~226–233). A network-mode change must **not** silently inherit that
   privilege — a session that has been OOM-killed repeatedly would gain a free retry by
   toggling a setting, while an *unchanged* first Send stays blocked. So reconciliation reuses
   the teardown/recreate path with the breakers **left alone**, and a tripped breaker aborts
-  the Send with the existing Rescue guidance rather than quietly overriding it.
+  the Send with the existing Rescue **action** rather than quietly overriding it. (There is no
+  second, independently-tripped "restart-loop breaker": the loop detector can force-trip the
+  OOM breaker and keeps its own event window, which is why both must be left alone. And the
+  breaker's current message advises `agent.memory` in `shipit.yaml` while `CLAUDE.md` points
+  at `DEFAULT_SESSION_MEMORY_MB` — pre-existing copy debt to avoid propagating, not to fix
+  here.)
 - **It is container-runtime only.** In `RUNTIME_MODE=local` there is no container manager and
   the call throws 503 (`recovery.ts` ~235). So "anything else → restart" is scoped to the
   container runtime; local mode persists the override, reports the policy/enforcement
@@ -325,8 +330,9 @@ reuse branch itself, not in the composer, because the composer is not involved i
 2g. **A mode changed during the restart or pre-spawn preparation** does not move the first
    turn: the admitted target is frozen and the late change becomes an ordinary pending
    post-first-turn change.
-2h. **A tripped OOM or restart-loop breaker aborts the Send** with the Rescue guidance, and
-   reconciliation does not clear either — toggling a setting must not buy a free retry.
+2h. **A tripped OOM breaker aborts the Send** and offers Rescue, and reconciliation clears
+   neither the breaker nor the loop detector's history — toggling a setting must not buy a
+   free retry that an unchanged first Send is denied.
 3. **`Inherit` follows the workspace at container start**, and an explicit pick does not move
    when the workspace default changes between Send and boot.
 4. **Reset**: a second new session in the *same* repo starts at `Inherit` — including the
