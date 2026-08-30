@@ -48,12 +48,22 @@ From independent review of that change (all fixed, each with a regression test):
 
 Still open:
 
-- [ ] Which surface actually remounts in the 2026-08-30 trace is **not** established. A real-browser
-      harness ruled out scroll, parent re-render and message-object churn as re-highlight triggers,
-      and no key collision or render-declared component type was found in the transcript chain. The
-      cache makes the cost mechanism-independent; it does not identify the trigger. What would close
-      it: a trace whose `useMemo` frame carries the React component name, or a recording with
-      "Highlight updates when components render" on.
+- [x] Commit the real-browser probe rather than describing its results
+      (`scripts/fixtures/transcript-highlight-probe.*`), so the eliminations below are reproducible
+      and the next investigator does not rebuild it
+
+- [ ] **The loop's engine is still unidentified.** The 35 calls are one loop — 29 consecutive calls,
+      2.8–6.1 ms apart, 8.2 s long, period = one highlight — that starts 1.8 s *after* scrolling
+      begins and outlives the last scroll event by 4.8 s, scheduling each iteration through a
+      microtask after the previous commit. Two failures must hold at once: something re-renders
+      continuously, and every one of those renders re-highlights. The probe eliminated
+      `MessageList`, the memoized rows, `SubagentReport`'s ResizeObserver, the `content-visibility`
+      pairing, and both lazy-body fetches; the payload size (16,979 bytes, a whole file) narrows the
+      surface to `WriteContent`, an **expanded** `ReadResult`, or a whole-file fence — all of which
+      need a modal open. What would close it: a trace whose `useMemo` frame carries the React
+      component name (record with "Highlight updates when components render" on, or use the React
+      Profiler), **or** simply knowing whether a tool-call or diff modal was open during the
+      recording.
 - [ ] The two modal-only `highlightAuto` sites (`ReadResult`, `WriteContent`) still re-highlight on
       every modal open. Deliberately not wired here — a concurrent session is changing language
       selection in exactly those files — so this is a one-line follow-up for whoever lands that.

@@ -142,6 +142,63 @@ Chat/Workspace tab switching is **not** one — `MobileContentPanels` keeps both
 purpose. None of the three is obviously firing 35 times in 15 s, which is why the question is open
 rather than answered.
 
+#### The 35 calls are one loop, not 35 events
+
+Grouping the trace's calls by the idle gap between them gives four bursts, and the last one is the
+whole story: **29 consecutive calls with 2.8–6.1 ms of idle between them, running for 8.2 s**, at a
+period of ~284 ms — one `highlightAuto` plus the gap. The loop is rate-limited by its own cost.
+Three facts constrain it:
+
+- **It outlives the scroll.** Scroll events span 4,825–10,068 ms; the burst starts at 6,626 ms (1.8 s
+  *after* scrolling began) and runs to ~14,860 ms (4.8 s after the last scroll event). Scrolling
+  neither starts nor sustains it.
+- **The typing is a victim, not a cause.** All five keystrokes land inside the burst, which is why
+  each cost ~57 ms: they queued behind a 274 ms task.
+- **Each iteration schedules the next through a microtask**, after the previous render commits:
+  highlight ends → `RunMicrotasks` → a sub-millisecond `FunctionCall` → `RunTask` → the next
+  highlight. Some gaps also run real layout (`UpdateLayoutTree`, `Layout`, `PrePaint`,
+  `IntersectionObserverController::computeIntersections`, `Layerize`, `Commit`). An
+  `EventDispatch type=focus` / `focusin` pair sits in the gap immediately before the burst's first
+  call.
+
+That is the signature of an unconditional re-render, so **two failures have to hold at once**:
+something re-renders continuously, and each of those renders re-highlights. A test that drives N
+scripted re-renders and counts calls cannot see the first one.
+
+#### What the probe has eliminated
+
+`scripts/fixtures/transcript-highlight-probe.{html,jsx,css}` renders the real `MessageList` over an
+82-message transcript in a real browser and counts `highlight.js` calls over **wall clock**. Each
+run verifies `getComputedStyle(row).contentVisibility === "auto"` first — the fixture's first
+revision measured `visible`, because Tailwind scans from the Vite root and never read `src/client`,
+so every number was a false negative until an explicit `@source` fixed it.
+
+| condition | extra `highlightAuto` calls |
+|---|---|
+| 6 s idle after mount | **0** |
+| 5 s of continuous scrolling | **0** |
+| 6 s idle immediately after that scrolling | **0** |
+| 20 forced `MessageList` re-renders | **0** |
+| every `ChatMessage` object replaced | **0** |
+| diff modal opened (inline body) | 1, then **0** over 9 s idle |
+| diff modal opened (docs/244 stripped body) | 1 fetch, no retry, **0** highlights |
+
+So the loop's engine is **not** in `MessageList`, the memoized rows, `SubagentReport`'s
+`useOverflows` ResizeObserver, the `content-visibility` pairing, or either lazy-body fetch
+(`useLazyToolInput` and `useLazyResultBody` both cache their error under the same key, so neither
+can retry).
+
+#### What the payload size says about the surface
+
+The probe fixes each call site's input size, which is how a measured duration names a surface.
+`WriteContent` highlights a **whole file body, untruncated** — 16,979 bytes for the 400-line
+fixture, which is the trace's ~274 ms. `ReadResult` highlights only its `READ_MAX_LINES` (20-line)
+preview, ~46 ms, *unless the user expanded it*. So the traced payload is a whole ~400-line file:
+`WriteContent` in a diff modal, an **expanded** `ReadResult`, or a fenced block holding a whole file.
+That also disposes of the original suspicion that scrolling reached `ToolResult` — `ToolResult`
+renders only inside `ToolCallModal` and `WriteContent` only inside `DiffModal`, so neither is
+reachable by scrolling at all.
+
 ### 3. Revalidate instead of re-download (reqs 10, 11)
 
 `GET /api/sessions/:id/history` gains an **ETag that is the hash of the response body**, and
