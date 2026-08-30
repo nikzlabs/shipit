@@ -36,16 +36,23 @@ feature is honestly the sum of both docs.
 
 ## Open questions
 
-- **How far must recovery reach?** If the browser reloads mid-Send, should the draft and its
-  claimed session come back? And if the *orchestrator* restarts or is deployed mid-Send —
-  which today deletes every ungraduated session (`startup-tasks.ts` ~288) — is that a case
-  the design must survive, or an accepted loss with an honest error?
 - **Does the composer freeze while a Send is in flight?** Either it locks until the message
   is accepted (simple, but the input dies for a beat on every first message), or it stays
   editable and the design must say precisely what gets cleared on acceptance — clearing "the
   draft" would erase text typed after the send.
 
 ## Resolved questions
+
+- 2026-08-29 — *How far must recovery reach?* **Navigation and browser reload.** The
+  draft-claim key is persisted client-side, alongside the `/new` text that is already
+  persisted per repo (`useMessageDraft.ts`), so a retry after a reload returns the same
+  session rather than making a second one. An **orchestrator restart mid-Send is an accepted
+  loss** with an honest error: boot deletes every ungraduated session
+  (`startup-tasks.ts` ~288), so surviving it would mean a durable mapping that outlives the
+  session it names, and a recovery path for "your session was deleted, here is your text".
+  Raw attachments still cannot survive a reload — the `File` objects live only in memory
+  (`useFileUpload.ts` ~124) — so a reload restores the text and the session, not the files.
+  → reqs 3, 4.
 
 - 2026-08-29 — *Is this separable from docs/285, or is splitting it a way of making that
   feature look smaller?* Separable, and it should be extracted now rather than "if it grows
