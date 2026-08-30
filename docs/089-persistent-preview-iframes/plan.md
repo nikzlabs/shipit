@@ -233,11 +233,11 @@ found by adversarial review rather than by the first pass.
   the window before `service_list` lands, and surrendering the port there drops
   the pane onto `status.port`, reintroducing the fallback through the back door.
   The waiting predicate is keyed on the remembered name for the same reason.
-- **The pane must not probe a port that answers nothing.** `usePreviewHealthPoller`
-  returns early while waiting. Without that it would poll for its full 15s
-  deadline and then create the slot *anyway* — a 502 document parked behind the
-  overlay, and a created slot is only ever promoted afterwards, never re-probed,
-  so it would still be there when the service came back.
+- **The pane must not create a slot for a port that answers nothing.**
+  `usePreviewSlot` returns early while waiting. Without that it would create the
+  slot anyway — a connecting page parked behind the overlay, and a created slot
+  is only ever promoted afterwards, never reloaded, so it would still be there
+  when the service came back.
 - **The wait must end on a live page — and only for the slot that waited.** The
   slot is deliberately retained through the outage, so promoting it would
   re-show the document from before the service went down; `PreviewFrame` bumps
@@ -277,7 +277,7 @@ Multiple iframes emit `postMessage` errors. Extract sessionId from `event.origin
 |------|--------|
 | `src/client/components/PreviewFrame.tsx` | Iframe pool (main change); the waiting-for-its-service state |
 | `src/client/hooks/useIframePool.ts` | Slot map + LRU eviction |
-| `src/client/hooks/usePreviewHealthPoller.ts` | Slot creation; enters at the remembered path; skips a service that isn't running |
+| `src/client/hooks/usePreviewSlot.ts` | Slot creation; enters at the remembered path; skips a service that isn't running |
 | `src/client/stores/preview-store.ts` | Snapshot/restore per session; `previewPaths`; `resolvePreviewTarget` / `reconcilePreviewTarget` |
 | `src/client/stores/preview-target-memory.ts` | Per-session remembered preview service (planning#478) |
 | `src/client/stores/actions/session-actions.ts` | Snapshot on switch instead of reset |

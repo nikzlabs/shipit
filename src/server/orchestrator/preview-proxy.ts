@@ -7,8 +7,12 @@
  * works with any dev server, not just Vite. This is the ONLY container-preview
  * routing mode: a path-based (/preview/:sessionId/:port/*) variant existed but
  * was removed (docs/175) — it couldn't render real apps because absolute asset
- * paths 404 without the prefix, and no HTML rewriting was done. Container
- * reachability is probed separately via /api/preview-health/:sessionId/:port.
+ * paths 404 without the prefix, and no HTML rewriting was done.
+ *
+ * Reachability is not probed. A request that arrives before the dev server
+ * listens is retried here for a bounded window and, past it, answered with a
+ * self-refreshing connecting page — so the iframe's one load can't be burned on
+ * a 502 and the client needs no gate of its own (docs/286).
  *
  * Supports WebSocket upgrades for HMR.
  *
@@ -378,7 +382,19 @@ interface PreviewErrorReporter {
   success(sessionId: string, port: number): void;
 }
 
-function proxyHttp(
+/**
+ * One attempt at proxying a preview request to the container.
+ *
+ * The attempt takes ownership of the response only once the upstream answers.
+ * A failure to *reach* the upstream writes nothing and calls `onUnreachable`
+ * instead, so the caller can try again — see `proxyPreviewRequest`, which is
+ * what stops an iframe's single load from being spent on a 502 (docs/286).
+ *
+ * `hasBody` decides how the request is forwarded. A bodyless request is ended
+ * directly rather than piped, which is what makes it replayable: `rawReq` can
+ * be consumed once, so a piped request has nothing left for a second attempt.
+ */
+function proxyHttpAttempt(
   containerIp: string,
   targetPort: number,
   targetPath: string,
@@ -386,9 +402,10 @@ function proxyHttp(
   headers: http.IncomingHttpHeaders,
   rawReq: http.IncomingMessage,
   rawRes: http.ServerResponse,
-  onError?: (message: string) => void,
+  hasBody: boolean,
+  onUnreachable: (err: NodeJS.ErrnoException) => void,
   onSuccess?: () => void,
-): void {
+): http.ClientRequest {
   // Strip accept-encoding so the upstream sends uncompressed content — allows
   // us to inject the HMR WebSocket patch into HTML responses.
   const fwdHeaders = buildUpstreamHeaders(headers, targetPort);
@@ -435,16 +452,199 @@ function proxyHttp(
     },
   );
 
-  proxyReq.on("error", (err) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (onError) onError(msg);
-    if (!rawRes.headersSent) {
-      rawRes.writeHead(502, { "Content-Type": "application/json" });
-    }
-    rawRes.end(JSON.stringify({ error: "Container preview unreachable" }));
+  // Bound the connect, and only the connect — see PREVIEW_CONNECT_TIMEOUT_MS.
+  proxyReq.on("socket", (socket) => {
+    if (!socket.connecting) return;
+    const timer = setTimeout(() => {
+      socket.destroy(Object.assign(new Error("connect timeout"), { code: "ETIMEDOUT" }));
+    }, PREVIEW_CONNECT_TIMEOUT_MS);
+    timer.unref?.();
+    const clear = () => clearTimeout(timer);
+    socket.once("connect", clear);
+    socket.once("close", clear);
+    socket.once("error", clear);
   });
 
-  rawReq.pipe(proxyReq);
+  proxyReq.on("error", (err: NodeJS.ErrnoException) => {
+    // Past the response head the upstream already answered and the body is
+    // being streamed — there is nothing to retry and no way to restate the
+    // status, so close what we have.
+    if (rawRes.headersSent) {
+      rawRes.end();
+      return;
+    }
+    onUnreachable(err);
+  });
+
+  if (hasBody) rawReq.pipe(proxyReq);
+  else proxyReq.end();
+  return proxyReq;
+}
+
+// ---------------------------------------------------------------------------
+// Connect retry
+// ---------------------------------------------------------------------------
+
+/**
+ * How long the proxy keeps trying to reach a dev server that isn't listening
+ * yet, before it answers with the connecting page.
+ *
+ * The window is not the whole wait a user can experience: the connecting page
+ * reloads itself, and each reload opens a fresh window, so a dev server that
+ * takes a minute still resolves. All this bounds is how long ONE request may
+ * hold its response back — and that has a hard ceiling from the client.
+ * `PreviewFrame`'s auth detector reloads the iframe when no `loaded` message
+ * arrives within `MAX_AUTH_TIMEOUT_MS` (5 s) and, after two such reloads,
+ * reports "Preview authentication required" — so a held first load past that
+ * timer produces exactly the false claim req 6 forbids.
+ *
+ * The tighter bound is the pane, though. Nothing is rendered while the request
+ * is held, so this window is also how long the preview can look blank instead
+ * of saying "connecting" (req 4). A second of it is ordinary navigation
+ * latency; more would be a stare. So: just long enough to swallow the common
+ * short boot (Vite's "ready in 437 ms") with no connecting page at all, and
+ * everything longer belongs to the page, which says what it is doing.
+ */
+const PREVIEW_CONNECT_RETRY_MS = 1_000;
+
+/**
+ * Bound on the CONNECT phase of one attempt.
+ *
+ * Without it a target that accepts nothing and answers nothing — a container
+ * whose address is stale, so the SYN is dropped rather than refused — parks the
+ * request on `await`-forever: the retry deadline is only consulted from an error
+ * callback, so no error means no deadline check and no connecting page.
+ *
+ * Deliberately bounds the connect and NOT the response. A dev server compiling
+ * a route on demand accepts at once and answers a minute later; that is a
+ * working preview, and a response timeout would kill it.
+ */
+const PREVIEW_CONNECT_TIMEOUT_MS = 3_000;
+
+/** Spacing between connect attempts inside {@link PREVIEW_CONNECT_RETRY_MS}. */
+const PREVIEW_CONNECT_RETRY_STEP_MS = 250;
+
+/** How often the connecting page asks whether the dev server is up yet. */
+const CONNECTING_PAGE_POLL_MS = 1_000;
+
+/** How long the connecting page waits before it shows the connect error. */
+const CONNECTING_PAGE_DETAIL_MS = 30_000;
+
+/**
+ * Errors that mean "nothing is listening there yet" rather than "the app is
+ * broken". Everything else is reported on the first failure, as before.
+ */
+const CONNECT_ERROR_CODES = new Set([
+  "ECONNREFUSED",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "ENOTFOUND",
+]);
+
+/**
+ * Whether a request can be attempted more than once.
+ *
+ * Only a bodyless GET/HEAD qualifies: a retry re-sends the request, and a body
+ * has already been consumed by the first attempt. In practice this costs
+ * nothing — the request that meets a cold dev server is the iframe's own
+ * navigation, and assets follow an HTML response that already proved the
+ * server is up.
+ */
+export function isRetryablePreviewRequest(
+  method: string,
+  headers: http.IncomingHttpHeaders,
+): boolean {
+  const m = method.toUpperCase();
+  if (m !== "GET" && m !== "HEAD") return false;
+  return headers["content-length"] === undefined && headers["transfer-encoding"] === undefined;
+}
+
+/** Whether this request is a document navigation that should get the connecting page. */
+export function wantsHtmlDocument(
+  method: string,
+  headers: http.IncomingHttpHeaders,
+): boolean {
+  if (method.toUpperCase() !== "GET") return false;
+  const accept = headers.accept;
+  return typeof accept === "string" && accept.includes("text/html");
+}
+
+/** Embed a value in an inline script without letting it close the script element. */
+function toScriptLiteral(value: string): string {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
+/**
+ * The document served when the retry window runs out on a navigation.
+ *
+ * It is the "connecting" state itself (docs/286 req 4). It **polls and then
+ * reloads**, rather than reloading on a timer: a blind reload every couple of
+ * seconds makes the pane flash for the whole of a slow boot, and this page is
+ * what the user looks at for that entire time. Polling lets one rendered
+ * document sit still — spinner included — until the dev server actually
+ * answers, and the reload then lands on a server that is ready.
+ *
+ * The poll asks for this very URL, so it is answered by the same retry path
+ * that produced this page; the 503 it returns while still unreachable is the
+ * signal to keep waiting. Anything else means the app is up.
+ */
+export function buildConnectingPage(port: number, lastError: string): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Connecting to the dev server</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+         font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: Canvas; color: CanvasText; }
+  .box { text-align: center; max-width: 30rem; padding: 1.5rem; }
+  .spinner { width: 20px; height: 20px; margin: 0 auto 0.9rem; border-radius: 50%;
+             border: 2px solid currentColor; border-right-color: transparent;
+             opacity: 0.5; animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+  .detail { margin-top: 0.75rem; font-size: 12px; opacity: 0.65; word-break: break-word; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="spinner"></div>
+  <p>Connecting to the dev server on port <code>${port}</code>&hellip;</p>
+  <p class="detail" id="shipit-connect-detail" hidden></p>
+</div>
+<script>
+(function () {
+  var started = Date.now();
+  var detail = document.getElementById("shipit-connect-detail");
+  function schedule() {
+    if (Date.now() - started > ${CONNECTING_PAGE_DETAIL_MS} && detail.hidden) {
+      detail.textContent = "The dev server has not answered yet. Last error: " + ${toScriptLiteral(lastError)};
+      detail.hidden = false;
+    }
+    setTimeout(tick, ${CONNECTING_PAGE_POLL_MS});
+  }
+  function tick() {
+    fetch(location.href, { cache: "no-store", headers: { accept: "text/html" } })
+      .then(function (res) {
+        // 503 is this page again — still unreachable. Anything else is the app.
+        if (res.status !== 503) { location.reload(); return; }
+        schedule();
+      })
+      .catch(schedule);
+  }
+  schedule();
+})();
+</script>
+</body>
+</html>
+`;
 }
 
 function proxyWebSocket(
@@ -604,9 +804,16 @@ export function registerPreviewProxy(
      * docs/124-session-rescue-and-diagnostics §1.5.
      */
     runnerRegistry?: SessionRunnerRegistry;
+    /**
+     * How long to keep retrying a connect before answering with the connecting
+     * page. Defaults to {@link PREVIEW_CONNECT_RETRY_MS}; tests set it to 0 to
+     * reach the exhaustion path without waiting out the real window.
+     */
+    connectRetryMs?: number;
   },
 ): void {
   const { containerManager, serviceManagers, runnerRegistry } = opts;
+  const connectRetryMs = opts.connectRetryMs ?? PREVIEW_CONNECT_RETRY_MS;
 
   const reportError = createPreviewErrorReporter(runnerRegistry);
 
@@ -630,6 +837,106 @@ export function registerPreviewProxy(
     return sc?.containerIp ? { ip: sc.containerIp, port } : null;
   }
 
+  /**
+   * Proxy one preview request, retrying the connect while the dev server is
+   * still coming up (docs/286).
+   *
+   * Two failures mean the same thing to a user opening a preview too early, so
+   * both are retried on the one loop: no target yet (the Compose service has no
+   * container and the agent container isn't registered — previously a hard 404)
+   * and a target that refuses the connection. The target is re-resolved on every
+   * attempt, so a container that changes address is picked up.
+   *
+   * The failure is reported once, when the window is exhausted, rather than per
+   * attempt — `createPreviewErrorReporter` then sees a request that genuinely
+   * failed instead of a transient bring-up error (req 5).
+   */
+  function proxyPreviewRequest(
+    sessionId: string,
+    originPort: number,
+    rawReq: http.IncomingMessage,
+    rawRes: http.ServerResponse,
+    url: string,
+    method: string,
+    headers: http.IncomingHttpHeaders,
+  ): void {
+    // The same test answers both questions: a request we can replay is exactly
+    // one with no body to forward.
+    const canRetry = isRetryablePreviewRequest(method, headers);
+    const deadline = Date.now() + connectRetryMs;
+    // A viewer that navigates away, switches session, or closes the tab must
+    // not leave a retry timer running, nor an upstream socket connecting, for a
+    // response nobody is reading. One listener for the whole request, not one
+    // per attempt: the window allows ~40 of those.
+    let abandoned = false;
+    let inFlight: http.ClientRequest | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    rawRes.on("close", () => {
+      abandoned = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      // A finished response closes too. Only an unfinished one is an abandon,
+      // and only there is destroying the upstream right.
+      if (!rawRes.writableEnded && inFlight && !inFlight.destroyed) inFlight.destroy();
+    });
+
+    function attempt(): void {
+      if (abandoned) return;
+      const target = resolveTarget(sessionId, originPort);
+      if (!target) {
+        giveUpOrRetry("Session container not found", true);
+        return;
+      }
+      inFlight = proxyHttpAttempt(
+        target.ip,
+        target.port,
+        url,
+        method,
+        headers,
+        rawReq,
+        rawRes,
+        !canRetry,
+        (err) => giveUpOrRetry(err.message, CONNECT_ERROR_CODES.has(err.code ?? "")),
+        () => reportError.success(sessionId, originPort),
+      );
+    }
+
+    function giveUpOrRetry(message: string, transient: boolean): void {
+      if (abandoned) return;
+      if (canRetry && transient && Date.now() < deadline) {
+        retryTimer = setTimeout(attempt, PREVIEW_CONNECT_RETRY_STEP_MS);
+        retryTimer.unref?.();
+        return;
+      }
+      if (rawRes.headersSent) {
+        rawRes.end();
+        return;
+      }
+      // Reported against the ORIGIN's port, which is what the user's address
+      // bar uses. Only here, at exhaustion — never per attempt — so a boot that
+      // resolves inside the window says nothing at all, and
+      // `createPreviewErrorReporter`'s own grace window then holds even this
+      // back until a second request fails (req 5). `preview_error` paints the
+      // pane's banner and writes a Logs line; it does not reach auto-fix, which
+      // watches the captured-console errors (`useAutoFix`).
+      reportError(sessionId, originPort, message, false);
+      if (wantsHtmlDocument(method, headers)) {
+        const body = injectPreviewBootstrap(buildConnectingPage(originPort, message));
+        rawRes.writeHead(503, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+          "Content-Length": String(Buffer.byteLength(body)),
+        });
+        rawRes.end(body);
+        return;
+      }
+      // Not a navigation — an asset or an XHR must not be handed HTML.
+      rawRes.writeHead(502, { "Content-Type": "application/json" });
+      rawRes.end(JSON.stringify({ error: "Container preview unreachable" }));
+    }
+
+    attempt();
+  }
+
   // --- Subdomain-based proxy (intercepts before Fastify routing) ----------
   //
   // When Host matches {uuid}--{port}.*, proxy the entire request to the
@@ -644,83 +951,18 @@ export function registerPreviewProxy(
     }
 
     const { sessionId, port: originPort } = parsed;
-    const target = resolveTarget(sessionId, originPort);
-    if (!target) {
-      reply.code(404).send({ error: "Session container not found" });
-      done();
-      return;
-    }
-    // Errors are reported against the ORIGIN's port, which is what the user's
-    // address bar and the health poller both use.
-    const { ip: containerIp, port: targetPort } = target;
-
     reply.hijack();
-    proxyHttp(
-      containerIp,
-      targetPort,
+    proxyPreviewRequest(
+      sessionId,
+      originPort,
+      request.raw,
+      reply.raw,
       request.url,
       request.method,
       request.headers,
-      request.raw,
-      reply.raw,
-      (msg) => reportError(sessionId, originPort, msg, false),
-      () => reportError.success(sessionId, originPort),
     );
     done();
   });
-
-  // --- Preview health check (for polling without console errors) ----------
-  //
-  // Always returns 200 with { ready: true/false }. The browser logs non-2xx
-  // fetch() responses as errors in the console; this endpoint avoids that.
-
-  app.get(
-    "/api/preview-health/:sessionId/:port",
-    async (request, reply) => {
-      const params = request.params as { sessionId: string; port: string };
-      const originPort = Number(params.port);
-      if (
-        !Number.isInteger(originPort) ||
-        originPort < 1 ||
-        originPort > 65535
-      ) {
-        return reply.send({ ready: false });
-      }
-      // The poller asks about the origin it is going to load, so the probe has
-      // to follow the same mapping the proxy does — otherwise a plugin service
-      // whose fragment moved its port would report "not ready" forever.
-      const target = resolveTarget(params.sessionId, originPort);
-      if (!target) {
-        return reply.send({ ready: false });
-      }
-      const { ip: containerIp, port: targetPort } = target;
-      // Quick HTTP probe to the container's dev server
-      const ready = await new Promise<boolean>((resolve) => {
-        const probe = http.request(
-          {
-            hostname: containerIp,
-            port: targetPort,
-            path: "/",
-            method: "HEAD",
-            timeout: 2000,
-          },
-          (res) => {
-            res.resume();
-            resolve(
-              res.statusCode !== undefined && res.statusCode < 500,
-            );
-          },
-        );
-        probe.on("error", () => resolve(false));
-        probe.on("timeout", () => {
-          probe.destroy();
-          resolve(false);
-        });
-        probe.end();
-      });
-      return reply.send({ ready });
-    },
-  );
 
   // --- WebSocket upgrade proxy (subdomain) -------------------------------
   //

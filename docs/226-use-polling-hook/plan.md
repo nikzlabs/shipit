@@ -288,8 +288,12 @@ See below.
 
 ## Sites that should NOT migrate
 
-**`usePreviewHealthPoller` is explicitly excluded.** It is not a recurring
-snapshot poll — it is a **converge-once-then-stop** bounded retry loop:
+**`usePreviewHealthPoller` is explicitly excluded.** (Since docs/286 it no
+longer exists: the preview proxy absorbs the wait for a dev server that is not
+listening yet, so the poll and its gate were deleted rather than migrated. The
+reasoning below is why it was never a `usePolling` caller in the first place.)
+It is not a recurring snapshot poll — it is a **converge-once-then-stop**
+bounded retry loop:
 
 - It loops *until a condition* (`data.ready`) and then **terminates
   permanently**, creating an iframe slot. `usePolling` is a steady interval that

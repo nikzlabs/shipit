@@ -22,8 +22,9 @@
  *     loop re-arms when the value changes (e.g. fast-while-restarting)
  *
  * This is a *recurring snapshot* primitive. It is intentionally NOT a fit for
- * a converge-once-then-stop retry loop (see usePreviewHealthPoller, which the
- * doc explicitly excludes from migration).
+ * a converge-once-then-stop retry loop. (The example docs/226 excluded from
+ * migration on those grounds was the preview health poll, which docs/286 has
+ * since deleted outright — the proxy absorbs that wait now.)
  */
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: interval polling of external state with cleanup is the hook's entire purpose
