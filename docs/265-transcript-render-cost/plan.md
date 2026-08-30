@@ -159,3 +159,26 @@ short ones, and no task should hold a chain of them. Then check by hand that Ctr
 message far above the fold, that select-all copies the whole conversation, that the
 transcript stays pinned while a message streams, and that search jump-to-match still scrolls
 and highlights.
+
+## A larger cost now dominates, and this design does not address it (2026-08-30)
+
+A production trace taken after this work shipped is recorded in
+[`checklist.md`](./checklist.md). It does not close reqs 1–4 — it is not a streaming turn —
+but it establishes that the render cost this doc is about is no longer the largest one.
+
+**`hljs.highlightAuto()` is 52% of that trace**: 7,786 ms of self time in the `_highlight`
+leaf, 8,847 ms across the whole highlight.js module, out of 14,897 ms. It runs synchronously
+inside a React render, so it blocks exactly the way the 92 ms slices did.
+
+The mechanism is unrelated to row memoization. `highlightAuto` is not told which language the
+text is, so it highlights the content once per registered language — all 192 of them — and
+compares relevance scores. Browser-measured on 12 KB: 248.9 ms for all 192 languages, 19.6 ms
+for a 13-language subset, 4.1 ms when the language is known. Two of the three call sites can
+know the language and do not (`ToolResult.tsx`, `DiffBlock.tsx`).
+
+**This matters for reqs 1–4 rather than being merely adjacent.** Cost per call is
+near-constant (p50 274 ms, p90 276 ms) while `highlightAuto` cost scales with input size — so
+one payload is being highlighted ~35 times, which is a memoization or remount failure of the
+same family this design set out to remove. Whether the row memo is implicated is not
+established here; only 12 WebSocket frames arrived, so nothing was streaming, and the trace
+shows scrolling instead. Tracked separately.
