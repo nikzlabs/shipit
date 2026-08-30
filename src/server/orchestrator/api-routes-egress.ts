@@ -50,7 +50,7 @@ import type {
 } from "../shared/types.js";
 import { computeEgressGrantOutcome } from "./egress-grant-outcome.js";
 import { emitSessionSettingsChangeCard } from "./services/session-settings.js";
-import { withFirstTurnAdmission } from "./services/first-turn-admission.js";
+import { withFirstTurnAdmission, awaitFirstTurnClaim } from "./services/first-turn-admission.js";
 import type { PersistedEgressPrompt } from "./chat-history.js";
 
 /**
@@ -398,6 +398,17 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
         // Cheap in the ordinary case: nothing holds the section outside a first
         // Send, so this resolves on the next microtask.
         const previous = await withFirstTurnAdmission(sessionId, async () => {
+          // docs/285 — the section alone is not enough. It ends when the first
+          // Send's RECONCILIATION returns, and the replacement container may
+          // still be `starting` at that point: its containment is resolved later,
+          // when creation reaches the plumbing step. A write landing in between
+          // is sampled by that container, and the already-admitted first turn
+          // silently runs under a policy the user changed after committing to it.
+          //
+          // So the write waits for the turn to be dispatched. Bounded, because a
+          // claim leaked by some future path must not wedge the Session settings
+          // dialog for the life of the process.
+          await awaitFirstTurnClaim(sessionId);
           const before = store.getSessionOverride(sessionId);
           store.setSessionOverride(sessionId, override);
           return before;

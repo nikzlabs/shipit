@@ -515,6 +515,7 @@ export default function App() {
       globalEnabled: composerNetworkState.globalEnabled,
       enforcementStatus: composerNetworkState.enforcementStatus,
       pendingRestart: composerNetworkState.pendingRestart,
+      loaded: composerNetworkState.loaded,
       saving: composerNetworkState.saving,
       beforeFirstTurn: messages.length === 0,
     }),

@@ -84,6 +84,7 @@ export function QuickCaptureOverlay({
   // fields rather than the Settings editor's full provenance view.
   const egressGlobalEnabled = useEgressStore((s) => s.globalEnabled);
   const egressEnforcement = useEgressStore((s) => s.enforcementStatus);
+  const egressGlobalLoaded = useEgressStore((s) => s.globalLoaded);
   // The harness and model seeds live in localStorage, which React cannot
   // subscribe to — and both this overlay and the pickers inside it read them
   // during render. Bumped after every write below so the read happens again; a
@@ -369,6 +370,10 @@ export function QuickCaptureOverlay({
               enforcementStatus: egressEnforcement,
               pendingRestart: false,
               beforeFirstTurn: true,
+              // req 10 — the overlay must not name a workspace default it has
+              // not read; the store's optimistic initial value is a placeholder,
+              // not a fact.
+              loaded: egressGlobalLoaded,
               // Nothing is being written, so nothing can be in flight — the
               // barrier exists for a round-trip this path does not make.
               saving: false,

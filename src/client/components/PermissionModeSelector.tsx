@@ -145,6 +145,15 @@ export interface NetworkSectionProps {
    * things and both are true at their own moment.
    */
   beforeFirstTurn: boolean;
+  /**
+   * req 10 — whether `globalEnabled` has actually been read from the server.
+   *
+   * False means the workspace default is genuinely unknown, and the control says
+   * so rather than printing its optimistic placeholder as fact. Naming the wrong
+   * inherited value is worse than naming none: the user reads it, believes their
+   * session is contained, and sends.
+   */
+  loaded: boolean;
 }
 
 export function PermissionModeSelector({
@@ -196,7 +205,10 @@ export function PermissionModeSelector({
   const modeIsDefault = displayMode === "auto";
 
   const networkIsDefault = !network || network.mode === "inherit";
-  const contained = network
+  // req 10 — an unread workspace default cannot decide that this session is
+  // contained, so `Inherit` warns about nothing until the value is known. An
+  // explicit pick needs no default and is unaffected.
+  const contained = network && (network.mode !== "inherit" || network.loaded)
     ? resolvesToContained(network.mode, network.globalEnabled)
     : false;
   const warning = network && contained ? enforcementWarning(network.enforcementStatus) : null;
@@ -223,7 +235,9 @@ export function PermissionModeSelector({
   // what a colour cannot carry.
   const networkSummary = network
     ? networkIsDefault
-      ? `Network: inheriting the workspace setting (currently ${network.globalEnabled ? "Contained" : "Open"})`
+      ? network.loaded
+        ? `Network: inheriting the workspace setting (currently ${network.globalEnabled ? "Contained" : "Open"})`
+        : "Network: inheriting the workspace setting"
       : `Network: ${NETWORK_MODE_LABEL[network.mode]}, overriding the workspace setting`
     : null;
   const accessibleName = [
@@ -313,7 +327,9 @@ export function PermissionModeSelector({
                         // present it as pinned: `Inherit` resolves when the
                         // container starts, so it follows a workspace change
                         // made in between. That is what the word means (req 3).
-                        ? `Follow the workspace setting — currently ${network.globalEnabled ? "Contained" : "Open"}.`
+                        ? network.loaded
+                          ? `Follow the workspace setting — currently ${network.globalEnabled ? "Contained" : "Open"}.`
+                          : "Follow the workspace setting."
                         : m === "contained"
                           ? "Deny by default; only allowlisted hosts are reachable."
                           : "Unrestricted outbound network access."}

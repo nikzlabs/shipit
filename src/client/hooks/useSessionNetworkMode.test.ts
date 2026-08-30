@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act, waitFor, cleanup } from "@testing-library/react";
 import {
   useSessionNetworkMode,
+  notifySessionNetworkModeChanged,
   _resetSessionNetworkModeClock,
 } from "./useSessionNetworkMode.js";
 import type { EgressSessionSettings } from "../../server/shared/types.js";
@@ -70,6 +71,54 @@ describe("useSessionNetworkMode (docs/285)", () => {
     expect(result.current.mode).toBe("inherit");
   });
 
+  it("does not release Send past a write the server DID accept", async () => {
+    // The ordering a remembered fallback cannot survive: an older write
+    // succeeds, a newer one fails. Reverting to a value captured when the newer
+    // write was issued rewinds past the accepted change — showing Inherit (read
+    // as "currently Contained") while the server holds Open, with Send released
+    // and the first turn about to run Open.
+    let serverOverride: boolean | null = null;
+    const puts: { resolve: (v: Response) => void; body: boolean | null }[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        const body = JSON.parse((init.body as string) ?? "{}").override as boolean | null;
+        return new Promise<Response>((resolve) => { puts.push({ resolve, body }); });
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => settings({ override: serverOverride }),
+      } as Response;
+    }));
+
+    const { result } = renderHook(() => useSessionNetworkMode("s1"));
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+
+    act(() => { result.current.setMode("open"); });
+    act(() => { result.current.setMode("contained"); });
+    await waitFor(() => expect(puts).toHaveLength(2));
+
+    // PUT 1 succeeds — the server is now explicitly Open.
+    await act(async () => {
+      serverOverride = false;
+      puts[0]?.resolve({
+        ok: true,
+        status: 200,
+        json: async () => settings({ override: false }),
+      } as Response);
+      await Promise.resolve();
+    });
+    // PUT 2 fails.
+    await act(async () => {
+      puts[1]?.resolve({ ok: false, status: 500 } as Response);
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(result.current.saving).toBe(false));
+    // The truth is Open, and that is what the control must show.
+    expect(result.current.mode).toBe("open");
+  });
+
   it("drops a response for a session it has navigated away from", async () => {
     // Revisions are keyed per session, so an in-flight response for A still
     // satisfies A's revision long after the hook moved to B — and would paint
@@ -129,5 +178,66 @@ describe("useSessionNetworkMode (docs/285)", () => {
     });
     await waitFor(() => expect(result.current.saving).toBe(false));
     expect(result.current.mode).toBe("contained");
+  });
+});
+
+describe("useSessionNetworkMode — the barrier only opens on a known value (docs/285)", () => {
+  beforeEach(() => {
+    _resetSessionNetworkModeClock();
+    vi.restoreAllMocks();
+  });
+
+  it("stays barred when the recovery read ALSO fails", async () => {
+    // The failure path re-reads instead of guessing. If that read fails too, the
+    // value on screen is still the optimistic one the server never accepted —
+    // so clearing the barrier here would enable Send on a policy nobody can
+    // name. Staying barred is recoverable; the turn is not.
+    let allowGet = true;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") return { ok: false, status: 500 } as Response;
+      if (!allowGet) return { ok: false, status: 503 } as Response;
+      return { ok: true, status: 200, json: async () => settings() } as Response;
+    }));
+
+    const { result } = renderHook(() => useSessionNetworkMode("s1"));
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+
+    allowGet = false;
+    await act(async () => {
+      result.current.setMode("contained");
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.mode).toBe("contained"));
+    // Neither the write nor the recovery read reached the server.
+    expect(result.current.saving).toBe(true);
+  });
+
+  it("lets a later read win over an earlier one that returns after it", async () => {
+    // Two GETs at the same write revision — the mount hydration and a refetch
+    // driven by another tab's change — both pass the write clock's check, so
+    // without a read counter whichever LANDS last wins regardless of which was
+    // ASKED last, and the stale one wins permanently.
+    const gets: ((v: Response) => void)[] = [];
+    vi.stubGlobal("fetch", vi.fn(async () => new Promise<Response>((r) => { gets.push(r); })));
+
+    const { result } = renderHook(() => useSessionNetworkMode("s1"));
+    await waitFor(() => expect(gets).toHaveLength(1));
+
+    // A second read is issued (as the cross-tab invalidation does).
+    act(() => { notifySessionNetworkModeChanged("s1"); });
+    await waitFor(() => expect(gets).toHaveLength(2));
+
+    // The NEWER read answers first, then the older one arrives.
+    await act(async () => {
+      gets[1]?.({ ok: true, status: 200, json: async () => settings({ override: false }) } as Response);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      gets[0]?.({ ok: true, status: 200, json: async () => settings({ override: null }) } as Response);
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.mode).toBe("open");
   });
 });

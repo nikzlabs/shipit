@@ -66,7 +66,99 @@ export function withFirstTurnAdmission<T>(
   return run;
 }
 
-/** Test-only: drop every chain, so one case cannot leak a section into the next. */
+/** Test-only: drop every chain and claim, so one case cannot leak into the next. */
 export function _resetFirstTurnAdmission(): void {
   chains.clear();
+  for (const entry of claims.values()) entry.release();
+  claims.clear();
+}
+
+// ---------------------------------------------------------------------------
+// The first-turn claim
+// ---------------------------------------------------------------------------
+
+/**
+ * docs/285 — a session-scoped claim held from BEFORE the first turn's
+ * reconciliation until that turn is dispatched.
+ *
+ * Distinct from the admission section above, and both are needed. The section
+ * serializes *entry*; this marks the whole span as taken, and it lives here
+ * rather than on the runner for two reasons the runner cannot satisfy:
+ *
+ *  - **It has to outlive the runner.** Reconciliation destroys the container and
+ *    builds a replacement runner, so a flag on the runner object is dropped in
+ *    the middle of the very window it guards. `restartContainer` publishes that
+ *    replacement and then waits for readiness — and in that interval a
+ *    programmatic `dispatch()` (a CI fix, a wake, a parent's message) saw an
+ *    unclaimed runner and started a turn alongside the first Send.
+ *  - **It has to be awaitable.** The first turn's mode is not sampled when
+ *    reconciliation returns: the replacement can still be `starting`, and its
+ *    containment is resolved later, when creation reaches the plumbing step. A
+ *    write landing in between silently moves the admitted turn to another
+ *    policy. So every writer of a session's egress override waits here first.
+ */
+interface FirstTurnClaimEntry {
+  done: Promise<void>;
+  release: () => void;
+}
+
+const claims = new Map<string, FirstTurnClaimEntry>();
+
+/**
+ * How long a writer will wait for an in-flight first turn before giving up and
+ * writing anyway.
+ *
+ * Generous relative to the work it covers (an 8s readiness wait plus spawn), and
+ * bounded because the alternative failure is worse: a claim leaked by some future
+ * path would otherwise wedge the Session settings dialog for the life of the
+ * process, with no error and nothing to retry.
+ */
+const CLAIM_WAIT_TIMEOUT_MS = 30_000;
+
+/**
+ * Take the claim, or return `null` when someone already holds it.
+ *
+ * `null` rather than a silent no-op release, and the difference is the whole
+ * point: a no-op made a LOSER indistinguishable from a winner, so it carried on
+ * as though it owned the span and started a second turn. The caller has to be
+ * able to tell, because "someone else owns this session's first turn" is exactly
+ * the condition it must act on.
+ *
+ * The winner MUST call the returned release in a `finally`.
+ */
+export function claimFirstTurn(sessionId: string): (() => void) | null {
+  const existing = claims.get(sessionId);
+  if (existing) return null;
+  let release!: () => void;
+  const done = new Promise<void>((resolve) => {
+    release = () => {
+      if (claims.get(sessionId)?.done === done) claims.delete(sessionId);
+      resolve();
+    };
+  });
+  claims.set(sessionId, { done, release });
+  return release;
+}
+
+/** True while a first turn is being started for this session. */
+export function firstTurnClaimed(sessionId: string): boolean {
+  return claims.has(sessionId);
+}
+
+/**
+ * Wait for an in-flight first turn to be dispatched, so a write cannot change
+ * the mode that turn's container is about to sample. Resolves immediately when
+ * nothing is claimed.
+ */
+export async function awaitFirstTurnClaim(sessionId: string): Promise<void> {
+  const entry = claims.get(sessionId);
+  if (!entry) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    entry.done,
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, CLAIM_WAIT_TIMEOUT_MS);
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
 }

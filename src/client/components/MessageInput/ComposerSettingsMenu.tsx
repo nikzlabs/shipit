@@ -49,10 +49,10 @@ import type { ModelInfo } from "../../utils/model-info.js";
  * flat list because the menu has to survive catalogue growth (req 11): the root
  * stays four rows however many models or reasoning levels a harness offers.
  *
- * **The anchor never reacts to the permission mode.** The mode's own icon appears
- * on the menu's Mode row instead (req 12). The consequence — guarded and plan are
- * invisible until the menu opens — was accepted deliberately; see the receipts in
- * `docs/260-composer-toolbar-layout/requirements.md`.
+ * docs/285 — the permission mode is NOT behind this anchor at all any more. It
+ * moved to the composer row's own control, alongside network access, on every
+ * viewport (reqs 5, 6). docs/260 req 12's "the anchor never reacts to the mode"
+ * is therefore moot rather than upheld: there is no mode here to react to.
  */
 
 
@@ -226,10 +226,8 @@ export function ComposerSettingsMenu({
    * triggers.
    *
    * It deliberately does NOT disable the anchor. Everything behind it would
-   * become unreadable mid-turn, and the permission mode — which the wide row
-   * leaves changeable while a turn runs — would silently stop working here.
-   * So the anchor still opens, and only the three rows that must not move are
-   * inert.
+   * become unreadable mid-turn. So the anchor still opens, and only the three
+   * rows that must not move are inert.
    */
   pickersLocked?: boolean;
   /**
@@ -355,7 +353,7 @@ export function ComposerSettingsMenu({
           title={
             sessionRoleName
               ? `Role: ${sessionRoleName}. Opens the roles, and the settings this one sets.`
-              : `Model: ${modelName}. Opens harness, model, reasoning and permission mode.`
+              : `Model: ${modelName}. Opens harness, model and reasoning.`
           }
           data-testid="composer-settings-trigger"
           // `flex-[0_1_auto] min-w-0` is what makes the name the elastic thing in

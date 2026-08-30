@@ -110,17 +110,42 @@ function currentRevision(sessionId: string): number {
 }
 
 /**
+ * Monotonic READ counter, separate from the write revision above.
+ *
+ * The write clock orders writes against reads, and cannot order reads against
+ * each other: two GETs issued at the same revision — the mount hydration and a
+ * refetch triggered by another tab's change — both pass its check, so whichever
+ * response arrives LAST wins regardless of which was asked last. The older one
+ * winning is permanent, and shows a value the server has already replaced.
+ */
+const reads = new Map<string, number>();
+
+function nextRead(sessionId: string): number {
+  const next = (reads.get(sessionId) ?? 0) + 1;
+  reads.set(sessionId, next);
+  return next;
+}
+
+/**
  * Tell every mounted consumer that this session's network mode changed, so they
  * re-read it. Called by the writer here, and by the SSE handler for a change
  * that happened somewhere else.
  */
-export function notifySessionNetworkModeChanged(sessionId: string): void {
-  for (const listener of listeners) listener(sessionId);
+export function notifySessionNetworkModeChanged(
+  sessionId: string,
+  /** The listener that caused the change, which already has the answer. */
+  origin?: unknown,
+): void {
+  for (const listener of listeners) {
+    if (listener === origin) continue;
+    listener(sessionId);
+  }
 }
 
 /** Test-only: drop the shared clock so one case cannot leak into the next. */
 export function _resetSessionNetworkModeClock(): void {
   revisions.clear();
+  reads.clear();
   listeners.clear();
 }
 
@@ -162,16 +187,6 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   /**
-   * The last value the SERVER accepted, which is what a failed write reverts to.
-   *
-   * Not the displayed value: that one is optimistic, so reverting to it after two
-   * rapid failed writes restores the FIRST failure's guess rather than the truth.
-   * Inherit → click Contained → click Open, both PUTs fail, and the control ends
-   * up showing Contained while the server still holds Inherit — with `saving`
-   * false, so Send is released on a promise nothing behind it made.
-   */
-  const serverMode = useRef<NetworkMode>("inherit");
-  /**
    * The session this hook is CURRENTLY mounted against.
    *
    * Revision ownership alone is not enough. Revisions are keyed per session, so a
@@ -182,11 +197,11 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
    */
   const mountedSession = useRef<string | null>(sessionId);
   mountedSession.current = sessionId;
+  /** This hook's own subscription, so its writes do not notify itself. */
+  const listenerRef = useRef<((changed: string) => void) | null>(null);
 
   const applySettings = useCallback((settings: EgressSessionSettings) => {
-    const next = modeFromOverride(settings.override);
-    serverMode.current = next;
-    setModeState(next);
+    setModeState(modeFromOverride(settings.override));
     setGlobalEnabled(settings.globalEnabled);
     setEnforcementStatus(settings.enforcementStatus ?? (settings.enforcementActive ? "active" : "no-sidecar"));
     setPendingRestart(settings.pendingRestart);
@@ -194,19 +209,25 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
   }, []);
 
   const refresh = useCallback(
-    async (id: string) => {
+    async (id: string): Promise<boolean> => {
       const issuedAt = currentRevision(id);
+      const readAt = nextRead(id);
       try {
         const res = await fetch(`/api/egress/session/${encodeURIComponent(id)}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const settings = (await res.json()) as EgressSessionSettings;
-        // Drop a read that a write has already overtaken, AND one that belongs to
-        // a session this hook has since navigated away from.
-        if (currentRevision(id) !== issuedAt) return;
-        if (mountedSession.current !== id) return;
+        // Three ways this answer can be obsolete, and all three have bitten:
+        // a write has overtaken it; a LATER READ has overtaken it (the mount
+        // hydration racing a cross-tab refetch); or the hook has navigated to a
+        // different session since asking.
+        if (currentRevision(id) !== issuedAt) return false;
+        if ((reads.get(id) ?? 0) !== readAt) return false;
+        if (mountedSession.current !== id) return false;
         applySettings(settings);
+        return true;
       } catch (err) {
         console.error("[session-network-mode] failed to read the session's mode:", err);
+        return false;
       }
     },
     [applySettings],
@@ -220,7 +241,6 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
   // the next new session.
   // eslint-disable-next-line no-restricted-syntax -- external system sync: read the session's mode when it changes
   useEffect(() => {
-    serverMode.current = "inherit";
     setModeState("inherit");
     setGlobalEnabled(true);
     setPendingRestart(false);
@@ -237,6 +257,7 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
     const listener = (changed: string): void => {
       if (changed === sessionId) void refresh(sessionId);
     };
+    listenerRef.current = listener;
     listeners.add(listener);
     return () => {
       listeners.delete(listener);
@@ -246,14 +267,14 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
   const setMode = useCallback(
     (next: NetworkMode) => {
       if (!sessionId) return;
-      // The value to fall back to is the SERVER's, not what is on screen: two
-      // rapid failures would otherwise revert to the first one's guess.
-      const accepted = serverMode.current;
       // Optimistic: a settings control that lags a click reads as broken, and
       // the Send barrier below is what makes the optimism safe.
       setModeState(next);
       setSaving(true);
       const revision = bumpRevision(sessionId);
+      // Whether the displayed value is one the server actually reported. Set on
+      // a successful write, and on a successful recovery read after a failure.
+      let recovered = false;
       void (async () => {
         try {
           const res = await fetch(`/api/egress/session/${encodeURIComponent(sessionId)}`, {
@@ -269,21 +290,51 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
           if (currentRevision(sessionId) !== revision) return;
           if (mountedSession.current !== sessionId) return;
           applySettings(settings);
+          recovered = true;
+          // req 7 — tell every other mounted surface directly. The transient SSE
+          // carries this to OTHER TABS, but within one tab it is not the path:
+          // an SSE interruption during a write would leave the composer and the
+          // dialog holding different values indefinitely, which is the exact
+          // disagreement req 7 forbids.
+          notifySessionNetworkModeChanged(sessionId, listenerRef.current);
         } catch (err) {
-          // Revert BEFORE clearing `saving`. The barrier's contract is that Send
-          // stays blocked until the displayed value is one the server agrees
-          // with, and clearing first would open a frame in which the composer
-          // shows a mode the server never accepted and lets it be sent.
-          if (currentRevision(sessionId) === revision && mountedSession.current === sessionId) {
-            setModeState(accepted);
-          }
           console.error("[session-network-mode] failed to write the session's mode:", err);
+          // RE-READ rather than revert to a remembered value. Any local guess is
+          // a guess about a server this client just failed to talk to, and the
+          // orderings make it wrong: capture the value at issue time and an
+          // older write that SUCCEEDED never advanced it, so a newer failure
+          // reverts past a change the server did accept — showing Inherit while
+          // the server holds Open, with Send released. Asking is cheap, correct
+          // in every interleaving, and cannot drift.
+          //
+          // Awaited inside the barrier: `saving` stays true until the displayed
+          // value is one the server actually reported.
+          if (currentRevision(sessionId) === revision && mountedSession.current === sessionId) {
+            recovered = await refresh(sessionId);
+          }
         } finally {
-          if (currentRevision(sessionId) === revision) setSaving(false);
+          // The barrier opens ONLY on a value the server reported, and only for
+          // the session still mounted. Two ways it used to open on nothing: the
+          // recovery read swallowed its own failure, leaving the optimistic
+          // value on screen with Send enabled; and this check tested the old
+          // session's revision alone, so a write settling after navigation
+          // released the barrier on a DIFFERENT session's pending state.
+          //
+          // Staying barred on an unreachable server is the safe direction. It is
+          // recoverable — reopening the menu or the next invalidation re-reads —
+          // and the alternative is dispatching a first turn under a policy
+          // nobody can name.
+          if (
+            recovered
+            && currentRevision(sessionId) === revision
+            && mountedSession.current === sessionId
+          ) {
+            setSaving(false);
+          }
         }
       })();
     },
-    [sessionId, applySettings],
+    [sessionId, applySettings, refresh],
   );
 
   return { mode, globalEnabled, enforcementStatus, pendingRestart, loaded, saving, setMode };
@@ -342,6 +393,7 @@ export function useComposerNetworkMode(
    */
   const storeGlobalEnabled = useEgressStore((s) => s.globalEnabled);
   const storeEnforcement = useEgressStore((s) => s.enforcementStatus);
+  const storeGlobalLoaded = useEgressStore((s) => s.globalLoaded);
   const loadGlobal = useEgressStore((s) => s.loadGlobal);
   // eslint-disable-next-line no-restricted-syntax -- external system sync: read the workspace default when no session can report it
   useEffect(() => {
@@ -400,6 +452,13 @@ export function useComposerNetworkMode(
     // per-session view takes over the moment there is a session to read.
     globalEnabled: sessionId ? server.globalEnabled : storeGlobalEnabled,
     enforcementStatus: sessionId ? server.enforcementStatus : storeEnforcement,
+    // …and `loaded` says whether that value has actually been READ. The store's
+    // initial `true` is an optimistic placeholder chosen so a capable deployment
+    // never flashes a warning, which makes it exactly the wrong thing to print
+    // as fact: on an Open workspace the pre-claim menu would say "Inherit —
+    // currently Contained" until the request returned. The control names no
+    // value until one is known.
+    loaded: sessionId ? server.loaded : storeGlobalLoaded,
     // While the claim is pending the draft IS the displayed value — the server
     // has nothing to say about a session that does not exist yet.
     mode: sessionId ? server.mode : (draft ?? "inherit"),

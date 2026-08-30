@@ -13,7 +13,7 @@ import { shouldSteerMessage } from "../dispatch-steering.js";
 import { resetSubAgentSpawnBudget } from "../session-runner.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { agentAdmissionError } from "../services/agent-auth-gate.js";
-import { withFirstTurnAdmission } from "../services/first-turn-admission.js";
+import { withFirstTurnAdmission, claimFirstTurn } from "../services/first-turn-admission.js";
 import { announceRunnerReplaced } from "../services/recovery.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
 
@@ -80,8 +80,27 @@ function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
  */
 class FirstTurnClaim {
   private runner: { turnStartInProgress: boolean } | null = null;
+  private releaseSession: (() => void) | null = null;
 
-  take(runner: { turnStartInProgress: boolean }): void {
+  /**
+   * Take the SESSION-scoped claim, before anything that could replace the
+   * runner. The runner flag is attached separately, because reconciliation
+   * destroys the runner this is called on.
+   */
+  takeSession(sessionId: string): boolean {
+    if (this.releaseSession) return true;
+    const release = claimFirstTurn(sessionId);
+    if (!release) return false;
+    this.releaseSession = release;
+    return true;
+  }
+
+  /**
+   * Mark whichever runner the session ends up with, so `verifyRunningState()`
+   * — which lives on the runner and cannot see the session claim — stops
+   * reporting the pre-spawn window as a stale `running` flag.
+   */
+  markRunner(runner: { turnStartInProgress: boolean }): void {
     runner.turnStartInProgress = true;
     this.runner = runner;
   }
@@ -89,6 +108,8 @@ class FirstTurnClaim {
   release(): void {
     if (this.runner) this.runner.turnStartInProgress = false;
     this.runner = null;
+    this.releaseSession?.();
+    this.releaseSession = null;
   }
 }
 
@@ -554,6 +575,18 @@ async function sendMessage(
         // have won it while this one queued, in which case there is nothing left
         // to decide and this is an ordinary second message.
         if (ctx.sessionManager.get(effectiveSessionId)?.warm !== true) return null;
+        // Claim the session BEFORE reconciling, not after. `restartContainer`
+        // publishes the replacement runner and then waits for readiness, and in
+        // that interval a programmatic `dispatch()` — a CI fix, a wake, a
+        // parent's message — saw an unclaimed runner and started a turn beside
+        // this one. The claim is session-scoped precisely so it survives the
+        // runner being replaced underneath it.
+        // Someone else already owns this session's first turn. That is possible
+        // even inside the section: the previous holder released it before
+        // graduating (it yields on the issue-pointer pin), so `warm` can still
+        // read true here. Stand down and take the ordinary send-or-queue path
+        // rather than starting a second turn beside theirs.
+        if (!firstTurnClaim.takeSession(effectiveSessionId)) return null;
         const result = await reconcile(effectiveSessionId);
         if (result.action !== "aborted") {
           // Claim the session before releasing the section, in this same tick.
@@ -563,7 +596,14 @@ async function sendMessage(
           // reservation that probe cannot see. The runner is resolved from the
           // registry rather than the connection because a restart just replaced it.
           const claimed = ctx.getRunnerRegistry().get(effectiveSessionId);
-          if (claimed) firstTurnClaim.take(claimed);
+          if (claimed) firstTurnClaim.markRunner(claimed);
+          // Clear `warm` INSIDE the section. `graduateSession` below is what
+          // normally does it, and it runs after the section releases — and it
+          // yields first (the issue-pointer pin), so a waiter entering here
+          // could still read `warm === true` and set out to start its own first
+          // turn. `setWarm(false)` is idempotent, and graduation does the rest
+          // of its work (naming, branch, re-warm, SSE) unchanged.
+          ctx.sessionManager.setWarm(effectiveSessionId, false);
         }
         return result;
       });

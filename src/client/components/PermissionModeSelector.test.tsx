@@ -105,6 +105,7 @@ describe("PermissionModeSelector — the Network section (docs/285)", () => {
     enforcementStatus: "active",
     pendingRestart: false,
     beforeFirstTurn: true,
+    loaded: true,
     ...over,
   });
 

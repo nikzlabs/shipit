@@ -18,6 +18,7 @@ import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
 import type { PersistedMessage, ResolvedBugReport } from "./chat-history.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
 import type { UnreadableWorkspace } from "../shared/git.js";
+import { firstTurnClaimed } from "./services/first-turn-admission.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from "../shared/sub-agent-run.js";
 import { runAgentToCompletion, buildSubAgentRunParams } from "../shared/sub-agent-run.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
@@ -418,12 +419,19 @@ export function dispatchOnRunner(
   // container restart that window exists for. So the loser dispatched while the
   // winner was still starting, and two first turns ran against one session.
   //
+  // The SESSION claim is asked as well as the runner flag, and it is the one that
+  // actually covers the gap: reconciliation destroys this runner and builds a
+  // replacement, so a flag on the runner object is dropped in the middle of the
+  // window it guards. `restartContainer` publishes that replacement and then
+  // waits for readiness, and a programmatic dispatch arriving in between saw a
+  // runner with nothing set on it.
+  //
   // Safe against self-deadlock: a turn's own start path (`runAgentWithMessage`)
   // does not come through `dispatch`, so the holder never queues behind itself.
   // Steering is unreachable in this state too — there is no resident streaming
   // process yet — so this falls through to the enqueue below, which is the
   // intended outcome.
-  if (runner.running || runner.turnStartInProgress) {
+  if (runner.running || runner.turnStartInProgress || firstTurnClaimed(runner.sessionId)) {
     // docs/163 — honor live steering on the dispatch path too: when the running
     // turn is steerable+streaming and live steering is on, inject the message
     // via `sendUserMessage` instead of queuing it. Shares the

@@ -32,3 +32,21 @@ gaps. All verified at the source, all fixed.
 - [x] **req 9** the menu opens onto the role list when Role is the only row the root would hold — removing the Mode row was necessary and not sufficient
 - [x] **req 10** the workspace default is read before the claim, so `Inherit` cannot say "currently Contained" on an Open workspace
 - [x] dead code removed: `seenRevision`, `firstTurnAdmissionHeld`, the dialog's own mode helpers
+
+## Review round 3 — findings fixed
+
+The re-review found the round-2 fixes incomplete and three further races. All
+verified at the source.
+
+- [x] **P1** the first turn's mode is frozen until the turn is DISPATCHED, not until reconciliation returns — a replacement container still `starting` samples its policy later, so every override writer (the PUT, and the reused-draft reset) now waits on a session-scoped claim
+- [x] **P1** the claim is taken BEFORE reconciliation and is session-scoped, so it spans the window where `restartContainer` has published a replacement runner that nothing yet marks — a programmatic `dispatch()` could start a turn there
+- [x] **P1** a failed write RE-READS from the server instead of reverting to a remembered value: an older write that succeeded never advanced the remembered one, so a newer failure rewound past a change the server had accepted
+- [x] **req 7** `setMode` notifies sibling surfaces directly; SSE is an optimization, not the path — an interruption during a write left the two surfaces disagreeing indefinitely
+- [x] **req 10** the control names no workspace default until one has been read; the store's optimistic `Contained` is a placeholder, not a fact
+- [x] stale tooltip and doc comments claiming this menu still holds the permission mode
+
+**Three tests in the previous round were blind by construction** and were rebuilt:
+a `dispatch` test on a runner with no system-turn deps enqueues for that reason
+alone; a second one reused a runner whose control turn was still in flight; and
+the overlapping-write test reverted through a path the bug did not take. Each
+guard is now individually proven red without its fix.

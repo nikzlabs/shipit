@@ -246,7 +246,15 @@ export function MessageInput({
    * never the network control itself — the user must be able to correct a pick
    * (or undo one whose write failed) without waiting on anything.
    */
-  const networkSaving = network?.saving ?? false;
+  const networkSaving =
+    (network?.saving ?? false)
+    // req 10 — the control must state what it will do BEFORE the user commits.
+    // While the value is unread (or a read failed) it names no inherited mode,
+    // and letting Send through then would commit the first turn to a policy the
+    // UI declined to name — which is the same failure as naming the wrong one,
+    // reached by staying quiet instead. Barring Send is recoverable; the turn is
+    // not.
+    || (network ? !network.loaded : false);
   const [text, setText] = useState("");
   // ── docs/272-user-selectable-roles — the role control's three states ─────────────────────
   // 1. no roles configured → nothing at all, the row exactly as it is today (req 16)
