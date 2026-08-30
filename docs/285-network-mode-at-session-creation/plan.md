@@ -33,10 +33,13 @@ space in the product (docs/260 exists to keep that row from pushing Send off the
   closed, and `SESSION_EGRESS_ENFORCE=0`, which starts the session **uncontained**
   (`egress-firewall-install.ts` ~45, `container-lifecycle.ts` ~1451). One boolean cannot
   express which, and the two have **opposite** consequences — fail-closed versus silently
-  open — so neither wording is safe on its own. The API should report which case it is; until
-  it does, the copy says only what is known ("containment is not enforced on this
-  deployment") and never asserts either outcome. Remediation is inline, not a link out
-  (§1/§2).
+  open — so neither wording is safe on its own. **The API therefore reports which case it
+  is**, and the copy names that case and its remediation inline (§1/§2): "enforcement is
+  switched off … unset `SESSION_EGRESS_ENFORCE=0`", or "the egress sidecar is unavailable …
+  contained sessions will not start". Covering copy that asserts neither was the interim
+  answer and is not good enough — it leaves the user unable to tell whether their Contained
+  session is about to run wide open or refuse to start. The prototype shows the
+  enforcement-off case concretely rather than a hedge.
 - **The menu states; it does not act.** Before the first turn: "In force from this session's
   first turn." On a running session: "Applies on next container start — restart from Session
   settings", shown **only when the server says something is pending** (`pendingRestart`
@@ -111,9 +114,19 @@ entry (~122) while `running` is not claimed until just before execution (~590), 
 callbacks are independently asynchronous — so with an 8-second restart in between, two
 near-simultaneous first Sends (two tabs, or a fast double Enter) can both pass the idle check
 and both attempt reconciliation. One reconciles; the others wait and then **re-enter the
-ordinary send-or-queue path** rather than proceeding on a stale decision. The section is held
-until the winner has claimed the new runner's dispatch slot — releasing at the end of
-reconciliation would let a waiter back in while `running` is still false.
+ordinary send-or-queue path** rather than proceeding on a stale decision.
+
+**And the winner's claim has to be one a probe cannot revoke.** Releasing the section once
+`running = true` is not enough: the ordinary second-send path probes a running runner with
+`verifyRunningState()` (`ws-handlers/send-message.ts` ~137), which asks the worker whether an
+agent is actually up (`container-session-runner.ts` ~3102). Between the claim and
+`agent.run()` the winner is still doing environment preparation and parameter assembly, so
+the worker truthfully answers "no agent" — the probe clears `running`, and the waiter falls
+through into a concurrent first turn. The reservation must therefore be a state that probe
+does not clear (a pre-spawn `turnStartInProgress`, queuing the waiters outright, or holding
+the section until the worker acknowledges the turn — the choice is the implementer's, the
+invariant is not). **The concurrency test must pause during pre-spawn preparation**, not
+merely during the restart, or it cannot fail on this.
 
 **What that step actually gives us**, which is a lot but not everything:
 
@@ -262,6 +275,8 @@ reuse branch itself, not in the composer, because the composer is not involved i
    and a change made later shows the pending strip instead.
 2c. **Concurrent first Sends** — two near-simultaneous first messages reconcile once and both
    land in the ordinary send-or-queue path, never two restarts or a turn on a stale decision.
+   The second send must be released **while the winner is in pre-spawn preparation**, so the
+   test fails against a reservation that `verifyRunningState()` can clear.
 2d. **A failed replacement aborts the Send** with a correlated error rather than dispatching,
    and a still-`starting` replacement waits on the *new* runner's readiness gate.
 2e. **Send is barred while the network write is in flight**, and after a failed write until
@@ -274,7 +289,8 @@ reuse branch itself, not in the composer, because the composer is not involved i
    real abandon→reopen path, where the claim **reuses** the untouched draft session — and
    Quick Capture resets on every opening.
 4b. **A second viewer survives the restart**: two tabs on one session, first Send changes the
-   mode, and the non-sending tab reattaches and sees the first turn.
+   mode, and the non-sending tab reattaches and sees the first turn — **including** when it
+   misses the live signal and only reconnects SSE afterwards.
 4c. **Quick Capture keeps its harness through a reconcile**: a non-default agent plus a
    changed network mode, asserting the first dispatched turn runs on the selected harness and
    not the deployment default.

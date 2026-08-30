@@ -61,10 +61,11 @@ description: Fold network containment into the composer's existing permission-mo
   keep the eager claim and reconcile the container at first Send using the existing
   `restartContainer` flow.* Taken. `/new` keeps claiming as it does today, so the live
   preview, the warm container and `@file`/`/skills` autocomplete are **not** given up, and
-  the whole late-claim prerequisite is deleted. `services/recovery.ts` already notifies
-  viewers, force-disposes the runner, destroys the container *including cancelling a
-  creation still in preflight*, reaps orphans and waits for readiness — every hard part the
-  draft design was re-inventing. Cost: pressing Send with a changed mode waits for that
+  the whole late-claim prerequisite is deleted. `services/recovery.ts` force-disposes the runner, destroys the
+  container *including cancelling a creation still in preflight*, reaps orphans and recreates
+  through the ordinary factory — the hard parts the draft design was re-inventing. (It does
+  **not** reliably wait for readiness, nor reattach other viewers; `plan.md` states its real
+  contract and how both are handled.) Cost: pressing Send with a changed mode waits for that
   restart, with the existing restarting UI. → the mechanism in `plan.md`.
 - 2026-08-28 — *Is a live runner and preview before the first Send a product
   requirement?* **Superseded on 2026-08-29 (above).** The answer at the time was "no —
