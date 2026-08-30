@@ -102,6 +102,26 @@ Still open:
 - [x] Give the mount counter a positive control (`window.__swapWrapper`, the `AppLayout`
       Fragment/div shape), so a "0 mounts" result is falsifiable rather than free. Four flips: 3
       mounts, and 3 highlight runs with the cache neutered against 0 with it live.
+- [x] Establish the loop is **self-scheduled, not timer-driven**: correlation between a call's
+      duration and the following idle gap is r = +0.22 (n = 27), where a fixed-period timer would
+      give roughly −1. Period = duration + ~10 ms, so a cheaper iteration is a *faster* loop.
+- [x] Eliminate click and focus as the trigger, and retract the earlier "focusin immediately before
+      the burst" reading — it came from a windowing bug in the analysis script. Direct enumeration:
+      `focus`/`focusin`/`DOMFocusIn` each fire exactly once at 7,172.2 ms, 546 ms *after* the burst
+      began, and the trace holds exactly one click. Both sit inside an already-running loop.
+- [x] Eliminate the `AppLayout` `isMobile` swap for this trace on the **viewport measurement**: the
+      full-page `Paint` clip is 2742 × 1906 at `hostDPR: 2`, i.e. 1371 × 953 CSS px, against a
+      `(max-width: 767px)` query — stably false by a factor of 1.8, with nothing resizing.
+- [x] State the instrument rule once, generally, rather than as four separate incidents
+      (`plan.md` → "The rule this investigation kept relearning").
+
+- [ ] **Fix the `AppLayout` Fragment-vs-div remount** (`AppLayout.tsx`, the `isMobile ? <>…</> :
+      <div>…</div>` branch). Not this trace's engine — the viewport rules that out — but a real
+      latent defect on its own: every crossing of the 768 px breakpoint discards every fiber in the
+      transcript and re-highlights every code block. Give both branches the same element type; the
+      mobile branch's relative wrapper is load-bearing for the sessions-drawer overlay and has to
+      survive. Needs a test asserting a child below the branch keeps identity across an
+      `isMobile` flip.
 
 - [ ] **The loop's engine is still unidentified.** The 35 calls are one loop — 29 consecutive calls,
       2.8–6.1 ms apart, 8.2 s long, period = one highlight — that starts 1.8 s *after* scrolling
@@ -109,12 +129,15 @@ Still open:
       microtask after the previous commit. Two failures must hold at once: something re-renders
       continuously, and every one of those renders re-highlights. The probe eliminated
       `MessageList`, the memoized rows, `SubagentReport`'s ResizeObserver, the `content-visibility`
-      pairing, and both lazy-body fetches; the payload size (16,979 bytes, a whole file) narrows the
-      surface to `WriteContent`, an **expanded** `ReadResult`, or a whole-file fence — all of which
-      need a modal open. What would close it: a trace whose `useMemo` frame carries the React
+      pairing, and both lazy-body fetches. **The surface question is settled** — no modal was open,
+      so the payload (16,979 bytes, a whole file) is a whole-file fence rendered by `CodeBlock`, and
+      since `CodeBlock` cannot re-highlight while mounted, the loop remounts transcript rows.
+      **Every named engine is now eliminated too**: periodic re-render (any cadence, by
+      construction), `@formkit/auto-animate`, keyed ancestors, `useNarrowContainer`, history
+      rehydration, SSE, click/focus, and — on the viewport measurement — the `AppLayout`
+      `isMobile` swap. What would close it: a trace whose `useMemo` frame carries the React
       component name (record with "Highlight updates when components render" on, or use the React
-      Profiler), **or** simply knowing whether a tool-call or diff modal was open during the
-      recording.
+      Profiler). Whoever picks this up starts from an empty candidate list, not from these.
 - [ ] The two modal-only `highlightAuto` sites (`ReadResult`, `WriteContent`) still re-highlight on
       every modal open. Deliberately not wired here — a concurrent session is changing language
       selection in exactly those files — so this is a one-line follow-up for whoever lands that.
