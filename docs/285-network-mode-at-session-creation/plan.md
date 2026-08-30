@@ -1,6 +1,6 @@
 ---
 title: Network mode at session creation — design
-description: Fold network containment into the composer's permission-mode control; /new claims only at Send, carrying nothing but the network mode.
+description: Fold network containment into the composer's permission-mode control; reconcile the container at first Send when the pick differs from what it booted with.
 ---
 
 # Network mode at session creation
@@ -63,10 +63,12 @@ The dialog fetches on open and consumes its `PUT` response; no store, no SSE
   count the same clock. Session-id ownership alone stops A's response landing
   in B, but not an older GET for A landing after a newer PUT or change-card refresh for A.
   The stale-response class is already documented in `session-data.ts` ~260.
-- **Session-filtered refetch on the existing `session_settings_change_card` event.** No new
-  SSE type is needed: that card already fires for every attached viewer on a real change, so
-  cross-tab divergence is closed rather than waved away — after this feature one tab shows an
-  always-visible trigger while another can change the same value.
+- **Session-filtered refetch on a transient, session-scoped settings-changed event.** The
+  persisted `session_settings_change_card` cannot serve as the invalidation signal: the
+  creation-time choice deliberately emits no card (below), so another tab would receive
+  nothing at all, and per-session PUTs do not broadcast the global `egress_settings` event
+  either. So a small transient event carries invalidation for **every** change; the persisted
+  card continues to carry *audit* for changes to an existing session. Two signals, two jobs.
 - **Follow the workspace default while showing `Inherit`.** The global handler receives the
   new value but discards it unless the egress store was already loaded
   (`useServerEvents.ts` ~733); it should always update the minimal global fields.
@@ -86,25 +88,63 @@ time a mode is picked, a container already exists, created under the *inherited*
 
 1. Picking a mode writes the per-session override immediately — the same
    `PUT /api/egress/session/:id` the dialog uses. Nothing else happens yet.
+   **Send is barred while that write is in flight**, and after a failed write until the
+   displayed value has reverted. Without that, picking Contained and pressing Send at once
+   lets the server resolve the *old* value, see no mismatch, and run the first turn under the
+   wrong policy — requirement 3 lost to ordinary mutation ordering. This is a save barrier on
+   one control, not a Send transaction.
 2. On the session's **first** Send, the server compares the resolved containment against the
    live container's recorded boot mode. If they agree — the common case, since most sessions
    never change it — nothing happens and the message goes as it does today.
 3. If they differ, it runs **`restartContainer` (`services/recovery.ts`)** and then sends.
 
-That third step is doing a lot, and none of it is new code:
+"First Send" is `session.warm`: the handler graduates on the first message
+(`ws-handlers/send-message.ts` ~482) and graduation clears the flag synchronously
+(`graduate-session.ts` ~194), so reconciliation sits **after activation, before graduation**.
 
-- it emits `container_restarting` so **viewers are told**, which is the multi-viewer problem
-  an earlier design spent rounds on;
-- it **force-disposes** the runner, overriding the normal refusal;
-- it **destroys the container — including cancelling a creation still in preflight**, because
-  `destroy` bumps the teardown counter before its own "nothing to destroy" return. That is
-  exactly the `starting`-container race that made the earlier reconciliation design hard;
+It also needs a **session-keyed critical section**. Dispatch admission is checked near handler
+entry (~122) while `running` is not claimed until just before execution (~590), and WS
+callbacks are independently asynchronous — so with an 8-second restart in between, two
+near-simultaneous first Sends (two tabs, or a fast double Enter) can both pass the idle check
+and both attempt reconciliation. One reconciles; the others wait and then **re-enter the
+ordinary send-or-queue path** rather than proceeding on a stale decision.
+
+**What that step actually gives us**, which is a lot but not everything:
+
+- it **force-disposes** the runner, overriding the normal refusal, and **destroys the
+  container — including cancelling a creation still in preflight**, because `destroy` bumps
+  the teardown counter before its own "nothing to destroy" return
+  (`container-lifecycle.ts` ~1799). That is exactly the `starting`-container race;
 - it **reaps orphaned compose children** so the new `ServiceManager.start()` cannot collide
-  with survivors;
-- and it recreates via the ordinary factory and **waits for readiness**.
+  with survivors — and a full restart is the right unit, since Compose services share the
+  session's containment policy;
+- it recreates via the ordinary factory;
+- it is **idempotent**: if the container is already gone, destroy is a no-op and the next
+  attach creates a fresh one.
 
-It is also explicitly idempotent: if the container is already gone, destroy is a no-op and
-the next attach creates a fresh one.
+**What it does not give us, and the plan must handle:**
+
+- **It does not guarantee readiness.** The wait is bounded (`RESTART_READY_TIMEOUT_MS`, 8s)
+  and can return with the container still `starting`/`pending` (`recovery.ts` ~340), and the
+  replacement Compose stack starts lazily on viewer attachment (~346). So Send does not
+  proceed on "restart returned"; it proceeds through the **new runner's worker-readiness
+  gate**, never the disposed one.
+- **It reports success too eagerly.** The call returns `ok` even when replacement creation
+  errored; the meaningful values are `newContainerState` and `error` (~362). A **failed**
+  replacement aborts the Send with a correlated error rather than dispatching into nothing.
+- **It does not migrate other viewers.** Attachment is per connection
+  (`route-registry.ts` ~1037). The *sending* connection recovers, because reconciliation is
+  inserted before the handler's existing `getOrCreate`/`attachToRunner` block
+  (`ws-handlers/send-message.ts` ~578); other viewers of the same session must be told to
+  reattach, which is what the existing manual restart asks the browser to do.
+- **It can interrupt a warm preinstall.** Warm readiness is announced without waiting for the
+  fire-and-forget `agent.install` (`warm-pool-manager.ts` ~297, ~331), so a changed-mode
+  first Send can destroy an install in flight. The replacement reruns setup; the cost is a
+  longer Send, and it is stated rather than discovered.
+- **It is container-runtime only.** In `RUNTIME_MODE=local` there is no container manager and
+  the call throws 503 (`recovery.ts` ~235). So "anything else → restart" is scoped to the
+  container runtime; local mode persists the override, reports the policy/enforcement
+  limitation, and reconciles nothing.
 
 ### The rejected alternative: claiming late
 
@@ -185,6 +225,14 @@ no-op.
    if the implementation reads `isEgressContained()` instead of the raw boot value.
 2b. **Only the first turn reconciles** — a second message on the same session never restarts,
    and a change made later shows the pending strip instead.
+2c. **Concurrent first Sends** — two near-simultaneous first messages reconcile once and both
+   land in the ordinary send-or-queue path, never two restarts or a turn on a stale decision.
+2d. **A failed replacement aborts the Send** with a correlated error rather than dispatching,
+   and a still-`starting` replacement waits on the *new* runner's readiness gate.
+2e. **Send is barred while the network write is in flight**, and after a failed write until
+   the shown value reverts.
+2f. **Local runtime** (`RUNTIME_MODE=local`) persists the override and reconciles nothing,
+   rather than failing the first Send on a 503.
 3. **`Inherit` follows the workspace at container start**, and an explicit pick does not move
    when the workspace default changes between Send and boot.
 4. **Reset**: a second new session in the *same* repo starts at `Inherit`, and Quick Capture
@@ -199,10 +247,17 @@ no-op.
 | `src/client/components/PermissionModeSelector.tsx` | The combined mode + network control |
 | `src/client/components/MessageInput/MessageInput.tsx` | Renders the combined control on every viewport |
 | `src/client/components/MessageInput/ComposerSettingsMenu.tsx` | Loses its Mode row; role list opens directly |
-| `src/server/orchestrator/services/recovery.ts` | `restartContainer` — the reconciliation, reused as-is |
+| `src/server/orchestrator/services/recovery.ts` | `restartContainer` — the reconciliation; read `newContainerState`/`error`, not the `ok` |
 | `src/server/orchestrator/ws-handlers/send-message.ts` | First-Send reconcile-before-dispatch |
-| `src/server/orchestrator/session-container.ts` | Evict-only reconciliation on the container record; raw `egressContainedAtStart` |
-| `src/server/orchestrator/container-lifecycle.ts` | Teardown-epoch cancellation; where `Inherit` is re-resolved (~1435) |
 | `src/server/orchestrator/api-routes-egress.ts` | Strict validation on **both** the session GET and PUT (~319–363 accept arbitrary ids); dedicated GET for hydration |
-| `src/server/orchestrator/services/headless-sessions.ts` | Quick Capture only: + network mode, + permission mode, + preflight |
+| `src/server/orchestrator/services/headless-sessions.ts` | Quick Capture: persist + reconcile after claim (~403), before `getOrCreate` (~426) |
+| `src/server/orchestrator/api-routes-session-crud.ts` | Headless request parsing for the new field (~562) |
+| `src/client/stores/actions/session-actions.ts` | Quick Capture request type / form serialization (~205) |
 | `src/client/components/SessionSidebar/SessionSettingsDialog.tsx` | Keeps its section; matched copy; propagates its PUT result |
+| `src/client/hooks/useServerEvents.ts` | Transient session-scoped invalidation; stop discarding the global egress value (~733) |
+
+**Verified dependencies, not expected to change:** `session-container.ts` (the raw
+`egressContainedAtStart` record, and why `isEgressContained()` is wrong here) and
+`container-lifecycle.ts` (teardown-epoch cancellation, and where `Inherit` re-resolves at
+~1435). The design leans on their current behaviour; if either needs editing, that is a
+signal the design drifted.
