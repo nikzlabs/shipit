@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: resets the lazily-fetched body (docs/244) when a different tool result occupies the same slot after a session switch or rewind.
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
-import hljs from "highlight.js";
+import { highlightCode, languageFromPath } from "../syntax-highlight.js";
 import { Button } from "./ui/button.js";
 import type { ToolResultBlock } from "./MessageList.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -44,32 +44,6 @@ function truncateLines(text: string, maxLines: number): { text: string; truncate
     truncated: true,
     totalLines: lines.length,
   };
-}
-
-/** Detect language from file path extension for syntax highlighting. */
-function languageFromPath(filePath: string): string {
-  const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
-  const map: Record<string, string> = {
-    ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
-    json: "json", html: "xml", css: "css", scss: "scss",
-    py: "python", rb: "ruby", go: "go", rs: "rust",
-    java: "java", kt: "kotlin", c: "c", cpp: "cpp", h: "c",
-    sh: "bash", bash: "bash", zsh: "bash",
-    md: "markdown", yaml: "yaml", yml: "yaml",
-    sql: "sql", xml: "xml", toml: "ini",
-  };
-  return map[ext] ?? "";
-}
-
-/** Try to extract file path from Read result content (first line often has path info). */
-function extractFilePathFromReadContent(content: string): string | null {
-  // Read results from Claude CLI often start with the file path or line numbers
-  // Try to detect if the content looks like it has line numbers (e.g., "     1\tconst x = 1;")
-  const firstLine = content.split("\n")[0] ?? "";
-  if (/^\s*\d+\t/.test(firstLine)) {
-    return null; // Has line numbers — it's file content, not a path header
-  }
-  return null;
 }
 
 /**
@@ -178,21 +152,20 @@ function BashResult({ content, isError, maxLines, lazy }: { content: string; isE
   );
 }
 
-function ReadResult({ content, maxLines, lazy }: { content: string; maxLines?: number; lazy?: LazyResultBody }) {
+/**
+ * `filePath` is the `file_path` the Read call was made with, threaded down from
+ * the modal that already holds the tool input. Without it this fell back to
+ * auto-detection over every grammar highlight.js ships, which a trace measured
+ * at ~274 ms per call, synchronously inside the render.
+ */
+function ReadResult({ content, maxLines, lazy, filePath }: { content: string; maxLines?: number; lazy?: LazyResultBody; filePath?: string }) {
   const state = useExpandable(content, maxLines ?? READ_MAX_LINES, lazy);
   const { displayText } = state;
 
-  extractFilePathFromReadContent(content);
-
-  // Attempt syntax highlighting based on content heuristics
-  const highlighted = useMemo(() => {
-    try {
-      const result = hljs.highlightAuto(displayText);
-      return result.value;
-    } catch {
-      return null;
-    }
-  }, [displayText]);
+  const highlighted = useMemo(
+    () => highlightCode(displayText, filePath ? languageFromPath(filePath) : null),
+    [displayText, filePath],
+  );
 
   return (
     <div className="mt-1 rounded overflow-hidden border border-(--color-border-secondary)/50 bg-(--color-bg-primary)">
@@ -469,7 +442,16 @@ function useLazyResultBody(result: ToolResultBlock): LazyResultBody | undefined 
   };
 }
 
-export function ToolResult({ tool, result }: { tool: string; result: ToolResultBlock }) {
+export function ToolResult({ tool, result, filePath }: {
+  tool: string;
+  result: ToolResultBlock;
+  /**
+   * The `file_path` from the tool's own input, when it had one. Optional
+   * because most tools have no file to name; a `Read` that supplies it gets
+   * highlighted by lookup instead of by auto-detection.
+   */
+  filePath?: string;
+}) {
   const lazy = useLazyResultBody(result);
   const parsed = useMemo(
     () => parseContentForImages(lazy?.full ?? result.content),
@@ -528,7 +510,7 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
     if (tool === "Bash") {
       textResult = <BashResult content={displayContent} isError={result.isError} maxLines={textMaxLines} lazy={textLazy} />;
     } else if (tool === "Read") {
-      textResult = <ReadResult content={displayContent} maxLines={textMaxLines} lazy={textLazy} />;
+      textResult = <ReadResult content={displayContent} maxLines={textMaxLines} lazy={textLazy} {...(filePath ? { filePath } : {})} />;
     } else if (tool === "Grep" || tool === "Glob") {
       textResult = <GrepResult content={displayContent} maxLines={textMaxLines} lazy={textLazy} />;
     } else {
@@ -556,4 +538,4 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
   );
 }
 
-export { truncateLines, languageFromPath };
+export { truncateLines };

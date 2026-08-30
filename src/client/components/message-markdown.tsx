@@ -1,5 +1,5 @@
 import { useMemo, memo, createContext, useContext } from "react";
-import hljs from "highlight.js";
+import { highlightCode } from "../syntax-highlight.js";
 import Markdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -570,12 +570,9 @@ export function MarkdownTooltip({ content, children }: { content: string; childr
  * skips the render entirely when the block's content is unchanged.
  */
 export const CodeBlock = memo(({ code, language }: { code: string; language: string }) => {
-  const html = useMemo(() => {
-    if (language && hljs.getLanguage(language)) {
-      return hljs.highlight(code, { language }).value;
-    }
-    return hljs.highlightAuto(code).value;
-  }, [code, language]);
+  // An unlabeled fence still has to be guessed at, but over the registered
+  // subset rather than every grammar highlight.js ships (see syntax-highlight.ts).
+  const html = useMemo(() => highlightCode(code, language), [code, language]);
 
   return (
     <div className="not-prose my-2 rounded-md overflow-hidden bg-(--color-bg-secondary) w-0 min-w-full">
@@ -592,10 +589,11 @@ export const CodeBlock = memo(({ code, language }: { code: string; language: str
         />
       </div>
       <pre className="px-3 py-1 overflow-x-auto text-xs leading-relaxed">
-        <code
-          className="hljs"
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
+        {html !== null ? (
+          <code className="hljs" dangerouslySetInnerHTML={{ __html: html }} />
+        ) : (
+          <code className="hljs">{code}</code>
+        )}
       </pre>
     </div>
   );
