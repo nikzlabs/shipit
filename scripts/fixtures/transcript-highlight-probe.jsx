@@ -75,6 +75,9 @@ hljs.highlight = (...args) => {
   return origHighlight(...args);
 };
 
+// `window.__listeners` is installed by an INLINE script in the HTML, not here —
+// see the comment there for why a module-scope patch would count too little.
+
 /** ~400 lines, i.e. the ~274 ms `highlightAuto` the production trace measured. */
 const BIG = Array.from({ length: 400 }, (_, i) => `  const value_${i} = compute(${i}) + offset;`).join("\n");
 const REPORT = `## Findings\n\nProse long enough that the report overflows its clamp.\n\n${"- a finding line\n".repeat(30)}\n\n\`\`\`\n${BIG}\n\`\`\`\n\nEnd of report.`;
@@ -134,6 +137,16 @@ function buildTranscript() {
 
 const MESSAGES = buildTranscript();
 
+/**
+ * `?rewind=0` drops `onRewindAtGap`, which is what `MessageList` derives
+ * `hasRewindControls` from — so no `RewindPoint`, and therefore no Radix
+ * dropdown-menu trigger per gap. It is the control condition for the keydown
+ * listener leak: with the handles present a keystroke costs two document
+ * listeners per gap, and this flag is how that is attributed to them rather
+ * than assumed.
+ */
+const REWIND = new URLSearchParams(location.search).get("rewind") !== "0";
+
 function Harness() {
   const [tick, setTick] = useState(0);
   window.__tick = () => setTick((t) => t + 1);
@@ -144,8 +157,7 @@ function Harness() {
         messages={MESSAGES}
         isLoading={false}
         onSendFollowUp={() => true}
-        onRewindAtGap={() => {}}
-        onRequestRewindPreview={() => {}}
+        {...(REWIND ? { onRewindAtGap: () => {}, onRequestRewindPreview: () => {} } : {})}
         sessionTitle={`t${tick}`}
       />
     </div>

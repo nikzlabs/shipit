@@ -52,6 +52,19 @@ Still open:
       (`scripts/fixtures/transcript-highlight-probe.*`), so the eliminations below are reproducible
       and the next investigator does not rebuild it
 
+- [x] Give the probe a listener counter that models DOM deduplication and `once: true`
+      auto-removal, so it counts registrations rather than `addEventListener` calls — the naive
+      version reported a 160-per-keystroke and 159-per-modal-cycle "leak" that the browser was not
+      holding
+- [x] Attribute the (bounded, self-clearing) keydown listener cost to the rewind handles with a
+      control condition (`?rewind=0`), rather than by inspection
+
+- [ ] **The source of the trace's 620-listeners-per-call rise is unfound.** Nothing reachable in the
+      transcript, the diff modal, or a keystroke accounts for it: a modal open/close cycle nets
+      exactly zero, and the keydown cost plateaus at two listeners per mounted `RewindPoint` and
+      clears on the next pointer event. DevTools' `JSEventListeners` counts registrations, so the
+      production figure is not subject to the call-counting error above.
+
 - [ ] **The loop's engine is still unidentified.** The 35 calls are one loop — 29 consecutive calls,
       2.8–6.1 ms apart, 8.2 s long, period = one highlight — that starts 1.8 s *after* scrolling
       begins and outlives the last scroll event by 4.8 s, scheduling each iteration through a

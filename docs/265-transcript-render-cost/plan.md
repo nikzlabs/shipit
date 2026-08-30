@@ -199,6 +199,42 @@ That also disposes of the original suspicion that scrolling reached `ToolResult`
 renders only inside `ToolCallModal` and `WriteContent` only inside `DiffModal`, so neither is
 reachable by scrolling at all.
 
+#### The listener rise: what it is not, and how a probe can lie about it
+
+The same trace showed live listeners rising by **exactly 620 per highlight call** while DOM nodes
+grew by 8 over the whole 15 s and listeners never fell across several garbage collections. That is a
+strong fingerprint — `highlight.js` attaches no listeners, so the 620 belong to whatever is being
+remounted — so the probe gained a listener counter, patching `EventTarget.prototype`.
+
+**A counter that counts `addEventListener` CALLS reports a leak that is not there.** Two DOM rules
+make calls and registrations different numbers, and both inflate the answer:
+
+- **Deduplication.** `addEventListener` with the same `(type, listener, capture)` triple is a no-op.
+- **`once: true` auto-removal.** Such a listener detaches when it fires, with no
+  `removeEventListener` call for a patch to observe.
+
+Both matter here, because `@radix-ui/react-menu`'s keyboard-vs-pointer tracker re-adds one stable
+`handlePointer` under `{ capture: true, once: true }` on **every keydown**
+(`react-menu/dist/index.mjs:59-63`). The naive counter reported +160 live listeners per keystroke in
+an 80-gap transcript, and a per-cycle "leak" of +159 from opening and closing the diff modal. Both
+were the instrument. With the counter corrected to model dedup and `once`:
+
+| measurement | corrected result |
+|---|---|
+| one keystroke, 80 rewind handles mounted | +160 (2 per handle), **plateaus** — further keystrokes add 0 |
+| a pointer event after that | the 80 `pointermove` fire and self-remove |
+| diff modal opened and closed, cycles 2 and 3 | **exactly 0** net; DOM nodes flat at 2,756 |
+| one keystroke with `?rewind=0` (no handles) | **0** |
+
+So the keydown cost is real but **bounded and self-clearing** — at most two document listeners per
+mounted `RewindPoint`, cleared by the next pointer event — and it is not the trace's monotonic rise.
+The `?rewind=0` control is what attributes it to the rewind handles rather than assuming it: with
+them the keystroke costs 160, without them it costs nothing.
+
+**Nothing reachable in the transcript, the diff modal, or a keystroke accounts for 620 per call.**
+DevTools' `JSEventListeners` counts registrations, not calls, so the production number is not
+subject to this error — but the source of it is still unfound.
+
 ### 3. Revalidate instead of re-download (reqs 10, 11)
 
 `GET /api/sessions/:id/history` gains an **ETag that is the hash of the response body**, and
