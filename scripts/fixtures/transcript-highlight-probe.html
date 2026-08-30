@@ -9,10 +9,14 @@
        *
        * The production trace (2026-08-30) showed listeners rising by *exactly*
        * 620 per highlight call across 34 calls, while DOM nodes grew by 8 over
-       * the whole 15 s and listeners never fell across several garbage
-       * collections. `highlight.js` attaches no listeners — it returns a string
-       * — so the 620 belong to whatever React mounts each iteration, and their
-       * survival is the leak.
+       * the whole 15 s. `highlight.js` attaches no listeners — it returns a
+       * string — so the 620 belong to whatever React mounts each iteration.
+       *
+       * That is registration CHURN, not established retention: the trace holds
+       * 163 minor (scavenger) GCs and zero major/mark-compact ones, and only a
+       * major GC releases detached nodes and their listeners. So a subtree
+       * mounting and unmounting each iteration produces exactly this curve, and
+       * measuring no retention here is the expected result rather than a gap.
        *
        * CDP's `Performance.getMetrics` -> `JSEventListeners` is the counter the
        * trace recorded, but it gives only a total. Patching `EventTarget` gives

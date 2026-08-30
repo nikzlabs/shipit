@@ -199,12 +199,26 @@ That also disposes of the original suspicion that scrolling reached `ToolResult`
 renders only inside `ToolCallModal` and `WriteContent` only inside `DiffModal`, so neither is
 reachable by scrolling at all.
 
-#### The listener rise: what it is not, and how a probe can lie about it
+#### The listener rise is registration churn, not a leak
 
 The same trace showed live listeners rising by **exactly 620 per highlight call** while DOM nodes
-grew by 8 over the whole 15 s and listeners never fell across several garbage collections. That is a
-strong fingerprint — `highlight.js` attaches no listeners, so the 620 belong to whatever is being
-remounted — so the probe gained a listener counter, patching `EventTarget.prototype`.
+grew by 8 over the whole 15 s. That figure survived falsification: with 2,131 counter samples for 35
+calls, growth tracks the calls and not the clock — 2,264 listeners/s across intervals overlapping a
+heavy call against 118/s elsewhere, and a 2.7 s quiet window holding 819 samples and no heavy calls
+grew by **exactly 0**. So ~620 registrations per iteration is real, and since `highlight.js` attaches
+no listeners, they belong to whatever is being mounted each iteration.
+
+**They are not known to be retained, and an earlier draft of this section was wrong to imply it.**
+The reading that they "never fell across several garbage collections" does not hold: the trace
+contains 163 minor GCs, all scavenger, and **zero** major / mark-compact events. Detached nodes and
+their listeners are released by a major GC, so the collections that ran were never going to release
+them. A subtree that mounts and unmounts every iteration produces exactly this curve and is
+reclaimed by the first major GC — which a 15-second window never saw.
+
+That is why the probe finding no retention below is **evidence, not a gap**: it is what the trace
+predicts if the 620 are churn. The open question is what mounts them, not where they leak.
+
+The probe gained a listener counter to answer that, by patching `EventTarget.prototype`.
 
 **A counter that counts `addEventListener` CALLS reports a leak that is not there.** Two DOM rules
 make calls and registrations different numbers, and both inflate the answer:
@@ -227,13 +241,19 @@ were the instrument. With the counter corrected to model dedup and `once`:
 | one keystroke with `?rewind=0` (no handles) | **0** |
 
 So the keydown cost is real but **bounded and self-clearing** — at most two document listeners per
-mounted `RewindPoint`, cleared by the next pointer event — and it is not the trace's monotonic rise.
-The `?rewind=0` control is what attributes it to the rewind handles rather than assuming it: with
-them the keystroke costs 160, without them it costs nothing.
+mounted `RewindPoint`, cleared by the next pointer event. The `?rewind=0` control is what attributes
+it to the rewind handles rather than assuming it: with them the keystroke costs 160, without them it
+costs nothing.
 
-**Nothing reachable in the transcript, the diff modal, or a keystroke accounts for 620 per call.**
-DevTools' `JSEventListeners` counts registrations, not calls, so the production number is not
-subject to this error — but the source of it is still unfound.
+That also **explains the trace's outliers**. Deltas over the 620 baseline were +73, +108, +113 and
++116, in the windows where a keystroke landed; at two listeners per handle that implies 37–58 rewind
+handles, which is plausible for the traced session's 14,524 DOM nodes. The outliers are the rewind
+handles; the 620 baseline is separate and stays open.
+
+**Nothing reachable in the transcript, the diff modal, or a keystroke RETAINS listeners** — and, per
+the GC reading above, that is the expected result rather than a missing explanation. DevTools'
+`JSEventListeners` counts registrations, not calls, so the production figure is not subject to the
+call-counting error either. What remains unidentified is the subtree whose mount registers ~620.
 
 ### 3. Revalidate instead of re-download (reqs 10, 11)
 

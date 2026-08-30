@@ -59,11 +59,19 @@ Still open:
 - [x] Attribute the (bounded, self-clearing) keydown listener cost to the rewind handles with a
       control condition (`?rewind=0`), rather than by inspection
 
-- [ ] **The source of the trace's 620-listeners-per-call rise is unfound.** Nothing reachable in the
-      transcript, the diff modal, or a keystroke accounts for it: a modal open/close cycle nets
-      exactly zero, and the keydown cost plateaus at two listeners per mounted `RewindPoint` and
-      clears on the next pointer event. DevTools' `JSEventListeners` counts registrations, so the
-      production figure is not subject to the call-counting error above.
+- [x] Establish that the trace's listener rise is **registration churn, not a leak** — the trace has
+      163 minor (scavenger) GCs and zero major/mark-compact ones, and only a major GC releases
+      detached nodes and their listeners, so "never fell across GCs" was never a retention finding.
+      A subtree mounting and unmounting each iteration produces exactly the measured curve.
+- [x] Reconcile the trace's +73/+108/+113/+116 outliers with the rewind handles: at two listeners
+      per handle they imply 37–58 handles, plausible at the traced session's 14,524 DOM nodes
+
+- [ ] **What subtree registers ~620 listeners on mount is unidentified.** The figure itself survived
+      falsification (2,131 counter samples; growth tracks calls not clock; a 2.7 s window with 819
+      samples and no heavy call grew by 0), so it is a real per-iteration cost. Nothing reachable in
+      the transcript, the diff modal, or a keystroke *retains* listeners — which is the expected
+      result for churn, not a missing explanation. Finding the subtree with that mount cost would
+      very likely name the loop's engine too.
 
 - [ ] **The loop's engine is still unidentified.** The 35 calls are one loop — 29 consecutive calls,
       2.8–6.1 ms apart, 8.2 s long, period = one highlight — that starts 1.8 s *after* scrolling
