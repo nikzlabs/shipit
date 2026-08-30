@@ -165,9 +165,12 @@ Three facts constrain it:
 - **Each iteration schedules the next through a microtask**, after the previous render commits:
   highlight ends → `RunMicrotasks` → a sub-millisecond `FunctionCall` → `RunTask` → the next
   highlight. Some gaps also run real layout (`UpdateLayoutTree`, `Layout`, `PrePaint`,
-  `IntersectionObserverController::computeIntersections`, `Layerize`, `Commit`). An
-  `EventDispatch type=focus` / `focusin` pair sits in the gap immediately before the burst's first
-  call.
+  `IntersectionObserverController::computeIntersections`, `Layerize`, `Commit`).
+- **The loop is self-scheduled, not timer-driven — measured, not inferred from the shape.**
+  Correlation between a call's duration and the idle gap that follows it is **r = +0.22** (n = 27).
+  A fixed-period timer would give r near **−1**, because the gap would absorb the variation in
+  duration. It does not: period = duration + ~10 ms. That distinction is what makes the cost fix and
+  the loop fix interact — a cheaper iteration is a *faster* loop, not a shorter one.
 
 That is the signature of an unconditional re-render, so **two failures have to hold at once**:
 something re-renders continuously, and each of those renders re-highlights. A test that drives N
@@ -249,10 +252,22 @@ Eliminated by inspection in the same pass, each for a structural reason rather t
   layout — is used by the Issues panel only.
 - **History rehydration** is out on the trace's own evidence: `/history` was fetched exactly once in
   the window, and the whole trace contains three requests (`/api/events`, `/files`, `/history`).
-- **A resize-driven breakpoint flip** is out: the trace has zero resize events of any kind. The one
-  door left open is that a `matchMedia` change does not surface as a DOM event, so an `isMobile` flip
-  by that route is not excluded — and it is the one structural path that would genuinely remount
-  everything (see below).
+- **A resize-driven breakpoint flip** is out: the trace has zero resize events of any kind. A
+  `matchMedia` change does not surface as a DOM event, so that route stayed open on the event
+  evidence alone — but the **viewport measurement closes it**. The trace's full-page `Paint` clip is
+  `[0,0,2742,0,2742,1906,0,1906]` at the metadata's `hostDPR: 2`, i.e. a **1371 × 953 CSS px**
+  window. `useIsMobile()` is `(max-width: 767px)`, so the query was stably false by a factor of 1.8
+  and nothing resized. **The `isMobile` flip below cannot have fired during this recording**, let
+  alone 29 times.
+- **Click and focus** are out, and this corrects an earlier reading of the same trace. `focus`,
+  `focusin` and `DOMFocusIn` each fire **exactly once**, all at 7,172.2 ms — **546 ms after** the
+  burst began at 6,626 ms — and the trace contains exactly one click, at 7,175 ms, into a text field
+  (`focus` + `selectstart` + `click`): the user reaching for the composer before typing. An earlier
+  pass reported a `focusin` immediately *before* the burst; that came from a windowing bug in the
+  analysis script, and direct enumeration of every focus event in the trace refutes it. Both the
+  click and the five keystrokes that follow sit **inside** an already-running loop, so they are
+  victims of it, not triggers.
+- **SSE** is out: `/api/events` opened and delivered zero messages.
 
 #### The remount class is mitigated, measured rather than argued
 
@@ -261,6 +276,15 @@ position, which React treats as a type change and so unmounts and remounts every
 `chatPanel` included. The probe reproduces that exact shape (`window.__swapWrapper`), which doubles
 as the **positive control** for the mount counter: without it, every "0 mounts" above would be
 unfalsifiable, since a counter that can never report a mount reports zero for free.
+
+**This is a real latent defect and a separate finding from the trace.** The viewport measurement
+above rules it out as *this* recording's engine, so it is not the answer anyone was looking for —
+but it stands on its own: every crossing of the 768 px breakpoint discards every fiber in the
+transcript and re-highlights every code block in it. Resizing a desktop window across the
+breakpoint, or rotating a tablet, is enough. The fix is to give both branches the same element type
+so React reconciles instead of remounting; the mobile branch's relative wrapper is load-bearing
+(it scopes the sessions drawer overlay to the content region above the tab bar), so it has to
+survive the change.
 
 Four flips of that wrapper, with the big block in the transcript:
 
@@ -276,6 +300,28 @@ Measuring that needed a third correction to the instrument, for the same reason 
 **Counting `highlightAuto` can no longer detect a remount at all**, because `highlightCached` turns
 one into a map lookup — the fix blinds the obvious probe. The probe now counts `code.hljs` nodes
 entering and leaving the DOM, which is independent of the cache.
+
+#### The rule this investigation kept relearning
+
+Four instruments in this work were blind by construction, and each produced a confident negative
+before anyone noticed:
+
+1. A fixture built outside Tailwind's content scan rendered `content-visibility: visible`, so the
+   browser was never doing the thing under test.
+2. A patched `addEventListener` counted *calls*, over-reporting because the DOM deduplicates
+   identical `(type, listener, capture)` triples and `once: true` listeners self-remove — it
+   reported a per-keystroke "leak" the browser was not holding.
+3. Patching the full `highlight.js` build intercepted nothing, because the code calls
+   `highlight.js/lib/core`, so the counter read 0 forever and every elimination was a false
+   negative.
+4. Counting `highlightAuto` stopped detecting remounts the moment a cache made one a map lookup.
+
+**The rule: a negative result is worth nothing until the instrument has been shown able to produce a
+positive one.** Assert the condition under test is actually present (computed style, a non-zero
+baseline at mount, a positive control that forces the event you are counting) *before* believing any
+zero. `window.__swapWrapper` exists for exactly this reason. Note that (2) cut the opposite way from
+the others — a blind instrument can over-report as readily as it under-reports, so "the number
+looked alarming" is not evidence the instrument worked either.
 
 Scaling the listener count is a weak but consistent cross-check: this fixture registers ~2 listeners
 per rewind handle and ~1.9 per message at mount, so 620 per iteration is far more than any single
