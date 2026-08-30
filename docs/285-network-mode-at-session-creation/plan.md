@@ -78,77 +78,76 @@ network containment" card above the first message describes something that never
 ## Mechanism
 
 Egress is plumbed when the container is *created* (`container-lifecycle.ts`); a running
-container cannot be re-plumbed. Today `/new` claims on arrival
-(`useSessionActivation.ts` ~96), which opens the WS and materializes a runner — so a mode
-picked afterwards arrives at a live session. `/new` therefore claims nothing until Send.
+container cannot be re-plumbed. `/new` claims a session on arrival
+(`useSessionActivation.ts` ~96), which opens the WS and materializes a runner — so by the
+time a mode is picked, a container already exists, created under the *inherited* default.
 
-### Send claims, and carries only the network mode
+**So the container is reconciled at first Send, using the restart path that already exists.**
 
-**Only the network mode has to precede container materialization.** Everything else already
-has an authoritative path, and duplicating it would create two owners that can disagree:
+1. Picking a mode writes the per-session override immediately — the same
+   `PUT /api/egress/session/:id` the dialog uses. Nothing else happens yet.
+2. On the session's **first** Send, the server compares the resolved containment against the
+   live container's recorded boot mode. If they agree — the common case, since most sessions
+   never change it — nothing happens and the message goes as it does today.
+3. If they differ, it runs **`restartContainer` (`services/recovery.ts`)** and then sends.
 
-| Already owned by | What |
-|---|---|
-| The WS handshake URL (`useSessionWebSocket.ts` ~18), applied before runner activation (`route-registry.ts` ~884, activation at ~1464) | harness, the model triple, reasoning, role |
-| The ordinary first message (`App.tsx` ~628) | permission mode |
-| `ws-handlers/send-message.ts` ~482 | the issue pin, graduation, and mark-started |
+That third step is doing a lot, and none of it is new code:
 
-So Send is: **claim with the network mode → persist → reconcile → return the id →
-connect the ordinary WebSocket → send the first message down the existing path.** Nothing
-new carries a payload, and no create-and-dispatch transaction exists.
+- it emits `container_restarting` so **viewers are told**, which is the multi-viewer problem
+  an earlier design spent rounds on;
+- it **force-disposes** the runner, overriding the normal refusal;
+- it **destroys the container — including cancelling a creation still in preflight**, because
+  `destroy` bumps the teardown counter before its own "nothing to destroy" return. That is
+  exactly the `starting`-container race that made the earlier reconciliation design hard;
+- it **reaps orphaned compose children** so the new `ServiceManager.start()` cannot collide
+  with survivors;
+- and it recreates via the ordinary factory and **waits for readiness**.
 
-Two things this deletes outright. **Trust-before-claim** goes: the composer is already
-blocked for an untrusted repo (`App.tsx` ~2210) and the server's boundary stays at dispatch
-(`runner-registry-factory.ts` ~295) — avoiding an unused claim is optional hardening, not
-this requirement. **Issue mark-started stays where it is**: moving it to claim would mark an
-issue started even when the first message never reaches the socket.
+It is also explicitly idempotent: if the container is already gone, destroy is a no-op and
+the next attach creates a fresh one.
 
-**Quick Capture keeps its own headless path**, gaining the network mode, the permission mode
-it currently drops (`headless-sessions.ts` ~460), and the same reconciliation preflight. It
-is not merged with `/new`, and `headless-sessions.ts` is *not* generalized. It **resets the
-network pick to `Inherit` on every opening**, where it already resets its other non-sticky
-fields (`QuickCaptureOverlay.tsx` ~134) — req 8 applies to it as much as to `/new`, and it
-has no generation to hang the reset on.
+### The rejected alternative: claiming late
 
-### Why not one create-and-dispatch call
+An earlier version of this design had `/new` hold a draft and claim at Send, so that no
+runner could exist before the choice. It is recorded here because it will be proposed again.
 
-`dispatch()` is not a commit point: it sets `running = true` in memory and launches the turn
-with `void runner.runDispatchedTurn(...)` (`session-runner.ts` ~555), while attachment
-resolution, agent creation and parameter assembly happen afterwards
-(`dispatched-turn.ts` ~90, ~119, ~241), and a setup failure turns `running` back off after
-dispatch returned (~561). An HTTP 200 can precede a crash that loses the turn. Making that
-honest needs durable idempotent admission — the subsystem this design exists to avoid.
+It works, but it costs a **platform-sized prerequisite** — the Send transaction, first-message
+delivery scoped to its claimed session, a correlated acceptance echo, claim idempotency
+across a lost response, per-tab keys, a recovery matrix — and it *gives up* the live preview,
+the warm container and `@file`/`/skills` autocomplete while composing, then needs a new
+repo-scoped endpoint to win the autocomplete back. Reconciling at Send buys the same
+guarantee out of a path that already handles viewers, in-flight creation, orphans and
+readiness.
 
-### The prerequisite: docs/286
+The one thing late-claiming is genuinely better at: the container is never built under a mode
+the user did not choose, so there is no restart and no window in which it existed. That is
+worth knowing, and it is not worth the prerequisite.
 
-Claiming at Send needs a contract of its own — transaction ownership, delivery, acceptance,
-idempotency, recovery — and **none of it is about network modes**. It is extracted to
-[docs/286-first-send-creates-the-session](../286-first-send-creates-the-session/plan.md) so it
-can be reviewed on its own terms, and it is a **prerequisite**: this feature cannot land
-before it, and the honest cost of this feature is the sum of both docs.
+### What the user sees
 
-Two open questions in that doc block implementation — how far recovery must reach, and
-whether the composer freezes while a Send is in flight.
+Pressing Send after changing the mode waits for a container restart — seconds, with the
+existing restarting UI — and only when the mode actually changed. The menu says so before
+the fact (`In force from this session's first turn`), rather than presenting the choice as
+free.
 
-What this design needs from it, and nothing more: **a claimed session id, with the network
-mode applied and the standby reconciled, before any runner exists.**
+Quick Capture is unchanged in shape: it persists the override and reconciles **before
+`runnerRegistry.getOrCreate`** (`headless-sessions.ts` ~426, not merely before `dispatch()`
+at ~460), since it creates and dispatches server-side in one act.
 
-### Standby reconciliation: evict, never create
+### Comparing: what counts as "the container disagrees"
 
-The container record exists as `starting` before its containment is resolved
-(`container-lifecycle.ts` ~1191 vs ~1435), and the standby marker lags the record
-(`session-container.ts` ~1524) — so key on the **record** (~521), not on "is it a standby".
-Before materialization:
+The comparison feeding step 3 above:
 
-- **Running, and recorded boot mode matches** → leave it.
-- **Anything else** — mismatching, `starting`, unknown → `await destroy(sessionId)` and
-  return. The ordinary factory then creates the replacement, asynchronously
-  (`app-lifecycle.ts` ~840); this operation never creates one itself.
+- **Running, and the recorded boot mode matches** → agree; send as normal.
+- **Anything else** — mismatching, `starting`, or unknown → restart.
 
-It reads **raw `egressContainedAtStart`** (~304), never `isEgressContained()` (~639), which
-deliberately re-derives current policy when boot state is unknown — precisely how "unknown"
-would come to read as "matching". Destroying an in-flight creation is supported by the
-teardown epoch (~1799).
+It keys on the **container record** (`session-container.ts` ~521), never on the standby
+marker, which lags the record (~1524). And it reads **raw `egressContainedAtStart`** (~304),
+never `isEgressContained()` (~639), which deliberately re-derives *current policy* when boot
+state is unknown — precisely how "unknown" would come to read as "matching". Treating
+`starting` and unknown as disagreement costs an unnecessary restart in a rare case and cannot
+silently run the first turn under the wrong mode; `restartContainer` handles both, since its
+destroy cancels a creation that has not published a record.
 
 **`Inherit` resolves at container start, and is not snapshotted** (req 3, resolved
 2026-08-29). Containment is re-read when the container is created
@@ -169,22 +168,23 @@ statements must not drift apart.
 
 ### Rollout
 
-`PUT /api/egress/session/:id` gains strict validation: it currently accepts an invalid body
-and an arbitrary session id (`api-routes-egress.ts` ~331). Narrow fix, not a subsystem.
+**Both** session egress routes gain strict validation — the GET and the PUT each accept an
+arbitrary session id today, and the PUT also accepts an invalid body
+(`api-routes-egress.ts` ~319–363). Narrow fix, not a subsystem.
 
-The legacy claim route is **left alone** — a cached old client has no network control, so
-there is nothing to reconcile for it, and the new behaviour lives on docs/286's draft-claim
-endpoint.
+Nothing about claiming changes, so there is no rollout concern for cached clients: an old
+client has no network control, never sets an override, and its sessions reconcile to a
+no-op.
 
 ## Where the tests go
 
-Only what is network-specific; docs/286 owns the transaction, delivery and idempotency tests.
-
 1. **Mode in force on the first turn**, for explicit Contained and Open, on `/new` and Quick
    Capture.
-2. **Reconciliation in every state** — matching leaves the container; mismatching, `starting`
-   and unknown all evict. Must fail if the implementation reads `isEgressContained()` instead
-   of the raw boot value.
+2. **Reconciliation in every state** — a matching container is left alone and the turn is not
+   delayed; mismatching, `starting` and unknown all restart before the first turn. Must fail
+   if the implementation reads `isEgressContained()` instead of the raw boot value.
+2b. **Only the first turn reconciles** — a second message on the same session never restarts,
+   and a change made later shows the pending strip instead.
 3. **`Inherit` follows the workspace at container start**, and an explicit pick does not move
    when the workspace default changes between Send and boot.
 4. **Reset**: a second new session in the *same* repo starts at `Inherit`, and Quick Capture
@@ -199,9 +199,10 @@ Only what is network-specific; docs/286 owns the transaction, delivery and idemp
 | `src/client/components/PermissionModeSelector.tsx` | The combined mode + network control |
 | `src/client/components/MessageInput/MessageInput.tsx` | Renders the combined control on every viewport |
 | `src/client/components/MessageInput/ComposerSettingsMenu.tsx` | Loses its Mode row; role list opens directly |
-| *new* draft-claim endpoint (docs/286) | Carries the network mode; persists and reconciles before returning |
+| `src/server/orchestrator/services/recovery.ts` | `restartContainer` — the reconciliation, reused as-is |
+| `src/server/orchestrator/ws-handlers/send-message.ts` | First-Send reconcile-before-dispatch |
 | `src/server/orchestrator/session-container.ts` | Evict-only reconciliation on the container record; raw `egressContainedAtStart` |
 | `src/server/orchestrator/container-lifecycle.ts` | Teardown-epoch cancellation; where `Inherit` is re-resolved (~1435) |
-| `src/server/orchestrator/api-routes-egress.ts` | Strict validation; dedicated session GET for hydration |
+| `src/server/orchestrator/api-routes-egress.ts` | Strict validation on **both** the session GET and PUT (~319–363 accept arbitrary ids); dedicated GET for hydration |
 | `src/server/orchestrator/services/headless-sessions.ts` | Quick Capture only: + network mode, + permission mode, + preflight |
 | `src/client/components/SessionSidebar/SessionSettingsDialog.tsx` | Keeps its section; matched copy; propagates its PUT result |

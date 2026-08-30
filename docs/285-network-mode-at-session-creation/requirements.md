@@ -57,26 +57,32 @@ description: Fold network containment into the composer's existing permission-mo
 - 2026-08-28 — *Should the pick carry over to the next new session, like the model
   seed does?* No — reset every time, as the Quick Capture auto-merge checkbox does.
   → req 8.
+- 2026-08-29 — **REVERSES the 2026-08-28 decision below.** *A review found a third option:
+  keep the eager claim and reconcile the container at first Send using the existing
+  `restartContainer` flow.* Taken. `/new` keeps claiming as it does today, so the live
+  preview, the warm container and `@file`/`/skills` autocomplete are **not** given up, and
+  the whole late-claim prerequisite is deleted. `services/recovery.ts` already notifies
+  viewers, force-disposes the runner, destroys the container *including cancelling a
+  creation still in preflight*, reaps orphans and waits for readiness — every hard part the
+  draft design was re-inventing. Cost: pressing Send with a changed mode waits for that
+  restart, with the existing restarting UI. → the mechanism in `plan.md`.
 - 2026-08-28 — *Is a live runner and preview before the first Send a product
-  requirement?* No. The `/new` page may hold a plain draft until Send, giving up the
-  preview and the warm container while the first message is being composed. Accepted
-  deliberately: it removes the need for a first-turn admission protocol entirely,
-  because no runner exists before the choice is made. The warm pool still pre-builds
-  standby containers, so this is not a cold start.
+  requirement?* **Superseded on 2026-08-29 (above).** The answer at the time was "no —
+  `/new` may hold a plain draft until Send", accepted to remove the need for a first-turn
+  admission protocol. It is recorded rather than deleted because it is why two designs were
+  written, and because the reasoning was sound given the options known then; a cheaper
+  option existed and was not checked first.
 - 2026-08-29 — *Should `Inherit` be snapshotted at Send, so a workspace-default change
   during Send cannot move it?* No. Containment is resolved when the container is created
   (`container-lifecycle.ts` ~1435), so snapshotting would mean new claim-owned boot state
   carried through materialization — machinery for a race nobody would hit except during a
   concurrent workspace-default change. `Inherit` means what it says: the workspace setting
   at container start. Explicit Contained/Open keep the hard guarantee. → reqs 3, 10.
-- 2026-08-29 — *A sessionless `/new` would also lose `@file` autocomplete and the `/skills`
-  list while composing — a regression the preview decision never covered. Accept it, or
-  claim the workspace and withhold the WebSocket?* Neither: **read them from the repo's
-  existing warm session without claiming it.** A warm session already has a `workspaceDir`,
-  `RepoInfo.warmSessionId` already reaches the client (`repo-store.ts` ~140), and
-  `resolveSessionDir` (`api-routes.ts` ~391) has no warm-session guard — it returns the
-  session's workspace directory, so `GET /api/sessions/<warmSessionId>/files` serves that
-  tree today. Nothing is claimed, no runner exists, and the guarantee is untouched.
+- 2026-08-29 — *A sessionless `/new` would lose `@file` and `/skills` autocomplete while
+  composing.* **Moot as of the reversal above** — the session is claimed on arrival again,
+  so both work exactly as they do today and no draft-context endpoint is needed. (The
+  investigation stands on its own: a warm session's tree *is* readable without claiming it,
+  since `resolveSessionDir` has no warm-session guard. Worth knowing, not needed here.)
 - 2026-08-28 — *A review argued that the running-session half of requirement 6 is the
   largest remaining cost and should be cut, leaving the composer control on creation
   surfaces only.* No — requirement 6 stands as written: one menu, new and existing
