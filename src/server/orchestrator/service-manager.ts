@@ -325,6 +325,34 @@ export const STARTING_WATCHDOG_MS = 120_000;
 export const GATED_TEARDOWN_GRACE_MARGIN_MS = 60_000;
 
 /**
+ * How long the install gate must look wedged — services held, no install in
+ * flight, no teardown pending — before {@link ServiceManager.checkInstallGateLiveness}
+ * reopens it (docs/286).
+ *
+ * The gate is a bracket: `holdGatedServicesForReinstall` closes it and a
+ * matching `releaseInstallGate` opens it. Every route that loses the second
+ * half leaves the same wreckage — `preview: auto` services stopped by our own
+ * `docker compose stop` (exit 137, docs/239), sitting in `gatedServices` where
+ * the poller's `isGated` skip and `handleNonZeroExit`'s gated early-return
+ * deliberately ignore them, and where Compose's `restart: no` means nothing
+ * else brings them back. docs/283 closed two such routes; a third was observed
+ * in production afterwards, on a build that already carried that fix. So the
+ * watchdog is deliberately written against the *state*, not against any
+ * particular route: if nothing that could open the gate is in flight, no future
+ * event will open it, and that is decidable without knowing which branch was
+ * lost.
+ *
+ * Long enough that a legitimately in-progress bracket is never mistaken for a
+ * wedge — the honest bound on one is a service's `stop_grace_period` plus
+ * {@link GATED_TEARDOWN_GRACE_MARGIN_MS}, and the watchdog does not even start
+ * its clock while that teardown is pending. Short enough that a wedge costs the
+ * user a minute of dead preview rather than the rest of the session. This is a
+ * backstop, not a participant: on a healthy bracket it never observes a wedge
+ * at all.
+ */
+export const GATE_WATCHDOG_SETTLE_MS = 60_000;
+
+/**
  * Await `work`, or give up after `ms` and say which happened.
  *
  * Reports the outcome instead of throwing on expiry because both outcomes are
@@ -440,6 +468,13 @@ export interface ServiceManagerOptions {
   composeQuery?: ComposeQuery;
   /** Status poll interval in ms. 0 disables polling. Default: 5000. */
   pollIntervalMs?: number;
+  /**
+   * How long the install gate must look wedged before the watchdog reopens it.
+   * Default: {@link GATE_WATCHDOG_SETTLE_MS}. Overridable so tests can exercise
+   * the watchdog without waiting out the production window — same role as
+   * {@link pollIntervalMs}.
+   */
+  gateWatchdogSettleMs?: number;
   /** Docker named volume holding the workspace (for compose volume rewriting). */
   workspaceVolume?: string;
   /** Subpath within the workspace volume for this session. */
@@ -606,6 +641,8 @@ export class ServiceManager extends EventEmitter {
    */
   private followerSince = new Map<string, string>();
   private readonly logStore?: LogStore;
+  /** See {@link ServiceManagerOptions.gateWatchdogSettleMs}. */
+  private readonly gateWatchdogSettleMs: number;
   private _started = false;
   /** docs/201 P8 — owns `docker compose` command construction + execution. */
   private readonly compose: ComposeCli;
@@ -840,6 +877,28 @@ export class ServiceManager extends EventEmitter {
   private _gateGeneration = 0;
   private _gatedTeardownGeneration = 0;
 
+  /**
+   * Number of {@link releaseInstallGate} calls currently awaiting a teardown.
+   *
+   * `_gatedTeardown` cannot answer "is a release in flight?": the release
+   * captures it and nulls the field on its first line, so for the whole of the
+   * await — which can legitimately run for a service's `stop_grace_period` plus
+   * {@link GATED_TEARDOWN_GRACE_MARGIN_MS} — the field reads `null` while the
+   * bracket is very much still closing. The watchdog would call that a wedge and
+   * reopen the gate mid-teardown, which is the docs/239 bug.
+   *
+   * A counter rather than a boolean because two releases can overlap (an older
+   * cycle's release still awaiting its teardown when a newer one starts), and a
+   * boolean cleared by whichever finishes first would un-hide the other.
+   */
+  private _gateReleasesInFlight = 0;
+
+  /**
+   * `Date.now()` of the first poll heartbeat at which the gate looked wedged,
+   * or `null` while it does not. See {@link checkInstallGateLiveness}.
+   */
+  private _gateWedgedSince: number | null = null;
+
   constructor(opts: ServiceManagerOptions) {
     super();
     this.sessionId = opts.sessionId;
@@ -876,6 +935,7 @@ export class ServiceManager extends EventEmitter {
     this.serviceEnvDir = opts.serviceEnvDir;
     this.secretsInternalDir = opts.dockerSecretsConfig?.internalDir;
     this.logStore = opts.logStore;
+    this.gateWatchdogSettleMs = opts.gateWatchdogSettleMs ?? GATE_WATCHDOG_SETTLE_MS;
 
     this.secrets = new ServiceSecretsResolver({
       sessionId: opts.sessionId,
@@ -971,7 +1031,12 @@ export class ServiceManager extends EventEmitter {
       onExitedWithError: (name, exitCode, oomKilled) => {
         this.handleNonZeroExit(name, exitCode, oomKilled);
       },
-      afterPoll: () => this.healSessionNetwork(),
+      afterPoll: async () => {
+        // Before the heal, so a heal that runs long can't delay the wedge
+        // check behind it. Both are heartbeat work; neither owns the poll.
+        this.checkInstallGateLiveness();
+        await this.healSessionNetwork();
+      },
     });
   }
 
@@ -1230,10 +1295,28 @@ export class ServiceManager extends EventEmitter {
     this._gatedTeardown = null;
 
     const open = (): void => {
-      if (this._disposed) return;
+      // Every branch here says which one it took. Until docs/286 the gate's
+      // HOLD was logged unconditionally and its RELEASE was not, so a lost
+      // release was completely invisible: the operator saw a `docker compose
+      // stop` with no matching start and no reason anywhere, and diagnosing one
+      // production incident took an hour to narrow to "one of five silent
+      // returns" without ever identifying which. The watchdog below fixes the
+      // class regardless of the branch; these lines are what make the NEXT one
+      // take minutes.
+      if (this._disposed) {
+        console.log(
+          `[compose:${this.sessionId}] install gate not opened — the manager was disposed while the teardown ran`,
+        );
+        return;
+      }
       // A new install may have started while we waited for the teardown; that
       // re-held the services, and its own completion owns the next gate open.
-      if (this._installRunning) return;
+      if (this._installRunning) {
+        console.log(
+          `[compose:${this.sessionId}] install gate not opened — a newer install is already running; its completion owns the next open`,
+        );
+        return;
+      }
       if (this._installFailed) {
         this.latchGatedServicesToError();
       } else {
@@ -1250,13 +1333,28 @@ export class ServiceManager extends EventEmitter {
     // Fire-and-forget from a sync caller (`setInstallRunning`): the gate opens
     // once the teardown lands. `stopGatedForReinstall` always settles — it
     // swallows a rejection and bounds a hang (docs/283).
+    //
+    // Counted for the whole await, INCLUDING `open()`: for as long as this is
+    // non-zero the gate is legitimately mid-bracket and the watchdog must keep
+    // its hands off (docs/239).
+    this._gateReleasesInFlight++;
     void (async () => {
-      await teardown;
-      // Only THIS cycle's teardown may open the gate it scheduled. A newer
-      // hold, or a full restart, has already superseded us — see
-      // {@link _gateGeneration}.
-      if (this._gateGeneration !== generation) return;
-      open();
+      try {
+        await teardown;
+        // Only THIS cycle's teardown may open the gate it scheduled. A newer
+        // hold, or a full restart, has already superseded us — see
+        // {@link _gateGeneration}.
+        if (this._gateGeneration !== generation) {
+          console.log(
+            `[compose:${this.sessionId}] install gate not opened — this teardown belongs to gate ` +
+            `generation ${generation}, superseded by ${this._gateGeneration}`,
+          );
+          return;
+        }
+        open();
+      } finally {
+        this._gateReleasesInFlight--;
+      }
     })();
   }
 
@@ -2996,13 +3094,112 @@ export class ServiceManager extends EventEmitter {
   // -----------------------------------------------------------------------
 
   /**
+   * Backstop for a gate whose release was lost (docs/286). Runs on the poller's
+   * heartbeat via `afterPoll`.
+   *
+   * The gate is a bracket, and the wedge is a *state*, not an event: services
+   * sitting in `gatedServices` while nothing that could open the gate is in
+   * flight. Nothing polls a held service — the poller's `isGated` skip,
+   * `handleNonZeroExit`'s gated early-return and Compose's `restart: no` all
+   * deliberately ignore it — so no gate event will arrive to open it. That is
+   * decidable here without knowing which branch dropped the release, which
+   * matters: docs/283 closed two routes to this symptom and a third was then
+   * observed in production on a build already carrying that fix, over five
+   * separate reinstall cycles on one session and four other sessions besides.
+   * Guessing at a fourth route would be the same mistake again.
+   *
+   * **Scope.** This covers a lost gate RELEASE, not a lost install COMPLETION.
+   * An install that never finishes leaves `_installRunning` true, and firing
+   * there would start the services against a half-written dependency tree —
+   * the docs/137 race the gate exists to remove. That layer is docs/283's
+   * `awaitInstallCompletion`, and the two are deliberately independent.
+   *
+   * Four conditions must ALL hold, and each is a way the bracket can be
+   * legitimately open:
+   *
+   *  - **Services are held.** Nothing to recover otherwise.
+   *  - **No install is in flight.** A running install owns the gate; its own
+   *    completion is the release. This also subsumes "a teardown is stored but
+   *    not yet consumed": `_gatedTeardown` is only ever non-null while
+   *    `_installRunning` is true, since the hold sets it and `releaseInstallGate`
+   *    nulls it on its first line. Testing the field as well would add a
+   *    condition that can only ever SUPPRESS a recovery, never prevent a
+   *    docs/239 regression the next condition doesn't already prevent.
+   *  - **The last install did not fail.** `latchGatedServicesToError` leaves the
+   *    services in the set ON PURPOSE, latched to `error` with the real cause,
+   *    so a later successful re-install can start them. That is a held gate the
+   *    user can see and act on — not a wedge, and starting those services would
+   *    walk them straight into the `vite: not found` the latch exists to
+   *    prevent.
+   *  - **No release is awaiting a teardown.** `docker compose stop` may
+   *    legitimately run for a service's whole `stop_grace_period`, and
+   *    `releaseInstallGate` awaits it precisely so our own SIGKILL lands while
+   *    the service is still gated (docs/239). Reopening inside that window
+   *    re-creates the bug the await exists to prevent. This is the ONLY signal
+   *    for that window — see {@link _gateReleasesInFlight}.
+   *
+   * And it must hold CONTINUOUSLY for {@link gateWatchdogSettleMs}, measured
+   * from the first heartbeat that saw it. That is what makes this a backstop
+   * rather than a participant: on a healthy bracket a teardown or a running
+   * install is always in flight, so the clock never even starts.
+   *
+   * The action is the gate's own open path (`startGatedServices`), not a bespoke
+   * start, so the `stoppedByUser` filter (requirement 5) applies unchanged: a
+   * wedged gate holding only services the user stopped is cleared and nothing is
+   * started.
+   */
+  private checkInstallGateLiveness(now = Date.now()): void {
+    const wedged =
+      !this._disposed &&
+      this.gatedServices.size > 0 &&
+      !this._installRunning &&
+      !this._installFailed &&
+      this._gateReleasesInFlight === 0;
+
+    if (!wedged) {
+      this._gateWedgedSince = null;
+      return;
+    }
+
+    // First sighting — start the clock and wait for the next heartbeat.
+    if (this._gateWedgedSince === null) {
+      this._gateWedgedSince = now;
+      return;
+    }
+
+    const heldMs = now - this._gateWedgedSince;
+    if (heldMs < this.gateWatchdogSettleMs) return;
+
+    this._gateWedgedSince = null;
+    console.warn(
+      `[compose:${this.sessionId}] install gate watchdog: ${this.gatedServices.size} service(s) ` +
+      `(${[...this.gatedServices].join(", ")}) have been held for ${Math.round(heldMs / 1000)}s with no ` +
+      `install running, no failed install, and no teardown pending — the gate's release was lost, and no ` +
+      `gate event will arrive to open it. Reopening it.`,
+    );
+    this.startGatedServices();
+  }
+
+  /**
    * Install finished successfully — start every gated service in one batched
    * `docker compose up` so they share startup time rather than serializing.
    * Clears the gate set; from here the periodic poller tracks them normally.
    */
   private startGatedServices(): void {
     if (this._disposed) return;
-    if (this.gatedServices.size === 0) return;
+    if (this.gatedServices.size === 0) {
+      // Only once the stack is up. Before `start()` has populated the service
+      // map there is nothing the gate COULD be holding, and a successful
+      // install routinely finishes in that window — logging there would put a
+      // "declined to open the gate" line in every session's boot, which is how
+      // a diagnostic becomes noise and stops being read (review finding).
+      if (this._started) {
+        console.log(
+          `[compose:${this.sessionId}] install gate open skipped — no services are held`,
+        );
+      }
+      return;
+    }
     // A gated service the user stopped while it was held stays stopped. The gate
     // opening is an automatic lifecycle event, not a newer instruction from the
     // user, and requirement 5 gives the user's stop the last word — starting it
@@ -3010,8 +3207,16 @@ export class ServiceManager extends EventEmitter {
     // they like, which clears the flag.
     const names = [...this.gatedServices].filter(n => !this.stoppedByUser.has(n));
     const held = this.gatedServices.size - names.length;
+    // Cleared either way: the gate has done its job, and leaving names in the
+    // set would look exactly like the wedge the watchdog hunts for.
     this.gatedServices.clear();
-    if (names.length === 0) return;
+    if (names.length === 0) {
+      console.log(
+        `[compose:${this.sessionId}] install finished — all ${held} gated service(s) were stopped by the user; ` +
+        `clearing the gate and starting nothing`,
+      );
+      return;
+    }
     const heldNote = held > 0 ? ` (${held} left stopped at the user's request)` : "";
     console.log(
       `[compose:${this.sessionId}] install finished — starting ${names.length} gated service(s): ${names.join(", ")}${heldNote}`,
@@ -3073,7 +3278,16 @@ export class ServiceManager extends EventEmitter {
       );
       return;
     }
-    const names = requested.filter(n => this.services.has(n));
+    // The `stoppedByUser` filter is re-applied here, not just in
+    // `startGatedServices`, for the same reason the generation is re-checked:
+    // that filter ran BEFORE the queue, and the queue can hold this batch for
+    // as long as the `compose up` ahead of it takes. A Stop issued inside that
+    // window records itself and finds no `up` in flight to chase
+    // (`stopService` captures `upSettled` before stopping, and this batch has
+    // not started one yet), so without this the queued start walks a service
+    // the user just stopped straight back up — requirement 5 violated one layer
+    // down, exactly as the generation was. Review finding on docs/286.
+    const names = requested.filter(n => this.services.has(n) && !this.stoppedByUser.has(n));
     if (names.length === 0) return;
     try {
       await this.withUpInFlight(names, async () => {
