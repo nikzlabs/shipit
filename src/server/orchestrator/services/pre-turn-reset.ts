@@ -1191,7 +1191,7 @@ export async function checkResetPreconditions(
  */
 export const RESET_REFUSAL_GUIDANCE =
   "Do NOT work around this — do not run `git reset --hard`, `git checkout -f`, "
-  + "`git push --force`, or any other manual reset. The check refused because a reset "
+  + "`git push --force`, `git rebase`, or any other manual reset or rewrite. The check refused because a reset "
   + "here would destroy work that is not recoverable (uncommitted edits have no reflog "
   + "entry, and unmerged commits would be discarded). Report what this said and let the "
   + "user decide. If the user tells you to proceed anyway, use the brokered override — "

@@ -117,7 +117,16 @@ export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[
   // services/auto-push-scheduler.ts — the incident that motivated docs/264.
   {
     producer: "auto-push-scheduler: non-fast-forward",
-    pattern: /^Auto-push rejected: branch has diverged from remote\. Rebase needed to update\.$/,
+    pattern: /^Auto-push rejected: this session's branch and its remote have diverged\. Measuring which side carries what\.$/,
+  },
+  {
+    // The measured shape, which is the line an ops session actually needs: it
+    // says which SIDE carries work, and therefore whether a force-push would
+    // destroy anything. Safe to list because it names no branch and no remote —
+    // every variable part is a count. The "could not be measured" form is
+    // excluded, since its reason clause can carry git's own error text.
+    producer: "auto-push-scheduler: measured divergence shape",
+    pattern: /^Divergence shape(?: \(against a remote view that could not be refreshed\))?: \d+ commit\(s\) only in this session, \d+ commit\(s\) only on the remote branch(?:; the two histories share no common commit)?\.(?: A force-push would discard \d+ commit\(s\) from the remote\.)?$/,
   },
   {
     producer: "auto-push-scheduler: invalid token",

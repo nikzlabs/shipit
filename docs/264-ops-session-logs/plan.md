@@ -22,7 +22,10 @@ consecutive auto-pushes were rejected and the host showed the *commits* with no
 push and no error after them. The explanation was one line per commit —
 `Auto-push rejected: branch has diverged from remote. Rebase needed to update.`,
 written by `services/auto-push-scheduler.ts:report` — visible only in the
-session's own Logs panel in the browser. From an ops session it looked like a
+session's own Logs panel in the browser. (That wording is historical: docs/218
+phase 9 dropped the "rebase needed" remedy — a rebase is what *caused* the next
+incident — and added a measured `Divergence shape: …` line beside it. Both are
+ops-safe templates.) From an ops session it looked like a
 push that silently vanished.
 
 ## Shape

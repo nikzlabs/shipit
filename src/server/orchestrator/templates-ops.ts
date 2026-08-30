@@ -384,7 +384,8 @@ A large class of orchestrator events is written **per session** via
 \`broadcastLog\`, which writes to the durable log store and the in-memory ring and
 makes **no console call**. Those lines never appear in
 \`docker logs shipit-shipit-1\` or in the journal. Auto-push outcomes (including
-\`Auto-push rejected: branch has diverged from remote.\`), compose reconcile
+\`Auto-push rejected: this session's branch and its remote have diverged.\` and the
+\`Divergence shape: …\` line that follows it), compose reconcile
 failures, container re-adoption, idle disposal and OOM notices all live there.
 
 An event missing from the orchestrator log is therefore **not** evidence it

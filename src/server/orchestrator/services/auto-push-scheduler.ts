@@ -92,6 +92,33 @@
  * notice, exactly as the merged-push guard does — naming the branch, the reason,
  * and the two commands that actually ship the work.
  *
+ * ## …and a fourth misreport, this time in the notice's own text (2026-08-30)
+ *
+ * The notice that came out of the incident above described the SPACE of
+ * divergences — remote ahead, or history rewritten, or the pull request already
+ * merged — and let the reader pick. Session e48417b0 is what that costs: the
+ * shape there was "nothing unpushed here, one already-published commit only on
+ * the REMOTE" (an agent-side rebase after the docs/218 auto-reset dropped it),
+ * and the notice asserted the opposite — that the commit was safe locally and
+ * that further commits would stay local — while emphasising the one recovery,
+ * `shipit branch reset-to-base --force`, that would have deleted the commit from
+ * the only place it existed.
+ *
+ * The shape is cheap to measure at the moment of the rejection, so it is now
+ * measured: `services/push-divergence.ts` fetches the branch, counts both sides
+ * of the symmetric difference, names the commits that exist ONLY on the remote,
+ * and returns a shape the notice turns into exactly ONE recovery. The refusal to
+ * force a divergence open is untouched — what changed is the quality of the
+ * report, which is the defect this and the three incidents above share.
+ *
+ * The client's rebase banner had the same defect in UI form, and it is the more
+ * dangerous half: `git_push_rejected` was emitted on every rejection, and the
+ * banner's "Update branch" button rebases onto the base and force-pushes
+ * (`services/rebase-driver.ts`). In the shape above that is one click from
+ * deleting the only copy of the commit. The banner now waits for the
+ * measurement and is armed only when {@link baseRebaseIsSafe} — which fails
+ * closed on anything unmeasured.
+ *
  * **One notice per divergence EPISODE, not per rejection.** Nine identical
  * notices is noise that trains the reader to skip the tenth; the episode flag is
  * cleared by the next successful push, so a divergence that is healed (by
@@ -186,74 +213,15 @@ import type { PersistedMessage } from "../chat-history.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { pushToOrigin, isGitAuthError } from "../git-utils.js";
 import { classifyPushFailure, isNonFastForwardError, isRewriteWindowPushFailure } from "./git.js";
+import {
+  baseRebaseIsSafe,
+  formatDivergedPushNotice,
+  measurePushDivergence,
+  type PushDivergence,
+} from "./push-divergence.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import { agentLogAppend } from "../log-emit.js";
 import { getErrorMessage } from "../validation.js";
-
-/**
- * The persisted transcript notice for a push rejected as non-fast-forward. It
- * answers the three questions the user asked during the incident, in order: what
- * happened to my commit, why, and how do I ship it.
- *
- * Plain prose, no markdown emphasis — `MessageList` renders a `notice` as
- * pre-wrapped text (`useMarkdown` is false for notices), so `**bold**` would show
- * up literally. Backticks match the neighbouring merged-push / conflict notices.
- *
- * The branch may be unknown (the rejection came from `git push`, and re-reading
- * the branch afterwards can itself fail), so every mention degrades gracefully
- * rather than printing "undefined".
- *
- * ## Why the remedy is three branches and not one line
- *
- * A remedy the agent is refused when it runs it is the same dead end in a
- * friendlier voice, so each branch was checked against the code that would
- * refuse it. Divergence has two causes with opposite fixes, and this notice's
- * firing condition OVERLAPS a third state that forbids both:
- *
- *  - **The remote is ahead** — an ordinary reconcile, `git pull --rebase`.
- *  - **This branch's history was rewritten** — pulling would drag the replaced
- *    history back in, so the fix is `--force-with-lease`.
- *  - **…and the session's pull request has already merged.** A branch rebased
- *    off a merged tip still has `mergedAt` set (the docs/202 re-arm clears it
- *    only later), which arms `SHIPIT_GUARD_DESTRUCTIVE_GIT=1` and makes
- *    `docker/agent-hooks/block-branch-ops.mjs` block a hand-rolled
- *    `--force-with-lease` outright. The sanctioned command is
- *    `shipit branch reset-to-base` — but a PLAIN one refuses here too, with
- *    `head-moved` (`services/pre-turn-reset.ts`), because new commits sit on top
- *    of the merged SHA. `--force --reason "<why>"` is the documented escape for
- *    exactly this shape (CLAUDE.md post-turn invariant 4), so that is what the
- *    notice names.
- *
- * `gh pr create` is named with its condition attached rather than as a blanket
- * escape hatch: it `forcePush`es ONLY when re-arming past a merged pull request
- * (`services/github.ts`). Against an OPEN pull request it uses a plain
- * `git.push`, which a diverged branch rejects exactly as the auto-push did.
- */
-export function formatDivergedPushNotice(branch: string | null): string {
-  const named = branch ? ` ${branch}` : "";
-  const ref = branch ? `origin ${branch}` : "origin <branch>";
-  return (
-    `Not pushed — this session's branch${named} has diverged from its remote.\n\n`
-    + `The commit is safe in this session's local history, but the push was rejected as `
-    + `non-fast-forward: the remote branch carries commits this branch does not, or this `
-    + `branch's history was rewritten (a rebase or a reset onto a fresh base). ShipIt never `
-    + `force-pushes automatically, so the branch on GitHub stays frozen at its last successful `
-    + `push — and a pull request on it would merge WITHOUT this commit. Every further commit `
-    + `stays local too, until the divergence is resolved.\n\n`
-    + `To ship it, take the case that applies:\n\n`
-    + `1. The remote simply has commits this branch does not — reconcile with `
-    + `\`git pull --rebase ${ref}\`, and the next turn's push lands.\n`
-    + `2. This branch's history was rewritten on purpose — publish it with `
-    + `\`git push --force-with-lease ${ref}\`.\n`
-    + `3. This session's pull request has ALREADY MERGED — ShipIt blocks a hand-rolled `
-    + `force-push in that state, and a plain \`shipit branch reset-to-base\` refuses it too `
-    + `(\`head-moved\`) once new commits sit on the merged tip. Use `
-    + `\`shipit branch reset-to-base --force --reason "<why>"\`, then re-apply this work on the `
-    + `fresh base and open a new pull request.\n\n`
-    + `Note that \`gh pr create\` force-pushes only when it re-arms past a merged pull request; `
-    + `against an open one it uses a plain push and is rejected the same way.`
-  );
-}
 
 /**
  * How long to wait before retrying a push that was rejected while ShipIt's own
@@ -317,6 +285,20 @@ export interface AutoPushDeps {
    * is about to register. Optional so tests can leave it out.
    */
   notifyAutoPush?: ((sessionId: string) => void) | undefined;
+  /**
+   * Would a hand-rolled `git push --force-with-lease` be BLOCKED for this
+   * session right now? `docker/agent-hooks/block-branch-ops.mjs` blocks one
+   * while `SHIPIT_GUARD_DESTRUCTIVE_GIT=1`, which the orchestrator sets from
+   * `Boolean(session.mergedHeadSha)` (`session-agent-run-params.ts`).
+   *
+   * Consulted only to pick the wording of a recovery the notice was going to
+   * name anyway — a command the agent is refused when it runs it is the same
+   * dead end in a friendlier voice. Optional, and read defensively: an absent
+   * or throwing implementation means "not blocked", which names the ordinary
+   * force-push. That is the safe direction, because the hook's own refusal
+   * points at the brokered command.
+   */
+  destructiveGitGuarded?: ((sessionId: string) => boolean) | undefined;
 }
 
 export interface AutoPushScheduler {
@@ -405,6 +387,55 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
       deps.getRunner(sessionId)?.emitMessage(agentLogAppend("server", text));
     } catch (err) {
       console.error(`[auto-push] ${sessionId}: could not emit to attached viewers:`, err);
+    }
+  };
+
+  /**
+   * The measured shape, in one operator-readable line. The transcript notice is
+   * the user's surface and is emitted once per episode; this is the log ring's,
+   * and it exists so a `docker logs` reader can see WHICH side carried what
+   * without opening the transcript — the same reasoning that put the push
+   * failure's class and full message on the console before anything interprets
+   * them.
+   *
+   * The measured form names no branch and no remote, only counts. That is what
+   * lets it be an OPS-SAFE template (`services/host-session-logs.ts`): every
+   * variable part is a ShipIt-controlled number, so an ops session diagnosing
+   * this exact incident can read the shape across the session boundary. The
+   * unmeasured form quotes a failure reason that can carry git's own text, so it
+   * is deliberately NOT allowlisted — same call the file already makes for
+   * `Auto-push failed: ${errMsg}`.
+   */
+  const describeShape = (shape: PushDivergence): string => {
+    if (!shape.measured) {
+      return `Divergence shape: could not be measured — ${shape.reason}.`;
+    }
+    const stale = shape.refreshed ? "" : " (against a remote view that could not be refreshed)";
+    const atRisk = shape.behind > 0
+      ? ` A force-push would discard ${shape.behind} commit(s) from the remote.`
+      : "";
+    return [
+      `Divergence shape${stale}: ${shape.ahead} commit(s) only in this session, `
+      + `${shape.behind} commit(s) only on the remote branch`
+      + `${shape.sharedBase ? "" : "; the two histories share no common commit"}.`,
+      atRisk,
+    ].join("");
+  };
+
+  /**
+   * Is a hand-rolled force-push blocked for this session? Read defensively —
+   * an absent dep, or one that throws, means "not blocked", which names the
+   * ordinary `--force-with-lease`. Safe in that direction because the hook's
+   * own refusal points the agent at the brokered command; the reverse (naming
+   * the brokered command on a session that could just force-push) would send
+   * the user through a base reset they never needed.
+   */
+  const forcePushBlocked = (sessionId: string): boolean => {
+    try {
+      return deps.destructiveGitGuarded?.(sessionId) === true;
+    } catch (err) {
+      console.warn(`[auto-push] ${sessionId}: could not read the destructive-git guard state:`, err);
+      return false;
     }
   };
 
@@ -670,33 +701,62 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
         //   - `report` — the log ring (durable, replayed to a late viewer) and
         //     the server log. EVERY rejection, so the operator sees the run.
         //   - `git_push_rejected` — transient client state that drives the
-        //     rebase banner. Every rejection too; the client owns its lifetime.
+        //     rebase banner. Once per episode, and ONLY when the measurement
+        //     says the banner's action is safe (see below).
         //   - the persisted notice — the transcript, ONCE per episode.
+        // No remedy named here. This line fires on EVERY rejection, ahead of the
+        // measurement, so it cannot know which side carries what — and "rebase
+        // needed to update", which it used to say, was the exact wrong advice in
+        // the 2026-08-30 incident (a rebase is what dropped the commit). The
+        // measured shape and its one recovery land in the notice below.
         report(
           sessionId,
-          "Auto-push rejected: branch has diverged from remote. Rebase needed to update.",
+          "Auto-push rejected: this session's branch and its remote have diverged."
+          + " Measuring which side carries what.",
         );
-        try {
-          deps.getRunner(sessionId)?.emitMessage({
-            type: "git_push_rejected",
-            reason: "non_fast_forward",
-            message: "Branch has diverged from remote. Rebase needed to update.",
-          });
-        } catch (emitErr) {
-          // Isolated for the same reason `report` isolates its two surfaces: the
-          // rebase banner is the LEAST durable of the three, and it sits ahead of
-          // the persisted notice. A wedged transport must not cost the row.
-          console.error(`[auto-push] ${sessionId}: could not emit git_push_rejected:`, emitErr);
-        }
         if (!notifiedDiverged.has(sessionId)) {
           notifiedDiverged.add(sessionId);
-          // Best-effort: the push already failed, so re-reading the branch may
-          // fail too. The notice degrades to an unnamed branch rather than
-          // being lost — it is the whole point of this path.
-          let branch: string | null = null;
-          try {
-            branch = await git.getCurrentBranch();
-          } catch { /* notice names no branch */ }
+          // Measure the shape before saying anything about it. Deliberately
+          // AFTER the fast log line above: this fetches the branch, and a slow
+          // remote must not delay the operator's first signal. It is confined to
+          // the once-per-episode path, so a session rejecting on every turn does
+          // not fetch on every turn — and the fetch is timeout-bounded, because
+          // the episode is already marked notified here and a hung fetch would
+          // otherwise take the notice AND every later attempt with it.
+          //
+          // `measurePushDivergence` never throws — every read inside it
+          // degrades to an "unmeasured" shape, whose notice states plainly that
+          // ShipIt could not tell rather than guessing a recovery.
+          const shape = await measurePushDivergence(git);
+          report(sessionId, describeShape(shape));
+          // The client's rebase banner is not a passive warning: its "Update
+          // branch" button rebases onto the base and force-pushes
+          // (`services/rebase-driver.ts`). That republishes a rewritten branch —
+          // the right remedy for the 2026-08-15 shape — and DESTROYS the remote's
+          // commits in the 2026-08-30 one, where the branch has nothing to
+          // republish and the remote holds the only copy. Arming it used to be
+          // unconditional, which made the same wrong recommendation this fix
+          // removes from the notice available as one click. It now waits for the
+          // measurement and fails closed on anything unmeasured.
+          if (baseRebaseIsSafe(shape)) {
+            try {
+              deps.getRunner(sessionId)?.emitMessage({
+                type: "git_push_rejected",
+                reason: "non_fast_forward",
+                message: "Branch has diverged from remote. Rebase needed to update.",
+              });
+            } catch (emitErr) {
+              // Isolated for the same reason `report` isolates its two surfaces:
+              // the banner is the LEAST durable of the three, and it sits ahead
+              // of the persisted notice. A wedged transport must not cost the row.
+              console.error(`[auto-push] ${sessionId}: could not emit git_push_rejected:`, emitErr);
+            }
+          } else {
+            console.warn(
+              `[auto-push] ${sessionId}: withholding the rebase banner — its force-push could`
+              + " discard commits that exist only on the remote, or the shape could not be measured.",
+            );
+          }
           const runner = deps.getRunner(sessionId);
           try {
             emitNoticePostTurn(
@@ -717,7 +777,7 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
               },
               deps.chatHistory,
               sessionId,
-              formatDivergedPushNotice(branch),
+              formatDivergedPushNotice(shape, { forcePushBlocked: forcePushBlocked(sessionId) }),
               "warn",
             );
           } catch (noticeErr) {

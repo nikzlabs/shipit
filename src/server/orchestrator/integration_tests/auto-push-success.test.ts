@@ -219,11 +219,20 @@ describe("auto-push: success and failure", () => {
     const { sessionId, sessionDir } = await createSession();
     createBareRemote(sessionDir);
 
-    // Rewrite the branch's history so the remote no longer fast-forwards. This
-    // is what a post-merge rebase leaves behind. The message MUST change: an
-    // `--amend --no-edit` seconds after the original commit reproduces the same
-    // tree, parent, message and committer second, so git hands back the
-    // identical SHA and there is no divergence to detect.
+    // A commit on top of the pushed root, THEN a rewrite of it. Both halves
+    // matter. The rewrite is what stops the remote fast-forwarding — the shape a
+    // post-merge rebase leaves behind — and the message MUST change, because an
+    // `--amend --no-edit` seconds after the original reproduces the same tree,
+    // parent, message and committer second, so git hands back the identical SHA
+    // and there is nothing to detect. Rewriting the ROOT instead would leave the
+    // two histories with no common commit at all, which is a different (and
+    // rarer) shape: the notice then correctly refuses to name any remedy, so the
+    // fixture has to keep a shared base for this to be the rewritten-branch case.
+    execSync("git commit --allow-empty -m 'work on top of the pushed base'", {
+      cwd: sessionDir,
+      env: { ...process.env, HOME: tmpDir },
+    });
+    execSync("git push origin HEAD", { cwd: sessionDir, env: { ...process.env, HOME: tmpDir } });
     execSync('git commit --amend --allow-empty -m "rewritten by a rebase onto a fresh base"', {
       cwd: sessionDir,
       env: { ...process.env, HOME: tmpDir },
@@ -242,7 +251,18 @@ describe("auto-push: success and failure", () => {
     // The live half — what an attached viewer sees immediately.
     const notice = messages.find(isNotice);
     expect(notice).toMatchObject({ type: "system_notice", level: "warn", sessionId });
-    expect((notice as { message: string }).message).toContain("--force-with-lease");
+    const message = (notice as { message: string }).message;
+    expect(message).toContain("--force-with-lease");
+    // Measured against a real repository, not a stub: this branch carries the
+    // rewritten commit plus the turn's own auto-commit, while the remote still
+    // carries the commit the rewrite replaced. Both counts have to be right,
+    // because they are what choose the remedy — the 2026-08-30 incident was a
+    // notice that named one without measuring either.
+    expect(message).toContain("2 commits only in this session");
+    expect(message).toContain("1 commit only on the remote");
+    // …and the at-risk commit is NAMED, not just counted, because that is what a
+    // reader recognises before agreeing to discard it.
+    expect(message).toContain("work on top of the pushed base");
 
     // The durable half — what survives the reload. This is the assertion that
     // fails without the fix.
