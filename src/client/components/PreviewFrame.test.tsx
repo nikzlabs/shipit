@@ -578,12 +578,14 @@ describe("PreviewFrame", () => {
   });
 
   it("renders Home disabled while the preview is running but no slot URL exists yet", () => {
-    // Running, but the health poll hasn't created an iframe slot — the toolbar
-    // renders, but there is no origin to navigate to yet.
+    // A raw-IP access host can't carry `{session}--{port}.<host>`, so no slot
+    // URL can be built at all — the toolbar renders, but there is no origin to
+    // navigate to. Since docs/286 this is the only way to reach that state:
+    // every host that CAN build a URL gets its slot on the first pass.
+    vi.stubEnv("VITE_API_HOST", "192.168.1.5:4123");
     usePreviewStore.getState().setServices([
       { name: "dev", status: "running", port: 3000, preview: "manual" },
     ]);
-    vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise(() => {})));
     const runningPreview: PreviewStatus = {
       running: true,
       port: 3000,
@@ -1115,12 +1117,6 @@ describe("PreviewFrame", () => {
     usePreviewStore.getState().setServices([
       { name: "dev", status: "running", port: 3000, preview: "manual" },
     ]);
-    // Container-mode poll hits /api/preview-health/.../{port} and waits for
-    // `{ ready: true }`. Override the default fetch stub for this test.
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(new Response(JSON.stringify({ ready: true }), { status: 200 })),
-    );
     const runningPreview: PreviewStatus = {
       running: true,
       port: 3000,
@@ -1138,48 +1134,14 @@ describe("PreviewFrame", () => {
     );
     // The manual-only overlay must not show — the iframe takes its place.
     expect(screen.queryByText("No preview running. Start a service to launch it.")).not.toBeInTheDocument();
-    // The iframe poll completes via the stubbed fetch; iframe then mounts.
     const iframe = await screen.findByTitle("Live Preview");
     expect(iframe).toBeInTheDocument();
   });
 
-  it("shows 'Connecting to dev server...' (not 'Starting dev server...') while polling a running preview", () => {
-    // Dogfooding regression: when the orchestrator has reported the preview as
-    // running but the iframe slot hasn't been polled into existence yet, the
-    // overlay used to say "Starting dev server..." — confusing in dogfooding
-    // because the user already started the service and Vite logs "ready in
-    // 437ms" while the spinner is on screen. The wording now reflects
-    // reality: the dev server is up, we're connecting to it.
-    usePreviewStore.getState().setServices([
-      { name: "dev", status: "running", port: 3000, preview: "manual" },
-    ]);
-    // Never resolve — keep the poll pending so the overlay stays visible.
-    vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise(() => {})));
-    const runningPreview: PreviewStatus = {
-      running: true,
-      port: 3000,
-      url: "/preview/abc/3000/",
-      source: "detected",
-      detectedPorts: [3000],
-    };
-    render(
-      <PreviewFrame
-        preview={runningPreview}
-        sessionId="abc"
-        {...defaultProps}
-        detectedPorts={[3000]}
-      />,
-    );
-    expect(screen.getByText("Connecting to dev server...")).toBeInTheDocument();
-    // The legacy wording must NOT appear in this state — it's reserved for
-    // the path-1 spinner (no preview, no startup steps).
-    expect(screen.queryByText("Starting dev server...")).not.toBeInTheDocument();
-  });
-
   it("shows the empty-state (not an infinite spinner) when the host can't carry a wildcard subdomain", () => {
-    // docs/175: a raw-IP access host can't build {session}--{port}.<host>, so the
-    // poller creates no iframe slot. Instead of stranding the user on the
-    // "Connecting to dev server…" spinner forever, PreviewFrame must explain why.
+    // docs/175: a raw-IP access host can't build {session}--{port}.<host>, so no
+    // iframe slot is created. Instead of leaving the user on a blank pane,
+    // PreviewFrame must explain why.
     vi.stubEnv("VITE_API_HOST", "192.168.1.5:4123");
     const runningPreview: PreviewStatus = {
       running: true,
@@ -1232,19 +1194,13 @@ describe("PreviewFrame", () => {
     expect(screen.queryByText(/sslip\.io/)).not.toBeInTheDocument();
   });
 
-  it("passes an AbortSignal to preview-health fetch so a hung response can't strand the poll", async () => {
-    // Regression: previously, if `/api/preview-health` ever hung (e.g. the
-    // outer orchestrator is overloaded in dogfooding and responses get stuck),
-    // the poll loop was wedged on `await fetch(pollUrl)` — the `i < 60` cap
-    // never advanced, the post-loop slot creation never fired, and the
-    // "Connecting to dev server..." spinner stayed up forever. The fix is a
-    // per-fetch `AbortSignal.timeout(2000)` plus a wall-clock 15s deadline
-    // on the loop, after which the slot is created unconditionally.
-    //
-    // This test verifies the per-fetch signal is wired up; the wall-clock
-    // deadline is covered by inspection (testing 15s of real time is too
-    // slow, and fake-timers don't interleave cleanly with AbortSignal's
-    // internal timer + React's render queue).
+  it("mounts the iframe on the first pass, with no reachability check first", async () => {
+    // docs/286 req 1: the pane adds no wait of its own. The slot used to be
+    // created only after `/api/preview-health` reported ready, which cost at
+    // least one round trip on every open and up to 15s when the probe
+    // disagreed with the browser. The proxy now absorbs a dev server that is
+    // still coming up, so the iframe is attached straight away and the wait —
+    // if there is one — belongs to the document inside it.
     usePreviewStore.getState().setServices([
       { name: "dev", status: "running", port: 3000, preview: "manual" },
     ]);
@@ -1265,64 +1221,10 @@ describe("PreviewFrame", () => {
         detectedPorts={[3000]}
       />,
     );
-    // Spinner is up while we wait for the first fetch to settle.
-    expect(screen.getByText("Connecting to dev server...")).toBeInTheDocument();
-    // The poll effect fires async after mount — wait for the first fetch.
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit | undefined];
-    expect(url).toBe("/api/preview-health/abc/3000");
-    expect(init?.signal).toBeInstanceOf(AbortSignal);
-    // The signal must abort on its own (AbortSignal.timeout) so the await
-    // can't hang indefinitely. We don't need to wait the full 2s; the
-    // important contract is "there is a signal that will fire."
-    expect(init?.signal?.aborted).toBe(false);
-  });
-
-  it("creates iframe slot promptly when preview-health flips to ready after a few polls (dogfood slow boot)", async () => {
-    // Dogfooding case: the dev container is reported `running` by docker
-    // compose but Vite isn't actually serving on :3000 yet, so preview-health
-    // returns `{ ready: false }` for the first few polls. As soon as Vite
-    // comes up and preview-health flips to `{ ready: true }`, the iframe
-    // slot must be created — otherwise the user is stuck looking at the
-    // "Connecting to dev server..." overlay long after Vite logged
-    // "ready in 437 ms".
-    usePreviewStore.getState().setServices([
-      { name: "dev", status: "running", port: 3000, preview: "manual" },
-    ]);
-    let callCount = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockImplementation(() => {
-        callCount += 1;
-        // First few polls: dev container is up but Vite isn't listening yet.
-        // Then Vite comes up and the probe succeeds.
-        const ready = callCount > 3;
-        return Promise.resolve(
-          new Response(JSON.stringify({ ready }), { status: 200 }),
-        );
-      }),
-    );
-    const runningPreview: PreviewStatus = {
-      running: true,
-      port: 3000,
-      url: "/preview/abc/3000/",
-      source: "detected",
-      detectedPorts: [3000],
-    };
-    render(
-      <PreviewFrame
-        preview={runningPreview}
-        sessionId="abc"
-        {...defaultProps}
-        detectedPorts={[3000]}
-      />,
-    );
-    // The poll loop awaits fetch() with a 250ms gap between iterations —
-    // findByTitle's default 1000ms timeout is comfortably enough for 4 polls.
-    const iframe = await screen.findByTitle("Live Preview");
-    expect(iframe).toBeInTheDocument();
-    // The fetch should have been called at least 4 times before flipping to ready.
-    expect(callCount).toBeGreaterThanOrEqual(4);
+    // Synchronous `getBy`, not `findBy`: a hung fetch must not be able to
+    // delay the iframe, because nothing is waiting on one.
+    const iframe = screen.getByTitle("Live Preview") as HTMLIFrameElement;
+    expect(iframe.getAttribute("src")).toBe("http://abc--3000.localhost:3000/");
   });
 
   // ---- Managed source tests ----
@@ -1449,13 +1351,6 @@ describe("PreviewFrame", () => {
     usePreviewStore.getState().setServices([
       { name: "web", status: "running", port: 3000, preview: "auto" },
     ]);
-    // A fresh Response per call: a Response body is single-use, so one
-    // shared instance makes every poll after the first fail its `json()`
-    // and retry — each takeover re-poll would loop instead of resolving.
-    const fetchMock = vi.fn().mockImplementation(() =>
-      Promise.resolve(new Response(JSON.stringify({ ready: true }), { status: 200 })),
-    );
-    vi.stubGlobal("fetch", fetchMock);
     const runningPreview: PreviewStatus = {
       running: true,
       port: 3000,
@@ -1472,10 +1367,9 @@ describe("PreviewFrame", () => {
       />,
     );
     const first = await screen.findByTitle("Live Preview");
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 
     // A list refresh with the same owner for the port — the ordinary case —
-    // must not re-probe or remount the retained iframe.
+    // must not remount the retained iframe.
     act(() => {
       usePreviewStore.getState().setServices([
         { name: "web", status: "running", port: 3000, preview: "auto" },
@@ -1483,11 +1377,10 @@ describe("PreviewFrame", () => {
     });
     await act(async () => {});
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(screen.getByTitle("Live Preview")).toBe(first);
   });
 
-  it("re-probes and remounts the slot when the port changes owner", async () => {
+  it("recreates and remounts the slot when the port changes owner", async () => {
     // The #2325 symptom in mirror image, reached with no port collision:
     // the pane shows a service that is not the one selected. The retained
     // iframe holds the previous owner's already-loaded document, so the fix
@@ -1496,13 +1389,6 @@ describe("PreviewFrame", () => {
     usePreviewStore.getState().setServices([
       { name: "web", status: "running", port: 3000, preview: "auto" },
     ]);
-    // A fresh Response per call: a Response body is single-use, so one
-    // shared instance makes every poll after the first fail its `json()`
-    // and retry — each takeover re-poll would loop instead of resolving.
-    const fetchMock = vi.fn().mockImplementation(() =>
-      Promise.resolve(new Response(JSON.stringify({ ready: true }), { status: 200 })),
-    );
-    vi.stubGlobal("fetch", fetchMock);
     const runningPreview: PreviewStatus = {
       running: true,
       port: 3000,
@@ -1519,15 +1405,14 @@ describe("PreviewFrame", () => {
       />,
     );
     const first = await screen.findByTitle("Live Preview");
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 
     act(() => {
       usePreviewStore.getState().setServices([
         { name: "api", status: "running", port: 3000, preview: "auto" },
       ]);
     });
+    await act(async () => {});
 
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     const second = await screen.findByTitle("Live Preview");
     expect(second).not.toBe(first);
 
@@ -1538,7 +1423,7 @@ describe("PreviewFrame", () => {
         { name: "worker", status: "running", port: 3000, preview: "auto" },
       ]);
     });
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    await act(async () => {});
     const third = await screen.findByTitle("Live Preview");
     expect(third).not.toBe(second);
   });
@@ -1550,13 +1435,6 @@ describe("PreviewFrame", () => {
     usePreviewStore.getState().setServices([
       { name: "web", status: "running", port: 3000, preview: "auto" },
     ]);
-    // A fresh Response per call: a Response body is single-use, so one
-    // shared instance makes every poll after the first fail its `json()`
-    // and retry — each takeover re-poll would loop instead of resolving.
-    const fetchMock = vi.fn().mockImplementation(() =>
-      Promise.resolve(new Response(JSON.stringify({ ready: true }), { status: 200 })),
-    );
-    vi.stubGlobal("fetch", fetchMock);
     const runningPreview: PreviewStatus = {
       running: true,
       port: 3000,
@@ -1573,7 +1451,6 @@ describe("PreviewFrame", () => {
       />,
     );
     const first = await screen.findByTitle("Live Preview");
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 
     act(() => usePreviewStore.getState().setServices([]));
     await act(async () => {});
@@ -1585,7 +1462,6 @@ describe("PreviewFrame", () => {
     });
     await act(async () => {});
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(screen.getByTitle("Live Preview")).toBe(first);
   });
 
@@ -1875,10 +1751,6 @@ describe("PreviewFrame", () => {
         }),
       );
 
-      // Reset the spy now; from here on, any auth-block timer arming is
-      // a regression for *this* test's scenario.
-      setTimeoutSpy.mockClear();
-
       // User switches to session B for a moment...
       const previewB: PreviewStatus = {
         running: true,
@@ -1889,9 +1761,11 @@ describe("PreviewFrame", () => {
       rerender(
         <PreviewFrame preview={previewB} sessionId="session-b" {...defaultProps} />,
       );
-      // Session B's slot doesn't exist yet (poll hasn't run for its
-      // session/port), so `activeSlotUrl` is null and the auth-block
-      // effect early-returns. No timer is armed.
+      // Session B gets its own slot immediately (docs/286) and legitimately
+      // arms its own detection timer — that is B's first load, not a re-arm.
+      // Clear the spy here so the assertion below is only about the return
+      // to A.
+      setTimeoutSpy.mockClear();
 
       // ...and switches back to session A. The iframe pool keeps slot A's
       // iframe alive; its contentWindow has not been torn down. With the
@@ -1973,13 +1847,11 @@ describe("PreviewFrame", () => {
       }
       expect(screen.getByText("Preview authentication required")).toBeInTheDocument();
 
-      // From here, any auth timer at all is a regression. Note there is no
-      // advance between the two rerenders: `rerender` is already `act`-wrapped,
-      // so the effects run without one, while an `await` here would let session
-      // B's in-flight health poll resolve and legitimately arm a timer of its
-      // own — counted by the assertion below, for the wrong session.
-      setTimeoutSpy.mockClear();
+      // Session B arms a detection timer of its own the moment its slot exists,
+      // which is B's first load and not a re-arm — so the spy is cleared after
+      // the switch to B and the assertion below is only about the return to A.
       rerender(<PreviewFrame preview={previewB} sessionId="session-b" {...defaultProps} />);
+      setTimeoutSpy.mockClear();
       rerender(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
 
       // No fresh detection timer, and the verdict is still on screen rather
@@ -2013,14 +1885,6 @@ describe("PreviewFrame", () => {
       usePreviewStore.setState({ previewTargetMemory: { s1: { service: "api", port: 4000 } } });
     }
 
-    function readyFetch() {
-      const fetchMock = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ ready: true }), { status: 200 }),
-      );
-      vi.stubGlobal("fetch", fetchMock);
-      return fetchMock;
-    }
-
     function renderPane(props: {
       preview: PreviewStatus;
       detectedPorts: number[];
@@ -2051,7 +1915,6 @@ describe("PreviewFrame", () => {
       // clashing row is listed first. Resolving the pane's service by port
       // alone would sit forever on "web is not running" while the remembered
       // `api` served 4000 perfectly well.
-      readyFetch();
       rememberApi();
       usePreviewStore.getState().setServices([
         { ...WEB, status: "stopped", port: 4000 },
@@ -2111,16 +1974,15 @@ describe("PreviewFrame", () => {
       expect(screen.getByText("exit 1")).toBeInTheDocument();
     });
 
-    it("never probes the port it is waiting on", async () => {
-      const fetchMock = readyFetch();
+    it("creates no slot for the port it is waiting on", async () => {
       rememberApi();
       usePreviewStore.getState().setServices([WEB, API_STOPPED]);
       renderPane({ preview: RUNNING, detectedPorts: [3000] });
 
       expect(await screen.findByText("api is not running")).toBeInTheDocument();
-      // A poll that ran would create a slot on its own timeout and park a dead
-      // document behind the overlay — which nothing re-probes afterwards.
-      expect(fetchMock).not.toHaveBeenCalled();
+      // A slot created here would park a document behind the overlay, and a
+      // created slot is only ever promoted afterwards, never reloaded — so it
+      // would still be there when the service came back.
       expect(screen.queryByTitle("Live Preview")).not.toBeInTheDocument();
     });
 
@@ -2138,9 +2000,6 @@ describe("PreviewFrame", () => {
     });
 
     it("shows the preview once the service is running", async () => {
-      // Container mode: the slot is created only after `/api/preview-health`
-      // reports ready, so the default stub (an empty body) would never resolve.
-      readyFetch();
       rememberApi();
       usePreviewStore.getState().setServices([WEB, { ...API_STOPPED, status: "running" }]);
       renderPane({
@@ -2153,7 +2012,6 @@ describe("PreviewFrame", () => {
     });
 
     it("reloads the retained slot when the service comes back", async () => {
-      readyFetch();
       rememberApi();
       usePreviewStore.getState().setServices([WEB, { ...API_STOPPED, status: "running" }]);
       const view = renderPane({
@@ -2197,7 +2055,6 @@ describe("PreviewFrame", () => {
     });
 
     it("does not reload another session's iframe when a switch ends the wait", async () => {
-      readyFetch();
       usePreviewStore.setState({
         previewTargetMemory: {
           s1: { service: "api", port: 4000 },

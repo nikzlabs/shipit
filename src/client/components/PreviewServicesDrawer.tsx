@@ -16,7 +16,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { ServiceList } from "./ServiceList.js";
 import { LogView } from "./LogView.js";
-import { buildSubdomainUrl } from "../hooks/usePreviewHealthPoller.js";
+import { buildSubdomainUrl } from "../hooks/usePreviewSlot.js";
 import { usePreviewStore, isServicesDrawerOpen, type ManagedServiceState } from "../stores/preview-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { resolvePreviewHost } from "../utils/preview-host.js";

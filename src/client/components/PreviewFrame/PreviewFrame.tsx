@@ -11,7 +11,7 @@ import { useUiStore } from "../../stores/ui-store.js";
 import { resolvePreviewHost, suggestWildcardHost } from "../../utils/preview-host.js";
 import { StartupSteps } from "../StartupSteps.js";
 import { useIframePool } from "../../hooks/useIframePool.js";
-import { usePreviewHealthPoller, buildSubdomainUrl } from "../../hooks/usePreviewHealthPoller.js";
+import { usePreviewSlot, buildSubdomainUrl } from "../../hooks/usePreviewSlot.js";
 import { useDeviceFrame } from "./DeviceFrame.js";
 import { ViewportResizeHandles } from "./ViewportResizeHandles.js";
 import { CUSTOM_SIZE_MIN, CUSTOM_SIZE_MAX } from "../device-presets.js";
@@ -163,8 +163,8 @@ export function PreviewFrame({
   // ---- Iframe pool: one iframe per (session, port) ----
   // Slots are keyed by "sessionId:port". Only the active slot is visible.
   // Background slots keep their iframes alive in the DOM. See `useIframePool`
-  // for LRU eviction and `usePreviewHealthPoller` for slot creation.
-  const { slots, slotOrder, iframeRefs, createdSlotsRef, pollingRef, promoteSlot, setSlot, dropSlot, getSlot } = useIframePool();
+  // for LRU eviction and `usePreviewSlot` for slot creation.
+  const { slots, slotOrder, iframeRefs, createdSlotsRef, promoteSlot, setSlot, dropSlot, getSlot } = useIframePool();
 
   const activeSlotKey = activePort ? `${sessionId ?? "_"}:${activePort}` : null;
   const activeSlot = activeSlotKey ? slots.get(activeSlotKey) ?? null : null;
@@ -207,23 +207,15 @@ export function PreviewFrame({
    */
   const waitingForService = !!activePort && !!targetServiceName && activeServiceState?.status !== "running";
 
-  // Compute poll URL for the active slot
-  const pollUrl = isContainerMode && sessionId
-    ? `/api/preview-health/${sessionId}/${activePort}`
-    : (activePort ? `http://localhost:${activePort}` : null);
-
-  // Poll and create/update the active slot when session/port changes.
-  usePreviewHealthPoller({
+  // Create/update the active slot when session/port changes.
+  usePreviewSlot({
     activeSlotKey,
     activePort,
     sessionId,
     preview,
-    pollUrl,
-    isContainerMode,
     apiHost,
     apiProtocol,
     createdSlotsRef,
-    pollingRef,
     promoteSlot,
     setSlot,
     getSlot,
@@ -306,6 +298,19 @@ export function PreviewFrame({
   // once on mount) can read the current active slot without re-subscribing.
   const activeSlotKeyRef = useRef<string | null>(activeSlotKey);
   activeSlotKeyRef.current = activeSlotKey;
+  /**
+   * Auth-detection state is keyed by slot key AND generation, never by the key
+   * alone. A slot rebuilt after an ownership takeover (planning#394) reuses the
+   * key and mounts a *different* iframe loading a *different* app, so the
+   * previous owner's "loaded" confirmation or "blocked" verdict says nothing
+   * about it — inherited, they skip detection for a frame that never reported,
+   * or leave a stale overlay over a working one.
+   */
+  const slotGenerationsRef = useRef<Map<string, number>>(new Map());
+  slotGenerationsRef.current = new Map(
+    [...slots].map(([k, s]) => [k, s.generation ?? 0] as const),
+  );
+  const authKey = (key: string) => `${key}#${slotGenerationsRef.current.get(key) ?? 0}`;
   const MAX_AUTH_TIMEOUT_MS = 5000;
   const MAX_AUTH_RETRIES = 2;
   const authBlocked = !!activeSlotKey && authBlockedSlots.has(activeSlotKey);
@@ -407,12 +412,12 @@ export function PreviewFrame({
     // it anyway.
     for (const [key, el] of iframeRefs.current.entries()) {
       if (el?.contentWindow && el.contentWindow === event.source) {
-        loadedSlotsRef.current.add(key);
+        loadedSlotsRef.current.add(authKey(key));
         reloadableWindowsRef.current.set(key, el.contentWindow);
         // A late "loaded" overturns a blocked verdict — the page came up after
         // all, so the slot must not stay settled or the overlay would come back
         // on the next visit.
-        authSettledRef.current.delete(key);
+        authSettledRef.current.delete(authKey(key));
         markAuthBlocked(key, false);
         if (key === activeSlotKeyRef.current) authRetryRef.current = 0;
         return;
@@ -432,14 +437,14 @@ export function PreviewFrame({
     // injected script ran the first time around, so there's nothing to detect.
     // Without this guard the timer would expire (no fresh postMessage on
     // revisit), force-reload the iframe, and discard the user's in-iframe state.
-    if (loadedSlotsRef.current.has(activeSlotKey)) {
+    if (loadedSlotsRef.current.has(authKey(activeSlotKey))) {
       markAuthBlocked(activeSlotKey, false);
       return;
     }
     // Detection already concluded for this slot at this URL. Re-arming would
     // time out against a cached iframe that isn't fetching anything and reload
     // it for no reason; the recorded verdict is already on screen.
-    if (authSettledRef.current.get(activeSlotKey) === activeSlotUrl) return;
+    if (authSettledRef.current.get(authKey(activeSlotKey)) === activeSlotUrl) return;
     // Reset the retry budget when the user navigates to a different preview URL.
     // refreshKey changes (manual or auto retry) keep the existing budget.
     if (lastAuthUrlRef.current !== activeSlotUrl) {
@@ -448,7 +453,7 @@ export function PreviewFrame({
     }
     markAuthBlocked(activeSlotKey, false);
     const timer = setTimeout(() => {
-      if (loadedSlotsRef.current.has(activeSlotKey)) return;
+      if (loadedSlotsRef.current.has(authKey(activeSlotKey))) return;
       if (authRetryRef.current < MAX_AUTH_RETRIES) {
         // Silent auto-reload: the refreshKey effect below will set el.src
         // again, which forces the iframe to re-fetch and re-run the injected
@@ -457,11 +462,13 @@ export function PreviewFrame({
         setRefreshKey((k) => k + 1);
         return;
       }
-      authSettledRef.current.set(activeSlotKey, activeSlotUrl);
+      authSettledRef.current.set(authKey(activeSlotKey), activeSlotUrl);
       markAuthBlocked(activeSlotKey, true);
     }, MAX_AUTH_TIMEOUT_MS);
     return () => clearTimeout(timer);
-  }, [activeSlotKey, activeSlotUrl, previewSubdomainUrl, isLocalPreview, refreshKey]);
+    // `activeSlot?.generation` is a dep so a rebuilt slot re-arms detection for
+    // the new element instead of resting on the old one's verdict.
+  }, [activeSlotKey, activeSlotUrl, previewSubdomainUrl, isLocalPreview, refreshKey, activeSlot?.generation]);
 
   // ---- Agent-authored pointers (docs/258) ----
   // A `shipit-preview://` click records a destination; by the time it reaches
@@ -998,7 +1005,10 @@ export function PreviewFrame({
             : undefined;
           return (
             <iframe
-              key={key}
+              // Generation-suffixed so a slot rebuilt after an ownership
+              // takeover mounts a fresh element, and therefore actually loads
+              // the new owner's app (planning#394).
+              key={slot.generation ? `${key}#${slot.generation}` : key}
               ref={(el) => {
                 iframeRefs.current.set(key, el);
                 if (el) drainPendingReady();
@@ -1051,21 +1061,10 @@ export function PreviewFrame({
             {overlayContent}
           </div>
         )}
-        {/* Spinner when no iframe exists for this session/port and preview is running but polling.
-            Wording note: at this point the orchestrator has told us the preview
-            is running — we're waiting on the preview-health poll before
-            attaching the iframe. Saying "Starting dev server" here is misleading
-            (especially in dogfooding, where Vite logs "ready in 437 ms" while
-            this overlay is on screen); the dev server *is* up, we're just
-            connecting to it. */}
-        {isRunning && !activeSlotReady && !overlayContent && (
-          <div className="absolute inset-0 flex items-center justify-center bg-(--color-bg-primary) text-(--color-text-secondary) text-sm">
-            <div className="text-center space-y-3">
-              <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
-              <p>Connecting to dev server...</p>
-            </div>
-          </div>
-        )}
+        {/* No "connecting" overlay here on purpose (docs/286). The slot is
+            created without a reachability check, and a preview that isn't
+            serving yet gets the proxy's own connecting page inside the iframe —
+            so the wait is the document's state, not a cover over it. */}
       </div>
 
       {/* Error panel */}

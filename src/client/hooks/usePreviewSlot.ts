@@ -1,4 +1,4 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: poll external preview server URL until ready with cancellation (external system sync)
+// eslint-disable-next-line no-restricted-imports -- useEffect: mirror the active (session, port) into the iframe pool, an external DOM-backed store
 import { useEffect } from "react";
 import { usePreviewStore } from "../stores/preview-store.js";
 import type { PreviewStatus } from "../components/PreviewFrame.js";
@@ -103,20 +103,16 @@ export function desiredPathFor(slotKey: string, sessionId: string | undefined): 
   return state.previewPaths[slotKey];
 }
 
-export interface UsePreviewHealthPollerParams {
+export interface UsePreviewSlotParams {
   activeSlotKey: string | null;
   activePort: number;
   sessionId: string | undefined;
   preview: PreviewStatus | null;
-  pollUrl: string | null;
-  isContainerMode: boolean;
   apiHost: string;
   /** Protocol for preview origins — `http:` for the Tailscale sslip override (docs/216), else the page protocol. */
   apiProtocol: string;
   /** Shared with `useIframePool` — tracks slots that have already been created. */
   createdSlotsRef: React.RefObject<Set<string>>;
-  /** Shared with `useIframePool` — tracks slots currently being polled. */
-  pollingRef: React.RefObject<Set<string>>;
   /** Promote the slot in the LRU pool. */
   promoteSlot: (key: string) => void;
   /** Add/update a slot in the iframe pool. */
@@ -134,48 +130,37 @@ export interface UsePreviewHealthPollerParams {
   activeService: string | undefined;
   /**
    * True while the pane is parked on a service that is not running
-   * (planning#478). Polling then is pointless — the port answers nothing — and
-   * creating a slot on the poll's timeout would put a dead 502 document behind
-   * the waiting overlay and keep it there, because a created slot is only ever
-   * promoted afterwards, never re-probed.
+   * (planning#478). Creating a slot then would put a document behind the
+   * waiting overlay and keep it there, because a created slot is only ever
+   * promoted afterwards, never reloaded.
    */
   waitingForService: boolean;
 }
 
 /**
- * Poll the preview server's health endpoint (container mode) or root URL
- * (local mode) and create an iframe slot once it responds. The hook is the
- * sole driver of new slot creation — if a slot already exists for the active
- * key, it's promoted in the LRU and no polling happens. The one exception:
- * a slot whose port has been taken over by a different service (both owners
- * known, differing) is dropped and re-polled, so the recreated iframe loads
- * the new owner's app instead of showing the previous owner's document
- * (planning#394).
+ * Create the iframe slot for the active `(session, port)`. The hook is the sole
+ * driver of new slot creation — if a slot already exists for the active key,
+ * it's promoted in the LRU instead. The one exception: a slot whose port has
+ * been taken over by a different service (both owners known, differing) is
+ * dropped and recreated, so the new iframe loads the new owner's app instead of
+ * showing the previous owner's document (planning#394).
  *
- * Cancellation invariant: only the effect that "owns" a `pollingRef` entry
- * (the one that added it on mount) may remove it. The cleanup function is
- * that owner. The async `poll()` body must NEVER call `pollingRef.delete()`
- * on its own — if a re-render cancels poll #1 mid-loop, the cleanup removes
- * its key; poll #2 then adds the SAME key back; if poll #1 also called
- * `pollingRef.delete()` after the loop, it would remove poll #2's entry.
- * The next dep change would then see `pollingRef.has(key) === false` and
- * start poll #3 alongside the still-running poll #2 — a duplicate-poll
- * cascade that, in the worst case (a long-running poll like the dogfood
- * dev-container 15s timeout), can hold the spinner overlay open
- * indefinitely while the iframe slot is never actually created.
+ * The slot is created straight away, with no reachability check first. Waiting
+ * used to be necessary because a request that arrived before the dev server
+ * listened got a 502 that the iframe then kept forever; the proxy now retries
+ * the connect itself and serves a self-refreshing connecting page past its
+ * window, so the browser's own request is the only test of reachability there
+ * is, and the wait belongs to the document rather than to this pane (docs/286).
  */
-export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): void {
+export function usePreviewSlot(params: UsePreviewSlotParams): void {
   const {
     activeSlotKey,
     activePort,
     sessionId,
     preview,
-    pollUrl,
-    isContainerMode,
     apiHost,
     apiProtocol,
     createdSlotsRef,
-    pollingRef,
     promoteSlot,
     setSlot,
     getSlot,
@@ -184,14 +169,11 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
     waitingForService,
   } = params;
 
-  // The ref-in-cleanup warning does not apply: `pollingRef` holds a Map owned
-  // by the hook, not a DOM node, so deleting this key at cleanup is correct.
-  // eslint-disable-next-line no-restricted-syntax -- existing usage; hook-owned Map, see above
+  // eslint-disable-next-line no-restricted-syntax -- external system sync: the iframe pool is DOM-backed state outside React's tree, and the slot must exist before the iframe it owns is rendered
   useEffect(() => {
-    if (!activeSlotKey || !activePort || !preview?.running || !pollUrl) return;
-    // Wait, don't probe. When the service comes back this effect re-runs and
-    // either promotes the retained slot (which `PreviewFrame` reloads) or polls
-    // for a new one.
+    if (!activeSlotKey || !activePort || !preview?.running) return;
+    // Wait. When the service comes back this effect re-runs and either promotes
+    // the retained slot (which `PreviewFrame` reloads) or creates a new one.
     if (waitingForService) return;
 
     // If slot already exists (previously visited), just promote it — unless
@@ -199,8 +181,8 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
     // created. The key is `${sessionId}:${port}`, so a port that moves to a
     // new owner reuses the key, and the retained iframe would keep serving
     // the previous owner's document under the new owner's row (planning#394).
-    // Dropping falls through to the poll below, which re-probes and recreates
-    // the slot with the new owner's app.
+    // Dropping falls through to the creation below, which recreates the slot
+    // with the new owner's app.
     //
     // Both owners must be known: `undefined` on either side is a transient
     // service-list state (or a preview with no service rows at all), and
@@ -217,86 +199,34 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
       return;
     }
 
-    // Prevent duplicate polls for the same key
-    if (pollingRef.current.has(activeSlotKey)) return;
-    pollingRef.current.add(activeSlotKey);
-
-    const state = { cancelled: false };
     const key = activeSlotKey;
 
-    const poll = async () => {
-      // Two bounds matter, and the loop must respect both:
-      //   - per-fetch timeout (AbortSignal.timeout). Without this, a single
-      //     hung `/api/preview-health` response strands the loop on
-      //     `await fetch(...)` — `i < 60` never advances and the post-loop
-      //     slot-creation never fires, so the "Connecting to dev server..."
-      //     spinner stays up forever. Seen in dogfooding when the outer
-      //     orchestrator is slow to respond to the health endpoint.
-      //   - wall-clock deadline. Even with a per-fetch timeout, repeated
-      //     slow fetches would compound: 60 × (2s + 250ms) ≈ 135s worst case
-      //     without a wall-clock cap. The deadline keeps total polling at
-      //     ~15s so the user never waits longer than that before the iframe
-      //     gets created anyway.
-      // The 250ms inter-iteration sleep keeps the loop reactive when the
-      // dev server comes up fast (dogfood Vite "ready in 437ms").
-      const deadline = Date.now() + 15_000;
-      for (let i = 0; i < 60 && !state.cancelled; i++) {
-        if (Date.now() >= deadline) break;
-        try {
-          if (isContainerMode) {
-            const resp = await fetch(pollUrl, { signal: AbortSignal.timeout(2000) });
-            const data = await resp.json() as { ready?: boolean };
-            if (data.ready) break;
-          } else {
-            await fetch(pollUrl, { mode: "no-cors", signal: AbortSignal.timeout(2000) });
-            break;
-          }
-        } catch {
-          // Network error or fetch timeout — retry
-        }
-        await new Promise((r) => setTimeout(r, 250));
-      }
-
-      if (state.cancelled) return;
-      // Successful (non-cancelled) completion: clean up our own polling-ref
-      // entry now that nobody else will (the cleanup function below only
-      // fires on cancellation/unmount).
-      pollingRef.current.delete(key);
-
-      // Compute the URL and add the slot. Read the remembered path here rather
-      // than through a dep so a path reported while we were polling still
-      // counts, and so this effect doesn't re-run on every navigation inside
-      // an already-created slot.
-      //
-      // An agent-authored pointer waiting on this slot wins over the remembered
-      // path (docs/258): it is where the user just asked to go, and the
-      // remembered path is only where the previous page happened to be. Entering
-      // at the destination is also what makes a pointer to a stopped service
-      // work — the slot is created after the boot, already at the right place.
-      const result = computePreviewUrl(
-        sessionId ?? "_",
-        activePort,
-        preview,
-        apiHost,
-        apiProtocol,
-        desiredPathFor(key, sessionId),
-      );
-      if (result) {
-        createdSlotsRef.current.add(key);
-        // The owner recorded at creation is this effect's `activeService`: if
-        // it changes, the effect re-runs and the promote branch above decides
-        // whether a retained slot's recorded owner still matches the port's.
-        setSlot(key, { url: result.url, containerMode: result.containerMode, service: activeService });
-        promoteSlot(key);
-      }
-    };
-    void poll();
-    return () => {
-      state.cancelled = true;
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- `pollingRef` holds a hook-owned Map, not a DOM node, so deleting this key at cleanup is correct
-      pollingRef.current.delete(key);
-    };
-  }, [activeSlotKey, activePort, sessionId, preview?.running, preview?.url, pollUrl, isContainerMode, apiHost, apiProtocol, promoteSlot, setSlot, getSlot, dropSlot, activeService, waitingForService, preview, createdSlotsRef, pollingRef]);
+    // Compute the URL and add the slot. The remembered path is read here rather
+    // than through a dep, so this effect doesn't re-run on every navigation
+    // inside an already-created slot.
+    //
+    // An agent-authored pointer waiting on this slot wins over the remembered
+    // path (docs/258): it is where the user just asked to go, and the
+    // remembered path is only where the previous page happened to be. Entering
+    // at the destination is also what makes a pointer to a stopped service
+    // work — the slot is created after the boot, already at the right place.
+    const result = computePreviewUrl(
+      sessionId ?? "_",
+      activePort,
+      preview,
+      apiHost,
+      apiProtocol,
+      desiredPathFor(key, sessionId),
+    );
+    if (result) {
+      createdSlotsRef.current.add(key);
+      // The owner recorded at creation is this effect's `activeService`: if
+      // it changes, the effect re-runs and the promote branch above decides
+      // whether a retained slot's recorded owner still matches the port's.
+      setSlot(key, { url: result.url, containerMode: result.containerMode, service: activeService });
+      promoteSlot(key);
+    }
+  }, [activeSlotKey, activePort, sessionId, preview?.running, preview?.url, apiHost, apiProtocol, promoteSlot, setSlot, getSlot, dropSlot, activeService, waitingForService, preview, createdSlotsRef]);
 }
 
 // Re-export internal helpers for the consuming component, which also needs

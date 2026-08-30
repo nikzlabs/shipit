@@ -9,11 +9,12 @@ afterEach(() => {
 const slot = (overrides: Partial<IframeSlot> = {}): IframeSlot => ({
   url: "http://session-a--3000.localhost:3001/",
   containerMode: true,
+  generation: 0,
   ...overrides,
 });
 
 /**
- * Fill a pool the way the health poller does: mark the key created, add the
+ * Fill a pool the way `usePreviewSlot` does: mark the key created, add the
  * slot, promote it. The iframe ref is seeded separately because only the
  * real DOM (PreviewFrame's render) populates that one.
  */
@@ -55,6 +56,20 @@ describe("useIframePool", () => {
     expect(result.current.createdSlotsRef.current.has("session-a:3000")).toBe(false);
     // The untouched slot survives.
     expect(result.current.slots.has("session-a:5173")).toBe(true);
+  });
+
+  it("stamps a rebuilt slot with a new generation, so its iframe is a fresh element", () => {
+    // planning#394: a slot dropped for an ownership takeover is rebuilt under
+    // the SAME key and the same URL, so `PreviewFrame` would reuse the live
+    // iframe and load nothing. The generation is what forces a new element.
+    const { result } = renderHook(() => useIframePool());
+    createSlot(result.current, "session-a:3000");
+    expect(result.current.slots.get("session-a:3000")?.generation).toBe(0);
+
+    act(() => result.current.dropSlot("session-a:3000"));
+    createSlot(result.current, "session-a:3000");
+
+    expect(result.current.slots.get("session-a:3000")?.generation).toBe(1);
   });
 
   it("dropSlot on a key the pool doesn't hold is a no-op", () => {

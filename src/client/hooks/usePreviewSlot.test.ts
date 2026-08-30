@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { buildSubdomainUrl, computePreviewUrl, desiredPathFor } from "./usePreviewHealthPoller.js";
+import { buildSubdomainUrl, computePreviewUrl, desiredPathFor } from "./usePreviewSlot.js";
 import { usePreviewStore } from "../stores/preview-store.js";
 import type { PreviewStatus } from "../components/PreviewFrame.js";
 
