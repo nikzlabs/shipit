@@ -5,10 +5,11 @@ import {
   siblingsOf,
   orderSiblingsForTabs,
   siblingTabLabel,
-  hasTrackedPlanSibling,
-  hasTrackedSibling,
+  buildDocIndex,
+  hasTrackedPlanSiblingIn,
+  hasTrackedSiblingIn,
   isChecklistPath,
-  isTracked,
+  isTrackedIn,
 } from "./doc-paths.js";
 import type { DocEntry } from "../../server/shared/types.js";
 
@@ -114,7 +115,7 @@ describe("siblingTabLabel", () => {
   });
 });
 
-describe("isTracked", () => {
+describe("isTrackedIn", () => {
   const entries: DocEntry[] = [
     { path: "docs/095-foo/plan.md", title: "Plan" },
     { path: "docs/095-foo/checklist.md", title: "Checklist" },
@@ -124,29 +125,29 @@ describe("isTracked", () => {
   ];
 
   it("treats a feature-directory plan.md as tracked", () => {
-    expect(isTracked({ path: "docs/095-foo/plan.md" }, entries)).toBe(true);
+    expect(isTrackedIn(buildDocIndex(entries), { path: "docs/095-foo/plan.md" })).toBe(true);
   });
 
   it("treats a checklist.md as tracked", () => {
-    expect(isTracked({ path: "docs/095-foo/checklist.md" }, entries)).toBe(true);
+    expect(isTrackedIn(buildDocIndex(entries), { path: "docs/095-foo/checklist.md" })).toBe(true);
   });
 
   it("treats a doc with an issue pointer as tracked", () => {
     expect(
-      isTracked({ path: "docs/100-issue/spec.md", issue: "octo/repo#1" }, entries),
+      isTrackedIn(buildDocIndex(entries), { path: "docs/100-issue/spec.md", issue: "octo/repo#1" }),
     ).toBe(true);
   });
 
   it("treats a doc with a checklist.md sibling as tracked", () => {
-    expect(isTracked({ path: "docs/095-foo/notes.md" }, entries)).toBe(true);
+    expect(isTrackedIn(buildDocIndex(entries), { path: "docs/095-foo/notes.md" })).toBe(true);
   });
 
   it("returns false for an incidental doc with no plan/issue/checklist", () => {
-    expect(isTracked({ path: "docs/orphan/notes.md" }, entries)).toBe(false);
+    expect(isTrackedIn(buildDocIndex(entries), { path: "docs/orphan/notes.md" })).toBe(false);
   });
 });
 
-describe("hasTrackedSibling", () => {
+describe("hasTrackedSiblingIn", () => {
   const entries: DocEntry[] = [
     { path: "docs/095-foo/plan.md", title: "Plan" },
     { path: "docs/095-foo/checklist.md", title: "Checklist" },
@@ -157,19 +158,19 @@ describe("hasTrackedSibling", () => {
   ];
 
   it("returns true for checklist with a tracked plan sibling", () => {
-    expect(hasTrackedSibling("docs/095-foo/checklist.md", entries)).toBe(true);
+    expect(hasTrackedSiblingIn(buildDocIndex(entries), "docs/095-foo/checklist.md")).toBe(true);
   });
 
   it("returns false when the only entry in the dir is the path itself", () => {
-    expect(hasTrackedSibling("docs/orphan/notes.md", entries)).toBe(false);
+    expect(hasTrackedSiblingIn(buildDocIndex(entries), "docs/orphan/notes.md")).toBe(false);
   });
 
   it("ignores the entry itself when checking", () => {
-    expect(hasTrackedSibling("docs/096-bar/plan.md", entries)).toBe(false);
+    expect(hasTrackedSiblingIn(buildDocIndex(entries), "docs/096-bar/plan.md")).toBe(false);
   });
 
   it("treats a plan.md sibling as tracked", () => {
-    expect(hasTrackedSibling("docs/097-feature/notes.md", entries)).toBe(true);
+    expect(hasTrackedSiblingIn(buildDocIndex(entries), "docs/097-feature/notes.md")).toBe(true);
   });
 
   it("does not treat root-level files as siblings", () => {
@@ -177,11 +178,11 @@ describe("hasTrackedSibling", () => {
       { path: "a.md", title: "A", issue: "octo/repo#1" },
       { path: "README.md", title: "Root readme" },
     ];
-    expect(hasTrackedSibling("README.md", rootEntries)).toBe(false);
+    expect(hasTrackedSiblingIn(buildDocIndex(rootEntries), "README.md")).toBe(false);
   });
 });
 
-describe("hasTrackedPlanSibling", () => {
+describe("hasTrackedPlanSiblingIn", () => {
   const entries: DocEntry[] = [
     { path: "docs/095-foo/plan.md", title: "Plan" },
     { path: "docs/095-foo/checklist.md", title: "Checklist" },
@@ -192,19 +193,78 @@ describe("hasTrackedPlanSibling", () => {
   ];
 
   it("returns true for a checklist with a plan sibling", () => {
-    expect(hasTrackedPlanSibling("docs/095-foo/checklist.md", entries)).toBe(true);
-    expect(hasTrackedPlanSibling("docs/096-bar/checklist.md", entries)).toBe(true);
+    expect(hasTrackedPlanSiblingIn(buildDocIndex(entries), "docs/095-foo/checklist.md")).toBe(true);
+    expect(hasTrackedPlanSiblingIn(buildDocIndex(entries), "docs/096-bar/checklist.md")).toBe(true);
   });
 
   it("returns false for non-checklist paths", () => {
-    expect(hasTrackedPlanSibling("docs/095-foo/plan.md", entries)).toBe(false);
+    expect(hasTrackedPlanSiblingIn(buildDocIndex(entries), "docs/095-foo/plan.md")).toBe(false);
   });
 
   it("returns false when there is no plan sibling", () => {
-    expect(hasTrackedPlanSibling("docs/orphan/checklist.md", entries)).toBe(false);
+    expect(hasTrackedPlanSiblingIn(buildDocIndex(entries), "docs/orphan/checklist.md")).toBe(false);
   });
 
   it("does not treat root-level files as feature siblings", () => {
-    expect(hasTrackedPlanSibling("README.md", entries)).toBe(false);
+    expect(hasTrackedPlanSiblingIn(buildDocIndex(entries), "README.md")).toBe(false);
+  });
+});
+
+/**
+ * The grouping `DocsViewer` runs in its render body, over a doc list the size of
+ * a real repository's.
+ *
+ * This is a **cost** guard, and it is here because the cost was the bug. The
+ * predicates used to take the doc list and answer by scanning it, and
+ * `hasTrackedSibling` scanned it once per candidate sibling (it called
+ * `isTracked` — itself a scan — before the cheap same-directory test), so
+ * grouping n docs of which u are untracked was O(u²·n). Measured in Chrome on
+ * this repository's list (n = 866, u = 96): 342–486 ms, paid on every render of
+ * a component that re-renders with its parent — i.e. once per streamed token
+ * while the Docs tab was open. Indexed, the same grouping is ~3 ms.
+ *
+ * The budget is deliberately far above what a correct implementation needs and
+ * far below what the quadratic one costs, so neither CI load nor a fast machine
+ * can decide the result. On the shape below the pre-fix implementation takes
+ * seconds; the indexed one takes single-digit milliseconds.
+ */
+describe("grouping cost over a repository-sized doc list", () => {
+  /** ~1,000 docs: feature dirs that are tracked, plus loose markdown that is not. */
+  function repoSizedList(): DocEntry[] {
+    const entries: DocEntry[] = [];
+    for (let i = 0; i < 250; i++) {
+      entries.push({ path: `docs/${i}-feature/plan.md`, title: "Plan" });
+      entries.push({ path: `docs/${i}-feature/checklist.md`, title: "Checklist" });
+    }
+    // The expensive half: docs that are NOT tracked and have no tracked
+    // sibling, so every "is there a tracked sibling?" question ran to the end
+    // of the list instead of short-circuiting.
+    for (let i = 0; i < 500; i++) {
+      entries.push({ path: `notes/${i}/README.md`, title: "Readme" });
+    }
+    return entries;
+  }
+
+  it("groups the whole list without scanning it per doc", () => {
+    const files = repoSizedList();
+
+    const started = performance.now();
+    const index = buildDocIndex(files);
+    const tracked = files.filter(
+      (f) => isTrackedIn(index, f) && !hasTrackedPlanSiblingIn(index, f.path),
+    );
+    const untracked = files.filter(
+      (f) =>
+        !isTrackedIn(index, f) &&
+        !hasTrackedSiblingIn(index, f.path) &&
+        !hasTrackedPlanSiblingIn(index, f.path),
+    );
+    const elapsed = performance.now() - started;
+
+    // Grouped correctly: each feature dir contributes its plan (its checklist
+    // is suppressed by the plan sibling), and every loose README is untracked.
+    expect(tracked).toHaveLength(250);
+    expect(untracked).toHaveLength(500);
+    expect(elapsed).toBeLessThan(500);
   });
 });

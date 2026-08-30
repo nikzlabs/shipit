@@ -440,6 +440,8 @@ and it is the guard that makes out-of-order application impossible.
 | `src/client/hooks/useSearch.ts` | Shared empty match array, so no-search stops invalidating every row |
 | `src/client/utils/highlight-cache.ts` | New — bounded LRU so a highlight survives a remount or an abandoned render |
 | `src/client/components/message-markdown.tsx` | `CodeBlock` highlights through that cache |
+| `src/client/utils/doc-paths.ts` | `DocIndex` — one pass replaces the per-doc list scans behind the Docs-tab freeze |
+| `src/client/components/DocsViewer.tsx` | Groups through that index, memoized on the doc list |
 
 ## Verification
 
@@ -499,3 +501,41 @@ than captured. Which surface supplied it is **not** settled — the docs tab was
 `/api/sessions/:id/docs` returns metadata only and `DocsViewer.tsx` highlights nothing, so the
 docs list cannot be the source; the chat transcript is the only surface that loaded a large
 body in that window.
+
+## The Docs tab froze the UI, and it was never the transcript (2026-08-30)
+
+Reported with a reproducible trigger the earlier rounds did not have: **opening the Docs tab freezes
+the UI; with any other right-hand tab open it does not.** That is a strong constraint, because only
+one thing in the app is conditional on it — `App.tsx`'s `rightTab === "docs"` branch renders
+`DocsViewer`, and no other tab does.
+
+`DocsViewer` grouped its list with three predicates that each take the whole doc list and answer by
+scanning it. `hasTrackedSibling` scanned it once **per candidate sibling**, because it called
+`isTracked` — itself a scan — *before* the cheap same-directory test. Asked about every doc, that is
+**O(u²·n)** over n docs of which u are untracked. It ran in the render body, unmemoized.
+
+Measured in Chrome over this repository's real doc list (n = 866, u = 96), three runs:
+**486 / 356 / 342 ms per render**. Indexed: **3.6 ms**, and the grouping output is byte-identical on
+the real list.
+
+The rate is what turns that into a freeze. `DocsViewer` is created inline in `App`'s `rightPanel` and
+is not memoized, so it re-renders on every `App` render — and `App` subscribes to `messages`
+(`App.tsx:199`), which changes once per streamed token. So while the Docs tab was open, roughly
+400 ms of synchronous string-slicing ran per token; with any other tab, zero, because the branch is
+never rendered.
+
+The fix is one pass: `buildDocIndex` (`utils/doc-paths.ts`) precomputes per-directory facts — which
+directories hold a `plan.md` or a `checklist.md`, and how many tracked docs each holds — and the
+predicates become `Set`/`Map` lookups taking that index, built once in a `useMemo` keyed on the list.
+The `(path, entries)` convenience forms are **deleted rather than kept**: a predicate that accepts
+the list reads as free at the call site and hides the scan, which is exactly how a per-doc call in a
+render body became O(u²·n) unnoticed. Their only remaining caller was the defect.
+
+**This is a different finding from the highlight loop below, and it does not close it.**
+`highlightAuto` is not reachable from the Docs branch at all. The 2026-08-30 12:00 trace's 8,264 ms
+leaf was read by another session and attributed to `hljs.highlightAuto`; that trace was not available
+to this work, so whether that leaf is this cost or a second one is **unestablished**. Worth knowing
+when the next trace is read: both produce the same signature — one multi-second synchronous
+`FunctionCall` carrying a large number of minor scavenger GCs — because this one allocates two
+strings per `dirOf` across ~10⁸ iterations, and `dirOf`/`isTracked` are small enough that a release
+build inlines them, leaving the visible frame as an anonymous arrow inside a component render.

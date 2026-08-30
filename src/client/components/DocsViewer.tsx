@@ -11,7 +11,7 @@ import { Button } from "./ui/button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { DocEntry } from "../../server/shared/types.js";
 import { compareDocsByRecency } from "../../server/shared/doc-sort.js";
-import { hasTrackedPlanSibling, hasTrackedSibling, isTracked } from "../utils/doc-paths.js";
+import { buildDocIndex, hasTrackedPlanSiblingIn, hasTrackedSiblingIn, isTrackedIn } from "../utils/doc-paths.js";
 import { parseIssueRef } from "../../server/shared/issue-ref.js";
 import { resolveUiIssueRef } from "../stores/issues-store.js";
 import type { TrackerId } from "../../server/shared/types.js";
@@ -254,6 +254,15 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, onOpenIssu
     });
   }, [allFiles, searchQuery]);
 
+  // One pass over the doc list answers every grouping question below. Building
+  // it here rather than letting each predicate scan `files` is what keeps this
+  // component's render body linear: the predicates' convenience forms each
+  // rebuild it, and `hasTrackedSibling` used to rebuild it once per candidate
+  // sibling, which cost 342–486 ms per render on this repo's 866 docs — paid
+  // again on every parent render, i.e. once per streamed token whenever the
+  // Docs tab was the open one. See `doc-paths.ts` → `DocIndex`.
+  const index = useMemo(() => buildDocIndex(files), [files]);
+
   // Docs touched during the current session — shown in a dedicated group at the
   // top so the user sees what the agent just worked on without scrolling.
   // We exclude untracked siblings (e.g. `checklist.md`) when a tracked plan
@@ -265,10 +274,10 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, onOpenIssu
       files.filter(
         (f) =>
           wasModifiedInSession(f) &&
-          !hasTrackedPlanSibling(f.path, files) &&
-          (isTracked(f, files) || !hasTrackedSibling(f.path, files)),
+          !hasTrackedPlanSiblingIn(index, f.path) &&
+          (isTrackedIn(index, f) || !hasTrackedSiblingIn(index, f.path)),
       ),
-    [files],
+    [files, index],
   );
   const modifiedPaths = useMemo(
     () => new Set(modifiedInSession.map((f) => f.path)),
@@ -283,19 +292,27 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, onOpenIssu
     [files, modifiedPaths],
   );
 
-  const tracked = remaining.filter(
-    (f) => isTracked(f, files) && !hasTrackedPlanSibling(f.path, files),
+  const tracked = useMemo(
+    () =>
+      remaining.filter(
+        (f) => isTrackedIn(index, f) && !hasTrackedPlanSiblingIn(index, f.path),
+      ),
+    [remaining, index],
   );
   // Hide untracked siblings (e.g. `checklist.md`) when a tracked plan exists
   // in the same directory — they're now reachable via the modal's sibling
   // tabs, so listing them separately is redundant noise. We check against the
   // full `files` list so a tracked plan that was pulled into the "Modified"
   // group above still suppresses its untracked sibling here.
-  const untracked = remaining.filter(
-    (f) =>
-      !isTracked(f, files) &&
-      !hasTrackedSibling(f.path, files) &&
-      !hasTrackedPlanSibling(f.path, files),
+  const untracked = useMemo(
+    () =>
+      remaining.filter(
+        (f) =>
+          !isTrackedIn(index, f) &&
+          !hasTrackedSiblingIn(index, f.path) &&
+          !hasTrackedPlanSiblingIn(index, f.path),
+      ),
+    [remaining, index],
   );
   const hasTracked = tracked.length > 0;
   const hasUntracked = untracked.length > 0;

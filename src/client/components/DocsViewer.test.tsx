@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { DocsViewer } from "./DocsViewer.js";
+import * as docPaths from "../utils/doc-paths.js";
 import { useIssuesStore } from "../stores/issues-store.js";
 import type { DocEntry } from "../../server/shared/types.js";
 
@@ -437,6 +438,38 @@ describe("DocsViewer", () => {
       expect(screen.getAllByText("Feature")).toHaveLength(1);
       // The plan's issue chip should still be present.
       expect(screen.getByText("roadmap#TRACKER-28")).toBeInTheDocument();
+    });
+  });
+
+  /**
+   * The grouping is derived from `files`, not recomputed in the render body.
+   *
+   * This is the second half of the Docs-tab freeze, and it is the half a cost
+   * guard in `doc-paths.test.ts` cannot see. `DocsViewer` is rendered inline
+   * from `App`'s `rightPanel` and is not memoized, so it re-renders on every
+   * `App` render — and `App` subscribes to `messages`, i.e. once per streamed
+   * token. Whatever the grouping costs, it was being paid at that rate, and
+   * only while the Docs tab was the open one (the other tabs render a different
+   * branch entirely). Keyed on `files`, it is paid once per doc list.
+   */
+  describe("grouping cost", () => {
+    it("does not regroup when re-rendered with the same doc list", () => {
+      const spy = vi.spyOn(docPaths, "buildDocIndex");
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "docs/001-auth/plan.md", title: "Auth" }),
+        makeDoc({ path: "docs/001-auth/checklist.md", title: "Auth" }),
+        makeDoc({ path: "notes/scratch.md", title: "Scratch" }),
+      ];
+
+      const { rerender } = render(<DocsViewer {...props} />);
+      const afterMount = spy.mock.calls.length;
+      expect(afterMount).toBeGreaterThan(0); // the index IS built — a zero below would be free otherwise
+
+      for (let i = 0; i < 5; i++) rerender(<DocsViewer {...props} />);
+
+      expect(spy.mock.calls.length).toBe(afterMount);
+      spy.mockRestore();
     });
   });
 
