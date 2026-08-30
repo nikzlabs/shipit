@@ -21,7 +21,9 @@ space in the product (docs/260 exists to keep that row from pushing Send off the
   the bare icon it is today. Req 10 also needs the *common* state to be readable, so the
   trigger carries an accessible name and title stating the effective mode in both states —
   there is no hover on touch, and the prototype's static markup demonstrates only the
-  worded case.
+  worded case. For an explicit pick the accessible name says it **overrides the workspace**,
+  not merely "Open" or "Contained": that the choice is pinned is the part req 10 asks to be
+  stated, and it is exactly what a colour cannot carry.
 - **`Inherit workspace` names what is inherited** ("Currently Contained"). The dialog says
   "Inherit global" today; one value must not have two names.
 - **The enforcement warning is carried by the composer control as well as the dialog** —
@@ -29,10 +31,12 @@ space in the product (docs/260 exists to keep that row from pushing Send off the
   claiming protection, so there is nothing to warn about. It must also not overstate. `enforcementActive: false`
   covers two different deployments — a missing sidecar with enforcement *on*, which fails
   closed, and `SESSION_EGRESS_ENFORCE=0`, which starts the session **uncontained**
-  (`egress-firewall-install.ts` ~45, `container-lifecycle.ts` ~1451). The UI cannot infer
-  "contained sessions fail to start" from that single boolean, so the copy states what is
-  known — containment is not being enforced here — and the remediation is surfaced inline
-  rather than as "see the install notes", which is the link-out shape §1/§2 rule out.
+  (`egress-firewall-install.ts` ~45, `container-lifecycle.ts` ~1451). One boolean cannot
+  express which, and the two have **opposite** consequences — fail-closed versus silently
+  open — so neither wording is safe on its own. The API should report which case it is; until
+  it does, the copy says only what is known ("containment is not enforced on this
+  deployment") and never asserts either outcome. Remediation is inline, not a link out
+  (§1/§2).
 - **The menu states; it does not act.** Before the first turn: "In force from this session's
   first turn." On a running session: "Applies on next container start — restart from Session
   settings", shown **only when the server says something is pending** (`pendingRestart`
@@ -107,7 +111,9 @@ entry (~122) while `running` is not claimed until just before execution (~590), 
 callbacks are independently asynchronous — so with an 8-second restart in between, two
 near-simultaneous first Sends (two tabs, or a fast double Enter) can both pass the idle check
 and both attempt reconciliation. One reconciles; the others wait and then **re-enter the
-ordinary send-or-queue path** rather than proceeding on a stale decision.
+ordinary send-or-queue path** rather than proceeding on a stale decision. The section is held
+until the winner has claimed the new runner's dispatch slot — releasing at the end of
+reconciliation would let a waiter back in while `running` is still false.
 
 **What that step actually gives us**, which is a lot but not everything:
 
@@ -132,11 +138,16 @@ ordinary send-or-queue path** rather than proceeding on a stale decision.
 - **It reports success too eagerly.** The call returns `ok` even when replacement creation
   errored; the meaningful values are `newContainerState` and `error` (~362). A **failed**
   replacement aborts the Send with a correlated error rather than dispatching into nothing.
-- **It does not migrate other viewers.** Attachment is per connection
-  (`route-registry.ts` ~1037). The *sending* connection recovers, because reconciliation is
-  inserted before the handler's existing `getOrCreate`/`attachToRunner` block
-  (`ws-handlers/send-message.ts` ~578); other viewers of the same session must be told to
-  reattach, which is what the existing manual restart asks the browser to do.
+- **It does not migrate other viewers, and nothing else does either.** Attachment is per
+  connection (`route-registry.ts` ~1037). The *sending* connection recovers, because
+  reconciliation is inserted before the handler's existing `getOrCreate`/`attachToRunner`
+  block (`ws-handlers/send-message.ts` ~578). An earlier draft of this plan said the existing
+  manual restart asks every browser to reattach — **it does not**: only the tab that pressed
+  the button calls `onReconnectWs()` (`SessionHealthStrip/RecoveryActions.tsx` ~82), while the
+  `container_restarting` handler merely updates rescue state
+  (`message-handlers/container-restarting.ts`). So this design needs a **session-scoped
+  reconnect signal** emitted after replacement creation, or a second viewer sits on the
+  disposed runner and misses the whole first turn.
 - **It can interrupt a warm preinstall.** Warm readiness is announced without waiting for the
   fire-and-forget `agent.install` (`warm-pool-manager.ts` ~297, ~331), so a changed-mode
   first Send can destroy an install in flight. The replacement reruns setup; the cost is a
@@ -212,9 +223,19 @@ statements must not drift apart.
 arbitrary session id today, and the PUT also accepts an invalid body
 (`api-routes-egress.ts` ~319–363). Narrow fix, not a subsystem.
 
-Nothing about claiming changes, so there is no rollout concern for cached clients: an old
-client has no network control, never sets an override, and its sessions reconcile to a
-no-op.
+An old client has no network control, never sets an override, and its sessions reconcile to a
+no-op — so there is no rollout concern for cached clients.
+
+**But claiming is not entirely untouched, and requirement 8 depends on it.** An interactive
+claim deliberately **reuses an ungraduated warm session from the same repo**
+(`claim-session.ts` ~340). So: pick Open on `/new`, walk away without sending, start another
+new session in that repo — and the reused session still carries Open. "Every new session
+starts at Inherit" would be false, through a path that has nothing to do with the composer.
+
+So the interactive claim **resets a reused draft's override to `null`**, emits the transient
+invalidation for any viewer already attached, and writes **no audit card** while the session
+is still warm — there is no prior state for a card to describe. The reset belongs at the
+reuse branch itself, not in the composer, because the composer is not involved in that flow.
 
 ## Where the tests go
 
@@ -235,8 +256,11 @@ no-op.
    rather than failing the first Send on a 503.
 3. **`Inherit` follows the workspace at container start**, and an explicit pick does not move
    when the workspace default changes between Send and boot.
-4. **Reset**: a second new session in the *same* repo starts at `Inherit`, and Quick Capture
-   resets on every opening.
+4. **Reset**: a second new session in the *same* repo starts at `Inherit` — including the
+   real abandon→reopen path, where the claim **reuses** the untouched draft session — and
+   Quick Capture resets on every opening.
+4b. **A second viewer survives the restart**: two tabs on one session, first Send changes the
+   mode, and the non-sending tab reattaches and sees the first turn.
 5. **Composer and dialog agree** after a change in either, including in a second tab.
 6. **No audit card** for the creation-time choice; a card **is** written for a later change.
 
@@ -247,6 +271,7 @@ no-op.
 | `src/client/components/PermissionModeSelector.tsx` | The combined mode + network control |
 | `src/client/components/MessageInput/MessageInput.tsx` | Renders the combined control on every viewport |
 | `src/client/components/MessageInput/ComposerSettingsMenu.tsx` | Loses its Mode row; role list opens directly |
+| `src/server/orchestrator/services/claim-session.ts` | Reused-draft reuse branch (~340) — reset the override |
 | `src/server/orchestrator/services/recovery.ts` | `restartContainer` — the reconciliation; read `newContainerState`/`error`, not the `ok` |
 | `src/server/orchestrator/ws-handlers/send-message.ts` | First-Send reconcile-before-dispatch |
 | `src/server/orchestrator/api-routes-egress.ts` | Strict validation on **both** the session GET and PUT (~319–363 accept arbitrary ids); dedicated GET for hydration |
