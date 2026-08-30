@@ -8,9 +8,9 @@ description: The Send transaction, its delivery and acceptance contract, and how
 Implements [requirements.md](./requirements.md). Consumer:
 [docs/285-network-mode-at-session-creation](../285-network-mode-at-session-creation/plan.md).
 
-**Two open questions in `requirements.md` block implementation code.** The recovery scope and
-the editing-during-send semantics change what the transaction record has to be, so the
-sections below describe the shape and stop short of committing to those two answers.
+Both questions that blocked this doc are resolved (`requirements.md`, 2026-08-29): recovery
+reaches **navigation and browser reload**, and the composer is **locked** while a first Send
+is in flight.
 
 ## Why `/new` claims late
 
@@ -38,6 +38,10 @@ One **single-flight** operation per new-session generation:
 4. **Clear the draft** — text, dictation, chips, pending files, issue seed, settings — and
    only then.
 
+The composer is **locked for the duration** (req 9): a sending state, not editable, so what
+acceptance clears is exactly what was sent and a failure needs no restore path — the text
+was never cleared. This is a composer state that does not exist today and has to be built.
+
 `onSend` is synchronous today and the composer clears immediately (`MessageInput.tsx` ~640,
 with `App.tsx` ~696 clearing pending files unconditionally), so this is an ownership handoff,
 not just making a callback `async`.
@@ -57,9 +61,11 @@ which is the normal path; a user who deliberately goes elsewhere first leaves th
 **queued against its own session**, delivered when that session next connects, and never
 delivered to the session they switched to.
 
-> Whether "delivered when it next connects" must survive a **reload** — and therefore whether
-> the transaction record is durable and where the raw `File` objects live, since a component
-> ref (`useFileUpload.ts` ~124) cannot survive one — is the first open question.
+**Across a reload**, the persisted draft-claim key is what makes the retry safe: it returns
+the same session rather than making a second one. What does *not* survive is the attachment
+payload — the raw `File` objects live in a component ref (`useFileUpload.ts` ~124) — so a
+reload restores the text and the session, and the user re-attaches. Say that in the UI rather
+than silently dropping chips.
 
 ### Acceptance is a correlated echo
 
@@ -95,9 +101,10 @@ drafts — is deleted on orchestrator restart (`startup-tasks.ts` ~288), before 
 init (`bootstrap-managers.ts` ~149), so a durable mapping can point at a session that no
 longer exists.
 
-> The mapping's real lifetime, and whether it must survive an orchestrator restart at all,
-> follow from the recovery question above. A mapping that outlives its session must resolve
-> to "gone, start again" rather than a dangling id.
+So it is retired when the session **takes its first turn successfully**, or after a bounded
+expiry, whichever comes first — and it does not need to survive an orchestrator restart,
+since boot deletes the sessions it would name. A mapping found pointing at a missing session
+resolves to "gone, start again": an honest error with the text intact, never a dangling id.
 
 ## Pre-Send autocomplete
 

@@ -34,15 +34,22 @@ feature is honestly the sum of both docs.
    Only the live preview and the pre-warmed container are given up (docs/285, resolved
    2026-08-28).
 
+9. While a first Send is in flight the composer is **locked** — visibly in a sending state,
+   not editable — until the message is accepted or fails. On failure my text is simply still
+   there, because it was never cleared.
+
 ## Open questions
 
-- **Does the composer freeze while a Send is in flight?** Either it locks until the message
-  is accepted (simple, but the input dies for a beat on every first message), or it stays
-  editable and the design must say precisely what gets cleared on acceptance — clearing "the
-  draft" would erase text typed after the send.
+- (none)
 
 ## Resolved questions
 
+- 2026-08-29 — *Does the composer freeze while a first Send is in flight, or stay editable?*
+  **Locked.** It affects only the first message of a session and is normally under a second,
+  and the editable alternative would need a "here is your failed message back" surface that
+  does not exist today — sends currently cannot visibly fail. Accepted cost: on a cold claim
+  or a large attachment the input is dead for a noticeable beat, which is a composer state
+  ShipIt does not have yet. → req 9.
 - 2026-08-29 — *How far must recovery reach?* **Navigation and browser reload.** The
   draft-claim key is persisted client-side, alongside the `/new` text that is already
   persisted per repo (`useMessageDraft.ts`), so a retry after a reload returns the same
