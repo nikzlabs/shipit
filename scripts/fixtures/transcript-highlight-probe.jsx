@@ -59,8 +59,32 @@ import { useSessionStore } from "../../src/client/stores/session-store.js";
 // disabled and the paths under test never run.
 useSessionStore.setState({ sessionId: "probe-session" });
 
-const stats = { auto: 0, lang: 0, autoBytes: [], autoAt: [], listRenders: 0 };
+const stats = { auto: 0, lang: 0, autoBytes: [], autoAt: [], listRenders: 0, blockMounts: 0, blockUnmounts: 0 };
 window.__probe = stats;
+
+/**
+ * Count `CodeBlock` mounts from the DOM, independently of `highlight.js`.
+ *
+ * Counting `highlightAuto` calls CANNOT answer "did this remount?" any more:
+ * `highlightCached` (docs/265 section 2b) makes a remount of an already-seen
+ * block a map lookup, so a remount shows up as zero highlights. That is the
+ * whole point of the fix and it blinds the obvious probe — the same masking
+ * review caught in `transcript-highlight-cost.test.tsx`, which is why that test
+ * counts at the memo boundary rather than at `hljs`.
+ *
+ * A `<code class="hljs">` node is emitted once per rendered `CodeBlock`, so
+ * watching the tree for those nodes counts mounts whatever the cache does.
+ */
+new MutationObserver((records) => {
+  for (const rec of records) {
+    for (const n of rec.addedNodes) {
+      if (n.nodeType === 1) stats.blockMounts += n.matches?.("code.hljs") ? 1 : n.querySelectorAll("code.hljs").length;
+    }
+    for (const n of rec.removedNodes) {
+      if (n.nodeType === 1) stats.blockUnmounts += n.matches?.("code.hljs") ? 1 : n.querySelectorAll("code.hljs").length;
+    }
+  }
+}).observe(document.documentElement, { childList: true, subtree: true });
 
 const origAuto = hljs.highlightAuto.bind(hljs);
 const origHighlight = hljs.highlight.bind(hljs);
@@ -149,12 +173,22 @@ const REWIND = new URLSearchParams(location.search).get("rewind") !== "0";
 
 function Harness() {
   const [tick, setTick] = useState(0);
+  // Messages prepended ahead of the transcript. `MessageList` keys a bubble row
+  // `m-${el.index}`, so anything inserted or removed AHEAD of a row changes that
+  // row's key and remounts it — the one remount mechanism replacing message
+  // *objects* cannot reproduce, because element reuse and the row memo absorb
+  // that. `window.__setLead(n)` drives it.
+  const [lead, setLead] = useState(0);
   window.__tick = () => setTick((t) => t + 1);
+  window.__setLead = (n) => setLead(n);
   stats.listRenders += 1;
+  const messages = lead
+    ? [...Array.from({ length: lead }, (_, i) => ({ role: "user", text: `lead ${i}` })), ...MESSAGES]
+    : MESSAGES;
   return (
     <div className="flex flex-col h-screen bg-(--color-bg-primary)">
       <MessageList
-        messages={MESSAGES}
+        messages={messages}
         isLoading={false}
         onSendFollowUp={() => true}
         {...(REWIND ? { onRewindAtGap: () => {}, onRequestRewindPreview: () => {} } : {})}

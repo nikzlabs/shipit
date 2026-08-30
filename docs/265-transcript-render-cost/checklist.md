@@ -73,6 +73,22 @@ Still open:
       result for churn, not a missing explanation. Finding the subtree with that mount cost would
       very likely name the loop's engine too.
 
+- [x] Establish the traced surface. **No modal was open during the recording** (user who took the
+      trace, 2026-08-30), which excludes `ReadResult` (`ToolCallModal`-only) and `WriteContent`
+      (`DiffModal`-only) and leaves `CodeBlock` as the only call site — so the block is a whole-file
+      fenced block in the transcript with no usable language on the fence, and since `CodeBlock`
+      cannot re-highlight while mounted, the loop **remounts transcript rows**
+
+- [x] Row-key churn **does not** remount, and is eliminated. Inserting and removing a leading
+      message shifts every bubble's `m-${el.index}`, but React reconciles keyed children across the
+      whole list, so the key *set* is unchanged except at its ends: each fiber is reused and
+      re-rendered with the next row's props. Six flips produced **0** `CodeBlock` mounts.
+- [x] Give the probe a mount counter that does not go through `highlight.js`. Counting
+      `highlightAuto` can no longer detect a remount at all, because `highlightCached` makes one a
+      map lookup — the fix blinds the obvious probe, which is the same masking review caught in
+      `transcript-highlight-cost.test.tsx`. The probe now counts `code.hljs` nodes entering and
+      leaving the DOM.
+
 - [ ] **The loop's engine is still unidentified.** The 35 calls are one loop — 29 consecutive calls,
       2.8–6.1 ms apart, 8.2 s long, period = one highlight — that starts 1.8 s *after* scrolling
       begins and outlives the last scroll event by 4.8 s, scheduling each iteration through a

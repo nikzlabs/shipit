@@ -199,6 +199,37 @@ That also disposes of the original suspicion that scrolling reached `ToolResult`
 renders only inside `ToolCallModal` and `WriteContent` only inside `DiffModal`, so neither is
 reachable by scrolling at all.
 
+**No modal was open during the recording** (confirmed by the user who took the trace, 2026-08-30).
+`ToolResult` renders only inside `ToolCallModal` and `WriteContent` only inside `DiffModal`, so both
+are excluded outright, and **`CodeBlock` is the only call site left**. Two things follow:
+
+- The block is a **fenced code block in the transcript holding a whole ~400-line file**, with no
+  language on the fence or one `hljs.getLanguage()` does not know — that is the only way `CodeBlock`
+  reaches `highlightAuto` rather than the cheap `hljs.highlight` path.
+- `CodeBlock` is memoized and its `useMemo` compares strings by value, and the probe shows it does
+  not re-highlight under re-render or message-object churn. So the loop **remounts transcript
+  rows** — roughly 29 times, ~284 ms apart. There is no remaining reading in which it merely
+  re-renders them.
+
+The probe already shows nothing *inside* `MessageList` does that, and that replacing every
+`ChatMessage` object does not (element reuse plus the row memo hold). **Row-key churn is now
+eliminated too**: inserting and removing a leading message shifts every bubble's `m-${el.index}`,
+but React reconciles keyed children across the whole list, so the key *set* changes only at its
+ends — each fiber is reused and re-rendered with the next row's props. Six flips produced **0**
+`CodeBlock` mounts. That leaves the remount being driven from **above** `MessageList`: the
+whole-transcript paths listed earlier, or something else in the chat panel that unmounts it.
+
+Measuring that needed a third correction to the instrument, for the same reason the guard test did.
+**Counting `highlightAuto` can no longer detect a remount at all**, because `highlightCached` turns
+one into a map lookup — the fix blinds the obvious probe. The probe now counts `code.hljs` nodes
+entering and leaving the DOM, which is independent of the cache.
+
+Scaling the listener count is a weak but consistent cross-check: this fixture registers ~2 listeners
+per rewind handle and ~1.9 per message at mount, so 620 per iteration is far more than any single
+row and is the order of a large subtree — which is what a key-churn remount of the row list would
+be. Treat that as a sanity check on the shape, not as arithmetic: it scales a synthetic fixture to a
+real session.
+
 #### The listener rise is registration churn, not a leak
 
 The same trace showed live listeners rising by **exactly 620 per highlight call** while DOM nodes
