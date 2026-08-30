@@ -66,11 +66,6 @@ export function withFirstTurnAdmission<T>(
   return run;
 }
 
-/** True while someone holds or is waiting for this session's first-turn admission. */
-export function firstTurnAdmissionHeld(sessionId: string): boolean {
-  return chains.has(sessionId);
-}
-
 /** Test-only: drop every chain, so one case cannot leak a section into the next. */
 export function _resetFirstTurnAdmission(): void {
   chains.clear();

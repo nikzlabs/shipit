@@ -17,3 +17,18 @@
 - [x] `session_egress_changed` invalidation; the global egress fields stay fresh without the Settings editor
 - [x] Session settings dialog: shared copy, one name for one value, enforcement warning that names the case
 - [x] Tests: reconciliation states, admission lock, the combined control, route validation, req 8 through the reuse path
+
+## Review round 2 — findings fixed
+
+The independent review returned "not ready" with three P1s and four requirement
+gaps. All verified at the source, all fixed.
+
+- [x] **P1** `dispatch` treats `turnStartInProgress` as busy — a first Send that lost the admission race re-entered through the shared dispatcher, which consulted only `running`, and started a second turn
+- [x] **P1** a failed write reverts to the last SERVER-accepted value, not the last optimistic one; and every response is owned by the currently-mounted session, not just its revision
+- [x] **P1** `runner_replaced` is announced by the caller AFTER it attaches — announcing inside the restart reached the sending tab, whose reconnect closed the socket that handler then attached as an undetachable ghost viewer
+- [x] **req 7** `SessionSettingsDialog` reads and writes through the shared hook; it no longer owns a parallel fetch, mapping and PUT
+- [x] **req 7** the reused-draft reset emits the transient invalidation
+- [x] **req 8** the pre-claim draft is scoped to its claim, so `/repo-A/new` → `/repo-B/new` abandons it
+- [x] **req 9** the menu opens onto the role list when Role is the only row the root would hold — removing the Mode row was necessary and not sufficient
+- [x] **req 10** the workspace default is read before the claim, so `Inherit` cannot say "currently Contained" on an Open workspace
+- [x] dead code removed: `seenRevision`, `firstTurnAdmissionHeld`, the dialog's own mode helpers

@@ -693,14 +693,17 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
       onAdjustRoleParameters,
     });
     await userEvent.click(screen.getByTestId("composer-settings-trigger"));
-    expect(screen.getByTestId("composer-settings-row-role")).toHaveTextContent("deep dive");
+    // docs/285 req 9 — with the parameters folded away the root would hold only
+    // the Role row, so the menu opens ONTO the role list rather than making the
+    // user traverse a level whose only purpose is to lead here. The three rows
+    // are still absent, which is what req 5 is about.
     expect(screen.queryByTestId("composer-settings-row-harness")).toBeNull();
     expect(screen.queryByTestId("composer-settings-row-model")).toBeNull();
     expect(screen.queryByTestId("composer-settings-row-reasoning")).toBeNull();
+    expect(screen.getByTestId("composer-settings-trigger")).toHaveTextContent("deep dive");
 
-    // "Adjust parameters…" lives inside the Role panel, and the harness is in it
-    // — it pins irreversibly, and switching role can switch it.
-    await userEvent.click(screen.getByTestId("composer-settings-row-role"));
+    // "Adjust parameters…" is in that list, and the harness is named in it — it
+    // pins irreversibly, and switching role can switch it.
     await userEvent.click(screen.getByTestId("composer-settings-role-adjust"));
     expect(onAdjustRoleParameters).toHaveBeenCalled();
 
@@ -757,7 +760,7 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
     });
     await userEvent.click(screen.getByTestId("composer-settings-trigger"));
     expect(screen.queryByTestId("composer-settings-row-model")).toBeNull();
-    await userEvent.click(screen.getByTestId("composer-settings-row-role"));
+    // req 9 — opens straight onto the role panel; there is no root to traverse.
     expect(screen.getByTestId("composer-settings-role-locked")).toBeInTheDocument();
     expect(screen.queryByTestId("composer-settings-role-deep dive")).toBeNull();
     await userEvent.click(screen.getByTestId("composer-settings-role-adjust"));
@@ -772,6 +775,9 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
     const onRoleChange = vi.fn();
     const { rerender } = renderMenu({ onRoleChange, sessionRoleName: "deep dive" });
     await userEvent.click(screen.getByTestId("composer-settings-trigger"));
+    // The parameters are revealed here (the default), so the root is a real
+    // four-row choice and the Role row is the way in — req 9's collapse applies
+    // only when Role would be the ONLY row.
     await userEvent.click(screen.getByTestId("composer-settings-row-role"));
     await userEvent.click(screen.getByTestId("composer-settings-role-none"));
     expect(onRoleChange).toHaveBeenCalledWith(undefined);
@@ -793,7 +799,10 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
       />,
     );
     await userEvent.click(screen.getByTestId("composer-settings-trigger"));
-    await userEvent.click(screen.getByTestId("composer-settings-row-role"));
+    // Locked, parameters folded → req 9's collapse applies, so the list is the
+    // menu. "No role" is absent because the choice is locked, not because the
+    // panel was never reached.
+    expect(screen.getByTestId("composer-settings-role-locked")).toBeInTheDocument();
     expect(screen.queryByTestId("composer-settings-role-none")).toBeNull();
   });
 

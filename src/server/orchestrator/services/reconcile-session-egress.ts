@@ -125,6 +125,10 @@ export async function reconcileSessionEgress(
   const result = await restartContainer(deps.recovery, sessionId, {
     // NOT Rescue: see the breaker check above.
     resetBreakers: false,
+    // The CALLER announces, after it has attached to the replacement. Announcing
+    // from inside would reach the sending tab mid-handler, and a tab that
+    // reconnects there closes the very socket the handler goes on to attach.
+    announceReplacement: false,
     ...(opts.agentSeed ? { agentSeed: opts.agentSeed } : {}),
   });
 

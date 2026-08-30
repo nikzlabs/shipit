@@ -372,7 +372,14 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
           // No audit card and no pending state: the session is still warm, so
           // there is no prior state for a card to describe (the same reason the
           // creation-time choice itself is silent).
-          deps.egressAllowlistStore?.setSessionOverride(reusable.id, null);
+          const carriedOverride = deps.egressAllowlistStore?.getSessionOverride(reusable.id);
+          if (carriedOverride !== null && carriedOverride !== undefined) {
+            deps.egressAllowlistStore?.setSessionOverride(reusable.id, null);
+            // A viewer may already be attached to this session — the abandoned
+            // draft's own tab, still open. Without the invalidation its control
+            // keeps showing the override that was just cleared underneath it.
+            deps.sseBroadcast("session_egress_changed", { sessionId: reusable.id });
+          }
           const fetchDurationMs = await refreshClaimedSession(url, reusable.workspaceDir, forceFetch);
           return { sessionId: reusable.id, workspaceDir: reusable.workspaceDir, fetchDurationMs };
         }

@@ -1,5 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: hydrate a session's network mode from the server and follow invalidations (external system sync)
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useEgressStore } from "../stores/egress-store.js";
 import type {
   EgressEnforcementStatus,
   EgressSessionSettings,
@@ -160,12 +161,32 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
   const [pendingRestart, setPendingRestart] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
-  // The revision this component last issued or accepted. A response older than
-  // it is dropped.
-  const seenRevision = useRef(0);
+  /**
+   * The last value the SERVER accepted, which is what a failed write reverts to.
+   *
+   * Not the displayed value: that one is optimistic, so reverting to it after two
+   * rapid failed writes restores the FIRST failure's guess rather than the truth.
+   * Inherit → click Contained → click Open, both PUTs fail, and the control ends
+   * up showing Contained while the server still holds Inherit — with `saving`
+   * false, so Send is released on a promise nothing behind it made.
+   */
+  const serverMode = useRef<NetworkMode>("inherit");
+  /**
+   * The session this hook is CURRENTLY mounted against.
+   *
+   * Revision ownership alone is not enough. Revisions are keyed per session, so a
+   * response for session A can still satisfy `currentRevision(A)` long after the
+   * user navigated to B — and `applySettings` would then paint A's value onto B's
+   * control. Read from a ref rather than the closure so an in-flight request
+   * checks where we are NOW, not where we were when it was issued.
+   */
+  const mountedSession = useRef<string | null>(sessionId);
+  mountedSession.current = sessionId;
 
   const applySettings = useCallback((settings: EgressSessionSettings) => {
-    setModeState(modeFromOverride(settings.override));
+    const next = modeFromOverride(settings.override);
+    serverMode.current = next;
+    setModeState(next);
     setGlobalEnabled(settings.globalEnabled);
     setEnforcementStatus(settings.enforcementStatus ?? (settings.enforcementActive ? "active" : "no-sidecar"));
     setPendingRestart(settings.pendingRestart);
@@ -179,10 +200,10 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
         const res = await fetch(`/api/egress/session/${encodeURIComponent(id)}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const settings = (await res.json()) as EgressSessionSettings;
-        // Drop a read that a write has already overtaken. `>=` rather than `>`:
-        // a write issued at the same revision has authoritative data of its own.
+        // Drop a read that a write has already overtaken, AND one that belongs to
+        // a session this hook has since navigated away from.
         if (currentRevision(id) !== issuedAt) return;
-        seenRevision.current = issuedAt;
+        if (mountedSession.current !== id) return;
         applySettings(settings);
       } catch (err) {
         console.error("[session-network-mode] failed to read the session's mode:", err);
@@ -199,6 +220,7 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
   // the next new session.
   // eslint-disable-next-line no-restricted-syntax -- external system sync: read the session's mode when it changes
   useEffect(() => {
+    serverMode.current = "inherit";
     setModeState("inherit");
     setGlobalEnabled(true);
     setPendingRestart(false);
@@ -224,7 +246,9 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
   const setMode = useCallback(
     (next: NetworkMode) => {
       if (!sessionId) return;
-      const previous = mode;
+      // The value to fall back to is the SERVER's, not what is on screen: two
+      // rapid failures would otherwise revert to the first one's guess.
+      const accepted = serverMode.current;
       // Optimistic: a settings control that lags a click reads as broken, and
       // the Send barrier below is what makes the optimism safe.
       setModeState(next);
@@ -240,23 +264,26 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const settings = (await res.json()) as EgressSessionSettings;
           // A later write has superseded this one — its own response is the
-          // truth, and applying this would move the control backwards.
+          // truth, and applying this would move the control backwards. A session
+          // switch invalidates it for the same reason a read is invalidated.
           if (currentRevision(sessionId) !== revision) return;
-          seenRevision.current = revision;
+          if (mountedSession.current !== sessionId) return;
           applySettings(settings);
         } catch (err) {
-          // Revert BEFORE clearing `saving`. The barrier's contract is that
-          // Send stays blocked until the displayed value is one the server
-          // agrees with, and clearing first would open a frame in which the
-          // composer shows a mode the server never accepted and lets it be sent.
-          if (currentRevision(sessionId) === revision) setModeState(previous);
+          // Revert BEFORE clearing `saving`. The barrier's contract is that Send
+          // stays blocked until the displayed value is one the server agrees
+          // with, and clearing first would open a frame in which the composer
+          // shows a mode the server never accepted and lets it be sent.
+          if (currentRevision(sessionId) === revision && mountedSession.current === sessionId) {
+            setModeState(accepted);
+          }
           console.error("[session-network-mode] failed to write the session's mode:", err);
         } finally {
           if (currentRevision(sessionId) === revision) setSaving(false);
         }
       })();
     },
-    [sessionId, mode, applySettings],
+    [sessionId, applySettings],
   );
 
   return { mode, globalEnabled, enforcementStatus, pendingRestart, loaded, saving, setMode };
@@ -293,14 +320,50 @@ export function useComposerNetworkMode(
    * never made it for. The caller knows which route it is on, so it says.
    */
   expectingClaim: boolean,
+  /**
+   * req 8 — which claim this composer is waiting for, as a stable identity.
+   *
+   * `sessionId === null` plus `expectingClaim` is not enough to own a draft:
+   * navigating `/repo-A/new` → `/repo-B/new` before A's claim lands leaves both
+   * renders at `(null, true)`, so a pick made for A survives and is written into
+   * B when B's claim returns — a mode the user chose for a different session, in
+   * a different repository. Anything that changes per new-session route works;
+   * the repo URL is what the caller has.
+   */
+  claimScope: string | null,
 ): SessionNetworkModeState {
   const server = useSessionNetworkMode(sessionId);
+  /**
+   * req 10 — while there is no session there is nothing to read a per-session
+   * view from, and the hook's own default would have the menu say "Inherit
+   * workspace — currently Contained" on an OPEN workspace. That is a false
+   * statement made in exactly the interval this feature promises the control
+   * works, so the workspace default is read from the store instead of assumed.
+   */
+  const storeGlobalEnabled = useEgressStore((s) => s.globalEnabled);
+  const storeEnforcement = useEgressStore((s) => s.enforcementStatus);
+  const loadGlobal = useEgressStore((s) => s.loadGlobal);
+  // eslint-disable-next-line no-restricted-syntax -- external system sync: read the workspace default when no session can report it
+  useEffect(() => {
+    if (!sessionId) void loadGlobal();
+  }, [sessionId, loadGlobal]);
+
   // The pick, and the claim it is waiting for. One piece of state, so the
   // "is it still valid" question cannot be answered by two values that disagree.
   const [draft, setDraft] = useState<NetworkMode | null>(null);
   // Held in a ref as well so the write effect can consume it without listing the
   // setter's identity among its dependencies.
   const pending = useRef<NetworkMode | null>(null);
+
+  // req 8 — the draft belongs to ONE claim. A route change abandons it rather
+  // than carrying a pick into whatever session arrives next.
+  // eslint-disable-next-line no-restricted-syntax -- external system sync: drop a draft whose claim the user navigated away from
+  useEffect(() => {
+    return () => {
+      pending.current = null;
+      setDraft(null);
+    };
+  }, [claimScope]);
 
   // eslint-disable-next-line no-restricted-syntax -- external system sync: write a pre-claim pick once the claim resolves
   useEffect(() => {
@@ -333,6 +396,10 @@ export function useComposerNetworkMode(
 
   return {
     ...server,
+    // req 10 — before the claim, the workspace default comes from the store; the
+    // per-session view takes over the moment there is a session to read.
+    globalEnabled: sessionId ? server.globalEnabled : storeGlobalEnabled,
+    enforcementStatus: sessionId ? server.enforcementStatus : storeEnforcement,
     // While the claim is pending the draft IS the displayed value — the server
     // has nothing to say about a session that does not exist yet.
     mode: sessionId ? server.mode : (draft ?? "inherit"),

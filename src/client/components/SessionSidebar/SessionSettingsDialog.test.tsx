@@ -56,6 +56,11 @@ function stubFetch(opts: {
   });
   const impl = vi.fn(async (url: string, init?: RequestInit) => {
     if (url.startsWith("/api/egress/allowlist")) return { ok: true, status: 200, json: async () => view() } as Response;
+    // docs/285 req 7 — the dialog reads through the SHARED hook now, which asks
+    // the per-session route rather than the Settings editor's provenance view.
+    if (url.startsWith("/api/egress/session/") && init?.method !== "PUT") {
+      return { ok: true, status: 200, json: async () => sessionView() } as Response;
+    }
     if (url.startsWith("/api/egress/session/") && init?.method === "PUT") {
       override = (JSON.parse((init.body as string) ?? "{}").override ?? null) as boolean | null;
       return { ok: true, status: 200, json: async () => sessionView() } as Response;

@@ -14,6 +14,7 @@ import { resetSubAgentSpawnBudget } from "../session-runner.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { agentAdmissionError } from "../services/agent-auth-gate.js";
 import { withFirstTurnAdmission } from "../services/first-turn-admission.js";
+import { announceRunnerReplaced } from "../services/recovery.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
 
 // Re-export all public symbols from sub-modules for backwards compatibility
@@ -514,6 +515,9 @@ async function sendMessage(
   // when the message doesn't include an explicit sessionId.
   const effectiveSessionId = msg.sessionId ?? ctx.getActiveAppSessionId();
   let agentSessionId: string | undefined;
+  // docs/285 — whether the first-Send reconciliation actually rebuilt the
+  // container, so the replacement is announced once, after this handler attaches.
+  let reconciled = false;
   if (effectiveSessionId) {
     // Resuming an existing session
     // Clear the queue when switching to a different session.
@@ -587,6 +591,8 @@ async function sendMessage(
           }));
           return;
         }
+      } else if (outcome.action === "restarted") {
+        reconciled = true;
       } else if (outcome.action === "aborted") {
         // The container could not be rebuilt, so the turn would run under the
         // wrong network mode — or in nothing at all. Refuse rather than dispatch.
@@ -698,6 +704,13 @@ async function sendMessage(
     const registry = ctx.getRunnerRegistry();
     const runner = registry.getOrCreate(activeId, activeDir, ctx.getActiveAgentId());
     ctx.attachToRunner(runner);
+    // docs/285 — a reconciliation rebuilt the container earlier in this handler,
+    // and OTHER viewers are still attached to the runner it disposed. Tell them
+    // now, not then: the broadcast reaches this tab as well, and a reconnect
+    // fired while this handler was still running would close the socket the
+    // `attachToRunner` above just used — leaving a viewer that can never be
+    // detached, because its close event already fired.
+    if (reconciled) announceRunnerReplaced({ sseBroadcast: ctx.sseBroadcast, runnerRegistry: registry }, activeId);
   }
 
   // Collect all upload paths for chat history (so hydrateUploads can detect sent uploads)

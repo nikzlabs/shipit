@@ -410,7 +410,20 @@ export function dispatchOnRunner(
     return settlement;
   };
 
-  if (runner.running) {
+  // docs/285 — `turnStartInProgress` counts as busy here, and this is the seam
+  // that makes the reservation mean anything. The WS handler checks it at its own
+  // entry, but a first Send that LOST the admission race re-enters through this
+  // shared dispatcher instead, and `running` alone is false for the whole
+  // pre-spawn window — environment preparation, parameter assembly, and the
+  // container restart that window exists for. So the loser dispatched while the
+  // winner was still starting, and two first turns ran against one session.
+  //
+  // Safe against self-deadlock: a turn's own start path (`runAgentWithMessage`)
+  // does not come through `dispatch`, so the holder never queues behind itself.
+  // Steering is unreachable in this state too — there is no resident streaming
+  // process yet — so this falls through to the enqueue below, which is the
+  // intended outcome.
+  if (runner.running || runner.turnStartInProgress) {
     // docs/163 — honor live steering on the dispatch path too: when the running
     // turn is steerable+streaming and live steering is on, inject the message
     // via `sendUserMessage` instead of queuing it. Shares the

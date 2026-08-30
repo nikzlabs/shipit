@@ -28,11 +28,9 @@ import { DEFAULT_SANDBOX_CAPABILITIES } from "../../../server/shared/types.js";
 import {
   NETWORK_MODE_LABEL,
   enforcementWarning,
+  useSessionNetworkMode,
 } from "../../hooks/useSessionNetworkMode.js";
 import type {
-  EgressEnforcementStatus,
-  EgressAllowlistView,
-  EgressSessionSettings,
   SandboxCapabilitiesView,
   SessionCapabilities,
 } from "../../../server/shared/types.js";
@@ -72,12 +70,6 @@ import type {
 
 type Mode = "inherit" | "contained" | "open";
 
-const modeFromOverride = (override: boolean | null): Mode =>
-  override === null ? "inherit" : override ? "contained" : "open";
-
-const overrideFromMode = (mode: Mode): boolean | null =>
-  mode === "inherit" ? null : mode === "contained";
-
 export function SessionSettingsDialog({
   sessionId,
   open,
@@ -87,20 +79,12 @@ export function SessionSettingsDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  // undefined = not yet loaded; the options render disabled until it resolves.
-  const [mode, setMode] = useState<Mode | undefined>(undefined);
-  // Deployment-level facts (not changed by this session's override): the global
-  // containment switch and whether this deployment can actually ENFORCE
-  // containment. Optimistic `true` so a capable host never flashes the warning.
-  const [globalEnabled, setGlobalEnabled] = useState(true);
-  // docs/285 — the STATUS, not the boolean: the warning below has to name
-  // which inactive deployment this is, and those two cases point in opposite
-  // directions.
-  const [enforcementStatus, setEnforcementStatus] = useState<EgressEnforcementStatus>("active");
   // Server-computed: the now-resolved containment differs from what this
   // session's live container was created with, so the change applies only on the
   // next container start. Null while loading / when no container is running.
-  const [pendingRestart, setPendingRestart] = useState(false);
+  // docs/279 — the SANDBOX half's pending verdict. The network half reads the
+  // hook's instead: one value, one owner.
+  const [capabilityPendingRestart, setCapabilityPendingRestart] = useState(false);
   const [restarting, setRestarting] = useState(false);
   // docs/279 — a sandbox's capability grants. `undefined` until the fetch
   // resolves (the toggles render disabled meanwhile); never fetched at all for a
@@ -122,33 +106,22 @@ export function SessionSettingsDialog({
   // gates the restart action.
   const agentRunning = useSessionStore((s) => s.isLoading);
 
-  // eslint-disable-next-line no-restricted-syntax -- external system sync: read the session's current override when the dialog opens
-  useEffect(() => {
-    if (!open || isSandbox) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetch(`/api/egress/allowlist?session=${encodeURIComponent(sessionId)}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const view = (await res.json()) as EgressAllowlistView;
-        if (!cancelled) {
-          setMode(modeFromOverride(view?.session?.override ?? null));
-          setGlobalEnabled(view?.globalEnabled ?? true);
-          setEnforcementStatus(
-            view?.session?.enforcementStatus
-            ?? view?.enforcementStatus
-            ?? ((view?.session?.enforcementActive ?? view?.enforcementActive ?? true) ? "active" : "no-sidecar"),
-          );
-          setPendingRestart(view?.session?.pendingRestart ?? false);
-        }
-      } catch {
-        if (!cancelled) setMode("inherit");
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId, open, isSandbox]);
+  /**
+   * docs/285 req 7 — the session's network mode comes from the SHARED hook, the
+   * same one the composer's control uses.
+   *
+   * This dialog used to own a parallel fetch, mapping and PUT. That was two
+   * clients of one value with no ordering between them: a change made in the
+   * composer (or in another tab) left an open dialog stale, and the two sets of
+   * writes were sequenced against nothing. Requirement 7 asks for one
+   * authoritative value — which is a shared mutation clock and a shared
+   * invalidation, not merely one control.
+   *
+   * Passed `null` while closed or for a sandbox, so it neither fetches nor holds
+   * state for a half of this dialog that is not rendered.
+   */
+  const net = useSessionNetworkMode(open && !isSandbox ? sessionId : null);
+  const mode: Mode | undefined = net.loaded ? net.mode : undefined;
 
   // docs/279 — a sandbox's grants + the server's pending-restart verdict. A
   // separate fetch from the egress one above because the two are mutually
@@ -165,7 +138,7 @@ export function SessionSettingsDialog({
         const view = (await res.json()) as SandboxCapabilitiesView;
         if (!cancelled) {
           setCapabilities(view.capabilities);
-          setPendingRestart(view.pendingRestart);
+          setCapabilityPendingRestart(view.pendingRestart);
         }
       } catch (err) {
         // Leave the toggles disabled rather than rendering a guessed set the
@@ -178,28 +151,6 @@ export function SessionSettingsDialog({
       cancelled = true;
     };
   }, [sessionId, open, isSandbox]);
-
-  const handleChange = async (next: Mode) => {
-    const prev = mode;
-    setMode(next);
-    try {
-      const res = await fetch(`/api/egress/session/${encodeURIComponent(sessionId)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ override: overrideFromMode(next) }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      // The PUT returns the fresh session view, including the recomputed
-      // pendingRestart (resolved-now vs the live container's started-with mode),
-      // so the indicator reflects the selection without a second round-trip.
-      const settings = (await res.json()) as EgressSessionSettings;
-      setPendingRestart(settings?.pendingRestart ?? false);
-    } catch (err) {
-      setMode(prev);
-      useUiStore.getState().setToast({ message: "Failed to update this session's network mode" });
-      console.error("[session-egress] failed to set override:", err);
-    }
-  };
 
   /**
    * docs/279 — write the whole capability set. Optimistic: the toggle moves
@@ -225,7 +176,7 @@ export function SessionSettingsDialog({
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const view = (await res.json()) as SandboxCapabilitiesView;
       setCapabilities(view.capabilities);
-      setPendingRestart(view.pendingRestart);
+      setCapabilityPendingRestart(view.pendingRestart);
     } catch (err) {
       setCapabilities(prev);
       useUiStore.getState().setToast({ message: "Failed to update this session's capabilities" });
@@ -245,8 +196,10 @@ export function SessionSettingsDialog({
       // `reconnect()` via the window-event listener in useAppBootstrap.
       window.dispatchEvent(new CustomEvent("shipit:reconnect-ws"));
       // The new container starts with the now-resolved mode, so nothing is
-      // pending anymore.
-      setPendingRestart(false);
+      // pending anymore. Only the SANDBOX half is cleared here: the network
+      // half's value is the server's, and the hook re-reads it on the
+      // invalidation the restart produces rather than being told locally.
+      setCapabilityPendingRestart(false);
       useUiStore.getState().setToast({
         message: isSandbox
           ? "Restarting container to apply the new capabilities"
@@ -264,7 +217,8 @@ export function SessionSettingsDialog({
   // Would this session resolve to Contained? "inherit" follows the global switch;
   // "contained"/"open" force it. Computed from the live `mode` so toggling to
   // Open hides the warning immediately (Open isn't claiming containment).
-  const sessionContained = mode === "open" ? false : mode === "contained" ? true : globalEnabled;
+  const pendingRestart = isSandbox ? capabilityPendingRestart : net.pendingRestart;
+  const sessionContained = mode === "open" ? false : mode === "contained" ? true : net.globalEnabled;
   // Policy says contain but the deployment can't enforce → warn instead of
   // silently implying protection. Mirrors the Settings → Network egress banner.
   //
@@ -274,9 +228,9 @@ export function SessionSettingsDialog({
   // missing; with `SESSION_EGRESS_ENFORCE=0` the session starts fine and runs
   // wide open — the opposite failure, reported as the one it is not.
   const enforcementNotice =
-    mode !== undefined && sessionContained ? enforcementWarning(enforcementStatus) : null;
+    mode !== undefined && sessionContained ? enforcementWarning(net.enforcementStatus) : null;
 
-  const globalLabel = globalEnabled ? "Contained" : "Open";
+  const globalLabel = net.globalEnabled ? "Contained" : "Open";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -315,7 +269,7 @@ export function SessionSettingsDialog({
               desc={`Follow the workspace setting (currently ${globalLabel}). Change it in Settings → Network.`}
               selected={mode === "inherit"}
               disabled={mode === undefined}
-              onSelect={() => void handleChange("inherit")}
+              onSelect={() => net.setMode("inherit")}
             />
             <ModeOption
               icon={<ShieldCheckIcon size={ICON_SIZE.SM} weight="fill" />}
@@ -323,7 +277,7 @@ export function SessionSettingsDialog({
               desc="Default-deny — only the allowlist (LLM API, GitHub, registries, your added hosts) is reachable, with inline prompts for new hosts."
               selected={mode === "contained"}
               disabled={mode === undefined}
-              onSelect={() => void handleChange("contained")}
+              onSelect={() => net.setMode("contained")}
             />
             <ModeOption
               icon={<ShieldSlashIcon size={ICON_SIZE.SM} />}
@@ -331,7 +285,7 @@ export function SessionSettingsDialog({
               desc="Unrestricted outbound network access — no allowlist, no prompts."
               selected={mode === "open"}
               disabled={mode === undefined}
-              onSelect={() => void handleChange("open")}
+              onSelect={() => net.setMode("open")}
             />
           </div>
         )}

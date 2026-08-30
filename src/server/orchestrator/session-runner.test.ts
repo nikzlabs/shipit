@@ -141,6 +141,27 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
+  it("dispatch enqueues during a pre-spawn turn claim, not only while running (docs/285)", () => {
+    // `turnStartInProgress` covers the window between claiming the session and
+    // `agent.run()` — environment preparation, and the container restart a
+    // first-Send network reconciliation performs. `running` is false throughout.
+    //
+    // This is the seam that makes the reservation mean anything: a first Send
+    // that LOST the admission race re-enters through this shared dispatcher, and
+    // with only `running` consulted it started a second turn against the session
+    // the winner was still spawning into.
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    runner.turnStartInProgress = true;
+    expect(runner.running).toBe(false);
+    runner.dispatch(testDispatch({ text: "second first send" }));
+    expect(runner.queueLength).toBe(1);
+    runner.dispose({ force: true });
+  });
+
   it("dispatch broadcasts message_queued via emitMessage (docs/150)", () => {
     // The enqueue branch must emit message_queued via the runner's broadcast
     // channel so every attached viewer sees the update, not just the originating

@@ -210,3 +210,30 @@ describe("ComposerSettingsMenu", () => {
     });
   });
 });
+
+/**
+ * docs/285 req 9 — the menu never keeps a level of nesting that exists only to
+ * hold one row leading somewhere else.
+ */
+describe("ComposerSettingsMenu — no one-row root (docs/285 req 9)", () => {
+  it("opens straight onto the role list when Role is all the root would hold", async () => {
+    const user = userEvent.setup();
+    // A role in force with its parameters folded away: removing the Mode row
+    // left exactly one row on the root, whose only job was to open this panel.
+    renderMenu({ onRoleChange: vi.fn(), sessionRoleName: "reviewer", roleParamsRevealed: false });
+    await user.click(screen.getByTestId("composer-settings-trigger"));
+    // The role list itself, with no traversal and no back header to a root that
+    // would be empty behind it.
+    expect(screen.getByTestId("composer-settings-role-none")).toBeInTheDocument();
+    expect(screen.queryByTestId("composer-settings-back")).toBeNull();
+  });
+
+  it("keeps the root when there is more than one row on it", async () => {
+    const user = userEvent.setup();
+    // Parameters revealed → harness, model and level are back, so the root is a
+    // real choice rather than a step.
+    renderMenu({ onRoleChange: vi.fn(), sessionRoleName: "reviewer", roleParamsRevealed: true });
+    await user.click(screen.getByTestId("composer-settings-trigger"));
+    expect(screen.getByTestId("composer-settings-row-model")).toBeInTheDocument();
+  });
+});

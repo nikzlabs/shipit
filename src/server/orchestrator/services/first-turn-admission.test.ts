@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   withFirstTurnAdmission,
-  firstTurnAdmissionHeld,
   _resetFirstTurnAdmission,
 } from "./first-turn-admission.js";
 
@@ -76,23 +75,6 @@ describe("withFirstTurnAdmission (docs/285)", () => {
 
     // A failed first Send must not take the queue down with it.
     await expect(withFirstTurnAdmission("s1", async () => "ok")).resolves.toBe("ok");
-  });
-
-  it("reports the section as held while someone owns it, and free once it drains", async () => {
-    // The reported state is what lets a competing Send queue rather than fall
-    // through — and it must not stay held forever, or the session reads as
-    // permanently busy.
-    expect(firstTurnAdmissionHeld("s1")).toBe(false);
-    const hold = deferred<null>();
-    const run = withFirstTurnAdmission("s1", async () => {
-      await hold.promise;
-    });
-    expect(firstTurnAdmissionHeld("s1")).toBe(true);
-    hold.resolve(null);
-    await run;
-    // Drain is asynchronous — let the chain's own cleanup tick.
-    await new Promise((r) => setTimeout(r, 0));
-    expect(firstTurnAdmissionHeld("s1")).toBe(false);
   });
 
   it("keeps a waiter's turn when a later arrival replaces the chain tail", async () => {

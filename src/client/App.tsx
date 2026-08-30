@@ -500,7 +500,14 @@ export default function App() {
    * rather than "applies on the next container start". The two footers say
    * opposite things and each is true at its own moment.
    */
-  const composerNetworkState = useComposerNetworkMode(wsSessionId ?? null, isNewSessionRoute);
+  const composerNetworkState = useComposerNetworkMode(
+    wsSessionId ?? null,
+    isNewSessionRoute,
+    // req 8 — the draft belongs to THIS new-session route. Navigating from one
+    // repo's `/new` to another's before the first claim lands must abandon the
+    // pick, not carry it into the session that arrives next.
+    newSessionRepoSlug ?? null,
+  );
   const composerNetwork = useMemo(
     () => ({
       mode: composerNetworkState.mode,
