@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mode &amp; network — one composer control</title>
+<style>
+  :root {
+    --color-bg-primary: #030712;
+    --color-bg-secondary: #111827;
+    --color-bg-tertiary: #1f2937;
+    --color-bg-elevated: #1f2937;
+    --color-bg-hover: rgba(255,255,255,0.05);
+    --color-bg-overlay: rgba(0,0,0,0.7);
+    --color-text-primary: #f3f4f6;
+    --color-text-secondary: #9ca3af;
+    --color-text-tertiary: #6b7280;
+    --color-text-link: #60a5fa;
+    --color-border-primary: #212c3b;
+    --color-border-secondary: #374151;
+    --color-accent: #3b82f6;
+    --color-accent-subtle: rgba(59,130,246,0.15);
+    --color-success: #22c55e;
+    --color-success-subtle: rgba(34,197,94,0.15);
+    --color-warning: #f59e0b;
+    --color-warning-subtle: rgba(245,158,11,0.15);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--color-bg-primary); color: var(--color-text-primary);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px; line-height: 1.5; padding: 32px 32px 90px;
+  }
+  h1 { font-size: 23px; font-weight: 650; margin-bottom: 6px; letter-spacing: -.01em; }
+  h2 {
+    font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em;
+    color: var(--color-text-secondary);
+    margin: 46px 0 6px; padding-top: 18px; border-top: 1px solid var(--color-border-primary);
+  }
+  .lede { color: var(--color-text-secondary); font-size: 13.5px; max-width: 880px; }
+  .note { color: var(--color-text-tertiary); font-size: 12.5px; max-width: 880px; margin: 8px 0 20px; }
+  .note b { color: var(--color-text-secondary); font-weight: 600; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--color-text-secondary); }
+  .row { display: flex; gap: 30px; flex-wrap: wrap; align-items: flex-start; }
+  .col { display: flex; flex-direction: column; gap: 10px; }
+  .cap { font-size: 11.5px; font-weight: 600; color: var(--color-text-secondary); margin: 0 0 9px 2px; }
+  .frame {
+    background: var(--color-bg-primary); border: 1px solid var(--color-border-primary);
+    border-radius: 12px; overflow: hidden; box-shadow: 0 8px 40px rgba(0,0,0,.45);
+  }
+  .frame.w720 { width: 720px; }
+  .plate {
+    background: var(--color-bg-secondary); border: 1px solid var(--color-border-primary);
+    border-radius: 10px; padding: 14px 16px;
+  }
+
+  /* composer */
+  .composer-wrap { padding: 14px 16px 12px; }
+  .composer { display: flex; flex-direction: column; border-radius: 12px; background: var(--color-bg-secondary); border: 1px solid var(--color-border-secondary); }
+  .composer.focus { border-color: rgba(59,130,246,.8); box-shadow: 0 0 0 1px rgba(59,130,246,.8); }
+  .composer .field { padding: 12px 16px 8px; font-size: 14px; color: var(--color-text-tertiary); min-height: 60px; }
+  .composer .field.typed { color: var(--color-text-primary); }
+  .toolbar { display: flex; align-items: center; gap: 4px; padding: 0 8px 8px; }
+  .spacer { flex: 1; }
+  .iconbtn { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--color-text-tertiary); }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 8px; font-size: 12px; font-weight: 500; color: var(--color-text-secondary); white-space: nowrap; }
+  .pill.hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+  .send { width: 30px; height: 30px; border-radius: 8px; background: var(--color-accent); display: flex; align-items: center; justify-content: center; color: #fff; margin-left: 4px; }
+  .dial { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--color-border-secondary); border-top-color: var(--color-accent); }
+
+  /* the combined control's trigger */
+  .ctl { display: inline-flex; align-items: center; gap: 5px; border-radius: 8px; padding: 6px; color: var(--color-text-tertiary); }
+  .ctl.quiet:hover { background: var(--color-bg-hover); }
+  .ctl.mode-on { background: var(--color-accent-subtle); color: var(--color-accent); padding: 6px 7px; }
+  .ctl.net-on { background: var(--color-warning-subtle); color: var(--color-warning); padding: 6px 7px; }
+  .ctl .txt { font-size: 12px; font-weight: 600; }
+  .ctl .div { width: 1px; height: 12px; background: currentColor; opacity: .3; }
+
+  /* menu */
+  .menu { background: var(--color-bg-elevated); border: 1px solid var(--color-border-secondary); border-radius: 10px; padding: 4px; width: 300px; box-shadow: 0 14px 44px rgba(0,0,0,.6); }
+  .mhead { padding: 8px 10px 5px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--color-text-tertiary); display: flex; align-items: center; gap: 6px; }
+  .msep { height: 1px; background: var(--color-border-primary); margin: 4px 2px; }
+  .mrow { display: flex; align-items: flex-start; gap: 9px; padding: 7px 10px; border-radius: 7px; font-size: 13px; color: var(--color-text-primary); }
+  .mrow .ico { flex: 0 0 auto; margin-top: 1px; color: var(--color-text-secondary); }
+  .mrow .lbl { flex: 1; min-width: 0; }
+  .mrow .desc { display: block; font-size: 11.5px; color: var(--color-text-tertiary); margin-top: 2px; line-height: 1.4; }
+  .mrow .val { font-size: 11.5px; color: var(--color-text-tertiary); white-space: nowrap; }
+  .mrow.cur { background: var(--color-accent-subtle); }
+  .mrow.cur .ico { color: var(--color-accent); }
+  .mrow.hov { background: var(--color-bg-hover); }
+  .mrow.off { opacity: .45; }
+  .tick { margin-top: 2px; color: var(--color-accent); flex: 0 0 auto; }
+  .mfoot { padding: 8px 10px 7px; font-size: 11px; color: var(--color-text-tertiary); line-height: 1.45; border-top: 1px solid var(--color-border-primary); margin-top: 4px; }
+  .pend {
+    display: flex; align-items: center; gap: 8px; margin: 5px 2px 2px; padding: 7px 9px;
+    border: 1px solid var(--color-border-secondary); background: var(--color-bg-secondary);
+    border-radius: 8px; font-size: 11.5px; color: var(--color-text-secondary);
+  }
+  .btn { border: 1px solid var(--color-border-secondary); border-radius: 7px; padding: 3px 8px; color: var(--color-text-primary); font-size: 11.5px; white-space: nowrap; }
+
+  /* quick capture */
+  .qc-shell { padding: 24px 14px 14px; background: var(--color-bg-overlay); }
+  .qc { border: 1px solid var(--color-border-secondary); border-radius: 10px; background: var(--color-bg-elevated); box-shadow: 0 18px 60px rgba(0,0,0,.6); overflow: hidden; }
+  .qc-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 14px; border-bottom: 1px solid var(--color-border-primary); }
+  .select { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--color-border-secondary); background: var(--color-bg-tertiary); border-radius: 7px; padding: 3px 8px; font-size: 13px; color: var(--color-text-primary); }
+  .qc-foot { display: flex; flex-direction: column; gap: 11px; border-top: 1px solid var(--color-border-primary); padding: 11px 14px; font-size: 12px; color: var(--color-text-tertiary); }
+  .check { display: flex; align-items: flex-start; gap: 8px; }
+  .box { width: 15px; height: 15px; border-radius: 4px; border: 1px solid var(--color-border-secondary); flex: 0 0 auto; margin-top: 2px; background: var(--color-bg-tertiary); }
+
+  /* today strip */
+  .steps { display: flex; gap: 8px; flex-wrap: wrap; max-width: 880px; }
+  .step { flex: 1 1 150px; border: 1px dashed var(--color-border-secondary); border-radius: 10px; padding: 11px 12px; background: var(--color-bg-secondary); }
+  .step .n { display: inline-flex; width: 18px; height: 18px; border-radius: 50%; background: var(--color-warning-subtle); color: var(--color-warning); font-size: 11px; font-weight: 700; align-items: center; justify-content: center; margin-bottom: 6px; }
+  .step .t { font-size: 12.5px; }
+  .step .s { font-size: 11.5px; color: var(--color-text-tertiary); margin-top: 3px; }
+
+  /* before/after */
+  .ba { display: flex; gap: 18px; align-items: flex-start; }
+  .arrow { align-self: center; color: var(--color-text-tertiary); font-size: 22px; }
+  .strike { text-decoration: line-through; opacity: .4; }
+  .phone { width: 320px; }
+  .repo-bar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--color-border-primary); border-left: 3px solid #eab308; background: rgba(234,179,8,.06); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<h1>Mode &amp; network — one composer control</h1>
+<p class="lede">
+  Prototype for <code>docs/285-network-mode-at-session-creation/requirements.md</code>.
+  Network containment is needed rarely, so it gets <b>no new control</b>: it joins the composer's existing
+  permission-mode button, which becomes one flat menu holding both settings — same on desktop and mobile,
+  for new sessions and running ones alike (reqs 5–7). The mode leaves the parameters menu, which removes a
+  nesting level there (req 9).
+</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2>Today — the four-step dance</h2>
+<p class="note">
+  Egress is plumbed <b>at container creation</b>, and the only control lives on a session that already exists.
+  So the mode can only be corrected by restarting a session that has already started.
+</p>
+<div class="steps">
+  <div class="step"><span class="n">1</span><div class="t">Start the session</div><div class="s">Container boots on the workspace default.</div></div>
+  <div class="step"><span class="n">2</span><div class="t">Stop / wait</div><div class="s">The turn must be idle before anything can restart.</div></div>
+  <div class="step"><span class="n">3</span><div class="t">Session settings → Network</div><div class="s">Pick Open. “Pending · applies on next container start”.</div></div>
+  <div class="step"><span class="n">4</span><div class="t">Restart, then continue</div><div class="s">Restart to apply now, re-attach, re-send.</div></div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2>1 · The control, at rest — no new footprint (req 5)</h2>
+<p class="note">
+  The trigger is today's permission-mode button, unchanged in the common case: Auto is a bare icon with no
+  label. Network only appears on it when it is <b>not</b> the inherited default — the rare case pays the
+  pixels, the common one pays none.
+</p>
+<div class="row">
+  <div class="col">
+    <div class="plate">
+      <p class="cap" style="margin-bottom:12px">Trigger states — left to right, most common first</p>
+      <div style="display:flex; align-items:center; gap:26px; flex-wrap:wrap">
+
+        <div style="text-align:center">
+          <span class="ctl quiet"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M240 128a15.74 15.74 0 0 1-7.6 13.51L88.32 229.65a16 16 0 0 1-16.2.3A15.86 15.86 0 0 1 64 216.13V39.87a15.86 15.86 0 0 1 8.12-13.82 16 16 0 0 1 16.2.3L232.4 114.49A15.74 15.74 0 0 1 240 128Z"/></svg></span>
+          <div style="font-size:11px;color:var(--color-text-tertiary);margin-top:7px;max-width:120px">Auto + inherited<br>(today, unchanged)</div>
+        </div>
+
+        <div style="text-align:center">
+          <span class="ctl mode-on"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M208 40H48a16 16 0 0 0-16 16v58.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c15.2-5.05 91-34.78 91-124.39V56a16 16 0 0 0-16-16Z"/></svg><span class="txt">Guarded</span></span>
+          <div style="font-size:11px;color:var(--color-text-tertiary);margin-top:7px;max-width:120px">Non-default mode<br>(today, unchanged)</div>
+        </div>
+
+        <div style="text-align:center">
+          <span class="ctl net-on">
+            <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M240 128a15.74 15.74 0 0 1-7.6 13.51L88.32 229.65a16 16 0 0 1-16.2.3A15.86 15.86 0 0 1 64 216.13V39.87a15.86 15.86 0 0 1 8.12-13.82 16 16 0 0 1 16.2.3L232.4 114.49A15.74 15.74 0 0 1 240 128Z"/></svg>
+            <span class="div"></span>
+            <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M53.92 34.62a8 8 0 1 0-11.84 10.76l17.68 19.45A15.93 15.93 0 0 0 32 80v34.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c11-3.68 55.2-21.19 78.11-67.4l10.97 12.07a8 8 0 0 0 11.84-10.76Z"/></svg>
+            <span class="txt">Open</span>
+          </span>
+          <div style="font-size:11px;color:var(--color-text-tertiary);margin-top:7px;max-width:130px">Open override —<br>a loosening</div>
+        </div>
+
+        <div style="text-align:center">
+          <span class="ctl mode-on">
+            <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M208 40H48a16 16 0 0 0-16 16v58.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c15.2-5.05 91-34.78 91-124.39V56a16 16 0 0 0-16-16Z"/></svg><span class="txt">Guarded</span>
+            <span class="div"></span>
+            <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M128 24a104 104 0 1 0 104 104A104.11 104.11 0 0 0 128 24Zm88 104a87.61 87.61 0 0 1-3.33 24h-38.51a157.44 157.44 0 0 0 0-48h38.51a87.61 87.61 0 0 1 3.33 24ZM128 214.8a115.06 115.06 0 0 1-20.24-46.8h40.48A115.06 115.06 0 0 1 128 214.8ZM104.62 152a140.5 140.5 0 0 1 0-48h46.76a140.5 140.5 0 0 1 0 48ZM40 128a87.61 87.61 0 0 1 3.33-24h38.51a157.44 157.44 0 0 0 0 48H43.33A87.61 87.61 0 0 1 40 128Zm88-86.8a115.06 115.06 0 0 1 20.24 46.8h-40.48A115.06 115.06 0 0 1 128 41.2Z"/></svg><span class="txt">Contained</span>
+          </span>
+          <div style="font-size:11px;color:var(--color-text-tertiary);margin-top:7px;max-width:140px">Both non-default — each<br>named in words, not glyphs</div>
+        </div>
+
+      </div>
+    </div>
+    <p class="note" style="max-width:640px;margin-top:2px">
+      Any non-default network mode adds the globe glyph. <b>Only a loosening</b> (Open on a contained workspace)
+      tints the control amber; a tightening keeps the mode's own colouring — tinting the safe choice too would
+      train the eye to ignore the tint that matters. The tint is never the message: the trigger's accessible
+      name and tooltip state the effective network mode, and any pending restart, in words.
+    </p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2>2 · The menu — flat, two sections, no drill-down</h2>
+<p class="note">
+  One popover, opened from that trigger. Both settings are visible at once and each is one tap away — the
+  same body on desktop and mobile (req 6). A session that has not started and one that is running differ only
+  in the footer and the conditional pending-restart strip.
+</p>
+<div class="row">
+  <div>
+    <p class="cap">New session — before the first message</p>
+    <div class="menu">
+      <div class="mhead">Permission mode</div>
+      <div class="mrow">
+        <span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M208 32H72a24 24 0 0 0-24 24v168a8 8 0 0 0 8 8h136a8 8 0 0 0 8-8V40a8 8 0 0 0-8-8Z"/></svg></span>
+        <span class="lbl">Plan mode<span class="desc">Read-only — research and plan, no edits.</span></span>
+      </div>
+      <div class="mrow">
+        <span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M208 40H48a16 16 0 0 0-16 16v58.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c15.2-5.05 91-34.78 91-124.39V56a16 16 0 0 0-16-16Z"/></svg></span>
+        <span class="lbl">Guarded mode<span class="desc">Autonomous — commands are safety-checked before running.</span></span>
+      </div>
+      <div class="mrow cur">
+        <span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M240 128a15.74 15.74 0 0 1-7.6 13.51L88.32 229.65a16 16 0 0 1-16.2.3A15.86 15.86 0 0 1 64 216.13V39.87a15.86 15.86 0 0 1 8.12-13.82 16 16 0 0 1 16.2.3L232.4 114.49A15.74 15.74 0 0 1 240 128Z"/></svg></span>
+        <span class="lbl">Auto mode<span class="desc">Autonomous — no command safety check.</span></span>
+        <span class="tick"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183l119.51-119.5a12 12 0 0 1 17 17Z"/></svg></span>
+      </div>
+
+      <div class="msep"></div>
+      <div class="mhead">Network access</div>
+      <div class="mrow cur">
+        <span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M208 40H48a16 16 0 0 0-16 16v58.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c15.2-5.05 91-34.78 91-124.39V56a16 16 0 0 0-16-16Zm-31.51 77.66-56 56a8 8 0 0 1-11.32 0l-24-24a8 8 0 0 1 11.32-11.32L114.83 157l50.34-50.35a8 8 0 0 1 11.32 11.32Z"/></svg></span>
+        <span class="lbl">Inherit workspace<span class="desc">Currently <b>Contained</b>. Change the default in Settings → Network.</span></span>
+        <span class="tick"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183l119.51-119.5a12 12 0 0 1 17 17Z"/></svg></span>
+      </div>
+      <div class="mrow">
+        <span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M208 40H48a16 16 0 0 0-16 16v58.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c15.2-5.05 91-34.78 91-124.39V56a16 16 0 0 0-16-16Z"/></svg></span>
+        <span class="lbl">Contained<span class="desc">Allowlist only — LLM API, GitHub, registries, your added hosts. Pinned: later workspace changes do not move it.</span></span>
+      </div>
+      <div class="mrow hov">
+        <span class="ico" style="color:var(--color-warning)"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M53.92 34.62a8 8 0 1 0-11.84 10.76l17.68 19.45A15.93 15.93 0 0 0 32 80v34.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c11-3.68 55.2-21.19 78.11-67.4l10.97 12.07a8 8 0 0 0 11.84-10.76Z"/></svg></span>
+        <span class="lbl">Open<span class="desc">Unrestricted outbound access — no allowlist, no prompts. Pinned: later workspace changes do not move it.</span></span>
+      </div>
+      <div class="pend" style="border-color:rgba(245,158,11,.35);background:var(--color-warning-subtle);color:var(--color-warning)">
+        <svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><path d="M236.8 188.09 149.35 36.22a24.76 24.76 0 0 0-42.7 0L19.2 188.09a23.51 23.51 0 0 0 0 23.72A24.35 24.35 0 0 0 40.55 224h174.9a24.35 24.35 0 0 0 21.33-12.19 23.51 23.51 0 0 0 .02-23.72ZM120 104a8 8 0 0 1 16 0v40a8 8 0 0 1-16 0Zm8 88a12 12 0 1 1 12-12 12 12 0 0 1-12 12Z"/></svg>
+        <span style="flex:1">Enforcement is <b>switched off</b> on this deployment — this session will run without containment whatever is selected here. <span style="opacity:.85">Turn it back on by unsetting <code style="font-size:10px">SESSION_EGRESS_ENFORCE=0</code> and restarting ShipIt.</span></span>
+      </div>
+      <div class="mfoot">In force from this session’s <b>first turn</b>. Repository setup may already have run under the workspace default before you chose — “Contained” does not reach back over that.</div>
+    </div>
+  </div>
+
+  <div>
+    <p class="cap">Running session — same menu, one extra strip</p>
+    <div class="menu">
+      <div class="mhead">Permission mode</div>
+      <div class="mrow">
+        <span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M208 32H72a24 24 0 0 0-24 24v168a8 8 0 0 0 8 8h136a8 8 0 0 0 8-8V40a8 8 0 0 0-8-8Z"/></svg></span>
+        <span class="lbl">Plan mode<span class="desc">Read-only — research and plan, no edits.</span></span>
+      </div>
+      <div class="mrow cur">
+        <span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M208 40H48a16 16 0 0 0-16 16v58.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c15.2-5.05 91-34.78 91-124.39V56a16 16 0 0 0-16-16Z"/></svg></span>
+        <span class="lbl">Guarded mode<span class="desc">Autonomous — commands are safety-checked before running.</span></span>
+        <span class="tick"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183l119.51-119.5a12 12 0 0 1 17 17Z"/></svg></span>
+      </div>
+      <div class="mrow">
+        <span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M240 128a15.74 15.74 0 0 1-7.6 13.51L88.32 229.65a16 16 0 0 1-16.2.3A15.86 15.86 0 0 1 64 216.13V39.87a15.86 15.86 0 0 1 8.12-13.82 16 16 0 0 1 16.2.3L232.4 114.49A15.74 15.74 0 0 1 240 128Z"/></svg></span>
+        <span class="lbl">Auto mode<span class="desc">Autonomous — no command safety check.</span></span>
+      </div>
+
+      <div class="msep"></div>
+      <div class="mhead">Network access</div>
+      <div class="mrow">
+        <span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M208 40H48a16 16 0 0 0-16 16v58.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c15.2-5.05 91-34.78 91-124.39V56a16 16 0 0 0-16-16Zm-31.51 77.66-56 56a8 8 0 0 1-11.32 0l-24-24a8 8 0 0 1 11.32-11.32L114.83 157l50.34-50.35a8 8 0 0 1 11.32 11.32Z"/></svg></span>
+        <span class="lbl">Inherit workspace<span class="desc">Currently Contained.</span></span>
+      </div>
+      <div class="mrow">
+        <span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M208 40H48a16 16 0 0 0-16 16v58.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c15.2-5.05 91-34.78 91-124.39V56a16 16 0 0 0-16-16Z"/></svg></span>
+        <span class="lbl">Contained<span class="desc">Allowlist only, with inline prompts.</span></span>
+      </div>
+      <div class="mrow cur">
+        <span class="ico" style="color:var(--color-warning)"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M53.92 34.62a8 8 0 1 0-11.84 10.76l17.68 19.45A15.93 15.93 0 0 0 32 80v34.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c11-3.68 55.2-21.19 78.11-67.4l10.97 12.07a8 8 0 0 0 11.84-10.76Z"/></svg></span>
+        <span class="lbl">Open<span class="desc">Unrestricted outbound access — no allowlist, no prompts. Pinned: later workspace changes do not move it.</span></span>
+        <span class="tick"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183l119.51-119.5a12 12 0 0 1 17 17Z"/></svg></span>
+      </div>
+      <div class="pend">
+        <svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><path d="M136 80v43.47l36.12 21.67a8 8 0 0 1-8.24 13.72l-40-24A8 8 0 0 1 120 128V80a8 8 0 0 1 16 0Z"/></svg>
+        <span style="flex:1">Applies on next container start — restart from Session settings</span>
+      </div>
+
+    </div>
+    <p class="note" style="width:300px">
+      A running turn changes nothing here: permission mode stays changeable mid-turn today, and network is a
+      container-start setting, so neither is locked. The strip is <b>conditional</b> — the server already
+      computes whether the live topology actually differs, so a pick that changes nothing shows no strip. The
+      restart itself lives in Session settings, so this menu never carries a second copy of that control.
+    </p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2>3 · In the composer — desktop, new session</h2>
+<div class="row">
+  <div>
+    <div class="frame w720">
+      <div class="composer-wrap">
+        <div class="composer focus">
+          <div class="field typed">Pull the vendor's staging API spec and regenerate the client.</div>
+          <div class="toolbar">
+            <span class="iconbtn"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M224 128a8 8 0 0 1-8 8h-80v80a8 8 0 0 1-16 0v-80H40a8 8 0 0 1 0-16h80V40a8 8 0 0 1 16 0v80h80a8 8 0 0 1 8 8Z"/></svg></span>
+            <span class="iconbtn"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M128 176a48.05 48.05 0 0 0 48-48V64a48 48 0 0 0-96 0v64a48.05 48.05 0 0 0 48 48Zm8 31.6V232a8 8 0 0 1-16 0v-24.4A80.11 80.11 0 0 1 48 128a8 8 0 0 1 16 0 64 64 0 0 0 128 0 8 8 0 0 1 16 0 80.11 80.11 0 0 1-72 79.6Z"/></svg></span>
+            <span class="ctl net-on">
+              <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M240 128a15.74 15.74 0 0 1-7.6 13.51L88.32 229.65a16 16 0 0 1-16.2.3A15.86 15.86 0 0 1 64 216.13V39.87a15.86 15.86 0 0 1 8.12-13.82 16 16 0 0 1 16.2.3L232.4 114.49A15.74 15.74 0 0 1 240 128Z"/></svg>
+              <span class="div"></span>
+              <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M53.92 34.62a8 8 0 1 0-11.84 10.76l17.68 19.45A15.93 15.93 0 0 0 32 80v34.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c11-3.68 55.2-21.19 78.11-67.4l10.97 12.07a8 8 0 0 0 11.84-10.76Z"/></svg>
+              <span class="txt">Open</span>
+            </span>
+            <span class="spacer"></span>
+            <span class="dial"></span>
+            <span class="pill">Claude</span>
+            <span class="pill">Opus 5</span>
+            <span class="pill">Think</span>
+            <span class="send"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M231.87 114 30 26.35A16 16 0 0 0 8.44 46l25.28 79.42-25.28 79.42A16 16 0 0 0 30 229.65L231.87 142a16 16 0 0 0 0-28Z"/></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="note" style="width:720px">
+      No new control — the network state re-uses the button the mode already occupies. It is not free of width:
+      naming a non-default mode adds a glyph, a divider and a word. That is a deliberate trade against req 10,
+      which wants the effective mode readable without hover, and it is still one control instead of two.
+    </p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2>4 · Same control on mobile (req 6)</h2>
+<p class="note">
+  Today the mode folds <b>into</b> the parameters menu when the composer measures under 700px — its own width,
+  not the viewport's, with Quick Capture on desktop as a deliberate exception. So “the same control everywhere”
+  is more than a copy change: the control has to leave that measured fold entirely rather than gain a third
+  case. On a phone it is two taps behind a name that says “Opus 5” today.
+</p>
+<div class="row">
+  <div>
+    <p class="cap">New-session screen</p>
+    <div class="frame phone">
+      <div class="repo-bar">
+        <span style="color:var(--color-text-tertiary);font-size:11.5px">New session in</span>
+        <span style="font-weight:650">shipit/shipit</span>
+        <span style="margin-left:auto;color:var(--color-text-tertiary)">›</span>
+      </div>
+      <div style="min-height:230px"></div>
+      <div style="padding:0 10px 10px">
+        <div class="composer">
+          <div class="field" style="min-height:50px">Ask anything…</div>
+          <div class="toolbar">
+            <span class="iconbtn"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M224 128a8 8 0 0 1-8 8h-80v80a8 8 0 0 1-16 0v-80H40a8 8 0 0 1 0-16h80V40a8 8 0 0 1 16 0v80h80a8 8 0 0 1 8 8Z"/></svg></span>
+            <span class="ctl quiet"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M240 128a15.74 15.74 0 0 1-7.6 13.51L88.32 229.65a16 16 0 0 1-16.2.3A15.86 15.86 0 0 1 64 216.13V39.87a15.86 15.86 0 0 1 8.12-13.82 16 16 0 0 1 16.2.3L232.4 114.49A15.74 15.74 0 0 1 240 128Z"/></svg></span>
+            <span class="pill hover">Opus 5 <svg width="10" height="10" viewBox="0 0 256 256" fill="currentColor"><path d="m213.66 101.66-80 80a8 8 0 0 1-11.32 0l-80-80a8 8 0 0 1 11.32-11.32L128 164.69l74.34-74.35a8 8 0 0 1 11.32 11.32Z"/></svg></span>
+            <span class="spacer"></span>
+            <span class="send" style="width:38px;height:38px"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M231.87 114 30 26.35A16 16 0 0 0 8.44 46l25.28 79.42-25.28 79.42A16 16 0 0 0 30 229.65L231.87 142a16 16 0 0 0 0-28Z"/></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div>
+    <p class="cap">Tapping it — the same menu, same information as desktop</p>
+    <div class="frame phone">
+      <div style="min-height:120px;background:var(--color-bg-overlay)"></div>
+      <div style="padding:8px 8px 12px;background:var(--color-bg-overlay)">
+        <div class="menu" style="width:100%">
+          <div class="mhead">Permission mode</div>
+          <div class="mrow"><span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M208 32H72a24 24 0 0 0-24 24v168a8 8 0 0 0 8 8h136a8 8 0 0 0 8-8V40a8 8 0 0 0-8-8Z"/></svg></span><span class="lbl">Plan mode</span></div>
+          <div class="mrow"><span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M208 40H48a16 16 0 0 0-16 16v58.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c15.2-5.05 91-34.78 91-124.39V56a16 16 0 0 0-16-16Z"/></svg></span><span class="lbl">Guarded mode</span></div>
+          <div class="mrow cur"><span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M240 128a15.74 15.74 0 0 1-7.6 13.51L88.32 229.65a16 16 0 0 1-16.2.3A15.86 15.86 0 0 1 64 216.13V39.87a15.86 15.86 0 0 1 8.12-13.82 16 16 0 0 1 16.2.3L232.4 114.49A15.74 15.74 0 0 1 240 128Z"/></svg></span><span class="lbl">Auto mode</span><span class="tick"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183l119.51-119.5a12 12 0 0 1 17 17Z"/></svg></span></div>
+          <div class="msep"></div>
+          <div class="mhead">Network access</div>
+          <div class="mrow cur"><span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M208 40H48a16 16 0 0 0-16 16v58.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c15.2-5.05 91-34.78 91-124.39V56a16 16 0 0 0-16-16Zm-31.51 77.66-56 56a8 8 0 0 1-11.32 0l-24-24a8 8 0 0 1 11.32-11.32L114.83 157l50.34-50.35a8 8 0 0 1 11.32 11.32Z"/></svg></span><span class="lbl">Inherit workspace<span class="desc">Currently Contained</span></span><span class="tick"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183l119.51-119.5a12 12 0 0 1 17 17Z"/></svg></span></div>
+          <div class="mrow"><span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M208 40H48a16 16 0 0 0-16 16v58.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c15.2-5.05 91-34.78 91-124.39V56a16 16 0 0 0-16-16Z"/></svg></span><span class="lbl">Contained</span></div>
+          <div class="mrow"><span class="ico" style="color:var(--color-warning)"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M53.92 34.62a8 8 0 1 0-11.84 10.76l17.68 19.45A15.93 15.93 0 0 0 32 80v34.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c11-3.68 55.2-21.19 78.11-67.4l10.97 12.07a8 8 0 0 0 11.84-10.76Z"/></svg></span><span class="lbl">Open</span></div>
+          <div class="mfoot">In force from this session’s <b>first turn</b>. Repository setup may already have run under the workspace default.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2>5 · Quick Capture — no additional control</h2>
+<p class="note">
+  The overlay already lifts the mode out of the folded menu into its row (docs/260 req 19). That same control
+  now carries network, so req 2 is met with <b>no additional control</b> in the overlay and no footer line. Not zero pixels — naming a non-default mode adds a glyph, a divider and a word to the button that was already there.
+</p>
+<div class="row">
+  <div>
+    <div class="frame" style="width:640px">
+      <div class="qc-shell">
+        <div class="qc">
+          <div class="qc-head">
+            <span style="display:flex;align-items:center;gap:8px;font-size:13px">
+              <span style="color:var(--color-text-secondary)">New quick session in</span>
+              <span class="select">shipit/shipit <svg width="10" height="10" viewBox="0 0 256 256" fill="currentColor"><path d="m213.66 101.66-80 80a8 8 0 0 1-11.32 0l-80-80a8 8 0 0 1 11.32-11.32L128 164.69l74.34-74.35a8 8 0 0 1 11.32 11.32Z"/></svg></span>
+            </span>
+            <span class="iconbtn"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M205.66 194.34a8 8 0 0 1-11.32 11.32L128 139.31l-66.34 66.35a8 8 0 0 1-11.32-11.32L116.69 128 50.34 61.66a8 8 0 0 1 11.32-11.32L128 116.69l66.34-66.35a8 8 0 0 1 11.32 11.32L139.31 128Z"/></svg></span>
+          </div>
+          <div style="padding:10px 12px 4px">
+            <div class="composer">
+              <div class="field typed" style="min-height:50px">Mirror the upstream changelog into our docs site nightly.</div>
+              <div class="toolbar">
+                <span class="iconbtn"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M224 128a8 8 0 0 1-8 8h-80v80a8 8 0 0 1-16 0v-80H40a8 8 0 0 1 0-16h80V40a8 8 0 0 1 16 0v80h80a8 8 0 0 1 8 8Z"/></svg></span>
+                <span class="ctl net-on">
+                  <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M240 128a15.74 15.74 0 0 1-7.6 13.51L88.32 229.65a16 16 0 0 1-16.2.3A15.86 15.86 0 0 1 64 216.13V39.87a15.86 15.86 0 0 1 8.12-13.82 16 16 0 0 1 16.2.3L232.4 114.49A15.74 15.74 0 0 1 240 128Z"/></svg>
+                  <span class="div"></span>
+                  <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M53.92 34.62a8 8 0 1 0-11.84 10.76l17.68 19.45A15.93 15.93 0 0 0 32 80v34.78c0 89.61 75.82 119.34 91 124.39a15.53 15.53 0 0 0 10 0c11-3.68 55.2-21.19 78.11-67.4l10.97 12.07a8 8 0 0 0 11.84-10.76Z"/></svg>
+                  <span class="txt">Open</span>
+                </span>
+                <span class="pill hover">Opus 5 <svg width="10" height="10" viewBox="0 0 256 256" fill="currentColor"><path d="m213.66 101.66-80 80a8 8 0 0 1-11.32 0l-80-80a8 8 0 0 1 11.32-11.32L128 164.69l74.34-74.35a8 8 0 0 1 11.32 11.32Z"/></svg></span>
+                <span class="spacer"></span>
+                <span class="send"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M231.87 114 30 26.35A16 16 0 0 0 8.44 46l25.28 79.42-25.28 79.42A16 16 0 0 0 30 229.65L231.87 142a16 16 0 0 0 0-28Z"/></svg></span>
+              </div>
+            </div>
+          </div>
+          <div class="qc-foot">
+            <div class="check">
+              <span class="box"></span>
+              <span>
+                <span style="color:var(--color-text-secondary)">Auto-merge when ready</span>
+                <span style="display:block;margin-top:2px">Merges automatically once the PR is mergeable.</span>
+              </span>
+            </div>
+            <span>Enter to send · Shift+Enter for newline · Esc to dismiss</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2>6 · What leaves the parameters menu (req 9)</h2>
+<p class="note">
+  With Mode gone, the folded settings menu holds only what a role sets. And a session already running under a
+  role had a root of <b>one row</b> that opened another panel — that level disappears: the anchor opens the
+  role list directly, with “Adjust parameters…” at the bottom.
+</p>
+<div class="row">
+  <div class="ba">
+    <div>
+      <p class="cap">Before — role in force, params folded</p>
+      <div class="menu" style="width:270px">
+        <div class="mrow strike"><span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M240 128a15.74 15.74 0 0 1-7.6 13.51L88.32 229.65a16 16 0 0 1-16.2.3A15.86 15.86 0 0 1 64 216.13V39.87a15.86 15.86 0 0 1 8.12-13.82 16 16 0 0 1 16.2.3L232.4 114.49A15.74 15.74 0 0 1 240 128Z"/></svg></span><span class="lbl">Mode</span><span class="val">Auto ›</span></div>
+        <div class="mrow"><span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M208 88h-32V72a48 48 0 0 0-96 0v16H48a16 16 0 0 0-16 16v96a16 16 0 0 0 16 16h160a16 16 0 0 0 16-16v-96a16 16 0 0 0-16-16Z"/></svg></span><span class="lbl">Role</span><span class="val">reviewer ›</span></div>
+        <div class="mfoot" style="color:var(--color-warning)">Two rows, both of which open another panel.</div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+    <div>
+      <p class="cap">After — the anchor IS the role panel</p>
+      <div class="menu" style="width:270px">
+        <div class="mhead">Role</div>
+        <div style="padding:6px 10px 2px;font-size:11.5px;color:var(--color-text-tertiary);line-height:1.45">
+          Fixed after the first message. This session runs as <b style="color:var(--color-text-secondary)">reviewer</b>.
+        </div>
+        <div class="msep"></div>
+        <div class="mrow"><span class="lbl">Adjust parameters…<span class="desc">Show the harness, model and level this role set</span></span></div>
+      </div>
+      <p class="note" style="width:270px;margin-top:8px">
+        A session that has taken its first turn lists no roles — the server refuses to change one, and the
+        menu already omits them when locked. Before the first turn the same panel lists “No role” and each
+        available role instead. Either way it is one level, not a row that opens a panel.
+      </p>
+    </div>
+  </div>
+</div>
+<div class="row" style="margin-top:18px">
+  <div class="ba">
+    <div>
+      <p class="cap">Before — no role in force</p>
+      <div class="menu" style="width:270px">
+        <div class="mrow strike"><span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M240 128a15.74 15.74 0 0 1-7.6 13.51L88.32 229.65a16 16 0 0 1-16.2.3A15.86 15.86 0 0 1 64 216.13V39.87a15.86 15.86 0 0 1 8.12-13.82 16 16 0 0 1 16.2.3L232.4 114.49A15.74 15.74 0 0 1 240 128Z"/></svg></span><span class="lbl">Mode</span><span class="val">Auto ›</span></div>
+        <div class="mrow"><span class="lbl">Role</span><span class="val">None ›</span></div>
+        <div class="mrow"><span class="lbl">Harness</span><span class="val">Claude ›</span></div>
+        <div class="mrow"><span class="lbl">Model</span><span class="val">Opus 5 ›</span></div>
+        <div class="mrow"><span class="lbl">Thinking</span><span class="val">Think ›</span></div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+    <div>
+      <p class="cap">After — one row lighter, structure unchanged</p>
+      <div class="menu" style="width:270px">
+        <div class="mrow"><span class="lbl">Role</span><span class="val">None ›</span></div>
+        <div class="mrow"><span class="lbl">Harness</span><span class="val">Claude ›</span></div>
+        <div class="mrow"><span class="lbl">Model</span><span class="val">Opus 5 ›</span></div>
+        <div class="mrow"><span class="lbl">Thinking</span><span class="val">Think ›</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2>7 · Session settings keeps its section (req 7)</h2>
+<p class="note">
+  An earlier draft deleted the dialog's network radio group, on the reasoning that one setting should live in
+  one place. That was an inference, not a request, and it cost more than it saved — it forced a composer control
+  that had to keep working while the composer was otherwise dead, a dialog that vanished for non-sandbox
+  sessions, and a relocation of the “not enforced on this deployment” warning, all to remove a <em>surface</em>
+  and no <em>state</em>. Requirement 7 now asks for one authoritative <b>value</b>: both surfaces read and write
+  the same per-session override, so neither is a second source of truth.
+</p>
+<p class="note" style="margin-top:-10px">
+  “Kept” is not “untouched”, and the design should not pretend otherwise. Two things change here: the first
+  option is renamed from <b>Inherit global</b> to <b>Inherit workspace</b>, because one value with two names in
+  two places is exactly the inconsistency requirement 7 is about; and the two surfaces are kept in step —
+  the dialog hands its write result to the composer's trigger in-process, and every attached viewer refetches
+  on a small transient session-scoped event. The persisted audit card cannot do that job: the creation-time
+  choice deliberately writes no card, so another tab would be told nothing. Two signals, two jobs — and one
+  shared revision orders the surfaces' writes against each other, with no keyed cache.
+</p>
+<div class="row">
+  <div>
+    <p class="cap">Kept — but its copy and its state are not untouched</p>
+    <div class="frame" style="width:330px">
+      <div style="padding:14px 16px 10px">
+        <div style="font-size:14px;font-weight:600">Session settings</div>
+        <div style="font-size:11.5px;color:var(--color-text-secondary);margin-top:2px">Network access for this session only. Applies the next time its container starts.</div>
+      </div>
+      <div style="padding:0 16px 14px">
+        <div style="border:1px solid var(--color-border-secondary);background:var(--color-bg-secondary);border-radius:9px;padding:9px 11px;margin-bottom:6px;font-size:12.5px">Inherit workspace</div>
+        <div style="border:1px solid var(--color-border-secondary);background:var(--color-bg-secondary);border-radius:9px;padding:9px 11px;margin-bottom:6px;font-size:12.5px">Contained</div>
+        <div style="border:1px solid var(--color-accent);background:var(--color-accent-subtle);border-radius:9px;padding:9px 11px;font-size:12.5px">Open</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="note" style="margin-top:34px">
+  <b>A harness with one permission mode.</b> Today the control hides entirely when the harness advertises only
+  Auto (Codex has nothing to toggle). Carrying network it must render, since network is meaningful whatever the
+  harness offers — but it then shows the <b>network section alone</b> and omits the permission section. A dead
+  “Auto” row above the network section would be worse than the nothing it replaced.
+</p>
+
+</body>
+</html>
