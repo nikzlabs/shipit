@@ -447,14 +447,23 @@ describe("DocsViewer", () => {
    * This is the second half of the Docs-tab freeze, and it is the half a cost
    * guard in `doc-paths.test.ts` cannot see. `DocsViewer` is rendered inline
    * from `App`'s `rightPanel` and is not memoized, so it re-renders on every
-   * `App` render — and `App` subscribes to `messages`, i.e. once per streamed
-   * token. Whatever the grouping costs, it was being paid at that rate, and
-   * only while the Docs tab was the open one (the other tabs render a different
-   * branch entirely). Keyed on `files`, it is paid once per doc list.
+   * `App` render — and `App` subscribes to `messages`, so every update to the
+   * transcript is one of them. Whatever the grouping costs, it was being paid
+   * at that rate, and only while the Docs tab was the open one (the other tabs
+   * render a different branch entirely). Keyed on `files`, it is paid once per
+   * doc list.
+   *
+   * Both halves of the derivation are watched, because they can regress
+   * independently: `buildDocIndex` covers the index, and `isTrackedIn` — which
+   * the `tracked`/`untracked` filters call once per doc — covers the grouping
+   * built on top of it. Exact counts rather than "did not grow": a baseline
+   * that accepts any number would also accept the index being rebuilt per doc
+   * during the first render.
    */
   describe("grouping cost", () => {
-    it("does not regroup when re-rendered with the same doc list", () => {
-      const spy = vi.spyOn(docPaths, "buildDocIndex");
+    it("does not rebuild the index or regroup when re-rendered with the same doc list", () => {
+      const buildSpy = vi.spyOn(docPaths, "buildDocIndex");
+      const trackedSpy = vi.spyOn(docPaths, "isTrackedIn");
       const props = defaultProps();
       props.files = [
         makeDoc({ path: "docs/001-auth/plan.md", title: "Auth" }),
@@ -463,13 +472,18 @@ describe("DocsViewer", () => {
       ];
 
       const { rerender } = render(<DocsViewer {...props} />);
-      const afterMount = spy.mock.calls.length;
-      expect(afterMount).toBeGreaterThan(0); // the index IS built — a zero below would be free otherwise
+      // The index is built exactly once for the list, not once per doc — and a
+      // spy that observed nothing would read 0 here rather than pass for free.
+      expect(buildSpy).toHaveBeenCalledTimes(1);
+      const groupingCalls = trackedSpy.mock.calls.length;
+      expect(groupingCalls).toBeGreaterThan(0);
 
       for (let i = 0; i < 5; i++) rerender(<DocsViewer {...props} />);
 
-      expect(spy.mock.calls.length).toBe(afterMount);
-      spy.mockRestore();
+      expect(buildSpy).toHaveBeenCalledTimes(1);
+      expect(trackedSpy.mock.calls.length).toBe(groupingCalls);
+      buildSpy.mockRestore();
+      trackedSpy.mockRestore();
     });
   });
 

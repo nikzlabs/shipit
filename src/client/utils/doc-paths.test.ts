@@ -211,6 +211,36 @@ describe("hasTrackedPlanSiblingIn", () => {
 });
 
 /**
+ * A repeated path must not become its own sibling.
+ *
+ * `hasTrackedSiblingIn` answers from a per-directory count minus one for the
+ * doc itself, where the scan it replaced excluded *every* entry matching the
+ * queried path. Those agree only while paths are unique, so the index counts
+ * each tracked path once rather than each entry. `listDocs` emits one entry per
+ * file on disk, so this guards the utility's contract for any array, not a
+ * state production can reach — which is exactly why it needs a test rather than
+ * a reader noticing.
+ */
+describe("buildDocIndex with a repeated path", () => {
+  it("does not let a duplicate entry make a doc its own tracked sibling", () => {
+    const entries: DocEntry[] = [
+      { path: "docs/095-foo/plan.md", title: "Plan" },
+      { path: "docs/095-foo/plan.md", title: "Plan" },
+    ];
+    expect(hasTrackedSiblingIn(buildDocIndex(entries), "docs/095-foo/plan.md")).toBe(false);
+  });
+
+  it("still sees a genuinely different tracked sibling alongside a duplicate", () => {
+    const entries: DocEntry[] = [
+      { path: "docs/095-foo/plan.md", title: "Plan" },
+      { path: "docs/095-foo/plan.md", title: "Plan" },
+      { path: "docs/095-foo/checklist.md", title: "Checklist" },
+    ];
+    expect(hasTrackedSiblingIn(buildDocIndex(entries), "docs/095-foo/plan.md")).toBe(true);
+  });
+});
+
+/**
  * The grouping `DocsViewer` runs in its render body, over a doc list the size of
  * a real repository's.
  *

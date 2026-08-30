@@ -73,7 +73,7 @@ export function isPlanPath(path: string): boolean {
 
 /**
  * Everything the three grouping predicates below need, precomputed per
- * directory in one pass over the doc list.
+ * directory in two linear passes over the doc list.
  *
  * **This exists for cost, not for tidiness.** The predicates are each asked
  * about every doc in the list, and the naive form answers each question by
@@ -82,8 +82,8 @@ export function isPlanPath(path: string): boolean {
  * cheap same-directory test. Over n docs with u of them untracked that is
  * O(u²·n), and it runs inside `DocsViewer`'s render body. Measured on this
  * repository (n = 866, u = 96) in Chrome: **342–486 ms per render**, on a
- * component that re-renders with its parent — i.e. once per streamed token
- * while the Docs tab is open. With the index it is one pass, ~1 ms.
+ * component that re-renders with its parent — so it was paid again on every
+ * update to the transcript while the Docs tab was open. Indexed: 3.6 ms.
  *
  * Taking the index rather than the doc list is deliberate, and it is the part
  * that stops the defect coming back: a predicate that accepts `entries` reads
@@ -104,7 +104,11 @@ export interface DocIndex {
   trackedPaths: Set<string>;
 }
 
-/** Build a {@link DocIndex} from a doc list. One pass for the sets, one for tracking. */
+/**
+ * Build a {@link DocIndex} from a doc list, in two linear passes: the
+ * per-directory sets first, then the tracked counts (which the first pass's
+ * `dirsWithChecklist` is needed to decide).
+ */
 export function buildDocIndex(entries: DocEntry[]): DocIndex {
   const dirsWithChecklist = new Set<string>();
   const dirsWithPlan = new Set<string>();
@@ -119,6 +123,14 @@ export function buildDocIndex(entries: DocEntry[]): DocIndex {
   const trackedPaths = new Set<string>();
   const index: DocIndex = { dirsWithChecklist, dirsWithPlan, trackedCountByDir, trackedPaths };
   for (const e of entries) {
+    // Count each tracked PATH once, not each entry. A repeated path would
+    // otherwise raise its directory's count above what `hasTrackedSiblingIn`
+    // subtracts for the doc itself, and report a doc as its own sibling — which
+    // the scan this replaces could not do, since it excluded every entry
+    // matching the queried path rather than one of them. `listDocs` emits one
+    // entry per file on disk, so this is about the utility's contract holding
+    // for any array rather than about a state production can reach.
+    if (trackedPaths.has(e.path)) continue;
     if (!isTrackedIn(index, e)) continue;
     trackedPaths.add(e.path);
     const dir = dirOf(e.path);
@@ -188,4 +200,3 @@ export function hasTrackedPlanSiblingIn(index: DocIndex, path: string): boolean 
   // `path` is a checklist, so the indexed `plan.md` is always a different doc.
   return index.dirsWithPlan.has(dir);
 }
-

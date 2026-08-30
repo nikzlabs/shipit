@@ -440,7 +440,7 @@ and it is the guard that makes out-of-order application impossible.
 | `src/client/hooks/useSearch.ts` | Shared empty match array, so no-search stops invalidating every row |
 | `src/client/utils/highlight-cache.ts` | New — bounded LRU so a highlight survives a remount or an abandoned render |
 | `src/client/components/message-markdown.tsx` | `CodeBlock` highlights through that cache |
-| `src/client/utils/doc-paths.ts` | `DocIndex` — one pass replaces the per-doc list scans behind the Docs-tab freeze |
+| `src/client/utils/doc-paths.ts` | `DocIndex` — two linear passes replace the per-doc list scans behind the Docs-tab freeze |
 | `src/client/components/DocsViewer.tsx` | Groups through that index, memoized on the doc list |
 
 ## Verification
@@ -520,22 +520,34 @@ the real list.
 
 The rate is what turns that into a freeze. `DocsViewer` is created inline in `App`'s `rightPanel` and
 is not memoized, so it re-renders on every `App` render — and `App` subscribes to `messages`
-(`App.tsx:199`), which changes once per streamed token. So while the Docs tab was open, roughly
-400 ms of synchronous string-slicing ran per token; with any other tab, zero, because the branch is
-never rendered.
+(`App.tsx:199`), so every update to the transcript is one. How many that is per second is
+backend-dependent (the Claude adapter maps CLI assistant events rather than raw deltas), but a
+streaming reply produces many, and each one cost ~400 ms of synchronous string-slicing while the
+Docs tab was open. With any other tab: zero, because the branch is never rendered.
 
-The fix is one pass: `buildDocIndex` (`utils/doc-paths.ts`) precomputes per-directory facts — which
-directories hold a `plan.md` or a `checklist.md`, and how many tracked docs each holds — and the
-predicates become `Set`/`Map` lookups taking that index, built once in a `useMemo` keyed on the list.
+The fix is two linear passes: `buildDocIndex` (`utils/doc-paths.ts`) precomputes per-directory facts
+— which directories hold a `plan.md` or a `checklist.md`, and how many tracked docs each holds — and
+the predicates become `Set`/`Map` lookups taking that index, built once in a `useMemo` keyed on the
+list. The index counts each tracked *path* once rather than each entry, because the scan it replaces
+excluded every entry matching the queried path; the two agree only while paths are unique, which
+`listDocs` guarantees but the utility's contract did not.
 The `(path, entries)` convenience forms are **deleted rather than kept**: a predicate that accepts
 the list reads as free at the call site and hides the scan, which is exactly how a per-doc call in a
 render body became O(u²·n) unnoticed. Their only remaining caller was the defect.
 
-**This is a different finding from the highlight loop below, and it does not close it.**
-`highlightAuto` is not reachable from the Docs branch at all. The 2026-08-30 12:00 trace's 8,264 ms
-leaf was read by another session and attributed to `hljs.highlightAuto`; that trace was not available
-to this work, so whether that leaf is this cost or a second one is **unestablished**. Worth knowing
-when the next trace is read: both produce the same signature — one multi-second synchronous
-`FunctionCall` carrying a large number of minor scavenger GCs — because this one allocates two
-strings per `dirOf` across ~10⁸ iterations, and `dirOf`/`isTracked` are small enough that a release
-build inlines them, leaving the visible frame as an anonymous arrow inside a component render.
+**This is a different finding from the highlight loop above, and it does not close it.** The
+2026-08-30 12:00 trace's 8,264 ms leaf was read by another session and attributed to
+`hljs.highlightAuto`; that trace was not available to this work, so whether that leaf is this cost or
+a second one is **unestablished**.
+
+The precise statement, which an earlier draft of this section overstated: **the `DocsViewer`
+grouping subtree does not call `highlightAuto`**, so an `_highlight` leaf would be a separate cost
+from this one. It is *not* true that `highlightAuto` is unreachable while the Docs tab is open — the
+transcript stays mounted beside `rightPanel`, and opening a doc renders its markdown through the
+same `markdownComponents` → `CodeBlock` path. What the trigger rules out is only that the *grouping*
+is what a highlight frame would be measuring.
+
+Worth knowing when the next trace is read: this cost and a highlight both present as one
+multi-second synchronous `FunctionCall` inside a component render, and `dirOf`/`isTracked` are small
+enough that a release build inlines them, leaving an anonymous arrow as the visible frame. Reading
+the leaf name is therefore what distinguishes them, not the shape.

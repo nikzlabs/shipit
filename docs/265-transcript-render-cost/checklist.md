@@ -142,20 +142,24 @@ Still open:
       and the one that matches the user's reproducible trigger ("opening the docs tab freezes the UI;
       with any other tab open it does not"). `DocsViewer` grouped its list with predicates that each
       re-scanned the whole doc list, `hasTrackedSibling` once per candidate sibling — O(u²·n) over n
-      docs of which u are untracked — in its render body, and it re-renders with `App`, i.e. once per
-      streamed token. Measured in Chrome on this repo's real list (n = 866, u = 96): **342–486 ms per
-      render**; indexed, **3.6 ms**, with byte-identical grouping. Only the Docs branch renders the
-      component, which is exactly why no other tab pays it. Guards: a cost guard in
-      `doc-paths.test.ts` (12,894 ms pre-fix against a 500 ms budget) and a memoization guard in
-      `DocsViewer.test.tsx` (6 index builds across 6 renders pre-fix, 1 after).
+      docs of which u are untracked — in its render body, and it re-renders with `App`, so every
+      update to the transcript paid it again. Measured in Chrome on this repo's real list
+      (n = 866, u = 96): **342–486 ms per render**; indexed, **3.6 ms**, with byte-identical
+      grouping. Only the Docs branch renders the component, which is exactly why no other tab pays
+      it. Guards, each shown able to fail first: a cost guard in `doc-paths.test.ts` (12,894 ms
+      pre-fix against a 500 ms budget); a derivation guard in `DocsViewer.test.tsx` watching both the
+      index build and the per-doc regrouping (21 `isTrackedIn` calls across 6 renders with the group
+      memos removed, against 6); and a duplicate-path guard, since the index counts each tracked
+      *path* once where the scan it replaces excluded every entry matching the query.
 
       **What this does not settle.** It is not established that this is the 8,264 ms leaf in the
       2026-08-30 12:00 trace — that trace was read by another session and attributed to
-      `hljs.highlightAuto`, and it was not available here. The two readings are distinguishable and
-      worth distinguishing: `highlightAuto` is unreachable from the Docs branch, so if the leaf
-      attribution holds then there are two costs and only this one explains the trigger. Both produce
-      the same trace signature — a single multi-second synchronous `FunctionCall` full of minor
-      scavenger GCs — because this one allocates two strings per `dirOf` over ~10⁸ iterations.
+      `hljs.highlightAuto`, and it was not available here. The precise claim is that the *grouping
+      subtree* does not call `highlightAuto`, so an `_highlight` leaf would be a separate cost; it is
+      NOT that `highlightAuto` is unreachable while the Docs tab is open, since the transcript stays
+      mounted and opening a doc renders its markdown through the same `CodeBlock`. Both costs present
+      as one multi-second synchronous `FunctionCall` inside a component render, so the leaf name is
+      what distinguishes them, not the shape.
 
 - [ ] The two modal-only `highlightAuto` sites (`ReadResult`, `WriteContent`) still re-highlight on
       every modal open. Deliberately not wired here — a concurrent session is changing language
