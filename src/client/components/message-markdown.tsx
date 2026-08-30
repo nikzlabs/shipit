@@ -1,5 +1,4 @@
 import { useMemo, memo, createContext, useContext } from "react";
-import { highlightCode } from "../syntax-highlight.js";
 import Markdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -11,6 +10,7 @@ import type { MessageSegment } from "./MessageList.js";
 import type { OpenIssueRef } from "../stores/issues-store.js";
 import { parseRepoFileLink } from "../utils/repo-file-link.js";
 import { parseTrackerIssueLink } from "../utils/tracker-link.js";
+import { highlightCached } from "../utils/highlight-cache.js";
 import { remarkLinkifyPaths } from "../utils/linkify-paths.js";
 import { remarkLinkifyIssues, ISSUE_LINK_SCHEME } from "../utils/linkify-issues.js";
 import { parseShipitLink, isShipitLinkHref, type ShipitLink } from "../utils/shipit-link.js";
@@ -564,15 +564,25 @@ export function MarkdownTooltip({ content, children }: { content: string; childr
 /**
  * Syntax-highlighted fenced code block with a header and "Copy" button.
  *
- * `memo`'d on `{ code, language }` so a growing transcript doesn't re-run
- * `hljs.highlight` for every already-rendered block on each streamed token —
- * the inner `useMemo` only protects a single render, the `memo` boundary
- * skips the render entirely when the block's content is unchanged.
+ * Three layers guard the highlight, each covering what the one inside it
+ * cannot: the `memo` boundary skips the render entirely when `{ code, language }`
+ * is unchanged (so a growing transcript doesn't re-highlight every already-drawn
+ * block on each streamed token); the inner `useMemo` covers a render this
+ * component does not skip; and {@link highlightCached} covers the case neither
+ * can — a fiber that does not survive, i.e. a remount.
+ *
+ * `html` is `null` for a fence naming a language ShipIt did not register, which
+ * renders as plain monospace rather than as a guess — `highlightCode` owns that
+ * decision, and the cache stores the `null` like any other answer.
  */
 export const CodeBlock = memo(({ code, language }: { code: string; language: string }) => {
-  // An unlabeled fence still has to be guessed at, but over the registered
-  // subset rather than every grammar highlight.js ships (see syntax-highlight.ts).
-  const html = useMemo(() => highlightCode(code, language), [code, language]);
+  // `highlightCached` wraps `highlightCode` and decides nothing itself: an
+  // unlabeled fence is still guessed at over the registered subset, and an
+  // unknown one still renders plain (see syntax-highlight.ts, which stays the
+  // one place that policy lives). What the wrapper adds is that the answer
+  // survives a fiber that does not — a remount re-runs this `useMemo`, and
+  // before the cache it re-ran the auto-detection with it.
+  const html = useMemo(() => highlightCached(code, language), [code, language]);
 
   return (
     <div className="not-prose my-2 rounded-md overflow-hidden bg-(--color-bg-secondary) w-0 min-w-full">

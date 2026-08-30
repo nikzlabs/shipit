@@ -23,7 +23,20 @@ From independent review (all fixed, each with a regression test):
 - [x] The history cache was FIFO despite the LRU intent — a 304 did not count as a use,
       so the most-revisited session was the one that aged out
 
+- [x] Cache syntax highlighting outside React render state, so a remount or an abandoned
+      concurrent render stops re-paying 274 ms for unchanged text (design 2b), with an
+      end-to-end guard that counts `hljs` calls through the real row → markdown →
+      `CodeBlock` chain (`transcript-highlight-cost.test.tsx`) — `transcript-row-memo.test.tsx`
+      mocks the row and is blind to everything below it
+
 Still open:
+
+- [ ] Which surface actually remounts in the 2026-08-30 trace is **not** established. A real-browser
+      harness ruled out scroll, parent re-render and message-object churn as re-highlight triggers,
+      and no key collision or render-declared component type was found in the transcript chain. The
+      cache makes the cost mechanism-independent; it does not identify the trigger. What would close
+      it: a trace whose `useMemo` frame carries the React component name, or a recording with
+      "Highlight updates when components render" on.
 
 - [ ] Re-trace a **streaming turn on a long session** and compare against the table in
       `plan.md`. Two post-merge traces exist (2026-08-16, 2026-08-30) and are recorded

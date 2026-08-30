@@ -97,6 +97,34 @@ if a burst still appears in a fresh trace, add explicit batching at the event-dr
 (`hooks/message-handlers/`); if it does not, adding a second coalescing layer on top of
 `useDeferredValue` is mechanism nobody needs.
 
+### 2b. Syntax highlighting is cached outside React (reqs 1–4)
+
+A later production trace (2026-08-30, 14.9 s) found `hljs.highlightAuto` called **35 times for
+9.5 s** of a 10.4 s busy main thread, with near-constant durations (p50 274 ms, p90 276, max 277)
+— i.e. the *same* payload, over and over. Every call site already wraps it in a `useMemo` keyed
+on the block's text, which is why that reads as impossible.
+
+It is not, because **a `useMemo` is not a cache**: React discards a memoized value when the fiber
+does not survive. Two ordinary things do that here. A **remount** — a modal, tooltip or
+disclosure reopening; a transcript row whose key changed — and an **abandoned concurrent render**:
+step 1 renders the transcript behind `useDeferredValue`, so React renders it at low priority and
+throws the work in progress away when higher-priority work arrives. On an update React compares
+`useMemo` deps against the last *committed* value — verified in React 19.2.8 at
+`updateWorkInProgressHook`, which clones the hook from `currentlyRenderingFiber.alternate`, and
+`updateMemo`, which compares against that clone's deps — so every restart between a text change
+and its commit recomputes the identical new payload and discards it again. At 274 ms a highlight,
+one delivered token can cost several, which is why the durations are constant rather than growing.
+
+So the answer moves out of render state into a bounded LRU keyed by the code string
+(`utils/highlight-cache.ts`), making the cost a property of the *content* rather than of the
+render lifecycle. Nothing about which language is chosen changes.
+
+Verified in a real browser (a Vite harness rendering the real `MessageList` over a 120-message
+transcript, so `content-visibility`, `ResizeObserver` and `IntersectionObserver` are real rather
+than jsdom stubs): scrolling hard, 20 parent re-renders, and replacing every `ChatMessage` object
+each produce **zero** extra highlights. So the memo chain from step 1 holds, and the repetition
+the trace recorded is not a defeated row memo.
+
 ### 3. Revalidate instead of re-download (reqs 10, 11)
 
 `GET /api/sessions/:id/history` gains an **ETag that is the hash of the response body**, and
@@ -150,6 +178,8 @@ and it is the guard that makes out-of-order application impossible.
 | `src/server/orchestrator/api-routes-session-spawn.ts` | `/history` ETag + `304`; `fileTree` removed |
 | `src/server/orchestrator/api-routes-files.ts` | `/files` ETag + `304` |
 | `src/client/hooks/useSearch.ts` | Shared empty match array, so no-search stops invalidating every row |
+| `src/client/utils/highlight-cache.ts` | New — bounded LRU so a highlight survives a remount or an abandoned render |
+| `src/client/components/message-markdown.tsx` | `CodeBlock` highlights through that cache |
 
 ## Verification
 
