@@ -1,0 +1,14 @@
+/*
+ * The probe's stylesheet is the app's, plus an explicit `@source`.
+ *
+ * That `@source` is load-bearing, not tidiness. Tailwind v4 detects the sources
+ * to scan from the project root it infers, and this fixture's Vite root is
+ * `scripts/fixtures` — so without it Tailwind never reads `src/client` and never
+ * emits the transcript's arbitrary utilities. The one that matters is
+ * `[&>*]:[content-visibility:auto]` on the message rows: with it missing, the
+ * rows computed `content-visibility: visible` and the probe measured a browser
+ * that was not doing the thing under test. Verified by reading the computed
+ * style off a row — do that again if this file is ever changed.
+ */
+@source "../../src/client";
+@import "../../src/client/index.css";

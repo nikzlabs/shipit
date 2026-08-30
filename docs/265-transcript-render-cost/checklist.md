@@ -23,7 +23,101 @@ From independent review (all fixed, each with a regression test):
 - [x] The history cache was FIFO despite the LRU intent — a 304 did not count as a use,
       so the most-revisited session was the one that aged out
 
+- [x] Cache syntax highlighting outside React render state, so a remount stops re-paying 274 ms
+      for unchanged text (design 2b), with an end-to-end guard through the real row → markdown →
+      `CodeBlock` chain (`transcript-highlight-cost.test.tsx`) — `transcript-row-memo.test.tsx`
+      mocks the row and is blind to everything below it
+
+From independent review of that change (all fixed, each with a regression test):
+
+- [x] The write-up attributed the 35 calls to abandoned concurrent renders under
+      `useDeferredValue`, on the strength of the trace's 2,515 scroll events. Refuted: the
+      transcript's scroll handler only mutates refs, so scrolling schedules no React update, and
+      yielding to input can pause work without discarding it. The claim is now the narrow one
+      (a mount always runs the factory; an update compares against the last *commit*), and the
+      trigger is recorded as unidentified rather than explained.
+- [x] The cache was not actually LRU: replacing an entry (same code, different language)
+      overwrote the `Map` value without moving its insertion position, so a just-recomputed
+      block stayed the oldest and was the next evicted
+- [x] 64 entries bounds cardinality, not memory — nothing caps how long a code block may be. A
+      character budget is enforced alongside the entry cap, with the most recent entry always kept
+- [x] The transcript guards were masked by the cache they validate: counting `hljs` calls, a broken
+      memo chain would have shown up as *zero* extra highlights. The probe moved to the memo
+      boundary (`highlightCached`), so they measure the chain independently of the cache, plus a
+      guard at more distinct blocks than the cache can hold
+
 Still open:
+
+- [x] Commit the real-browser probe rather than describing its results
+      (`scripts/fixtures/transcript-highlight-probe.*`), so the eliminations below are reproducible
+      and the next investigator does not rebuild it
+
+- [x] Give the probe a listener counter that models DOM deduplication and `once: true`
+      auto-removal, so it counts registrations rather than `addEventListener` calls — the naive
+      version reported a 160-per-keystroke and 159-per-modal-cycle "leak" that the browser was not
+      holding
+- [x] Attribute the (bounded, self-clearing) keydown listener cost to the rewind handles with a
+      control condition (`?rewind=0`), rather than by inspection
+
+- [x] Establish that the trace's listener rise is **registration churn, not a leak** — the trace has
+      163 minor (scavenger) GCs and zero major/mark-compact ones, and only a major GC releases
+      detached nodes and their listeners, so "never fell across GCs" was never a retention finding.
+      A subtree mounting and unmounting each iteration produces exactly the measured curve.
+- [x] Reconcile the trace's +73/+108/+113/+116 outliers with the rewind handles: at two listeners
+      per handle they imply 37–58 handles, plausible at the traced session's 14,524 DOM nodes
+
+- [ ] **What subtree registers ~620 listeners on mount is unidentified.** The figure itself survived
+      falsification (2,131 counter samples; growth tracks calls not clock; a 2.7 s window with 819
+      samples and no heavy call grew by 0), so it is a real per-iteration cost. Nothing reachable in
+      the transcript, the diff modal, or a keystroke *retains* listeners — which is the expected
+      result for churn, not a missing explanation. Finding the subtree with that mount cost would
+      very likely name the loop's engine too.
+
+- [x] Establish the traced surface. **No modal was open during the recording** (user who took the
+      trace, 2026-08-30), which excludes `ReadResult` (`ToolCallModal`-only) and `WriteContent`
+      (`DiffModal`-only) and leaves `CodeBlock` as the only call site — so the block is a whole-file
+      fenced block in the transcript with no usable language on the fence, and since `CodeBlock`
+      cannot re-highlight while mounted, the loop **remounts transcript rows**
+
+- [x] Row-key churn **does not** remount, and is eliminated. Inserting and removing a leading
+      message shifts every bubble's `m-${el.index}`, but React reconciles keyed children across the
+      whole list, so the key *set* is unchanged except at its ends: each fiber is reused and
+      re-rendered with the next row's props. Six flips produced **0** `CodeBlock` mounts.
+- [x] Point the probe at `highlight.js/lib/core`, the instance `syntax-highlight.ts` actually calls.
+      Patching the full `highlight.js` build intercepts nothing, so `__probe.auto` read 0 forever and
+      every elimination became a false negative — the **third** instrument in this investigation that
+      was blind by construction. Each run now checks for a non-zero baseline at mount before any zero
+      elsewhere is believed.
+- [x] Give the probe a mount counter that does not go through `highlight.js`. Counting
+      `highlightAuto` can no longer detect a remount at all, because `highlightCached` makes one a
+      map lookup — the fix blinds the obvious probe, which is the same masking review caught in
+      `transcript-highlight-cost.test.tsx`. The probe now counts `code.hljs` nodes entering and
+      leaving the DOM.
+
+- [x] Eliminate the ~1.8 s cadence hypotheses. A periodic **re-render** cannot be the engine at any
+      cadence — 8 forced re-renders at the real timers' 1 s produce 0 block mounts and 0 highlights,
+      and only a remount can re-highlight. `@formkit/auto-animate` (the closest cadence in the repo,
+      2 s) is sidebar-only and not an ancestor of `MessageList`; the only keyed elements in
+      `App.tsx`/`AppLayout.tsx` are a banner and a dialog; `useNarrowContainer` is Issues-panel only.
+- [x] Give the mount counter a positive control (`window.__swapWrapper`, the `AppLayout`
+      Fragment/div shape), so a "0 mounts" result is falsifiable rather than free. Four flips: 3
+      mounts, and 3 highlight runs with the cache neutered against 0 with it live.
+
+- [ ] **The loop's engine is still unidentified.** The 35 calls are one loop — 29 consecutive calls,
+      2.8–6.1 ms apart, 8.2 s long, period = one highlight — that starts 1.8 s *after* scrolling
+      begins and outlives the last scroll event by 4.8 s, scheduling each iteration through a
+      microtask after the previous commit. Two failures must hold at once: something re-renders
+      continuously, and every one of those renders re-highlights. The probe eliminated
+      `MessageList`, the memoized rows, `SubagentReport`'s ResizeObserver, the `content-visibility`
+      pairing, and both lazy-body fetches; the payload size (16,979 bytes, a whole file) narrows the
+      surface to `WriteContent`, an **expanded** `ReadResult`, or a whole-file fence — all of which
+      need a modal open. What would close it: a trace whose `useMemo` frame carries the React
+      component name (record with "Highlight updates when components render" on, or use the React
+      Profiler), **or** simply knowing whether a tool-call or diff modal was open during the
+      recording.
+- [ ] The two modal-only `highlightAuto` sites (`ReadResult`, `WriteContent`) still re-highlight on
+      every modal open. Deliberately not wired here — a concurrent session is changing language
+      selection in exactly those files — so this is a one-line follow-up for whoever lands that.
 
 - [ ] Re-trace a **streaming turn on a long session** and compare against the table in
       `plan.md`. Two post-merge traces exist (2026-08-16, 2026-08-30) and are recorded

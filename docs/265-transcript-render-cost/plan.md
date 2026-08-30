@@ -97,6 +97,248 @@ if a burst still appears in a fresh trace, add explicit batching at the event-dr
 (`hooks/message-handlers/`); if it does not, adding a second coalescing layer on top of
 `useDeferredValue` is mechanism nobody needs.
 
+### 2b. Syntax highlighting is cached outside React (reqs 1–4)
+
+A later production trace (2026-08-30, 14.9 s) found `hljs.highlightAuto` called **35 times for
+9.5 s** of a 10.4 s busy main thread, with near-constant durations (p50 274 ms, p90 276, max 277)
+— i.e. the *same* payload, over and over. Every call site already wraps it in a `useMemo` keyed
+on the block's text, which is why that reads as impossible.
+
+**Two independent changes came out of that trace, and they compose.** `syntax-highlight.ts` bounds
+highlight.js to a registered subset, which makes each auto-detect cheaper (roughly 20 ms for this
+block rather than 274) and is the single place language policy lives. This section makes the answer
+survive a fiber that does not, so a *repeat* costs nothing. `highlightCached` therefore delegates to
+`highlightCode` and decides nothing itself — adding a language still reaches every call site with no
+edit in the cache. The absolute milliseconds below are from before the subset landed; the counts,
+which is what everything here rests on, are unaffected.
+
+It is not, because **a `useMemo` is not a cache**: React discards a memoized value when the fiber
+does not survive. Two cases, and the second is narrower than it is tempting to write:
+
+- A **mounting** component always runs the factory, so every remount pays the full cost again — a
+  modal, tooltip or disclosure holding a code block reopening, or anything that remounts
+  transcript rows.
+- On an **update**, React compares deps against the last *committed* value rather than the last
+  attempt (verified in react-dom 19.2.8: `updateWorkInProgressHook` clones the hook from
+  `currentlyRenderingFiber.alternate`, and `updateMemo` compares against that clone). So a render
+  React abandons and retries recomputes any memo whose deps differ from the commit — but an
+  **unchanged** block is *not* recomputed merely because a render was interrupted.
+
+An earlier draft of this section attributed the 35 calls to the second case, on the grounds that
+step 1 renders the transcript behind `useDeferredValue` and the trace has 2,515 scroll events.
+Independent review refuted it and the refutation holds: the transcript's scroll handler only
+mutates refs (`useMessageScroll.ts`), so scrolling schedules no React update at all, and yielding
+to browser input can pause work without discarding it. 2,515 scroll events are not 2,515
+higher-priority React updates. **The trigger for those 35 calls is therefore still unidentified.**
+
+So the answer moves out of render state into a bounded LRU keyed by the code string
+(`utils/highlight-cache.ts`), making the cost a property of the *content* rather than of the
+render lifecycle. That is a **mitigation, not an identification**: it removes the cost of a
+remount whatever causes one, and it does not prove which surface the trace recorded. Nothing about
+which language is chosen changes.
+
+Verified in a real browser (a Vite harness rendering the real `MessageList` over a 120-message
+transcript, so `content-visibility`, `ResizeObserver` and `IntersectionObserver` are real rather
+than jsdom stubs): scrolling hard, 20 parent re-renders, and replacing every `ChatMessage` object
+each produce **zero** extra highlights. So the memo chain from step 1 holds, and the repetition
+the trace recorded is not a defeated row memo.
+
+Whole-transcript remount paths that *do* exist, for whoever picks the trigger question up: history
+being cleared and rehydrated; the onboarding/home panel replacing the conversation (`App.tsx`); and
+crossing the mobile/desktop breakpoint, which swaps two distinct trees in `AppLayout`. Mobile
+Chat/Workspace tab switching is **not** one — `MobileContentPanels` keeps both trees mounted on
+purpose. None of the three is obviously firing 35 times in 15 s, which is why the question is open
+rather than answered.
+
+#### The 35 calls are one loop, not 35 events
+
+Grouping the trace's calls by the idle gap between them gives four bursts, and the last one is the
+whole story: **29 consecutive calls with 2.8–6.1 ms of idle between them, running for 8.2 s**, at a
+period of ~284 ms — one `highlightAuto` plus the gap. The loop is rate-limited by its own cost.
+Three facts constrain it:
+
+- **It outlives the scroll.** Scroll events span 4,825–10,068 ms; the burst starts at 6,626 ms (1.8 s
+  *after* scrolling began) and runs to ~14,860 ms (4.8 s after the last scroll event). Scrolling
+  neither starts nor sustains it.
+- **The typing is a victim, not a cause.** All five keystrokes land inside the burst, which is why
+  each cost ~57 ms: they queued behind a 274 ms task.
+- **Each iteration schedules the next through a microtask**, after the previous render commits:
+  highlight ends → `RunMicrotasks` → a sub-millisecond `FunctionCall` → `RunTask` → the next
+  highlight. Some gaps also run real layout (`UpdateLayoutTree`, `Layout`, `PrePaint`,
+  `IntersectionObserverController::computeIntersections`, `Layerize`, `Commit`). An
+  `EventDispatch type=focus` / `focusin` pair sits in the gap immediately before the burst's first
+  call.
+
+That is the signature of an unconditional re-render, so **two failures have to hold at once**:
+something re-renders continuously, and each of those renders re-highlights. A test that drives N
+scripted re-renders and counts calls cannot see the first one.
+
+#### What the probe has eliminated
+
+`scripts/fixtures/transcript-highlight-probe.{html,jsx,css}` renders the real `MessageList` over an
+82-message transcript in a real browser and counts `highlight.js` calls over **wall clock**. Each
+run verifies `getComputedStyle(row).contentVisibility === "auto"` first — the fixture's first
+revision measured `visible`, because Tailwind scans from the Vite root and never read `src/client`,
+so every number was a false negative until an explicit `@source` fixed it.
+
+| condition | extra `highlightAuto` calls |
+|---|---|
+| 6 s idle after mount | **0** |
+| 5 s of continuous scrolling | **0** |
+| 6 s idle immediately after that scrolling | **0** |
+| 20 forced `MessageList` re-renders | **0** |
+| every `ChatMessage` object replaced | **0** |
+| diff modal opened (inline body) | 1, then **0** over 9 s idle |
+| diff modal opened (docs/244 stripped body) | 1 fetch, no retry, **0** highlights |
+
+So the loop's engine is **not** in `MessageList`, the memoized rows, `SubagentReport`'s
+`useOverflows` ResizeObserver, the `content-visibility` pairing, or either lazy-body fetch
+(`useLazyToolInput` and `useLazyResultBody` both cache their error under the same key, so neither
+can retry).
+
+#### What the payload size says about the surface
+
+The probe fixes each call site's input size, which is how a measured duration names a surface.
+`WriteContent` highlights a **whole file body, untruncated** — 16,979 bytes for the 400-line
+fixture, which is the trace's ~274 ms. `ReadResult` highlights only its `READ_MAX_LINES` (20-line)
+preview, ~46 ms, *unless the user expanded it*. So the traced payload is a whole ~400-line file:
+`WriteContent` in a diff modal, an **expanded** `ReadResult`, or a fenced block holding a whole file.
+That also disposes of the original suspicion that scrolling reached `ToolResult` — `ToolResult`
+renders only inside `ToolCallModal` and `WriteContent` only inside `DiffModal`, so neither is
+reachable by scrolling at all.
+
+**No modal was open during the recording** (confirmed by the user who took the trace, 2026-08-30).
+`ToolResult` renders only inside `ToolCallModal` and `WriteContent` only inside `DiffModal`, so both
+are excluded outright, and **`CodeBlock` is the only call site left**. Two things follow:
+
+- The block is a **fenced code block in the transcript holding a whole ~400-line file**, with no
+  language on the fence or one `hljs.getLanguage()` does not know — that is the only way `CodeBlock`
+  reaches `highlightAuto` rather than the cheap `hljs.highlight` path.
+- `CodeBlock` is memoized and its `useMemo` compares strings by value, and the probe shows it does
+  not re-highlight under re-render or message-object churn. So the loop **remounts transcript
+  rows** — roughly 29 times, ~284 ms apart. There is no remaining reading in which it merely
+  re-renders them.
+
+The probe already shows nothing *inside* `MessageList` does that, and that replacing every
+`ChatMessage` object does not (element reuse plus the row memo hold). **Row-key churn is now
+eliminated too**: inserting and removing a leading message shifts every bubble's `m-${el.index}`,
+but React reconciles keyed children across the whole list, so the key *set* changes only at its
+ends — each fiber is reused and re-rendered with the next row's props. Six flips produced **0**
+`CodeBlock` mounts. That leaves the remount being driven from **above** `MessageList`: the
+whole-transcript paths listed earlier, or something else in the chat panel that unmounts it.
+
+#### The 1.8 s cadence, and what it is not
+
+Before the continuous burst the heavy calls are isolated and roughly evenly spaced — 3 at ~0 ms, 2
+at ~1,874 ms, 1 at ~3,649 ms — then continuous from 6,626 ms to 14,860 ms. Something on a ~1.8 s
+cadence appears to remount transcript rows, and then stops being periodic and self-sustains.
+
+**A periodic re-render cannot be it, whatever its cadence.** Driving the probe with a re-render every
+1 s for 8 s — the cadence of the real timers, `GitHubRateLimitBanner` and `useContainerHealthPoll`,
+both of which force a render every 1,000 ms — produces **0 block mounts and 0 highlights**. Since
+only a remount can re-highlight, no timer that merely re-renders can be the engine.
+
+Eliminated by inspection in the same pass, each for a structural reason rather than a measurement:
+
+- **`@formkit/auto-animate`** (docs/265's own 2 s per-element interval, the closest cadence in the
+  codebase) is used in exactly one place, `SessionSidebar/SessionGroup.tsx` — a *sibling* of the chat
+  panel, not an ancestor of `MessageList`. It cannot remount the conversation.
+- **Keyed ancestors**: the only `key=` in `App.tsx`/`AppLayout.tsx` are on `RepoTrustBanner` and
+  `SessionSettingsDialog`. Neither is an ancestor of the conversation.
+- **`useNarrowContainer`** — the one container-width boolean that could oscillate against its own
+  layout — is used by the Issues panel only.
+- **History rehydration** is out on the trace's own evidence: `/history` was fetched exactly once in
+  the window, and the whole trace contains three requests (`/api/events`, `/files`, `/history`).
+- **A resize-driven breakpoint flip** is out: the trace has zero resize events of any kind. The one
+  door left open is that a `matchMedia` change does not surface as a DOM event, so an `isMobile` flip
+  by that route is not excluded — and it is the one structural path that would genuinely remount
+  everything (see below).
+
+#### The remount class is mitigated, measured rather than argued
+
+`AppLayout` renders `isMobile ? <>…</> : <div>…</div>` — a Fragment against a div at the same
+position, which React treats as a type change and so unmounts and remounts everything beneath,
+`chatPanel` included. The probe reproduces that exact shape (`window.__swapWrapper`), which doubles
+as the **positive control** for the mount counter: without it, every "0 mounts" above would be
+unfalsifiable, since a counter that can never report a mount reports zero for free.
+
+Four flips of that wrapper, with the big block in the transcript:
+
+| | block mounts | highlight runs |
+|---|---|---|
+| cache neutered | 3 | **3** (16,979 bytes each) |
+| cache live | 3 | **0** |
+
+So the remount *class* — the one the trace's surface and payload point at — costs nothing once the
+answer survives the fiber. That does not name the engine, and this section does not claim to.
+
+Measuring that needed a third correction to the instrument, for the same reason the guard test did.
+**Counting `highlightAuto` can no longer detect a remount at all**, because `highlightCached` turns
+one into a map lookup — the fix blinds the obvious probe. The probe now counts `code.hljs` nodes
+entering and leaving the DOM, which is independent of the cache.
+
+Scaling the listener count is a weak but consistent cross-check: this fixture registers ~2 listeners
+per rewind handle and ~1.9 per message at mount, so 620 per iteration is far more than any single
+row and is the order of a large subtree — which is what a key-churn remount of the row list would
+be. Treat that as a sanity check on the shape, not as arithmetic: it scales a synthetic fixture to a
+real session.
+
+#### The listener rise is registration churn, not a leak
+
+The same trace showed live listeners rising by **exactly 620 per highlight call** while DOM nodes
+grew by 8 over the whole 15 s. That figure survived falsification: with 2,131 counter samples for 35
+calls, growth tracks the calls and not the clock — 2,264 listeners/s across intervals overlapping a
+heavy call against 118/s elsewhere, and a 2.7 s quiet window holding 819 samples and no heavy calls
+grew by **exactly 0**. So ~620 registrations per iteration is real, and since `highlight.js` attaches
+no listeners, they belong to whatever is being mounted each iteration.
+
+**They are not known to be retained, and an earlier draft of this section was wrong to imply it.**
+The reading that they "never fell across several garbage collections" does not hold: the trace
+contains 163 minor GCs, all scavenger, and **zero** major / mark-compact events. Detached nodes and
+their listeners are released by a major GC, so the collections that ran were never going to release
+them. A subtree that mounts and unmounts every iteration produces exactly this curve and is
+reclaimed by the first major GC — which a 15-second window never saw.
+
+That is why the probe finding no retention below is **evidence, not a gap**: it is what the trace
+predicts if the 620 are churn. The open question is what mounts them, not where they leak.
+
+The probe gained a listener counter to answer that, by patching `EventTarget.prototype`.
+
+**A counter that counts `addEventListener` CALLS reports a leak that is not there.** Two DOM rules
+make calls and registrations different numbers, and both inflate the answer:
+
+- **Deduplication.** `addEventListener` with the same `(type, listener, capture)` triple is a no-op.
+- **`once: true` auto-removal.** Such a listener detaches when it fires, with no
+  `removeEventListener` call for a patch to observe.
+
+Both matter here, because `@radix-ui/react-menu`'s keyboard-vs-pointer tracker re-adds one stable
+`handlePointer` under `{ capture: true, once: true }` on **every keydown**
+(`react-menu/dist/index.mjs:59-63`). The naive counter reported +160 live listeners per keystroke in
+an 80-gap transcript, and a per-cycle "leak" of +159 from opening and closing the diff modal. Both
+were the instrument. With the counter corrected to model dedup and `once`:
+
+| measurement | corrected result |
+|---|---|
+| one keystroke, 80 rewind handles mounted | +160 (2 per handle), **plateaus** — further keystrokes add 0 |
+| a pointer event after that | the 80 `pointermove` fire and self-remove |
+| diff modal opened and closed, cycles 2 and 3 | **exactly 0** net; DOM nodes flat at 2,756 |
+| one keystroke with `?rewind=0` (no handles) | **0** |
+
+So the keydown cost is real but **bounded and self-clearing** — at most two document listeners per
+mounted `RewindPoint`, cleared by the next pointer event. The `?rewind=0` control is what attributes
+it to the rewind handles rather than assuming it: with them the keystroke costs 160, without them it
+costs nothing.
+
+That also **explains the trace's outliers**. Deltas over the 620 baseline were +73, +108, +113 and
++116, in the windows where a keystroke landed; at two listeners per handle that implies 37–58 rewind
+handles, which is plausible for the traced session's 14,524 DOM nodes. The outliers are the rewind
+handles; the 620 baseline is separate and stays open.
+
+**Nothing reachable in the transcript, the diff modal, or a keystroke RETAINS listeners** — and, per
+the GC reading above, that is the expected result rather than a missing explanation. DevTools'
+`JSEventListeners` counts registrations, not calls, so the production figure is not subject to the
+call-counting error either. What remains unidentified is the subtree whose mount registers ~620.
+
 ### 3. Revalidate instead of re-download (reqs 10, 11)
 
 `GET /api/sessions/:id/history` gains an **ETag that is the hash of the response body**, and
@@ -150,6 +392,8 @@ and it is the guard that makes out-of-order application impossible.
 | `src/server/orchestrator/api-routes-session-spawn.ts` | `/history` ETag + `304`; `fileTree` removed |
 | `src/server/orchestrator/api-routes-files.ts` | `/files` ETag + `304` |
 | `src/client/hooks/useSearch.ts` | Shared empty match array, so no-search stops invalidating every row |
+| `src/client/utils/highlight-cache.ts` | New — bounded LRU so a highlight survives a remount or an abandoned render |
+| `src/client/components/message-markdown.tsx` | `CodeBlock` highlights through that cache |
 
 ## Verification
 

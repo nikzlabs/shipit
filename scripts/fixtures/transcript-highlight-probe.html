@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Transcript highlight probe</title>
+    <script>
+      /*
+       * Live DOM event listeners, counted by interception rather than sampling.
+       *
+       * The production trace (2026-08-30) showed listeners rising by *exactly*
+       * 620 per highlight call across 34 calls, while DOM nodes grew by 8 over
+       * the whole 15 s. `highlight.js` attaches no listeners — it returns a
+       * string — so the 620 belong to whatever React mounts each iteration.
+       *
+       * That is registration CHURN, not established retention: the trace holds
+       * 163 minor (scavenger) GCs and zero major/mark-compact ones, and only a
+       * major GC releases detached nodes and their listeners. So a subtree
+       * mounting and unmounting each iteration produces exactly this curve, and
+       * measuring no retention here is the expected result rather than a gap.
+       *
+       * CDP's `Performance.getMetrics` -> `JSEventListeners` is the counter the
+       * trace recorded, but it gives only a total. Patching `EventTarget` gives
+       * the same number AND names the target and event type, which is what turns
+       * "620" from a quantity into an address. `live()` is adds minus removes,
+       * so a subtree that cleans up returns to its baseline and one that leaks
+       * does not.
+       *
+       * THIS MUST BE AN INLINE SCRIPT, NOT PART OF THE MODULE. ES imports are
+       * hoisted, so a patch written at the top of the module still runs after
+       * every imported module's top-level code — and would miss anything the app
+       * registers at module scope. Verified by moving it: the counts differ.
+       */
+      (function () {
+        var origAdd = EventTarget.prototype.addEventListener;
+        var origRemove = EventTarget.prototype.removeEventListener;
+        var adds = 0;
+        var removes = 0;
+        var byKey = new Map();
+        // target -> "type|capture" -> Map(listener -> entry). Needed because a
+        // truthful count has to reproduce two DOM rules that a naive
+        // call-counter gets wrong, and both of them inflate the answer:
+        //
+        //   1. DEDUPLICATION. `addEventListener` with the same (type, listener,
+        //      capture) triple is a NO-OP. Radix's keyboard/pointer tracker
+        //      re-adds one stable `handlePointer` on every keydown, so a
+        //      call-counter reports one new listener per keystroke per menu
+        //      where the browser registers none.
+        //   2. `once: true` AUTO-REMOVAL. Such a listener detaches when it
+        //      fires, without anyone calling `removeEventListener`, so a
+        //      call-counter never decrements it.
+        //
+        // Counting calls instead of registrations reported a 160-listener
+        // "leak" per keystroke in this fixture that the browser was not holding.
+        // Do not simplify this back.
+        var registry = new WeakMap();
+
+        function targetName(t) {
+          if (t === window) return "window";
+          if (t === document) return "document";
+          if (t instanceof Node) return "<" + (t.nodeName || "node").toLowerCase() + ">";
+          return (t && t.constructor && t.constructor.name) || "other";
+        }
+        function bump(target, type, delta) {
+          var key = targetName(target) + " " + type;
+          byKey.set(key, (byKey.get(key) || 0) + delta);
+        }
+        function slot(target, type, capture) {
+          var perTarget = registry.get(target);
+          if (!perTarget) { perTarget = new Map(); registry.set(target, perTarget); }
+          var k = type + "|" + (capture ? 1 : 0);
+          var perKey = perTarget.get(k);
+          if (!perKey) { perKey = new Map(); perTarget.set(k, perKey); }
+          return perKey;
+        }
+        function captureOf(opts) {
+          return typeof opts === "boolean" ? opts : !!(opts && opts.capture);
+        }
+
+        // Optional stack capture for one `target type` key, so a leak can be
+        // traced to its registrant instead of merely counted. Off by default —
+        // building a stack on every registration is far too slow to leave on.
+        var watchKey = null;
+        var watchStacks = [];
+
+        EventTarget.prototype.addEventListener = function (type, fn, opts) {
+          var capture = captureOf(opts);
+          var perKey = slot(this, type, capture);
+          if (fn && perKey.has(fn)) return undefined; // rule 1: already registered
+          adds += 1;
+          bump(this, type, 1);
+          if (watchKey && targetName(this) + " " + type === watchKey && watchStacks.length < 40) {
+            watchStacks.push(new Error("listener-added").stack);
+          }
+          var once = !!(opts && typeof opts === "object" && opts.once);
+          var bound = fn;
+          var self = this;
+          if (once && typeof fn === "function") {
+            // rule 2: observe the auto-removal by doing the bookkeeping in a
+            // wrapper. The wrapper is what the DOM holds, so `removeEventListener`
+            // below has to look it up rather than pass `fn` straight through.
+            bound = function (ev) {
+              removes += 1;
+              bump(self, type, -1);
+              perKey.delete(fn);
+              return fn.call(this, ev);
+            };
+          }
+          if (fn) perKey.set(fn, bound);
+          return origAdd.call(this, type, bound, opts);
+        };
+        EventTarget.prototype.removeEventListener = function (type, fn, opts) {
+          var capture = captureOf(opts);
+          var perKey = slot(this, type, capture);
+          if (!fn || !perKey.has(fn)) return origRemove.call(this, type, fn, opts);
+          var bound = perKey.get(fn);
+          perKey.delete(fn);
+          removes += 1;
+          bump(this, type, -1);
+          return origRemove.call(this, type, bound, opts);
+        };
+
+        window.__listeners = {
+          live: function () { return adds - removes; },
+          adds: function () { return adds; },
+          removes: function () { return removes; },
+          /** Busiest `target type` pairs, largest live count first. */
+          top: function (n) {
+            return [...byKey.entries()]
+              .filter(function (e) { return e[1] !== 0; })
+              .sort(function (a, b) { return b[1] - a[1]; })
+              .slice(0, n || 15);
+          },
+          snapshot: function () { return new Map(byKey); },
+          /** Start capturing stacks for one key, e.g. "document pointerdown". */
+          watch: function (key) { watchKey = key; watchStacks = []; },
+          stacks: function () { return watchStacks.slice(); },
+          /** Live counts that changed since a `snapshot()`. */
+          diff: function (before) {
+            return [...byKey.entries()]
+              .map(function (e) { return [e[0], e[1] - (before.get(e[0]) || 0)]; })
+              .filter(function (e) { return e[1] !== 0; })
+              .sort(function (a, b) { return b[1] - a[1]; });
+          },
+        };
+      })();
+    </script>
+  </head>
+  <body style="margin: 0">
+    <div id="root" style="height: 100vh; display: flex; flex-direction: column"></div>
+    <script type="module" src="./transcript-highlight-probe.jsx"></script>
+  </body>
+</html>
