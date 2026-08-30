@@ -597,13 +597,16 @@ async function sendMessage(
           // registry rather than the connection because a restart just replaced it.
           const claimed = ctx.getRunnerRegistry().get(effectiveSessionId);
           if (claimed) firstTurnClaim.markRunner(claimed);
-          // Clear `warm` INSIDE the section. `graduateSession` below is what
-          // normally does it, and it runs after the section releases — and it
-          // yields first (the issue-pointer pin), so a waiter entering here
-          // could still read `warm === true` and set out to start its own first
-          // turn. `setWarm(false)` is idempotent, and graduation does the rest
-          // of its work (naming, branch, re-warm, SSE) unchanged.
-          ctx.sessionManager.setWarm(effectiveSessionId, false);
+          // NOT `setWarm(false)` here, though it looks like the obvious way to
+          // stop a waiter seeing this session as still warm. `warm === false` is
+          // the observable signal that a session has GRADUATED, and graduation
+          // happens further down — after the issue-pointer branch pin. Clearing
+          // it early publishes "graduated" while the branch is still being
+          // renamed, and anything waiting on that signal reads a half-finished
+          // session (caught by `issue-seeded-branch.test.ts`).
+          //
+          // The claim above already does the job: a competing first Send is
+          // refused by `claimFirstTurn` and stands down, whatever `warm` says.
         }
         return result;
       });
