@@ -147,7 +147,10 @@ reconciliation would let a waiter back in while `running` is still false.
   `container_restarting` handler merely updates rescue state
   (`message-handlers/container-restarting.ts`). So this design needs a **session-scoped
   reconnect signal** emitted after replacement creation, or a second viewer sits on the
-  disposed runner and misses the whole first turn.
+  disposed runner and misses the whole first turn. It goes over **session-filtered global
+  SSE, not `runner.emitMessage`** — the old viewers are attached to the disposed runner and
+  the new one has no viewers yet — and it fires once the winning sender has attached to the
+  new runner and claimed its dispatch slot.
 - **It can interrupt a warm preinstall.** Warm readiness is announced without waiting for the
   fire-and-forget `agent.install` (`warm-pool-manager.ts` ~297, ~331), so a changed-mode
   first Send can destroy an install in flight. The replacement reruns setup; the cost is a
@@ -184,6 +187,17 @@ free.
 Quick Capture is unchanged in shape: it persists the override and reconciles **before
 `runnerRegistry.getOrCreate`** (`headless-sessions.ts` ~426, not merely before `dispatch()`
 at ~460), since it creates and dispatches server-side in one act.
+
+**It must hand its resolved `agentId` to the reconciliation**, or a non-default harness is
+silently lost. `restartContainer` creates the replacement runner itself, seeded
+`session.agentId ?? defaultAgentId` (`recovery.ts` ~332) — and at that point Quick Capture
+has *resolved* the requested agent but not persisted it: it supplies it to `getOrCreate` at
+~426, and warm-up env preparation deliberately does not persist the selection
+(`session-agent-env.ts` ~595). The later `getOrCreate` cannot repair it, because an existing
+runner is returned unchanged (`session-runner.ts` ~2268). So picking Codex on a
+Claude-default deployment *and* changing the network mode would create and dispatch through a
+Claude runner. The reconciliation therefore takes an agent seed; it does **not** pin the
+session's agent early — ordinary first-turn preparation keeps that job.
 
 ### Comparing: what counts as "the container disagrees"
 
@@ -261,6 +275,9 @@ reuse branch itself, not in the composer, because the composer is not involved i
    Quick Capture resets on every opening.
 4b. **A second viewer survives the restart**: two tabs on one session, first Send changes the
    mode, and the non-sending tab reattaches and sees the first turn.
+4c. **Quick Capture keeps its harness through a reconcile**: a non-default agent plus a
+   changed network mode, asserting the first dispatched turn runs on the selected harness and
+   not the deployment default.
 5. **Composer and dialog agree** after a change in either, including in a second tab.
 6. **No audit card** for the creation-time choice; a card **is** written for a later change.
 
