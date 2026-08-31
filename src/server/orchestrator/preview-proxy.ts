@@ -30,6 +30,8 @@ import {
   AGENT_INTERFACE_SDK_MARKER,
   AGENT_INTERFACE_SDK_SCRIPT,
 } from "../shared/agent-interface-sdk/bootstrap.js";
+import type { LogSource } from "../shared/types.js";
+import { appendAgentLog } from "./log-emit.js";
 
 // ---------------------------------------------------------------------------
 // Subdomain parsing
@@ -368,14 +370,16 @@ export function buildUpstreamHeaders(
  * has a record on the orchestrator's side.
  *
  * This is Logs-only. It once also painted a "Preview unreachable on port N"
- * banner over the preview pane; that banner is gone (planning#489). For a
- * failed navigation the connecting page behind it already names the port and
- * the last error and reloads itself on recovery (docs/286), so the banner was
- * duplicate text that — having no recovery signal — then outlived the failure
- * it described. The cases it did not duplicate were already carried
- * elsewhere: a failed sub-resource raises a console error the preview script
- * captures for auto-fix, and a stopped service shows on the toolbar's status
- * dot.
+ * banner over the preview pane; that banner is gone (PR #2607). The reason is
+ * the shared-key hole described on `createPreviewErrorReporter` below: the
+ * banner could only fire reliably when EVERY request to the port failed, and
+ * that is exactly the case docs/286's connecting page already covers — it
+ * names the port, reveals the last error once the wait passes
+ * `CONNECTING_PAGE_DETAIL_MS`, and reloads itself when the app answers. Where
+ * the banner would have said something new (a failure interleaved with
+ * working traffic) the same successes deleted its streak, so it mostly did
+ * not fire. Having no recovery signal either, what it did show then outlived
+ * the failure it described.
  *
  * `report.success(sessionId, port)` is the companion signal: the proxy calls
  * it whenever a request to that container *does* reach the upstream, which
@@ -733,11 +737,15 @@ const PREVIEW_ERROR_GRACE_MS = 2_000;
  * per `(sessionId,port)` to avoid log spam.
  *
  * KNOWN HOLE (planning#489): the streak and its `success` signal share one
- * `(sessionId, port)` key across both transports, so a working page's HTTP
- * traffic deletes a pending HMR-upgrade streak before the grace window can
- * elapse. An HMR failure on a port that still serves HTTP therefore never
- * reports at all — which is the only case where an HMR-specific report would
- * tell the user something new. Fixing it means keying by transport.
+ * `(sessionId, port)` key across BOTH transports, so any success on that port
+ * can delete a pending failure streak before the grace window elapses — the
+ * two are not required to be the same kind of request. That makes the reporter
+ * reliable only for a port where *everything* fails (a dev server that is
+ * down). A failure interleaved with working traffic on the same port — a
+ * sub-resource 502, an HMR upgrade against a page that still serves HTTP — can
+ * have its streak wiped by the successes around it and never report. HMR is
+ * the case that matters, because it is the one with no other signal; fixing it
+ * means keying by transport.
  *
  * Exported so the integration test in
  * `integration_tests/preview-error.test.ts` can verify the wiring without
@@ -747,7 +755,20 @@ const PREVIEW_ERROR_GRACE_MS = 2_000;
  */
 export function createPreviewErrorReporter(
   runnerRegistry: SessionRunnerRegistry | undefined,
-  opts: { now?: () => number; throttleMs?: number; graceMs?: number } = {},
+  opts: {
+    now?: () => number;
+    throttleMs?: number;
+    graceMs?: number;
+    /**
+     * Persists the line to the durable backlog. Without it the record is
+     * emit-only: live viewers see it, a reload does not, and a reconnect
+     * skips buffered `log_append` events precisely because it expects the
+     * durable snapshot to carry them (`route-registry.ts`). Since the pane's
+     * banner is gone, this Logs line is the only orchestrator-side account of
+     * a proxy failure, so it has to survive.
+     */
+    broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
+  } = {},
 ): PreviewErrorReporter {
   const lastEmitAt = new Map<string, number>();
   /** Start time of the current unresolved failure streak, per (sessionId, port). */
@@ -755,6 +776,7 @@ export function createPreviewErrorReporter(
   const now = opts.now ?? (() => Date.now());
   const throttleMs = opts.throttleMs ?? PREVIEW_ERROR_THROTTLE_MS;
   const graceMs = opts.graceMs ?? PREVIEW_ERROR_GRACE_MS;
+  const broadcastLog = opts.broadcastLog;
 
   const report = ((sessionId, port, message, upgrade) => {
     if (!runnerRegistry) return;
@@ -782,11 +804,9 @@ export function createPreviewErrorReporter(
     const human = upgrade
       ? `Preview HMR unreachable on port ${port} (${message})`
       : `Preview unreachable on port ${port} (${message})`;
-    runner.emitMessage({
-      type: "log_append",
-      channel: "agent",
-      records: [{ ts: new Date(t).toISOString(), source: "preview", text: human }],
-    });
+    // Through `appendAgentLog`, never a hand-built `log_append` — that is the
+    // dual-send this choke point (docs/192) replaced, and it persists nothing.
+    appendAgentLog(broadcastLog, sessionId, runner, "preview", human);
   }) as PreviewErrorReporter;
 
   // A request reached the upstream — the preview is alive, so abandon any
@@ -804,9 +824,9 @@ export function registerPreviewProxy(
     containerManager: SessionContainerManager;
     serviceManagers: Map<string, ServiceManager>;
     /**
-     * Optional runner registry. When provided, proxy errors emit a
-     * `log_entry` so the Logs panel records the failure. Without this,
-     * proxy errors are iframe-only — the orchestrator side has no record.
+     * Optional runner registry. When provided, proxy errors write a Logs
+     * record for the failure. Without this, proxy errors are iframe-only —
+     * the orchestrator side has no record.
      * See docs/124-session-rescue-and-diagnostics §1.5.
      */
     runnerRegistry?: SessionRunnerRegistry;
@@ -816,12 +836,20 @@ export function registerPreviewProxy(
      * reach the exhaustion path without waiting out the real window.
      */
     connectRetryMs?: number;
+    /**
+     * Persists a proxy-failure Logs line to the durable backlog. Optional so
+     * the proxy tests can register without one, but the real wiring must pass
+     * it — otherwise the record is live-only and a reload loses it.
+     */
+    broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
   },
 ): void {
   const { containerManager, serviceManagers, runnerRegistry } = opts;
   const connectRetryMs = opts.connectRetryMs ?? PREVIEW_CONNECT_RETRY_MS;
 
-  const reportError = createPreviewErrorReporter(runnerRegistry);
+  const reportError = createPreviewErrorReporter(runnerRegistry, {
+    ...(opts.broadcastLog ? { broadcastLog: opts.broadcastLog } : {}),
+  });
 
   /**
    * Resolve the container address behind a preview subdomain's port.

@@ -127,17 +127,24 @@ separate captured-console `errors` collection (`useAutoFix` takes
 path would have lost the docs/124 §1.5 Logs record for a crashed preview and
 bought nothing.
 
-**Superseded (planning#489).** At the time this was written the report also
-drove an in-pane banner via `preview_error` and `message-handlers/preview-error.ts`.
-That banner is gone, and the connecting page introduced by *this* doc is why:
-for a failed navigation it already names the port and the last error and
-reloads itself when the app answers, so the banner restated the page behind it
-— and, having no recovery signal, then stayed on screen after the preview came
-back. Its non-duplicated cases were carried elsewhere already (a failed
-sub-resource raises a captured console error; a stopped service shows on the
-toolbar status dot). The `preview_error` WS message, its handler, and the
-`previewProxyError` store field were deleted with it; `reportError` is now
-Logs-only.
+**Superseded (PR #2607).** At the time this was written the report also drove
+an in-pane banner via `preview_error` and `message-handlers/preview-error.ts`.
+That banner is gone, and the connecting page introduced by *this* doc is why.
+
+`createPreviewErrorReporter` keys its failure streak and its `report.success`
+signal on `(sessionId, port)` alone, so any success on that port deletes a
+pending streak. The banner could therefore only fire reliably when *every*
+request to the port failed — and for that case the connecting page names the
+port, reveals the last error once the wait passes `CONNECTING_PAGE_DETAIL_MS`,
+and reloads itself when the app answers. The banner restated it, and having no
+recovery signal, stayed on screen after the preview came back. Where it would
+have added something — a failure interleaved with working traffic on the same
+port — the surrounding successes deleted its streak first.
+
+The `preview_error` WS message, its handler, and the `previewProxyError` store
+field were deleted with it. `reportError` is now Logs-only, and routes through
+`appendAgentLog` so the record is durable rather than emit-only. The
+HMR-upgrade case, which is the one with no other signal, is planning#489.
 
 ### 4. The client stops polling
 

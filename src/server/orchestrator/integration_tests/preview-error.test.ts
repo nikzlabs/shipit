@@ -81,6 +81,33 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
     });
   });
 
+  it("persists the record, not just the live line", () => {
+    const { runner, emitted } = makeFakeRunner("sess-p");
+    const persisted: { sessionId: string; source: string; text: string }[] = [];
+    let nowMs = 1_000_000;
+    const report = createPreviewErrorReporter(
+      makeFakeRegistry({ "sess-p": runner }),
+      {
+        now: () => nowMs,
+        graceMs: 2_000,
+        broadcastLog: (sessionId, source, text) => { persisted.push({ sessionId, source, text }); },
+      },
+    );
+
+    report("sess-p", 5173, "Connection refused", false);
+    nowMs += 2_500;
+    report("sess-p", 5173, "Connection refused", false);
+
+    // The live emit alone is not enough: a reconnect skips buffered
+    // `log_append` events because it expects the durable snapshot to carry
+    // them, so an emit-only record vanishes on reload. Since the in-pane
+    // banner is gone, this line is the only account of the failure.
+    expect(emitted.some((m) => m.type === "log_append")).toBe(true);
+    expect(persisted).toEqual([
+      { sessionId: "sess-p", source: "preview", text: expect.stringContaining("Preview unreachable on port 5173") as string },
+    ]);
+  });
+
   it("suppresses a transient error that recovers within the grace window", () => {
     const { runner, emitted } = makeFakeRunner("sess-tr");
     let nowMs = 1_000_000;

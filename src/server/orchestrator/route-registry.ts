@@ -415,7 +415,7 @@ export async function registerRoutes(
 
   // ---- Preview reverse proxy (container mode) ----
   if (containerManager) {
-    registerPreviewProxy(app, { containerManager, serviceManagers, runnerRegistry });
+    registerPreviewProxy(app, { containerManager, serviceManagers, runnerRegistry, broadcastLog });
     // planning#370 — from here on, a `{uuid}--{port}.…` Host is hijacked by the
     // proxy above and cannot reach an API route, so the origin guard steps
     // aside for it. Told to the guard at the registration site (rather than

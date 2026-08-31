@@ -125,26 +125,49 @@ logged or emitted.
 overlay a "Preview unreachable on port 5173 — Rescue session?" banner
 and the Logs panel gets a record.
 
-**Superseded (planning#489) — the Logs record is all that remains.** The
-banner shipped without its "Rescue session?" action, so it offered only Retry
-(an iframe reload) and Dismiss. It was then made redundant by docs/286's
-connecting page, which for a failed navigation names the port and the last
-error and reloads itself on recovery; the banner restated that page and, having
-no recovery signal of its own, outlived the failure it described. The failures
-it did *not* duplicate were already reported elsewhere: a failed sub-resource
-raises a console error the preview script captures for auto-fix, and a stopped
-service shows on the toolbar's status dot. The `preview_error` WS message, its
-client handler, and the `previewProxyError` store field are deleted;
-`createPreviewErrorReporter` now writes the `log_entry` only.
+**Superseded (PR #2607) — the Logs record is all that remains.** The banner
+shipped without its "Rescue session?" action, so it offered only Retry (an
+iframe reload) and Dismiss, and it had no recovery signal, so what it did show
+outlived the failure it described.
 
-A failed **HMR upgrade** was the one failure with no other signal — the page
-renders, the console is clean, the status dot is green — and it never actually
-reported, because the streak and its `report.success` signal share one
-`(sessionId, port)` key across both transports, so a working page's HTTP
-traffic deleted every pending HMR streak before the 2 s grace window could
-elapse. Tracked in planning#489, which covers keying by transport and wording
-the report around the consequence (edits will not appear until you reload)
-rather than the transport errno.
+What decided its removal is the **shared-key hole** below. Because the failure
+streak and its `report.success` signal share one `(sessionId, port)` key across
+*both* transports, any success on that port deletes a pending streak. The
+banner could therefore only fire reliably when **every** request to the port
+failed — a dev server that is down — and that is precisely the case docs/286's
+connecting page took over: it names the port, reveals the last error once the
+wait passes `CONNECTING_PAGE_DETAIL_MS`, and reloads itself when the app
+answers. In the cases where the banner would have said something the pane could
+not, the surrounding successful traffic deleted its streak first. So it
+duplicated the one thing it reliably reported, and mostly did not report the
+rest.
+
+The `preview_error` WS message, its client handler, and the `previewProxyError`
+store field are deleted. `createPreviewErrorReporter` now writes the Logs
+record only — and writes it through `appendAgentLog` (docs/192), because the
+hand-built `log_append` it used before was emit-only: live viewers saw it, a
+reload did not, and reconnect deliberately skips buffered `log_append` events
+expecting the durable snapshot to carry them. With the banner gone that record
+is the only orchestrator-side account of a proxy failure, so it has to survive.
+
+**The remaining hole (planning#489).** A failed **HMR upgrade** is the one
+failure with no other signal — the page renders, the console is clean, the
+status dot is green — and it is also the one most exposed to the shared key,
+since a page that still serves HTTP produces exactly the successes that delete
+the streak. It can still report when two upgrade failures fall more than the
+2 s grace window apart with no HTTP success between them, so this is "usually
+erased", not "impossible"; empirically the banner never appeared for it.
+planning#489 covers keying by transport and wording the report around the
+consequence — edits will not appear until you reload — rather than the
+transport errno.
+
+**Note on an adjacent claim.** An earlier draft of this note asserted that a
+failed sub-resource is covered because the preview script captures its console
+error for auto-fix. That is **false**: `injectPreviewBootstrap` injects only
+the HMR/navigation patch and the agent-interface SDK, neither of which wraps
+`window.onerror`, `unhandledrejection`, or `console.error`, so
+`usePreviewErrors` has no producer on ShipIt's side at all. Tracked separately;
+it is not a consequence of this removal.
 
 **Refinement (grace window — suppress transient false alarms):** a
 *single* connect failure is almost always a transient bring-up race —
@@ -158,7 +181,12 @@ clock. The proxy calls the companion `report.success(sessionId, port)`
 whenever a request reaches the upstream (HTTP response received or HMR
 socket upgraded), which clears the streak — so a blip that recovers
 never surfaces. Only a failure still unresolved past the grace window
-reaches the banner/Logs (then throttled at `PREVIEW_ERROR_THROTTLE_MS`).
+reaches the Logs (then throttled at `PREVIEW_ERROR_THROTTLE_MS`).
+
+Note the key is `(sessionId, port)` and nothing else, so a success on
+*either* transport clears a streak started by the other — the hole that
+removed the banner and that planning#489 tracks. See the superseded note
+in §1.5 above.
 
 ### 1.6 Idle-disposal cleanup is a console.log only
 
@@ -374,8 +402,10 @@ helpful for empirical tuning.
 - `src/server/orchestrator/proxy-agent-process.ts` — propagate
   `kill()` errors as a chat-visible `log_entry`.
 - `src/server/orchestrator/preview-proxy.ts` &
-  `src/server/orchestrator/proxy-error.ts` — emit `preview_error`
-  runner events on connection / HMR upgrade failures.
+  `src/server/orchestrator/proxy-error.ts` — report connection / HMR
+  upgrade failures. *(As shipped: a durable Logs record via
+  `appendAgentLog`. The `preview_error` runner event described here was
+  removed with the banner — see the superseded note in §1.5.)*
 - `src/server/orchestrator/app-lifecycle.ts` — emit `session_status`
   with reason `"idle-disposed"` when the enforcer fires.
 - `src/server/orchestrator/services/recovery.ts` — stop the compose
@@ -386,8 +416,8 @@ helpful for empirical tuning.
 - `src/server/orchestrator/api-routes-container.ts` — add
   `GET /api/sessions/:id/diagnostics`.
 - `src/server/shared/types/ws-server-messages.ts` — new message types:
-  `stack_error`, `preview_error`, `service_oom`, refined
-  `container_restarting` payload with `phase`.
+  `stack_error`, ~~`preview_error`~~ *(removed — see §1.5)*,
+  `service_oom`, refined `container_restarting` payload with `phase`.
 
 ### Client
 
@@ -395,8 +425,8 @@ helpful for empirical tuning.
   session"; render phased progress; deep-link to diagnostics panel.
 - `src/client/components/SessionDiagnosticsPanel.tsx` *(new)* — the
   aggregate view; "Copy diagnostics" button.
-- `src/client/components/PreviewFrame.tsx` — render `preview_error`
-  overlay.
+- ~~`src/client/components/PreviewFrame.tsx` — render `preview_error`
+  overlay.~~ *Removed — see the superseded note in §1.5.*
 - `src/client/components/ServicesPanel.tsx` — show OOM annotations on
   service status; restart-count badges (plumbing for the diagnostics
   panel anyway).
