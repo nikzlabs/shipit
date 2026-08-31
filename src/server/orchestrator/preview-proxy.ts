@@ -364,9 +364,18 @@ export function buildUpstreamHeaders(
 
 /**
  * Callback invoked when a preview-proxy request fails to reach the upstream
- * container. Lets the registration site emit a `preview_error` WS message
- * and a Logs entry so the user gets observable feedback instead of just a
- * blank iframe / raw 502 JSON.
+ * container. Lets the registration site write a Logs entry, so the failure
+ * has a record on the orchestrator's side.
+ *
+ * This is Logs-only. It once also painted a "Preview unreachable on port N"
+ * banner over the preview pane; that banner is gone (planning#489). For a
+ * failed navigation the connecting page behind it already names the port and
+ * the last error and reloads itself on recovery (docs/286), so the banner was
+ * duplicate text that — having no recovery signal — then outlived the failure
+ * it described. The cases it did not duplicate were already carried
+ * elsewhere: a failed sub-resource raises a console error the preview script
+ * captures for auto-fix, and a stopped service shows on the toolbar's status
+ * dot.
  *
  * `report.success(sessionId, port)` is the companion signal: the proxy calls
  * it whenever a request to that container *does* reach the upstream, which
@@ -713,16 +722,22 @@ const PREVIEW_ERROR_THROTTLE_MS = 5_000;
  * back this long. If a later request to the same `(sessionId, port)` reaches
  * the upstream within the window (`report.success`), the streak is cleared and
  * nothing is shown. Only a failure that persists past the window (a genuinely
- * unreachable preview) reaches the banner/Logs. See SHI bug: false "Preview
+ * unreachable preview) reaches the Logs. See SHI bug: false "Preview
  * unreachable" while the preview is in fact working.
  */
 const PREVIEW_ERROR_GRACE_MS = 2_000;
 
 /**
  * Build a `PreviewErrorReporter` that routes preview-proxy connection
- * failures to (a) a `preview_error` WS message for the in-frame banner
- * and (b) a per-session `log_entry` with `source: "preview"`. Throttles
+ * failures to a per-session `log_entry` with `source: "preview"`. Throttles
  * per `(sessionId,port)` to avoid log spam.
+ *
+ * KNOWN HOLE (planning#489): the streak and its `success` signal share one
+ * `(sessionId, port)` key across both transports, so a working page's HTTP
+ * traffic deletes a pending HMR-upgrade streak before the grace window can
+ * elapse. An HMR failure on a port that still serves HTTP therefore never
+ * reports at all — which is the only case where an HMR-specific report would
+ * tell the user something new. Fixing it means keying by transport.
  *
  * Exported so the integration test in
  * `integration_tests/preview-error.test.ts` can verify the wiring without
@@ -768,13 +783,6 @@ export function createPreviewErrorReporter(
       ? `Preview HMR unreachable on port ${port} (${message})`
       : `Preview unreachable on port ${port} (${message})`;
     runner.emitMessage({
-      type: "preview_error",
-      sessionId,
-      port,
-      message,
-      upgrade,
-    });
-    runner.emitMessage({
       type: "log_append",
       channel: "agent",
       records: [{ ts: new Date(t).toISOString(), source: "preview", text: human }],
@@ -797,11 +805,9 @@ export function registerPreviewProxy(
     serviceManagers: Map<string, ServiceManager>;
     /**
      * Optional runner registry. When provided, proxy errors emit a
-     * `preview_error` runner event so connected viewers see an inline
-     * "Preview unreachable on port N" overlay, and a `log_entry` so the
-     * Logs panel records the failure. Without this, proxy errors are
-     * iframe-only — the orchestrator side has no record. See
-     * docs/124-session-rescue-and-diagnostics §1.5.
+     * `log_entry` so the Logs panel records the failure. Without this,
+     * proxy errors are iframe-only — the orchestrator side has no record.
+     * See docs/124-session-rescue-and-diagnostics §1.5.
      */
     runnerRegistry?: SessionRunnerRegistry;
     /**
@@ -915,9 +921,11 @@ export function registerPreviewProxy(
       // bar uses. Only here, at exhaustion — never per attempt — so a boot that
       // resolves inside the window says nothing at all, and
       // `createPreviewErrorReporter`'s own grace window then holds even this
-      // back until a second request fails (req 5). `preview_error` paints the
-      // pane's banner and writes a Logs line; it does not reach auto-fix, which
-      // watches the captured-console errors (`useAutoFix`).
+      // back until a second request fails (req 5). It writes a Logs line and
+      // nothing else — the user-facing account of this failure is the
+      // connecting page served just below, which names the port and the last
+      // error and reloads itself when the app answers. It does not reach
+      // auto-fix, which watches the captured-console errors (`useAutoFix`).
       reportError(sessionId, originPort, message, false);
       if (wantsHtmlDocument(method, headers)) {
         const body = injectPreviewBootstrap(buildConnectingPage(originPort, message));

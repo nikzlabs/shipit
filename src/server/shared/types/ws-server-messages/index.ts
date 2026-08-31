@@ -60,7 +60,7 @@ import type {
   WsServiceOom,
 } from "./service.js";
 import type { WsDocList, WsDocContent, WsFileTree, WsFileContent, WsFilesChanged } from "./files.js";
-import type { WsPreviewStatus, WsPreviewError } from "./preview.js";
+import type { WsPreviewStatus } from "./preview.js";
 import type {
   WsSessionList,
   WsSessionStarted,
@@ -252,7 +252,6 @@ export type WsServerMessage =
   | WsServiceList
   | WsServiceOom
   | WsSessionMemoryExhausted
-  | WsPreviewError
   | WsComposeError
   | WsPluginReposUpdated
   | WsStackError

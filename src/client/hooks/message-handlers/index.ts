@@ -58,7 +58,6 @@ import { handleResetEligible } from "./reset-eligible.js";
 import { handlePresentCleared } from "./present-cleared.js";
 import { handlePresentContent } from "./present-content.js";
 import { handlePresentState } from "./present-state.js";
-import { handlePreviewError } from "./preview-error.js";
 import { handlePreviewStatus } from "./preview-status.js";
 import { handleQueueUpdated } from "./queue-updated.js";
 import { handleRebaseAborted } from "./rebase-aborted.js";
@@ -183,7 +182,6 @@ export const messageHandlers: MessageHandlerMap = {
   present_cleared: handlePresentCleared,
   present_content: handlePresentContent,
   present_state: handlePresentState,
-  preview_error: handlePreviewError,
   preview_status: handlePreviewStatus,
   queue_updated: handleQueueUpdated,
   rebase_aborted: handleRebaseAborted,

@@ -121,12 +121,23 @@ with the grace window on top, means a boot that resolves says nothing at all.
 
 Both paths report. An earlier draft suppressed the report on the
 connecting-page path, on the theory that it could wake auto-fix; that was
-wrong. `preview_error` is handled by `message-handlers/preview-error.ts`, which
-only sets `previewProxyError` (the pane's banner) and writes a Logs line.
-Auto-fix reads the separate captured-console `errors` collection (`useAutoFix`
-takes `previewErrors`), so a proxy error cannot reach it. Suppressing the
-navigation path would have lost the docs/124 §1.5 signal for a crashed preview
-and bought nothing.
+wrong. The report writes a Logs line and nothing else. Auto-fix reads the
+separate captured-console `errors` collection (`useAutoFix` takes
+`previewErrors`), so a proxy error cannot reach it. Suppressing the navigation
+path would have lost the docs/124 §1.5 Logs record for a crashed preview and
+bought nothing.
+
+**Superseded (planning#489).** At the time this was written the report also
+drove an in-pane banner via `preview_error` and `message-handlers/preview-error.ts`.
+That banner is gone, and the connecting page introduced by *this* doc is why:
+for a failed navigation it already names the port and the last error and
+reloads itself when the app answers, so the banner restated the page behind it
+— and, having no recovery signal, then stayed on screen after the preview came
+back. Its non-duplicated cases were carried elsewhere already (a failed
+sub-resource raises a captured console error; a stopped service shows on the
+toolbar status dot). The `preview_error` WS message, its handler, and the
+`previewProxyError` store field were deleted with it; `reportError` is now
+Logs-only.
 
 ### 4. The client stops polling
 

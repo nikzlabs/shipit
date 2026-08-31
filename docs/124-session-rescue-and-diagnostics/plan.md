@@ -125,6 +125,27 @@ logged or emitted.
 overlay a "Preview unreachable on port 5173 — Rescue session?" banner
 and the Logs panel gets a record.
 
+**Superseded (planning#489) — the Logs record is all that remains.** The
+banner shipped without its "Rescue session?" action, so it offered only Retry
+(an iframe reload) and Dismiss. It was then made redundant by docs/286's
+connecting page, which for a failed navigation names the port and the last
+error and reloads itself on recovery; the banner restated that page and, having
+no recovery signal of its own, outlived the failure it described. The failures
+it did *not* duplicate were already reported elsewhere: a failed sub-resource
+raises a console error the preview script captures for auto-fix, and a stopped
+service shows on the toolbar's status dot. The `preview_error` WS message, its
+client handler, and the `previewProxyError` store field are deleted;
+`createPreviewErrorReporter` now writes the `log_entry` only.
+
+A failed **HMR upgrade** was the one failure with no other signal — the page
+renders, the console is clean, the status dot is green — and it never actually
+reported, because the streak and its `report.success` signal share one
+`(sessionId, port)` key across both transports, so a working page's HTTP
+traffic deleted every pending HMR streak before the 2 s grace window could
+elapse. Tracked in planning#489, which covers keying by transport and wording
+the report around the consequence (edits will not appear until you reload)
+rather than the transport errno.
+
 **Refinement (grace window — suppress transient false alarms):** a
 *single* connect failure is almost always a transient bring-up race —
 `EHOSTUNREACH`/`ECONNREFUSED` while a Compose service container is still
