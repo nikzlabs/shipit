@@ -96,7 +96,7 @@ interface SessionState {
    * docs/285 — which runner GENERATION each session is on, as the server last
    * reported it. Bumped server-side whenever a session's runner is created, so a
    * value that moves means the runner this tab is attached to has been replaced
-   * (a first-Send network reconciliation, a Rescue).
+   * (a network-mode rebuild, a Rescue).
    *
    * It matters because disposal leaves the viewer's socket open with no
    * listeners on the other end: a tab that was watching when the container was

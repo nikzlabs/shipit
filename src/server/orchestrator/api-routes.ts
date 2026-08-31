@@ -298,14 +298,14 @@ export interface ApiDeps {
   /**
    * docs/285 req 3 — rebuild an ungraduated session's container so the network
    * mode just written is the one it actually boots with. The settings PUT awaits
-   * this, which is what keeps the composer's save barrier closed until the
-   * container is ready. Optional: a runtime with no containers has nothing to
-   * rebuild.
+   * this, which is what keeps the composer's save barrier closed for the
+   * duration. Optional: a runtime with no containers has nothing to rebuild.
+   *
+   * No `agentSeed` here, unlike the core service: that option exists for Quick
+   * Capture, which has resolved a harness it has deliberately not persisted —
+   * and Quick Capture calls the service directly rather than through this route.
    */
-  reconcileSessionEgress?: (
-    sessionId: string,
-    opts?: { agentSeed?: AgentId },
-  ) => Promise<ReconcileEgressOutcome>;
+  reconcileSessionEgress?: (sessionId: string) => Promise<ReconcileEgressOutcome>;
   /**
    * docs/172 Tier B (planning#383) — whether this deployment installs the
    * controlled resolver at all (`egressDnsEnabled()`). False
@@ -473,8 +473,9 @@ export async function registerApiRoutes(
     ...(deps.waitForWarmSession ? { waitForWarmSession: deps.waitForWarmSession } : {}),
     ...(deps.shouldSkipClaimFetch ? { shouldSkipClaimFetch: deps.shouldSkipClaimFetch } : {}),
     ...(deps.containerManager ? { containerManager: deps.containerManager } : {}),
-    // docs/285 req 8 — the reuse path hands an abandoned `/new` draft back as a
-    // NEW session, so its network override has to be cleared there.
+    // docs/285 req 8 — the reuse path would hand an abandoned `/new` draft back
+    // as a NEW session, so it has to see whether that draft carries a network
+    // override and refuse to recycle it if so.
     ...(deps.egressAllowlistStore ? { egressAllowlistStore: deps.egressAllowlistStore } : {}),
   });
   const deps2: ApiDeps = { ...deps, claimSessionService };

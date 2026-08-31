@@ -11,6 +11,7 @@ import { runAgentWithMessage, saveImagesToUploadsDir, assembleAgentPrompt } from
 import { resolveRunner } from "./resolve-runner.js";
 import { shouldSteerMessage } from "../dispatch-steering.js";
 import { resetSubAgentSpawnBudget } from "../session-runner.js";
+import { settleNetworkModeWrites } from "../services/network-mode-writes.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { agentAdmissionError } from "../services/agent-auth-gate.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
@@ -474,6 +475,20 @@ export async function handleSendMessage(
         ctx.send({ type: "queue_updated", queue: [] });
       }
     }
+    // docs/285 — wait out an in-flight network-mode write for this session.
+    //
+    // Changing an ungraduated session's mode REBUILDS its container, and the
+    // composer that issued the write is barred for its duration — but another
+    // viewer's composer is not, because it only learns of the change from the
+    // invalidation broadcast at the end. Without this, that viewer sends the
+    // session's first message into the container being torn down.
+    //
+    // An await, deliberately not a claim. A claim marks the session busy, which
+    // sends the losing message to a queue that nothing drains; waiting costs the
+    // losing Send the rebuild's duration and then lets it proceed normally. It
+    // cannot deadlock — the write never waits on a turn — and it costs one map
+    // lookup when nothing is in flight, which is almost always.
+    await settleNetworkModeWrites(effectiveSessionId);
     await ctx.activateSession(effectiveSessionId);
     const session = ctx.sessionManager.get(effectiveSessionId);
     // Only resume if we have a real Claude CLI session ID

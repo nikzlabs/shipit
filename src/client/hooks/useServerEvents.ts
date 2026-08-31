@@ -228,10 +228,14 @@ export function useServerEvents(): void {
       useSessionStore.getState().setActiveRunnerSessions(() => new Set(data.sessionIds));
       // docs/285 — this snapshot is the AUTHORITATIVE recovery path for a viewer
       // stranded on a disposed runner, which is why the incarnations ride it
-      // rather than only the live `runner_replaced` signal below: a tab that
-      // missed that event during an SSE interruption would otherwise sit on a
-      // dead runner indefinitely. Optional so an older server simply reports
-      // nothing here instead of resetting every session to generation zero.
+      // as well as the live `runner_replaced` signal below, so a tab that missed
+      // that event during an SSE interruption can still notice. It is a partial
+      // backstop, not a guarantee: a viewer with no EARLIER generation for the
+      // session cannot tell a replacement from its first observation, and a
+      // `/new` viewer usually has none because its first snapshot predates the
+      // claim. The live event is the recovery path; this catches the rest.
+      // Optional so an older server simply reports nothing here instead of
+      // resetting every session to generation zero.
       if (data.runnerIncarnations) {
         useSessionStore.getState().noteRunnerIncarnations(data.runnerIncarnations);
       }

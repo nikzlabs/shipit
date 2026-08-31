@@ -48,6 +48,18 @@ description: Fold network containment into the composer's existing permission-mo
 
 ## Resolved questions
 
+- 2026-08-31 — **SUPERSEDES the 2026-08-29 decision below.** *The first-Send
+  reconciliation went through five review rounds; each found a race and each was
+  answered with more machinery. Can the same requirement be met more simply?* Yes, and
+  the answer is where the rebuild happens: **when the setting CHANGES, not at Send.** If
+  the user changes nothing, the code path is unchanged from `main`. If they change the
+  mode, the old container is not reused — a new one is started, and the composer's
+  controls stay locked until it is available, the same way they already are when no warm
+  container exists. That deleted the session-keyed admission section, the pre-spawn
+  runner reservation, the session claim, the hand-off path and the policy snapshot; the
+  Send path returned to `main` byte-for-byte. Requirements 1–11 are unchanged — this
+  supersedes a *mechanism*, not a requirement.
+
 - 2026-08-28 — *Where should the Network control sit in Quick Capture: its own pill
   in the composer toolbar, or a line in the footer beside auto-merge?* Neither. Both
   are too prominent for something needed this rarely. Fold it into the existing

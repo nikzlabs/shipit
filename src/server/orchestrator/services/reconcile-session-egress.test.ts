@@ -9,7 +9,7 @@ import {
 import type { RecoveryDeps } from "./recovery.js";
 
 /**
- * docs/285 — the first-Send reconciliation: does the live container disagree
+ * docs/285 — the write-time rebuild: does the live container disagree
  * with the mode this session resolves to, and what happens when it does.
  */
 
@@ -69,8 +69,8 @@ describe("reconcileSessionEgress (docs/285)", () => {
     it("treats an UNKNOWN boot mode as disagreement, never as matching", () => {
       // The trap this exists for: `isEgressContained()` re-derives the CURRENT
       // policy when the boot state is unknown, so reading it here would answer
-      // "matches" for a container nobody knows the containment of — and run the
-      // first turn under the wrong mode. Only the raw record is admissible.
+      // "matches" for a container nobody knows the containment of — leaving the
+      // session on the mode just replaced. Only the raw record is admissible.
       containers.set("s1", { status: "running", egressContainedAtStart: undefined });
       expect(containerDisagreesWithEgressPolicy(deps(), "s1")).toBe(true);
       // …and it stays disagreement whichever way the policy would have resolved.
@@ -81,9 +81,9 @@ describe("reconcileSessionEgress (docs/285)", () => {
     });
 
     it("treats a still-STARTING container as disagreement", () => {
-      // Costs an unnecessary restart in a rare case; cannot silently run the
-      // first turn under the wrong mode. `restartContainer`'s destroy cancels a
-      // creation that has published no record yet, so this is handled.
+      // Costs an unnecessary rebuild in a rare case; cannot silently leave the
+      // session on the mode just replaced. `restartContainer`'s destroy cancels
+      // a creation that has published no record yet, so this is handled.
       containers.set("s1", { status: "starting" });
       expect(containerDisagreesWithEgressPolicy(deps(), "s1")).toBe(true);
     });
@@ -108,8 +108,8 @@ describe("reconcileSessionEgress (docs/285)", () => {
     expect(outcome).toEqual({ action: "restarted" });
     // Rescue clears the OOM breaker because the user explicitly asked to retry.
     // Changing a setting is not that request: inheriting the reset would hand a
-    // repeatedly-OOM-killed session a free attempt that an unchanged first Send
-    // is refused.
+    // repeatedly-OOM-killed session a free attempt that the same session, left
+    // alone, is refused.
     expect(restartMock.mock.calls[0]?.[2]).toMatchObject({ resetBreakers: false });
   });
 
@@ -135,8 +135,8 @@ describe("reconcileSessionEgress (docs/285)", () => {
   });
 
   it("aborts when the replacement failed to be created", async () => {
-    // `restartContainer` reports `ok: true` even here — dispatching on that would
-    // send the first turn into a container that does not exist.
+    // `restartContainer` reports `ok: true` even here — answering 200 on that
+    // would report a mode in force over a container that does not exist.
     containers.set("s1", { status: "running", egressContainedAtStart: true });
     store.setSessionOverride("s1", false);
     restartMock.mockResolvedValue({
@@ -151,8 +151,8 @@ describe("reconcileSessionEgress (docs/285)", () => {
   });
 
   it("proceeds when the replacement is still starting", async () => {
-    // The caller waits on the NEW runner's readiness gate, not on this call
-    // having returned — `restartContainer`'s own wait is bounded at 8s.
+    // Containment is decided at creation, and the first turn separately waits on
+    // the worker-readiness gate — `restartContainer`'s own wait is bounded at 8s.
     containers.set("s1", { status: "running", egressContainedAtStart: true });
     store.setSessionOverride("s1", false);
     restartMock.mockResolvedValue({
@@ -167,7 +167,7 @@ describe("reconcileSessionEgress (docs/285)", () => {
   it("reconciles nothing in a runtime with no container manager, rather than failing the Send", async () => {
     // `RUNTIME_MODE=local` — no container manager, so `restartContainer` would
     // throw a 503. The override is persisted and there is no topology to
-    // rebuild, so the first Send must proceed instead of failing on a subsystem
+    // rebuild, so the write must still succeed instead of failing on a subsystem
     // this runtime does not have.
     containers.set("s1", { status: "running", egressContainedAtStart: true });
     store.setSessionOverride("s1", false);

@@ -50,6 +50,7 @@ import type {
 } from "../shared/types.js";
 import { computeEgressGrantOutcome } from "./egress-grant-outcome.js";
 import { emitSessionSettingsChangeCard } from "./services/session-settings.js";
+import { serializeNetworkModeWrite } from "./services/network-mode-writes.js";
 import type { PersistedEgressPrompt } from "./chat-history.js";
 
 /**
@@ -145,36 +146,6 @@ function allowlistView(
     session: sessionId ? sessionSettings(store, sessionId, enforcement, startedContained) : null,
     defaultsCustomized: store.hasSuppressedDefaults(),
   };
-}
-
-/**
- * docs/285 — serialize a session's network-mode writes against each other.
- *
- * The write now rebuilds the container, and `restartContainer` has no guard of
- * its own: two concurrent calls for one session would interleave a destroy and a
- * create against each other. Two tabs on one session, or the composer and the
- * Session settings dialog, can each issue a PUT — the client's save barrier
- * orders one surface's writes, not two clients'.
- *
- * Deliberately the smallest possible lock: this route with itself, per session.
- * Nothing outside this handler takes it, so it cannot deadlock against anything
- * and cannot make a session read as busy.
- */
-const networkModeWrites = new Map<string, Promise<unknown>>();
-
-function serializeNetworkModeWrite<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
-  const previous = networkModeWrites.get(sessionId) ?? Promise.resolve();
-  // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form: run `fn` whether or not the predecessor settled cleanly
-  const run = previous.then(fn, fn);
-  // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form: the chain tail must settle cleanly on both outcomes
-  const tail = run.then(() => {}, () => {});
-  networkModeWrites.set(sessionId, tail);
-  // eslint-disable-next-line no-restricted-syntax -- fire-and-forget cleanup in a sync function
-  void tail.then(() => {
-    // Only the CURRENT tail may clear the entry; a later writer has replaced it.
-    if (networkModeWrites.get(sessionId) === tail) networkModeWrites.delete(sessionId);
-  });
-  return run;
 }
 
 export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps): Promise<void> {

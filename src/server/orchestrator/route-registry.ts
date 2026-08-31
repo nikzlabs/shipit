@@ -380,7 +380,7 @@ export async function registerRoutes(
     // docs/285 req 3 — changing an ungraduated session's network mode rebuilds
     // its container, and the settings PUT awaits that. Assembled here because
     // this is where the recovery dependencies live; the route sees one call.
-    reconcileSessionEgress: (sid: string, opts?: { agentSeed?: AgentId }) => reconcileSessionEgress(
+    reconcileSessionEgress: (sid: string) => reconcileSessionEgress(
       {
         containerManager: containerManager ?? null,
         egressAllowlistStore,
@@ -400,7 +400,6 @@ export async function registerRoutes(
         },
       },
       sid,
-      opts ?? {},
     ),
     // planning#383 — the other honest deployment signal: with Tier B off there
     // is no resolver to pin an allowed name's IPs and no proxy to permit its

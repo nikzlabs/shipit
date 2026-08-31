@@ -191,20 +191,28 @@ describe("useSessionNetworkMode (docs/285)", () => {
   });
 
   it("bars Send while a write is in flight and releases it on success", async () => {
+    // The GET reflects what the PUT persisted, because the real server does. A
+    // stub whose read contradicts its own write cannot tell a correct re-read
+    // from one that clobbers the value the user just chose.
+    let stored: boolean | null = null;
     let releasePut: ((v: Response) => void) | null = null;
     vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
       if (init?.method === "PUT") {
+        stored = (JSON.parse(init.body as string) as { override: boolean | null }).override;
         return new Promise<Response>((r) => { releasePut = r; });
       }
-      return { ok: true, status: 200, json: async () => settings() } as Response;
+      return {
+        ok: true, status: 200, json: async () => settings({ override: stored }),
+      } as Response;
     }));
 
     const { result } = renderHook(() => useSessionNetworkMode("s1"));
     await waitFor(() => expect(result.current.loaded).toBe(true));
 
     act(() => { result.current.setMode("contained"); });
-    // The whole point: a first turn dispatched here would resolve the OLD value
-    // server-side, find no mismatch, and run under the wrong policy.
+    // The whole point: for an ungraduated session this write REBUILDS the
+    // container, so a first turn dispatched here would go into the one being
+    // torn down.
     expect(result.current.saving).toBe(true);
 
     await act(async () => {
@@ -216,6 +224,49 @@ describe("useSessionNetworkMode (docs/285)", () => {
       await Promise.resolve();
     });
     await waitFor(() => expect(result.current.saving).toBe(false));
+    expect(result.current.mode).toBe("contained");
+  });
+
+  it("converges on the SERVER's value when responses arrive out of issue order", async () => {
+    // The revision clock orders writes by the order they were ISSUED; the server
+    // applies them in the order they ARRIVE. If a later-issued write reaches the
+    // server first, the earlier one wins there while the client discards its
+    // response as stale — leaving the display showing a value the server does
+    // not hold, with Send released over it. The settle-time re-read is what
+    // repairs that without depending on the SSE invalidation.
+    let stored: boolean | null = null;
+    const puts: { override: boolean | null; resolve: (v: Response) => void }[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        const override = (JSON.parse(init.body as string) as { override: boolean | null }).override;
+        return new Promise<Response>((resolve) => { puts.push({ override, resolve }); });
+      }
+      return {
+        ok: true, status: 200, json: async () => settings({ override: stored }),
+      } as Response;
+    }));
+
+    const { result } = renderHook(() => useSessionNetworkMode("s1"));
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+
+    act(() => { result.current.setMode("contained") });  // issued first
+    act(() => { result.current.setMode("open") });       // issued second
+    await waitFor(() => expect(puts).toHaveLength(2));
+
+    // The server took them in the OTHER order, so "contained" is what it holds.
+    stored = puts[1]!.override;
+    await act(async () => {
+      puts[1]!.resolve({ ok: true, status: 200, json: async () => settings({ override: stored }) } as Response);
+      await Promise.resolve();
+    });
+    stored = puts[0]!.override;
+    await act(async () => {
+      puts[0]!.resolve({ ok: true, status: 200, json: async () => settings({ override: stored }) } as Response);
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(result.current.saving).toBe(false));
+    // Displays what the SERVER holds, not what was picked last.
     expect(result.current.mode).toBe("contained");
   });
 });

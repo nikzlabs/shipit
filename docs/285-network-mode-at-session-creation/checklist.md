@@ -63,6 +63,39 @@ and the reuse path.
 
 - [x] `serializeNetworkModeWrite` — per-session chain around the write + rebuild, with a test that two concurrent PUTs never overlap
 
+## Review round 7 — unrelated changes, and three more races
+
+Asked to hunt for **unrelated changes** and for residue left by deleting the old
+design incrementally rather than reverting.
+
+**Unrelated work is riding along in this PR.** The branch's oldest four commits
+predate the first docs/285 commit and belong to other changes: foreign-UID
+Compose writability (`ddbc685a`), a docs/265 trace (`3034a6e2`), push-divergence
+measurement (`59d2a3e0`), and highlight.js language binding (`f4587d69`). That is
+51 files and ~3,544 additions. The split is exact — **zero file overlap** with the
+42 docs/285 files, and no docs/285 commit touches any of them — so separating
+them is mechanical. Nothing in the feature depends on that work. Left in place:
+the branch is pushed, and rewriting its history is the user's call.
+
+Fixed:
+
+- [x] **P1** another viewer could send the session's first message while a mode write was still rebuilding the container. The write's serialization moved to `services/network-mode-writes.ts`, and the Send path now **awaits** an in-flight write. An await, not a claim — a claim marks the session busy, which sends the losing message to a queue nothing drains
+- [x] **P1** two writes could leave the display disagreeing with the server: the client orders writes by when they were *issued*, the server by when they *arrive*. Once nothing is in flight the client now **re-reads** once, converging in every interleaving without depending on the SSE invalidation
+- [x] **P3** residue the incremental deletion left behind — stale prose in `plan.md`, both route wirings, `api-routes.ts`, `session-crud`, `MessageInput`, `session-store`, `App.tsx`, the hook and the reconcile tests, all still describing a first-Send reconciliation or an override that gets "cleared" on reuse
+- [x] **P3** dead plumbing: `ApiDeps.reconcileSessionEgress` carried an `agentSeed` option no caller passed — Quick Capture calls the core service directly
+- [x] a dishonest client fixture: its GET returned a default that contradicted its own PUT, so it could not tell a correct re-read from one that clobbers the user's pick
+
+**Not fixed, and the claim corrected instead:** the incarnation *snapshot* cannot
+recover a viewer that has no earlier generation for the session — a `/new` viewer
+usually does not, since its first snapshot predates the claim. The live
+`runner_replaced` event is the recovery path; the snapshot only helps a viewer
+that already has a baseline. Requires the SSE to drop while the WebSocket stays
+up, since a WS reconnect re-attaches on its own.
+
+**requirements.md gained a dated receipt** for the 2026-08-31 decision that moved
+the rebuild to the write. The 2026-08-29 receipt it supersedes is left intact —
+a receipt records what was decided then, and rewriting it would falsify the log.
+
 ## Review round 6 — the simplified design, reviewed
 
 The review of the write-time rebuild found the direction right and the boundary

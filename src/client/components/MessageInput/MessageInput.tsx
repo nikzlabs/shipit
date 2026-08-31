@@ -217,10 +217,10 @@ export function MessageInput({
    */
   network?: NetworkSectionProps & {
     /**
-     * A write is in flight, or a failed one has not yet reverted. **Bars Send**:
-     * without it, picking Contained and pressing Send at once lets the server
-     * resolve the OLD value, see no mismatch, and run the first turn under the
-     * wrong policy — requirement 3 lost to ordinary mutation ordering.
+     * A write is in flight, or a failed one has not been re-read yet. **Bars
+     * Send**: for a session that has not run a turn, the write REBUILDS the
+     * container, so this is the "wait for the container" state — sending now
+     * would dispatch the first turn into the one being torn down.
      */
      saving: boolean;
   };

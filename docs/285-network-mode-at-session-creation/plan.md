@@ -235,12 +235,15 @@ and needs no rebuild on the claim path.
 3. **`Inherit` follows the workspace at container start**, and an explicit pick does not move
    when the workspace default changes between Send and boot.
 4. **Reset**: a second new session in the *same* repo starts at `Inherit` — including the
-   real abandon→reopen path, where the claim **reuses** the untouched draft session — and
-   Quick Capture resets on every opening.
-4b. **A second viewer survives the restart**: two tabs on one session, first Send changes the
-   mode, and the non-sending tab reattaches and sees the first turn — **including** when it
-   misses the live signal and only reconnects SSE afterwards.
-4c. **Quick Capture keeps its harness through a reconcile**: a non-default agent plus a
+   real abandon→reopen path, where a draft carrying a mode is **refused** rather than
+   recycled — and Quick Capture resets on every opening.
+4b. **A second viewer survives the rebuild**: two tabs on one session, one changes the mode,
+   and the non-changing tab reattaches on the live `runner_replaced` signal. The snapshot is
+   a partial backstop only — a viewer with no earlier generation for that session cannot
+   distinguish a replacement from its first observation, and a `/new` viewer usually has
+   none. Recovering that case needs a baseline handed out at attach time, which this design
+   does not do.
+4c. **Quick Capture keeps its harness through a rebuild**: a non-default agent plus a
    changed network mode, asserting the first dispatched turn runs on the selected harness and
    not the deployment default.
 5. **Composer and dialog agree** after a change in either, including in a second tab.
@@ -253,7 +256,7 @@ and needs no rebuild on the claim path.
 | `src/client/components/PermissionModeSelector.tsx` | The combined mode + network control |
 | `src/client/components/MessageInput/MessageInput.tsx` | Renders the combined control on every viewport |
 | `src/client/components/MessageInput/ComposerSettingsMenu.tsx` | Loses its Mode row; role list opens directly |
-| `src/server/orchestrator/services/claim-session.ts` | Reused-draft reuse branch (~340) — reset the override |
+| `src/server/orchestrator/services/claim-session.ts` | Reuse branch (~340) — refuse to recycle a draft carrying an override |
 | `src/server/orchestrator/services/recovery.ts` | `restartContainer` — the rebuild; read `newContainerState`/`error`, not the `ok` |
 | `src/server/orchestrator/api-routes-egress.ts` | **Where the rebuild happens**, before the PUT answers; strict validation on both session routes; dedicated GET for hydration |
 | `src/server/orchestrator/services/reconcile-session-egress.ts` | The comparison + rebuild, shared by the PUT and Quick Capture |

@@ -530,7 +530,7 @@ export default function App() {
   );
 
   // docs/285 — this session's runner was replaced (its container was rebuilt by
-  // a first-Send network reconciliation, or by Rescue in another tab), so this
+  // a network-mode rebuild, or by Rescue in another tab), so this
   // socket is attached to a runner that no longer has listeners and will never
   // deliver another event. Reattach.
   //

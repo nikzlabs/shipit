@@ -354,12 +354,27 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
           // value is displayed. Staying barred on an unreachable server is the safe
           // direction and is recoverable — the next read reopens it — but staying
           // barred after the server has answered is just broken.
-          if (
-            writesInFlight.current === 0
-            && displayedFromServer.current
-            && mountedSession.current === sessionId
-          ) {
-            setSaving(false);
+          if (writesInFlight.current === 0 && mountedSession.current === sessionId) {
+            // Once nothing is in flight, RE-READ before opening the barrier.
+            //
+            // The revision clock orders writes by the order they were ISSUED;
+            // the server applies them in the order they ARRIVE, and those are
+            // not the same. If a later-issued write reaches the server first,
+            // the earlier one wins there while the client discards its response
+            // as stale — leaving the display showing a value the server does not
+            // hold. Asking once, at the end, converges on the server's answer in
+            // every interleaving, and does not depend on the SSE invalidation
+            // that the same-tab path is explicitly not allowed to rely on.
+            //
+            // One extra GET per settled burst of writes, on a control the user
+            // touches rarely.
+            const fresh = await refresh(sessionId);
+            if (
+              (fresh || displayedFromServer.current)
+              && mountedSession.current === sessionId
+            ) {
+              setSaving(false);
+            }
           }
         }
       })();
@@ -387,8 +402,9 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
  *
  * req 8 — the draft is dropped whenever the session identity changes, so
  * abandoning `/new` and starting another one begins at Inherit. (The server
- * closes the other half of that: an interactive claim that RECYCLES an abandoned
- * draft session resets the override it still carries.)
+ * closes the other half of that: an interactive claim REFUSES to recycle an
+ * abandoned draft that carries an override, because its container still runs
+ * that draft's topology.)
  */
 export function useComposerNetworkMode(
   sessionId: string | null,
