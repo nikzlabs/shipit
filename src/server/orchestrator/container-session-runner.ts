@@ -600,12 +600,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * and returns the accumulated final text synchronously. No SSE involvement —
    * the result flows back over this HTTP response, so the runner's `_agent`
    * accumulators are untouched. The worker's own wall-clock cap stays
-   * authoritative for the run itself; a primary-turn interrupt (which hits the
-   * worker's `/agent/interrupt`) cancels it.
+   * authoritative for the run itself, and — since the docs/144 §8 reversal —
+   * a primary-turn interrupt or kill does NOT cancel it: nothing on the
+   * primary's lifecycle ends a spawn, only the cap and the container going away.
    *
    * planning#280 — two things the original `{ timeoutMs: 0 }` got wrong:
-   *  - **Unbounded.** An interrupt is not the only way this request can be
-   *    orphaned. Destroy the container under it (Restart agent, idle teardown)
+   *  - **Unbounded.** Destroy the container under it (Restart agent, idle teardown)
    *    and the worker's timer dies with the worker, leaving this promise pending
    *    forever. {@link SUB_AGENT_TRANSPORT_TIMEOUT_MS} is the backstop.
    *  - **Uncancellable.** The request is now registered in `_subAgentAborts` so

@@ -977,9 +977,27 @@ Traceability for the product decisions made during design:
    through Restart agent, which goes via `dispose()`.
 
    A caller merely going away is not a cancel either (§3, planning#247); the
-   recovery path depends on the spawn surviving. And **every card that does
-   reach `cancelled` names its terminator** in `statusDetail` — the incident was
-   slow to diagnose precisely because "Cancelled" could not say who did it.
+   recovery path depends on the spawn surviving.
+
+   **Every card that reaches `cancelled` says why**, in `statusDetail` — the
+   incident was slow to diagnose precisely because "Cancelled" could not say who
+   did it. Three producers, and the third is deliberately not a terminator:
+
+   | Producer | What it means |
+   |---|---|
+   | `WorkerAbortedError` from `dispose()` | the container was torn down under the run; the spawn is gone |
+   | a `cancelled` result returned normally | the process hosting the spawn was shut down with its session — the worker (`AgentController.stop`) or, in local mode, a forced `SessionRunner.dispose()` |
+   | the **boot reconcile** (planning#309) | an **orchestrator restart** left the card `pending` with nobody holding its handle |
+
+   That last row is an ownership loss, **not** a termination: a graceful
+   orchestrator shutdown disposes with `preserveAgent`, which deliberately skips
+   `cancelInFlightSubAgents`, so the worker spawn keeps running and finishes into
+   a socket whose other end is gone. Its card is cancelled because the result is
+   unrecoverable, not because anything ended the run — and
+   `ORPHANED_CONSULT_DETAIL` is worded to say exactly that. Recovering such a run
+   would take a durable worker-side record plus a re-attach path, which docs/249
+   ruled out of scope. So "two terminators" is a claim about what can **end a
+   spawn**; it is not a claim that every `cancelled` card corresponds to one.
 
 ## Implementation status (v0)
 

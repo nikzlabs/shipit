@@ -16,7 +16,7 @@ import {
   waitForSubAgentResult,
   teardownConsultDetail,
   SUB_AGENT_PER_TURN_CAP,
-  WORKER_SHUTDOWN_CONSULT_DETAIL,
+  HOST_SHUTDOWN_CONSULT_DETAIL,
 } from "./sub-agent.js";
 import { ServiceError } from "./types.js";
 import { DatabaseManager } from "../../shared/database.js";
@@ -1405,11 +1405,12 @@ describe("runSubAgent — durable in-flight consult card", () => {
     );
   });
 
-  // The other terminator, arriving over a SUCCESSFUL response: the worker went
-  // down under the run (`AgentController.stop`), SIGTERMed the spawn, and the
-  // result still made it back. Nothing on the primary turn can produce this
+  // The other terminator, arriving through a NORMAL return: the process hosting
+  // the spawn was shut down under it and the result still made it back — the
+  // worker going down (container mode) or a forced dispose (local mode, where
+  // there is no worker to name). Nothing on the primary turn can produce this
   // status any more (docs/144 §8), so the card can name the cause outright.
-  it("names the worker shutdown when a cancelled result comes back from the worker", async () => {
+  it("names the host shutdown when a cancelled result comes back from the run", async () => {
     const { deps, runner, updateSubAgentConsultCard } = makeDeps({});
     runner.spawnSubAgent = vi.fn(async () => {
       runner.running = false; // backgrounded: the launching turn ended first
@@ -1429,7 +1430,7 @@ describe("runSubAgent — durable in-flight consult card", () => {
       expect.any(String),
       expect.objectContaining({
         status: "cancelled",
-        statusDetail: WORKER_SHUTDOWN_CONSULT_DETAIL,
+        statusDetail: HOST_SHUTDOWN_CONSULT_DETAIL,
         // the partial answer is still carried — the card says what was lost AND
         // shows what survived
         outputMarkdown: "partial review",

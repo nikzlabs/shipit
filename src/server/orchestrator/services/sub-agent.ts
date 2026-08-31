@@ -248,13 +248,21 @@ export function teardownConsultDetail(reason?: string): string {
 }
 
 /**
- * The worker-side half of the same terminator: the worker process itself went
- * down under the run (`AgentController.stop`), so the spawn was SIGTERMed and
- * the HTTP response came back `cancelled` rather than never arriving.
+ * The other half of the same terminator, observed from the run's own side: the
+ * process hosting the spawn was shut down under it and the `cancelled` status
+ * came back through a NORMAL return rather than an aborted request.
+ *
+ * Deliberately does not name the worker. Two runtimes reach this: a container
+ * session, where `AgentController.stop()` SIGTERMs the spawn as the worker goes
+ * down; and local/dogfood mode, where there is no worker at all and a forced
+ * `SessionRunner.dispose()` cancels the in-process handle
+ * (`session-runner.ts`). Naming the container half would make the card lie in
+ * the other runtime.
  */
-export const WORKER_SHUTDOWN_CONSULT_DETAIL =
-  "The session worker shut down while this consult was running, so its result "
-  + "was lost. Re-run the consult if you still need it.";
+export const HOST_SHUTDOWN_CONSULT_DETAIL =
+  "The process running this consult was shut down with its session before the "
+  + "consult finished, so its result was lost. Re-run the consult if you still "
+  + "need it.";
 
 /**
  * Backstop for a `cancelled` status arriving from a path that did not name its
@@ -972,11 +980,12 @@ export async function runSubAgent(
       durationMs: result.durationMs,
       costUsd: result.costUsd,
       truncated: result.truncated,
-      // A `cancelled` status that came back over a SUCCESSFUL HTTP response
-      // means the spawn was SIGTERMed worker-side and the response still made
-      // it out — i.e. the worker went down under the run. Nothing else cancels
-      // a spawn there any more.
-      ...(result.status === "cancelled" ? { statusDetail: WORKER_SHUTDOWN_CONSULT_DETAIL } : {}),
+      // A `cancelled` status that came back through a NORMAL return means the
+      // spawn was SIGTERMed where it ran and the result still made it out — the
+      // worker going down under it (container mode), or a forced runner dispose
+      // (local mode). Nothing on the primary turn cancels a spawn any more, so
+      // there is no third producer of this status to confuse it with.
+      ...(result.status === "cancelled" ? { statusDetail: HOST_SHUTDOWN_CONSULT_DETAIL } : {}),
       // docs/220 — carry the verbatim output so the brokered consult is visible,
       // not just attested. Already capped upstream (`maxOutputChars`), which is
       // also what flags `truncated`. Omitted when empty.

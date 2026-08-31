@@ -390,5 +390,7 @@ id or a bad flag, since neither condition can ever clear.
   finishing. It ends only on its own ~30-minute cap or if the session container
   goes away (Restart agent, Restart container, archive). So you can safely
   background a review and then ask the user something while it runs; collect it
-  afterwards with `shipit agent result`. A consult that *is* cancelled says on
-  its card which of the two ended it.
+  afterwards with `shipit agent result`. A consult whose card reads `cancelled`
+  always says why — including the one case that is not a termination: if ShipIt
+  itself restarts mid-consult the run usually keeps going, but nobody is left
+  holding its result, so the card is closed as lost rather than left pending.
