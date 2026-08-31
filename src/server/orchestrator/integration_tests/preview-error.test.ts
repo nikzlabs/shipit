@@ -1,11 +1,14 @@
 /**
- * Test for the preview-proxy `preview_error` reporter wiring.
+ * Test for the preview-proxy error reporter wiring.
  *
  * Verifies that when the proxy can't reach a container (or HMR upgrade
- * fails), the reporter emits both a `preview_error` WS message (drives
- * the inline PreviewFrame banner) and a `log_entry` (Logs panel record),
+ * fails), the reporter writes a `log_append` record for the Logs panel,
  * and that repeats for the same (sessionId, port) within the throttle
  * window are suppressed.
+ *
+ * Logs-only since planning#489: the reporter also painted an in-pane
+ * "Preview unreachable on port N" banner, which duplicated the connecting
+ * page (docs/286) and never cleared on recovery.
  *
  * See docs/124-session-rescue-and-diagnostics §1.5.
  */
@@ -52,7 +55,7 @@ function makeFakeRegistry(runners: Record<string, SessionRunnerInterface>): Sess
 }
 
 describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
-  it("emits preview_error + log_append once a failure persists past the grace window", () => {
+  it("emits log_append once a failure persists past the grace window", () => {
     const { runner, emitted } = makeFakeRunner("sess-1");
     let nowMs = 1_000_000;
     const report = createPreviewErrorReporter(
@@ -68,19 +71,6 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
     nowMs += 2_500;
     report("sess-1", 5173, "Connection refused", false);
 
-    const types = emitted.map((m) => m.type);
-    expect(types).toContain("preview_error");
-    expect(types).toContain("log_append");
-
-    const previewErr = emitted.find((m) => m.type === "preview_error");
-    expect(previewErr).toMatchObject({
-      type: "preview_error",
-      sessionId: "sess-1",
-      port: 5173,
-      message: "Connection refused",
-      upgrade: false,
-    });
-
     const logAppend = emitted.find((m) => m.type === "log_append");
     expect(logAppend).toMatchObject({
       channel: "agent",
@@ -89,6 +79,33 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
         text: expect.stringContaining("Preview unreachable on port 5173") as string,
       }],
     });
+  });
+
+  it("persists the record, not just the live line", () => {
+    const { runner, emitted } = makeFakeRunner("sess-p");
+    const persisted: { sessionId: string; source: string; text: string }[] = [];
+    let nowMs = 1_000_000;
+    const report = createPreviewErrorReporter(
+      makeFakeRegistry({ "sess-p": runner }),
+      {
+        now: () => nowMs,
+        graceMs: 2_000,
+        broadcastLog: (sessionId, source, text) => { persisted.push({ sessionId, source, text }); },
+      },
+    );
+
+    report("sess-p", 5173, "Connection refused", false);
+    nowMs += 2_500;
+    report("sess-p", 5173, "Connection refused", false);
+
+    // The live emit alone is not enough: a reconnect skips buffered
+    // `log_append` events because it expects the durable snapshot to carry
+    // them, so an emit-only record vanishes on reload. Since the in-pane
+    // banner is gone, this line is the only account of the failure.
+    expect(emitted.some((m) => m.type === "log_append")).toBe(true);
+    expect(persisted).toEqual([
+      { sessionId: "sess-p", source: "preview", text: expect.stringContaining("Preview unreachable on port 5173") as string },
+    ]);
   });
 
   it("suppresses a transient error that recovers within the grace window", () => {
@@ -146,23 +163,23 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
     report("sess-3", 5173, "boom", false);
     nowMs += 2_500;
     report("sess-3", 5173, "boom", false);
-    expect(emitted.filter((m) => m.type === "preview_error").length).toBe(1);
+    expect(emitted.filter((m) => m.type === "log_append").length).toBe(1);
 
     // Inside the throttle window — suppressed.
     nowMs += 1_000;
     report("sess-3", 5173, "boom", false);
-    expect(emitted.filter((m) => m.type === "preview_error").length).toBe(1);
+    expect(emitted.filter((m) => m.type === "log_append").length).toBe(1);
 
     // Different port — needs its own streak past the grace window.
     report("sess-3", 5174, "boom", false);
     nowMs += 2_500;
     report("sess-3", 5174, "boom", false);
-    expect(emitted.filter((m) => m.type === "preview_error").length).toBe(2);
+    expect(emitted.filter((m) => m.type === "log_append").length).toBe(2);
 
     // After the throttle window — releases for port 5173 (streak still open).
     nowMs += 6_000;
     report("sess-3", 5173, "boom", false);
-    expect(emitted.filter((m) => m.type === "preview_error").length).toBe(3);
+    expect(emitted.filter((m) => m.type === "log_append").length).toBe(3);
   });
 
   it("no-ops when no runner is registered for the session", () => {

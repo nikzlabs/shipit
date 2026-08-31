@@ -38,9 +38,10 @@
         drops the SYN can no longer hang the request past the deadline. Guard
         test verified red without it.
   - [x] Pending retry timer cleared on viewer disconnect, not just no-opped.
-  - [x] `reportError` restored on the navigation path — `preview_error` paints
-        a banner and does not reach auto-fix, so suppressing it lost the
-        docs/124 §1.5 signal for nothing.
+  - [x] `reportError` restored on the navigation path — it does not reach
+        auto-fix, so suppressing it lost the docs/124 §1.5 signal for nothing.
+        *(It painted a banner too when this shipped; that banner was later
+        removed — see the superseded note in `plan.md` §3.)*
   - [x] Auth-detection state keyed by `slotKey#generation`, so a rebuilt slot
         cannot inherit the previous owner's loaded/blocked verdict.
   - [x] Local (non-container) preview regression assessed: the branch is
