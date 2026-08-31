@@ -449,9 +449,9 @@ export async function createHeadlessSession(
   // docs/285 reqs 2, 3 — the network mode the overlay carried, in force from
   // this session's FIRST turn.
   //
-  // Quick Capture creates and dispatches in one server-side act, so the whole
-  // first-Send reconciliation collapses to these few lines — and they have to
-  // land **before `getOrCreate`**, not merely before `dispatch`: the reconcile
+  // Quick Capture creates and dispatches in one server-side act, so it persists
+  // and rebuilds inline rather than through the settings route — and both have
+  // to land **before `getOrCreate`**, not merely before `dispatch`: the rebuild
   // destroys the claimed container and builds the replacement runner itself, and
   // a runner made here first would be returned unchanged by that later call.
   //
@@ -460,15 +460,6 @@ export async function createHeadlessSession(
   // owns that), so `session.agentId` is still undefined and the replacement
   // runner would otherwise be seeded with the deployment default — picking Codex
   // *and* changing the network mode would dispatch this turn to Claude.
-  //
-  // It takes NO first-turn claim, unlike the WS Send path, and must not: this
-  // path starts its turn through the shared `dispatch()`, which treats a held
-  // claim as busy — so a claim taken here would make Quick Capture enqueue its
-  // own prompt behind itself and return success with nothing running to drain
-  // it. The claim's two jobs (marking the session busy, making the `/new` reuse
-  // path stand down) are both meaningless for a session created right here. The
-  // pin the reconcile sets is what freezes the mode, and it outlives this call
-  // on its own.
   if (egressDeps && opts.networkMode !== undefined && opts.networkMode !== null) {
     egressDeps.store.setSessionOverride(newSessionId, opts.networkMode);
     const outcome = await egressDeps.reconcile(newSessionId, { agentSeed: agentId });

@@ -442,9 +442,22 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
           // change, it is Rescue. Those keep the "applies on next container start"
           // pending state they have always had.
           const stillWarm = deps.sessionManager.get(sessionId)?.warm === true;
-          if (stillWarm && previous !== override && deps.reconcileSessionEgress) {
+          if (stillWarm && deps.reconcileSessionEgress) {
+            // Deliberately NOT gated on `previous !== override`. The rebuild is
+            // already a no-op when the container matches, so the gate saves
+            // nothing — and it blocks the one case that needs it most: re-picking
+            // a mode after a rebuild FAILED would return 200 with the container
+            // still on the old topology, so the control could never self-heal.
             const outcome = await deps.reconcileSessionEgress(sessionId);
-            if (outcome.action === "aborted") return { previous, stillWarm, aborted: outcome };
+            if (outcome.action === "aborted") {
+              // Roll the write back. Leaving it persisted is what turned a
+              // refusal into a silent mismatch: the client re-reads after a
+              // failed write, would have read back the value it just asked for,
+              // and released Send — over a container still running the mode the
+              // user was trying to replace.
+              store.setSessionOverride(sessionId, previous);
+              return { previous, stillWarm, aborted: outcome };
+            }
           }
           return { previous, stillWarm, aborted: null };
         });

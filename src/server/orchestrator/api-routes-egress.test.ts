@@ -884,11 +884,26 @@ describe("changing an ungraduated session's mode rebuilds its container (docs/28
     expect(store.getSessionOverride("live-1")).toBe(false);
   });
 
-  it("does not rebuild when the value did not actually change", async () => {
+  it("re-asks for a rebuild even when the value did not change, so a failure can self-heal", async () => {
+    // Gating on "the override changed" saves nothing — the rebuild is already a
+    // no-op when the container matches — and it breaks recovery: after a rebuild
+    // FAILS, re-picking the same mode is exactly what the user does, and a gate
+    // would answer 200 with the container still on the old topology.
     store.setSessionOverride("warm-1", false);
     const res = await put("warm-1", false);
     expect(res.statusCode).toBe(200);
-    expect(reconcileCalls).toEqual([]);
+    expect(reconcileCalls).toEqual(["warm-1"]);
+  });
+
+  it("rolls the write back when the rebuild is refused", async () => {
+    // Leaving it persisted turns a refusal into a silent mismatch: the client
+    // re-reads after a failed write, reads back the value it just asked for, and
+    // releases Send — over a container still running the mode being replaced.
+    store.setSessionOverride("warm-1", true);
+    outcome = { action: "aborted", message: "breaker tripped", offerRescue: true };
+    const res = await put("warm-1", false);
+    expect(res.statusCode).toBe(503);
+    expect(store.getSessionOverride("warm-1")).toBe(true);
   });
 
   it("fails the write when the container could not be rebuilt", async () => {

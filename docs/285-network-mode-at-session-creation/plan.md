@@ -107,7 +107,12 @@ path that already exists.**
    the dialog uses.
 2. For a session that has **not graduated**, that route then compares the resolved
    containment against the live container's recorded boot mode, and on a disagreement runs
-   **`restartContainer` (`services/recovery.ts`)**. It does not answer until that is done.
+   **`restartContainer` (`services/recovery.ts`)** before answering. Precisely: it waits for
+   the replacement to be *created*, not necessarily *ready* — `restartContainer` bounds its
+   readiness wait at 8 s and can return with the container still `starting`. That is enough,
+   because the containment is decided at creation and the turn separately waits on the
+   worker-readiness gate; but "the container exists with the right topology" is the claim,
+   not "the container is up".
 3. **Send is barred for the whole write**, by the save barrier the control already had. That
    is the "wait for the container" state the user sees, and it is the same shape `/new`
    already shows before its session is claimed.
@@ -166,9 +171,15 @@ Send path.
 
 **It is not Rescue.** The rebuild reuses Rescue's teardown/recreate path but not its privilege
 of clearing the OOM breaker: a tripped breaker aborts the write with a 503 that offers Rescue,
-because toggling a setting must not buy a retry an unchanged session is refused. And a failed
-rebuild fails the *write* — answering 200 would tell the composer the mode is in force and
-release Send, which is the one outcome that must not happen.
+because toggling a setting must not buy a retry an unchanged session is refused.
+
+**A refused rebuild rolls the write back.** Answering 200 would tell the composer the mode is
+in force and release Send; leaving the override persisted behind a 503 is worse still, because
+the client re-reads after a failed write and would read back the value it just asked for —
+releasing Send over a container still running the mode being replaced. And the rebuild is
+deliberately **not** gated on "the override changed": it is already a no-op when the container
+matches, so the gate saves nothing and blocks the one case that needs it, re-picking a mode
+after a rebuild failed.
 
 **What "hard guarantee" means, precisely.** It is about *policy*: an explicit Contained or
 Open cannot be moved by a workspace-default race. It is **not** a promise of physical
@@ -193,10 +204,12 @@ claim deliberately **reuses an ungraduated warm session from the same repo**
 new session in that repo — and the reused session still carries Open. "Every new session
 starts at Inherit" would be false, through a path that has nothing to do with the composer.
 
-So the interactive claim **resets a reused draft's override to `null`**, emits the transient
-invalidation for any viewer already attached, and writes **no audit card** while the session
-is still warm — there is no prior state for a card to describe. The reset belongs at the
-reuse branch itself, not in the composer, because the composer is not involved in that flow.
+So a draft carrying an explicit mode is **not recycled at all**. Clearing the override and
+handing the session over is the cheaper fix and is wrong: the mode is a container *topology*,
+and the recycled container is still running the abandoned draft's one — the next user would
+read "Inherit workspace — currently Contained" over an Open container and send their first
+turn into it. Refusing the reuse costs one unused warm session, which the pool replenishes,
+and needs no rebuild on the claim path.
 
 ## Where the tests go
 

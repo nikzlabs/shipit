@@ -35,6 +35,47 @@ describe("useSessionNetworkMode (docs/285)", () => {
     vi.restoreAllMocks();
   });
 
+  it("keeps Send barred while an EARLIER write is still rebuilding", async () => {
+    // The revision clock orders writes by ARRIVAL; the barrier has to release on
+    // INTENT. Two rapid picks whose responses come back out of order — easy now
+    // that a write waits for a container rebuild — would otherwise let the one
+    // that answered first open the barrier while the other is still tearing a
+    // container down and building its replacement. Send would go out mid-rebuild.
+    const puts: { body: unknown; resolve: (v: Response) => void }[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return new Promise<Response>((resolve) => {
+          puts.push({ body: JSON.parse(String(init.body)), resolve });
+        });
+      }
+      return { ok: true, status: 200, json: async () => settings() } as Response;
+    }));
+
+    const { result } = renderHook(() => useSessionNetworkMode("s1"));
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+
+    act(() => { result.current.setMode("contained"); });
+    act(() => { result.current.setMode("open"); });
+    await waitFor(() => expect(puts).toHaveLength(2));
+    expect(result.current.saving).toBe(true);
+
+    // The SECOND write answers first — its rebuild happened to be a no-op.
+    await act(async () => {
+      puts[1]!.resolve({
+        ok: true, status: 200, json: async () => settings({ override: false }),
+      } as Response);
+    });
+    // …and the barrier must NOT open: the first write is still rebuilding.
+    expect(result.current.saving).toBe(true);
+
+    await act(async () => {
+      puts[0]!.resolve({
+        ok: true, status: 200, json: async () => settings({ override: true }),
+      } as Response);
+    });
+    await waitFor(() => expect(result.current.saving).toBe(false));
+  });
+
   it("reverts a failed write to the SERVER's value, not the last optimistic one", async () => {
     // The two writes must OVERLAP, or this cannot fail on the bug: if the first
     // one settles before the second is issued, its own revert has already put

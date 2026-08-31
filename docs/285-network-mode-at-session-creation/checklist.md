@@ -7,7 +7,7 @@
 - [x] `restartContainer` gains `resetBreakers` / `agentSeed`; the rebuild takes neither of Rescue's privileges
 - [x] The rebuild runs inside `PUT /api/egress/session/:id`, before it answers, for ungraduated sessions only
 - [x] Quick Capture: `networkMode` through the request, persisted and rebuilt before `getOrCreate`, with the agent seed
-- [x] Interactive claim resets a reused draft's override (req 8)
+- [x] Interactive claim refuses to recycle a draft carrying a network mode (req 8)
 - [x] Runner incarnation in the `active_runners` snapshot + live `runner_replaced`, so a second viewer converges
 - [x] Combined flat control: Permission mode + Network access, one trigger, every viewport
 - [x] Mode leaves `ComposerSettingsMenu`; the role root collapses onto the role list (req 9)
@@ -62,6 +62,26 @@ spanned the Send path and had to be reasoned about against dispatch, graduation
 and the reuse path.
 
 - [x] `serializeNetworkModeWrite` — per-session chain around the write + rebuild, with a test that two concurrent PUTs never overlap
+
+## Review round 6 — the simplified design, reviewed
+
+The review of the write-time rebuild found the direction right and the boundary
+incomplete. All verified at the source; fixed:
+
+- [x] **P1** an abandoned draft carrying a network mode is **no longer recycled at all**. Clearing its override and handing the session over was the cheaper fix and was wrong: the mode is a container *topology*, and the recycled container still ran the draft's. The next user read "Inherit workspace — currently Contained" over an Open container. Refusing the reuse costs one warm session and deletes the reset, its SSE broadcast, and the reasoning around both
+- [x] **P1** a refused rebuild **rolls the write back**. Persisting it behind a 503 turned a refusal into a silent mismatch: the client re-reads after a failed write, would have read back the value it just asked for, and released Send over the old container
+- [x] **P1** the rebuild is no longer gated on "the override changed" — it is already a no-op when the container matches, so the gate saved nothing and blocked the one case that needed it, re-picking a mode after a rebuild failed
+- [x] **P1** the incarnation snapshot is built from `listAll()`, not the sidebar list, which **excludes warm sessions** — the exact set a rebuild replaces. And a LIVE `runner_replaced` no longer needs a prior generation to be believed: a `/new` viewer has none, so the event was ignored for the sessions it was added for
+- [x] **P1** the Send barrier opens on the **provenance of the displayed value**, not on each write's own outcome. Two rapid picks settle in whatever order the server answers, so the write finishing last is routinely not the one whose value is shown
+- [x] stale Quick Capture comments describing a first-turn claim and a policy pin that no longer exist
+- [x] `plan.md` no longer claims the route "does not answer until the rebuild is done": `restartContainer` bounds its readiness wait at 8 s and can return with the container still `starting`. The honest claim is that the container *exists with the right topology*; the turn separately waits on the worker-readiness gate
+
+Two findings are **acknowledged, not fixed**, and both predate this branch:
+`RUNTIME_MODE=local` has no containment at all, so an explicit Contained is
+persisted and unenforceable there; and the interactive claim can still recycle a
+warm session whose first Send is in flight, which is `main`'s behaviour — the
+check this branch briefly added was reverted because the claim version of it
+stranded a queued message, a worse and more reachable failure.
 
 What remains from those rounds, kept because it was right on its own terms:
 

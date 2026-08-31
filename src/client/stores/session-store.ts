@@ -281,7 +281,12 @@ interface SessionState {
    */
   noteRunnerIncarnations: (
     next: Record<string, number>,
-    opts?: { merge?: boolean },
+    /**
+     * `live` marks the per-session `runner_replaced` event, which names the
+     * session it replaced and so needs no earlier generation to be believed.
+     * The snapshot path keeps the strict-greater rule.
+     */
+    opts?: { merge?: boolean; live?: boolean },
   ) => void;
   setAwaitingPermissionSessions: (
     updater: (prev: Set<string>) => Set<string>,
@@ -677,11 +682,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // loop against a server that is already giving them fresh runners.
       const previous = active ? state.runnerIncarnations[active] : undefined;
       const current = active ? merged[active] : undefined;
+      // A LIVE replacement event names the session it replaced, so it needs no
+      // baseline to be believed. Requiring one silently excluded the sessions
+      // this matters most for: a `/new` viewer has no earlier generation to
+      // compare against, and warm sessions are absent from the session list the
+      // authoritative snapshot is built from — which is exactly the set a
+      // network-mode rebuild replaces.
       const replaced =
         active !== null
-        && previous !== undefined
         && current !== undefined
-        && current > previous;
+        && (opts?.live === true
+          // The snapshot path keeps the strict-greater rule: a server that
+          // restarted reports lower numbers for everything, and reading that as
+          // "your runner was replaced" makes every tab reconnect in a loop.
+          ? previous === undefined || current > previous
+          : previous !== undefined && current > previous);
       return {
         runnerIncarnations: merged,
         staleRunnerNonce: replaced ? state.staleRunnerNonce + 1 : state.staleRunnerNonce,

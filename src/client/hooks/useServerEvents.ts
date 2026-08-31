@@ -256,7 +256,10 @@ export function useServerEvents(): void {
       const data = JSON.parse(e.data as string) as { sessionId: string; incarnation: number };
       useSessionStore
         .getState()
-        .noteRunnerIncarnations({ [data.sessionId]: data.incarnation }, { merge: true });
+        .noteRunnerIncarnations(
+          { [data.sessionId]: data.incarnation },
+          { merge: true, live: true },
+        );
     });
 
     // docs/193 (Thread C) — a session is blocked awaiting a permission answer.

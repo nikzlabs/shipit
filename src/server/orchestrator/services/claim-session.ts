@@ -356,30 +356,26 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         const reusable = skipReuse
           ? undefined
           : deps.sessionManager.findUngraduatedWarm(url, repoAfterWarm.warmSessionId ?? undefined);
+        // docs/285 req 8 — a draft that carries an explicit network mode is NOT
+        // recyclable. Clearing the override and handing the session over reads as
+        // the cheaper fix and is wrong: the mode is a *container topology*, and
+        // the recycled container is still running the abandoned draft's one. The
+        // next user would see "Inherit workspace — currently Contained" over an
+        // Open container and send their first turn into it — requirement 3 lost
+        // through a path that has nothing to do with the composer.
+        //
+        // Refusing the reuse costs one unused warm session, which the pool
+        // replenishes, and needs no rebuild on the claim path.
+        const carriedOverride = reusable
+          ? deps.egressAllowlistStore?.getSessionOverride(reusable.id) ?? null
+          : null;
         if (
           reusable?.workspaceDir &&
           !excluded.has(reusable.id) &&
+          carriedOverride === null &&
           existsSync(path.join(reusable.workspaceDir, ".git"))
         ) {
           claimPath = "reuse";
-          // docs/285 req 8 — this session is being handed out as a NEW one, so
-          // it must start at "Inherit workspace". Without this, picking Open on
-          // `/new`, walking away without sending, and then starting another new
-          // session in that repo hands back the same session still carrying
-          // Open. The reset belongs here rather than in the composer: the
-          // composer is not involved in the reuse flow at all.
-          //
-          // No audit card and no pending state: the session is still warm, so
-          // there is no prior state for a card to describe (the same reason the
-          // creation-time choice itself is silent).
-          const carriedOverride = deps.egressAllowlistStore?.getSessionOverride(reusable.id);
-          if (carriedOverride !== null && carriedOverride !== undefined) {
-            deps.egressAllowlistStore?.setSessionOverride(reusable.id, null);
-            // A viewer may already be attached to this session — the abandoned
-            // draft's own tab, still open. Without the invalidation its control
-            // keeps showing the override that was just cleared underneath it.
-            deps.sseBroadcast("session_egress_changed", { sessionId: reusable.id });
-          }
           const fetchDurationMs = await refreshClaimedSession(url, reusable.workspaceDir, forceFetch);
           return { sessionId: reusable.id, workspaceDir: reusable.workspaceDir, fetchDurationMs };
         }

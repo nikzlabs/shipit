@@ -141,15 +141,21 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     const backgroundTaskSessions: string[] = [];
     // docs/285 — the runner generation each session is on. A viewer holding an
     // older value is attached to a runner that has since been replaced (a
-    // first-Send network reconciliation, a Rescue) and is receiving nothing; it
-    // reconnects itself on seeing this. Snapshotted for EVERY session, not only
-    // the running ones, because a viewer stranded on a dead runner is precisely
-    // one the server does not see as running.
+    // network-mode rebuild, a Rescue) and is receiving nothing; it reconnects
+    // itself on seeing this. Snapshotted for EVERY session, not only the running
+    // ones, because a viewer stranded on a dead runner is precisely one the
+    // server does not see as running.
+    //
+    // Built from `listAll()` rather than the sidebar list above, which excludes
+    // WARM sessions — and a warm session is exactly what a network-mode rebuild
+    // replaces, so the one set this needs to cover was the one set it omitted.
     const runnerIncarnations: Record<string, number> = {};
-    for (const session of sessions) {
-      const runner = runnerRegistry.get(session.id);
+    for (const session of sessionManager.listAll()) {
       const incarnation = runnerRegistry.incarnation(session.id);
       if (incarnation > 0) runnerIncarnations[session.id] = incarnation;
+    }
+    for (const session of sessions) {
+      const runner = runnerRegistry.get(session.id);
       if (runner?.running) activeRunnerSessions.push(session.id);
       if (runner && runner.awaitingPermissionIds.size > 0) awaitingPermissionSessions.push(session.id);
       // planning#246 — the UNION (`backgroundWorkDescriptions`), not the

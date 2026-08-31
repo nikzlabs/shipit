@@ -207,8 +207,21 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
    * which is the barrier's whole failure mode.
    */
   const writesInFlight = useRef(0);
+  /**
+   * Whether the value currently ON SCREEN is one the server reported, as opposed
+   * to an optimistic pick that has not been confirmed. Set by `applySettings`,
+   * cleared the moment a pick is displayed optimistically.
+   *
+   * This is what the Send barrier actually waits for, and it is not the same
+   * question as "did MY write succeed". Two rapid picks settle in whatever order
+   * the server answers, so the write that finishes last is routinely not the one
+   * whose value is displayed — asking each write about its own outcome left the
+   * barrier shut forever whenever the responses came back out of order.
+   */
+  const displayedFromServer = useRef(false);
 
   const applySettings = useCallback((settings: EgressSessionSettings) => {
+    displayedFromServer.current = true;
     setModeState(modeFromOverride(settings.override));
     setGlobalEnabled(settings.globalEnabled);
     setEnforcementStatus(settings.enforcementStatus ?? (settings.enforcementActive ? "active" : "no-sidecar"));
@@ -286,13 +299,11 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
       if (!sessionId) return;
       // Optimistic: a settings control that lags a click reads as broken, and
       // the Send barrier below is what makes the optimism safe.
+      displayedFromServer.current = false;
       setModeState(next);
       setSaving(true);
       writesInFlight.current += 1;
       const revision = bumpRevision(sessionId);
-      // Whether the displayed value is one the server actually reported. Set on
-      // a successful write, and on a successful recovery read after a failure.
-      let recovered = false;
       void (async () => {
         try {
           const res = await fetch(`/api/egress/session/${encodeURIComponent(sessionId)}`, {
@@ -308,7 +319,6 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
           if (currentRevision(sessionId) !== revision) return;
           if (mountedSession.current !== sessionId) return;
           applySettings(settings);
-          recovered = true;
           // req 7 — tell every other mounted surface directly. The transient SSE
           // carries this to OTHER TABS, but within one tab it is not the path:
           // an SSE interruption during a write would leave the composer and the
@@ -328,24 +338,24 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
           // Awaited inside the barrier: `saving` stays true until the displayed
           // value is one the server actually reported.
           if (currentRevision(sessionId) === revision && mountedSession.current === sessionId) {
-            recovered = await refresh(sessionId);
+            await refresh(sessionId);
           }
         } finally {
           writesInFlight.current -= 1;
-          // The barrier opens ONLY on a value the server reported, and only for
-          // the session still mounted. Two ways it used to open on nothing: the
-          // recovery read swallowed its own failure, leaving the optimistic
-          // value on screen with Send enabled; and this check tested the old
-          // session's revision alone, so a write settling after navigation
-          // released the barrier on a DIFFERENT session's pending state.
+          // The barrier opens only when NOTHING is still being written for this
+          // session and the value on screen is one the server reported.
           //
-          // Staying barred on an unreachable server is the safe direction. It is
-          // recoverable — reopening the menu or the next invalidation re-reads —
-          // and the alternative is dispatching a first turn under a policy
-          // nobody can name.
+          // Both halves are load-bearing, and each replaced a wrong rule. Asking
+          // only "did my own write succeed" opened it while a sibling write was
+          // still rebuilding a container. Adding this write's own revision to the
+          // test then closed it forever whenever two responses came back out of
+          // order, because the last write to settle is routinely not the one whose
+          // value is displayed. Staying barred on an unreachable server is the safe
+          // direction and is recoverable — the next read reopens it — but staying
+          // barred after the server has answered is just broken.
           if (
-            recovered
-            && currentRevision(sessionId) === revision
+            writesInFlight.current === 0
+            && displayedFromServer.current
             && mountedSession.current === sessionId
           ) {
             setSaving(false);
