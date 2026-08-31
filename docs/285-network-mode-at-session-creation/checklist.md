@@ -71,6 +71,7 @@ outright break. All verified at the source before touching anything.
 - [x] **P1** round 4 pinned `Inherit` too, which **reverses requirements 3 and 10** — the human's words leave Inherit as "the workspace setting as it stands when the session's container starts … the only case a workspace-default change during Send can move", and req 10 forbids presenting it as pinned. Only an explicit pick is pinned now. A requirement is not something a mechanism gets to change
 - [x] **P2** the `/new` reuse path now **takes** the first-turn claim across its workspace reset instead of only checking it: the check passed, `refreshClaimedSession` yielded, and a Send arriving in that window claimed and ran while the reset moved the tree under it
 - [x] the claim is a plain `Set` again — no promise, no timer, no pin — and its release is idempotent
+- [x] the reuse-refusal test asserts the surviving override rather than the second claim's session id: which session that claim lands on depends on pool replenishment, and asserting it flaked under a loaded full-suite run while passing alone
 
 **Known and bounded, not fixed:** a programmatic dispatch that queues while a
 first Send holds the entry claim stays queued if that Send then fails validation,

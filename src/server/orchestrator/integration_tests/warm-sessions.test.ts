@@ -464,13 +464,18 @@ describe("Integration: warm session lifecycle", () => {
       // exactly this reason.
       const release = claimFirstTurn(first.sessionId)!;
       try {
-        const second = (await app.inject({
+        await app.inject({
           method: "POST",
           url: `/api/repos/${encodedUrl}/claim-session`,
-        })).json();
-        expect(second.sessionId).not.toBe(first.sessionId);
+        });
 
-        // …and the in-flight session kept the mode its turn was admitted under.
+        // The surviving override IS the observable, and the reason to assert on
+        // it rather than on the second claim returning a different session id:
+        // the reuse path ALWAYS clears the override (the test above pins that),
+        // so an intact one can only mean the reuse stood down. Which session the
+        // second claim ends up with instead — a recycled older draft, the warm
+        // pool, or a fresh clone — depends on how far pool replenishment has got,
+        // and asserting on that made this flake under a loaded full-suite run.
         const view = (await app.inject({
           method: "GET",
           url: `/api/egress/session/${first.sessionId}`,
