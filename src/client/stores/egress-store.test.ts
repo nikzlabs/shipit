@@ -17,6 +17,7 @@ function stubFetch(initial: { entries: EgressAllowlistEntry[]; globalEnabled?: b
     entries,
     globalEnabled,
     enforcementActive: true,
+    enforcementStatus: "active",
     session: {
       sessionId: "s1",
       override,
@@ -24,6 +25,7 @@ function stubFetch(initial: { entries: EgressAllowlistEntry[]; globalEnabled?: b
       effectiveContained: override ?? globalEnabled,
       globalEnabled,
       enforcementActive: true,
+      enforcementStatus: "active",
       startedContained: null,
       pendingRestart: false,
     },

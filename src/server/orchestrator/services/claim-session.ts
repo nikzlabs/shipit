@@ -27,6 +27,7 @@ import type { RepoGit } from "../repo-git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { RepoStore } from "../repo-store.js";
 import type { SessionContainerManager } from "../session-container.js";
+import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
 import { ServiceError } from "./types.js";
 import {
   generateBranchPrefix,
@@ -56,6 +57,18 @@ export interface ClaimSessionDeps {
   waitForWarmSession?: (repoUrl: string) => Promise<void> | undefined;
   shouldSkipClaimFetch?: (repoUrl: string) => boolean;
   containerManager?: SessionContainerManager;
+  /**
+   * docs/285 req 8 — every new session starts at "Inherit workspace", and the
+   * REUSE path below is the one place that would quietly break it: an
+   * interactive claim recycles an ungraduated warm session from the same repo,
+   * so an abandoned `/new` draft carrying an explicit Contained/Open would hand
+   * both that setting AND the container built for it to the next new session.
+   * Read here to refuse that reuse.
+   *
+   * Optional, like `containerManager`: a runtime with no egress store has no
+   * override to find.
+   */
+  egressAllowlistStore?: EgressAllowlistStore;
 }
 
 export interface ClaimSessionResult {
@@ -343,9 +356,23 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         const reusable = skipReuse
           ? undefined
           : deps.sessionManager.findUngraduatedWarm(url, repoAfterWarm.warmSessionId ?? undefined);
+        // docs/285 req 8 — a draft that carries an explicit network mode is NOT
+        // recyclable. Clearing the override and handing the session over reads as
+        // the cheaper fix and is wrong: the mode is a *container topology*, and
+        // the recycled container is still running the abandoned draft's one. The
+        // next user would see "Inherit workspace — currently Contained" over an
+        // Open container and send their first turn into it — requirement 3 lost
+        // through a path that has nothing to do with the composer.
+        //
+        // Refusing the reuse costs one unused warm session, which the pool
+        // replenishes, and needs no rebuild on the claim path.
+        const carriedOverride = reusable
+          ? deps.egressAllowlistStore?.getSessionOverride(reusable.id) ?? null
+          : null;
         if (
           reusable?.workspaceDir &&
           !excluded.has(reusable.id) &&
+          carriedOverride === null &&
           existsSync(path.join(reusable.workspaceDir, ".git"))
         ) {
           claimPath = "reuse";

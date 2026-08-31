@@ -14,7 +14,13 @@ import type { RepoGit } from "./repo-git.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
-import type { AgentId, AgentProcess, LimitsRefreshResult } from "../shared/types.js";
+import type {
+  AgentId,
+  AgentProcess,
+  LimitsRefreshResult,
+  EgressEnforcementStatus,
+} from "../shared/types.js";
+import type { ReconcileEgressOutcome } from "./services/reconcile-session-egress.js";
 import type { UsageManager } from "./usage.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionContainerManager } from "./session-container.js";
@@ -278,6 +284,29 @@ export interface ApiDeps {
    */
   egressEnforcementActive?: boolean;
   /**
+   * docs/285 — WHICH deployment this is when enforcement is not active, since
+   * the two inactive cases point in opposite directions (a Contained session
+   * runs open, versus refuses to start). The UI names the case and its
+   * remediation, which a boolean cannot support.
+   *
+   * Optional and derived from {@link egressEnforcementActive} when omitted, so
+   * every existing caller keeps working. The derivation can only produce
+   * `active` or `no-sidecar` — it cannot invent the `disabled` case, which is
+   * why production passes the status explicitly.
+   */
+  egressEnforcementStatus?: EgressEnforcementStatus;
+  /**
+   * docs/285 req 3 — rebuild an ungraduated session's container so the network
+   * mode just written is the one it actually boots with. The settings PUT awaits
+   * this, which is what keeps the composer's save barrier closed for the
+   * duration. Optional: a runtime with no containers has nothing to rebuild.
+   *
+   * No `agentSeed` here, unlike the core service: that option exists for Quick
+   * Capture, which has resolved a harness it has deliberately not persisted —
+   * and Quick Capture calls the service directly rather than through this route.
+   */
+  reconcileSessionEgress?: (sessionId: string) => Promise<ReconcileEgressOutcome>;
+  /**
    * docs/172 Tier B (planning#383) — whether this deployment installs the
    * controlled resolver at all (`egressDnsEnabled()`). False
    * (`SESSION_EGRESS_DNS=0`) means a contained session runs the fixed Tier A IP
@@ -444,6 +473,10 @@ export async function registerApiRoutes(
     ...(deps.waitForWarmSession ? { waitForWarmSession: deps.waitForWarmSession } : {}),
     ...(deps.shouldSkipClaimFetch ? { shouldSkipClaimFetch: deps.shouldSkipClaimFetch } : {}),
     ...(deps.containerManager ? { containerManager: deps.containerManager } : {}),
+    // docs/285 req 8 — the reuse path would hand an abandoned `/new` draft back
+    // as a NEW session, so it has to see whether that draft carries a network
+    // override and refuse to recycle it if so.
+    ...(deps.egressAllowlistStore ? { egressAllowlistStore: deps.egressAllowlistStore } : {}),
   });
   const deps2: ApiDeps = { ...deps, claimSessionService };
 

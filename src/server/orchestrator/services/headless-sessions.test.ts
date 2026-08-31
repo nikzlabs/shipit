@@ -33,6 +33,7 @@ vi.mock("../../shared/installed-harnesses.js", async (importOriginal) => {
   return { ...actual, isHarnessInstalled: (id: string) => !uninstalledHarnesses.has(id) };
 });
 
+
 interface FakeRunner {
   running: boolean;
   dispatch: ReturnType<typeof vi.fn>;

@@ -22,6 +22,8 @@ import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js
 import { ServiceError } from "./types.js";
 import { saveUploadedFile, MAX_UPLOAD_FILES_PER_REQUEST } from "./files.js";
 import type { ClaimSessionService } from "./claim-session.js";
+import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
+import type { ReconcileEgressOutcome } from "./reconcile-session-egress.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { resolveUserRole } from "./session-role.js";
 import { buildIssueSeedPrompt } from "../../shared/issue-ref.js";
@@ -181,6 +183,14 @@ export interface CreateHeadlessSessionOptions {
    * server-composed prompt (issue seeds, API callers that didn't ask for it).
    */
   dictated?: boolean;
+  /**
+   * docs/285 reqs 2, 3 — the network mode picked in the Quick Capture composer,
+   * in force from this session's first turn. `true` = Contained, `false` = Open,
+   * `null`/absent = inherit the workspace setting (the default; req 8 says the
+   * pick never carries over, so the overlay sends nothing unless the user
+   * changed it).
+   */
+  networkMode?: boolean | null;
 }
 
 export interface CreateHeadlessSessionResult {
@@ -203,6 +213,19 @@ export async function createHeadlessSession(
   autoMergeDeps?: {
     githubAuthManager: GitHubAuthManager;
     prStatusPoller: PrStatusPoller | undefined;
+  },
+  /**
+   * docs/285 — what it takes to honour `opts.networkMode`: somewhere to persist
+   * the override, and the reconciliation that rebuilds the claimed session's
+   * container when it was created under a different mode. Optional — a runtime
+   * without egress simply ignores the field, exactly as it does today.
+   */
+  egressDeps?: {
+    store: EgressAllowlistStore;
+    reconcile: (
+      sessionId: string,
+      opts?: { agentSeed?: AgentId },
+    ) => Promise<ReconcileEgressOutcome>;
   },
 ): Promise<CreateHeadlessSessionResult> {
   const repoUrl = opts.repoUrl?.trim();
@@ -422,6 +445,28 @@ export async function createHeadlessSession(
   // because that first turn is what collects the role's standing instructions
   // (req 2) — `takeRoleInstructions` reads this row.
   if (userRole) sessionManager.setRoleName(newSessionId, userRole.role.name);
+
+  // docs/285 reqs 2, 3 — the network mode the overlay carried, in force from
+  // this session's FIRST turn.
+  //
+  // Quick Capture creates and dispatches in one server-side act, so it persists
+  // and rebuilds inline rather than through the settings route — and both have
+  // to land **before `getOrCreate`**, not merely before `dispatch`: the rebuild
+  // destroys the claimed container and builds the replacement runner itself, and
+  // a runner made here first would be returned unchanged by that later call.
+  //
+  // `agentSeed: agentId` is why the harness survives. The requested agent has
+  // been RESOLVED above but deliberately not persisted (warm-up env preparation
+  // owns that), so `session.agentId` is still undefined and the replacement
+  // runner would otherwise be seeded with the deployment default — picking Codex
+  // *and* changing the network mode would dispatch this turn to Claude.
+  if (egressDeps && opts.networkMode !== undefined && opts.networkMode !== null) {
+    egressDeps.store.setSessionOverride(newSessionId, opts.networkMode);
+    const outcome = await egressDeps.reconcile(newSessionId, { agentSeed: agentId });
+    if (outcome.action === "aborted") {
+      throw new ServiceError(503, outcome.message);
+    }
+  }
 
   const runner = runnerRegistry.getOrCreate(newSessionId, newWorkspaceDir, agentId);
   if (credentialsDir && credentialStore) {

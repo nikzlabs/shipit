@@ -46,9 +46,11 @@ import type {
   EgressAllowlistView,
   EgressHostGrantOutcome,
   EgressHostReach,
+  EgressEnforcementStatus,
 } from "../shared/types.js";
 import { computeEgressGrantOutcome } from "./egress-grant-outcome.js";
 import { emitSessionSettingsChangeCard } from "./services/session-settings.js";
+import { serializeNetworkModeWrite } from "./services/network-mode-writes.js";
 import type { PersistedEgressPrompt } from "./chat-history.js";
 
 /**
@@ -67,12 +69,28 @@ export function egressCardId(sessionId: string, host: string): string {
   return `egress-${sessionId}-${normalizeHost(host)}`;
 }
 
+/**
+ * docs/285 — one enforcement value flows through this file, and the boolean is
+ * DERIVED from it at each edge rather than carried alongside. Threading both
+ * would let a call site pass a mismatched pair, and the two disagreeing is
+ * precisely the failure the status field was added to end.
+ */
+function enforcementFields(status: EgressEnforcementStatus): {
+  enforcementActive: boolean;
+  enforcementStatus: EgressEnforcementStatus;
+} {
+  return { enforcementActive: status === "active", enforcementStatus: status };
+}
+
 /** Snapshot the global egress settings (toggle + user allowlist + enforcement). */
-function globalSettings(store: EgressAllowlistStore, enforcementActive: boolean): EgressSettings {
+function globalSettings(
+  store: EgressAllowlistStore,
+  enforcement: EgressEnforcementStatus,
+): EgressSettings {
   return {
     globalEnabled: store.getGlobalEnabled(),
     globalHosts: store.listHosts(EGRESS_GLOBAL_SCOPE),
-    enforcementActive,
+    ...enforcementFields(enforcement),
   };
 }
 
@@ -87,7 +105,7 @@ function globalSettings(store: EgressAllowlistStore, enforcementActive: boolean)
 function sessionSettings(
   store: EgressAllowlistStore,
   sessionId: string,
-  enforcementActive: boolean,
+  enforcement: EgressEnforcementStatus,
   startedContained: boolean | null,
 ): EgressSessionSettings {
   const effectiveContained = store.resolveContained(sessionId);
@@ -97,7 +115,7 @@ function sessionSettings(
     hosts: store.listHosts(sessionId),
     effectiveContained,
     globalEnabled: store.getGlobalEnabled(),
-    enforcementActive,
+    ...enforcementFields(enforcement),
     startedContained,
     pendingRestart: startedContained !== null && startedContained !== effectiveContained,
   };
@@ -112,7 +130,7 @@ function allowlistView(
   store: EgressAllowlistStore,
   credentialStore: CredentialStore | undefined,
   sessionId: string | undefined,
-  enforcementActive: boolean,
+  enforcement: EgressEnforcementStatus,
   startedContained: boolean | null,
 ): EgressAllowlistView {
   const entries = buildEffectiveAllowlist({
@@ -124,8 +142,8 @@ function allowlistView(
   return {
     entries,
     globalEnabled: store.getGlobalEnabled(),
-    enforcementActive,
-    session: sessionId ? sessionSettings(store, sessionId, enforcementActive, startedContained) : null,
+    ...enforcementFields(enforcement),
+    session: sessionId ? sessionSettings(store, sessionId, enforcement, startedContained) : null,
     defaultsCustomized: store.hasSuppressedDefaults(),
   };
 }
@@ -136,7 +154,14 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
   // sidecar image configured). Resolved once at registration — it's a fixed
   // function of the process env. The honest signal the browser uses to
   // distinguish containment policy from enforcement (docs/172, planning#92).
-  const enforcementActive = deps.egressEnforcementActive ?? false;
+  // docs/285 — the same fact with the reason kept. `enforcementActive` stays as
+  // the predicate the reach/policy logic below already asks; `enforcement` is
+  // what the settings views report, so the UI can name the case. Derived from
+  // the boolean when a caller supplies only that — which can never produce
+  // `disabled`, hence the explicit status in production.
+  const enforcement: EgressEnforcementStatus =
+    deps.egressEnforcementStatus ?? (deps.egressEnforcementActive ? "active" : "no-sidecar");
+  const enforcementActive = enforcement === "active";
   // planning#383 — whether Tier B exists on this deployment at all. Resolved
   // once here for the same reason: a fixed function of the process env.
   const dnsControlDeployed = deps.egressDnsControlDeployed;
@@ -191,7 +216,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
   // when a store is wired (test setups without egress can omit it).
   if (store) {
     // Read the global containment toggle + user allowlist + enforcement state.
-    app.get("/api/egress/settings", async () => globalSettings(store, enforcementActive));
+    app.get("/api/egress/settings", async () => globalSettings(store, enforcement));
 
     // The effective allowlist with provenance (built-in / operator / MCP /
     // user-added) for the Settings editor. `?session=<id>` folds in that
@@ -201,7 +226,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
       async (request) => {
         const sessionId =
           typeof request.query.session === "string" && request.query.session ? request.query.session : undefined;
-        return allowlistView(store, deps.credentialStore, sessionId, enforcementActive, sessionId ? liveContained(sessionId) : null);
+        return allowlistView(store, deps.credentialStore, sessionId, enforcement, sessionId ? liveContained(sessionId) : null);
       },
     );
 
@@ -212,9 +237,9 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
       async (request) => {
         if (typeof request.body?.globalEnabled === "boolean") {
           store.setGlobalEnabled(request.body.globalEnabled);
-          deps.sseBroadcast("egress_settings", globalSettings(store, enforcementActive));
+          deps.sseBroadcast("egress_settings", globalSettings(store, enforcement));
         }
-        return globalSettings(store, enforcementActive);
+        return globalSettings(store, enforcement);
       },
     );
 
@@ -263,7 +288,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
         } else {
           store.addHost(scope, host);
         }
-        deps.sseBroadcast("egress_settings", globalSettings(store, enforcementActive));
+        deps.sseBroadcast("egress_settings", globalSettings(store, enforcement));
         // A per-session add can take effect immediately on a running session.
         if (!isGlobal) {
           let reloaded: boolean;
@@ -274,13 +299,13 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
             reply.code(503);
             return {
               error: "allowlist saved, but live service refresh failed closed",
-              settings: sessionSettings(store, scope, enforcementActive, liveContained(scope)),
+              settings: sessionSettings(store, scope, enforcement, liveContained(scope)),
             };
           }
-          return { ...sessionSettings(store, scope, enforcementActive, liveContained(scope)), grant: grant(reloaded) };
+          return { ...sessionSettings(store, scope, enforcement, liveContained(scope)), grant: grant(reloaded) };
         }
         // A global add reloads nothing at all, by design (`plugin-egress.ts`).
-        return { ...globalSettings(store, enforcementActive), grant: grant(false) };
+        return { ...globalSettings(store, enforcement), grant: grant(false) };
       },
     );
 
@@ -302,24 +327,41 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
         } else {
           store.removeHost(scope, host);
         }
-        deps.sseBroadcast("egress_settings", globalSettings(store, enforcementActive));
+        deps.sseBroadcast("egress_settings", globalSettings(store, enforcement));
         return scope === EGRESS_GLOBAL_SCOPE
-          ? globalSettings(store, enforcementActive)
-          : sessionSettings(store, scope, enforcementActive, liveContained(scope));
+          ? globalSettings(store, enforcement)
+          : sessionSettings(store, scope, enforcement, liveContained(scope));
       },
     );
 
     // Restore all built-in defaults (clear every user suppression).
     app.post("/api/egress/defaults/restore", async () => {
       store.restoreDefaults();
-      deps.sseBroadcast("egress_settings", globalSettings(store, enforcementActive));
-      return allowlistView(store, deps.credentialStore, undefined, enforcementActive, null);
+      deps.sseBroadcast("egress_settings", globalSettings(store, enforcement));
+      return allowlistView(store, deps.credentialStore, undefined, enforcement, null);
     });
+
+    // docs/285 — BOTH session routes below accepted an arbitrary id. The GET
+    // answered with a fully-formed view for a session that does not exist
+    // (`resolveContained` falls back to the global switch, so the shape is
+    // plausible and entirely fictional), and the PUT persisted an override keyed
+    // to nothing, which then sat in the store forever. Neither is exploitable —
+    // the surface is browser-only and the store is keyed by opaque id — but the
+    // composer now hydrates from the GET on mount, so a wrong id must fail
+    // loudly rather than return a confident answer about nothing.
+    const knownSession = (id: string, reply: FastifyReply): boolean => {
+      if (deps.sessionManager.get(id)) return true;
+      reply.code(404).send({ error: "Session not found" });
+      return false;
+    };
 
     // Read a session's egress view (override + per-session hosts + resolution).
     app.get<{ Params: { id: string } }>(
       "/api/egress/session/:id",
-      async (request) => sessionSettings(store, request.params.id, enforcementActive, liveContained(request.params.id)),
+      async (request, reply) => {
+        if (!knownSession(request.params.id, reply)) return;
+        return sessionSettings(store, request.params.id, enforcement, liveContained(request.params.id));
+      },
     );
 
     // Set/clear a session's containment override (null = inherit global).
@@ -330,14 +372,77 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
     // the same persisted transcript card a sandbox capability edit does.
     app.put<{ Params: { id: string }; Body: { override?: boolean | null } }>(
       "/api/egress/session/:id",
-      async (request) => {
+      async (request, reply) => {
         const sessionId = request.params.id;
+        if (!knownSession(sessionId, reply)) return;
+        // docs/285 — an `override` that is not exactly one of the three values
+        // used to be IGNORED: the route fell through, changed nothing, and
+        // returned 200 with the unchanged view. A client writing `"open"` or
+        // `undefined` got a success it could not distinguish from a real write,
+        // which is the worst possible answer for a control whose Send barrier is
+        // released by that very response.
         const override = request.body?.override;
-        if (override === true || override === false || override === null) {
+        if (override !== true && override !== false && override !== null) {
+          reply.code(400).send({ error: "override must be true, false, or null" });
+          return;
+        }
+        const rebuild = await serializeNetworkModeWrite(sessionId, async () => {
           const previous = store.getSessionOverride(sessionId);
           store.setSessionOverride(sessionId, override);
-          if (previous !== override) {
-            // The card's `pendingRestart` is the SAME value this route is about
+
+          // docs/285 req 3 — a session that has NOT run a turn yet gets its
+          // container rebuilt right here, and this route does not answer until it
+          // has been. That is the whole mechanism: containment is plumbed at
+          // container creation and a running container cannot be re-plumbed, so
+          // the pick has to reach a *new* container before the first turn goes
+          // out.
+          //
+          // The container is created immediately after the value it reads was
+          // written, so there is no window for the two to disagree and nothing to
+          // freeze. The composer's existing save barrier keeps Send unavailable
+          // for the duration, which is the "wait for the container" state — the
+          // same one `/new` already shows before its session is claimed.
+          //
+          // A GRADUATED session is deliberately untouched: restarting a container
+          // out from under a session the user is working in is not a settings
+          // change, it is Rescue. Those keep the "applies on next container start"
+          // pending state they have always had.
+          const stillWarm = deps.sessionManager.get(sessionId)?.warm === true;
+          if (stillWarm && deps.reconcileSessionEgress) {
+            // Deliberately NOT gated on `previous !== override`. The rebuild is
+            // already a no-op when the container matches, so the gate saves
+            // nothing — and it blocks the one case that needs it most: re-picking
+            // a mode after a rebuild FAILED would return 200 with the container
+            // still on the old topology, so the control could never self-heal.
+            const outcome = await deps.reconcileSessionEgress(sessionId);
+            if (outcome.action === "aborted") {
+              // Roll the write back. Leaving it persisted is what turned a
+              // refusal into a silent mismatch: the client re-reads after a
+              // failed write, would have read back the value it just asked for,
+              // and released Send — over a container still running the mode the
+              // user was trying to replace.
+              store.setSessionOverride(sessionId, previous);
+              return { previous, stillWarm, aborted: outcome };
+            }
+          }
+          return { previous, stillWarm, aborted: null };
+        });
+        if (rebuild.aborted) {
+          reply.code(503).send({
+            error: rebuild.aborted.message,
+            offerRescue: rebuild.aborted.offerRescue,
+          });
+          return;
+        }
+        const { previous, stillWarm } = rebuild;
+        // docs/285 — a card is written for a CHANGE. A session that has not
+        // graduated has no prior state for one to describe: "changed network
+        // containment" above the first message would report an edit to a session
+        // the user experiences as still being created. The creation-time choice
+        // is therefore silent, and every later change still carries the docs/279
+        // audit card.
+        if (previous !== override && !stillWarm) {
+          // The card's `pendingRestart` is the SAME value this route is about
             // to report to the dialog, read after the write. It used to be
             // hardcoded `true` on the reasoning that egress topology is always a
             // creation-time choice — but "the topology is fixed at creation" is
@@ -346,20 +451,32 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
             // Inherit → Contained), nothing is pending. The dialog would have
             // shown no pending row while the transcript card beside it said
             // "applies on next container start". (Review finding.)
-            emitSessionSettingsChangeCard(
-              { runnerRegistry: deps.runnerRegistry, chatHistoryManager: deps.chatHistoryManager },
-              sessionId,
-              "network-mode",
-              [{
-                label: "Network containment",
-                from: egressModeLabel(previous),
-                to: egressModeLabel(override),
-              }],
-              sessionSettings(store, sessionId, enforcementActive, liveContained(sessionId)).pendingRestart,
-            );
-          }
+          emitSessionSettingsChangeCard(
+            { runnerRegistry: deps.runnerRegistry, chatHistoryManager: deps.chatHistoryManager },
+            sessionId,
+            "network-mode",
+            [{
+              label: "Network containment",
+              from: egressModeLabel(previous),
+              to: egressModeLabel(override),
+            }],
+            sessionSettings(store, sessionId, enforcement, liveContained(sessionId)).pendingRestart,
+          );
         }
-        return sessionSettings(store, sessionId, enforcementActive, liveContained(sessionId));
+        // docs/285 — a transient, session-scoped invalidation so the OTHER
+        // surfaces showing this value refresh: the composer control and the
+        // Session settings dialog can be open at once, in this tab or another.
+        //
+        // It exists because neither existing signal can serve. The persisted
+        // `session_settings_change_card` is suppressed for the creation-time
+        // choice above, so another tab would receive nothing at all; and the
+        // global `egress_settings` event is not broadcast by this route, nor
+        // should it be — this changes one session, not the instance.
+        //
+        // Transient by design: this carries INVALIDATION, while the persisted
+        // card carries AUDIT. Two signals, two jobs.
+        deps.sseBroadcast("session_egress_changed", { sessionId });
+        return sessionSettings(store, sessionId, enforcement, liveContained(sessionId));
       },
     );
   }

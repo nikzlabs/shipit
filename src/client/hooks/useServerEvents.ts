@@ -24,6 +24,7 @@ import { persistHarnessPick } from "../utils/harness-seed.js";
 import { newSessionAgentId } from "../utils/new-session-agent.js";
 import { resolveAuthedSelection, resolveParkedRestore } from "../utils/resolve-authed-selection.js";
 import { useForegroundSignal } from "./useForegroundSignal.js";
+import { notifySessionNetworkModeChanged } from "./useSessionNetworkMode.js";
 
 let reloadingForClientUpdate = false;
 
@@ -220,8 +221,49 @@ export function useServerEvents(): void {
     });
 
     es.addEventListener("active_runners", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { sessionIds: string[] };
+      const data = JSON.parse(e.data as string) as {
+        sessionIds: string[];
+        runnerIncarnations?: Record<string, number>;
+      };
       useSessionStore.getState().setActiveRunnerSessions(() => new Set(data.sessionIds));
+      // docs/285 — this snapshot is the AUTHORITATIVE recovery path for a viewer
+      // stranded on a disposed runner, which is why the incarnations ride it
+      // as well as the live `runner_replaced` signal below, so a tab that missed
+      // that event during an SSE interruption can still notice. It is a partial
+      // backstop, not a guarantee: a viewer with no EARLIER generation for the
+      // session cannot tell a replacement from its first observation, and a
+      // `/new` viewer usually has none because its first snapshot predates the
+      // claim. The live event is the recovery path; this catches the rest.
+      // Optional so an older server simply reports nothing here instead of
+      // resetting every session to generation zero.
+      if (data.runnerIncarnations) {
+        useSessionStore.getState().noteRunnerIncarnations(data.runnerIncarnations);
+      }
+    });
+
+    // docs/285 — one session's network mode changed. Transient invalidation, not
+    // audit: it tells the composer control and the Session settings dialog to
+    // re-read, so two surfaces over one value cannot disagree — including across
+    // tabs, and including the creation-time choice, which deliberately writes no
+    // persisted card for another tab to notice.
+    es.addEventListener("session_egress_changed", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as { sessionId: string };
+      notifySessionNetworkModeChanged(data.sessionId);
+    });
+
+    // docs/285 — a session's runner was REPLACED (its container was rebuilt).
+    // Purely an optimization over the snapshot above: it turns "recovers on the
+    // next reconnect" into "recovers now", and losing it costs latency, never
+    // correctness. Session-scoped and merged, so it cannot drop what it does not
+    // mention.
+    es.addEventListener("runner_replaced", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as { sessionId: string; incarnation: number };
+      useSessionStore
+        .getState()
+        .noteRunnerIncarnations(
+          { [data.sessionId]: data.incarnation },
+          { merge: true, live: true },
+        );
     });
 
     // docs/193 (Thread C) — a session is blocked awaiting a permission answer.
@@ -737,10 +779,22 @@ export function useServerEvents(): void {
     es.addEventListener("egress_settings", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as EgressSettings;
       const store = useEgressStore.getState();
+      // docs/285 — the two GLOBAL fields are applied unconditionally. They used
+      // to be discarded unless the Settings editor's provenance view happened to
+      // be loaded, which was fine while that editor was the only reader; it is
+      // not, now that the composer's Network section names the workspace default
+      // that `Inherit` resolves to. A surface showing a value it never updates
+      // is worse than one that shows none.
+      useEgressStore.setState({
+        globalEnabled: data.globalEnabled,
+        enforcementActive: data.enforcementActive,
+        enforcementStatus: data.enforcementStatus
+          ?? (data.enforcementActive ? "active" : "no-sidecar"),
+        globalLoaded: true,
+      });
+      // The expensive part stays gated: re-fetching the full provenance view is
+      // only worth doing for a reader that has one.
       if (!store.loaded) return;
-      // Reflect the toggle + enforcement state immediately, then re-fetch the
-      // full provenance view.
-      useEgressStore.setState({ globalEnabled: data.globalEnabled, enforcementActive: data.enforcementActive });
       void store.refresh().catch(() => {});
     });
 

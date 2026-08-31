@@ -37,20 +37,34 @@ describe("egress settings routes", () => {
   // Mutable map of live container records, so a test can simulate "this session
   // has a running container that started Contained" for the pending-restart diff.
   let liveContainers: Map<string, { status: string; egressContainedAtStart?: boolean }>;
+  /** docs/285 — sessions the PUT asked to rebuild, in order. */
+  let reconcileCalls: string[];
+  let reconcileOutcome: { action: string; message?: string; offerRescue?: boolean };
   // The session's RESOLVED egress config — the seam the Plugins card and the
   // plugin containers' enforcement read (planning#376). Absent = no resolver
   // wired, which must never render as a positive claim about reachability.
   // Typed as the real shape rather than a hand-written subset, so a fixture can
   // never describe a config the resolver could not produce (planning#380).
   let resolvedEgress: Map<string, ResolvedEgressConfig>;
+  /** docs/285 — which session ids exist, and whether each has graduated. */
+  let knownSessions: Map<string, { id: string; warm: boolean }>;
+  /** docs/285 — persisted transcript cards, so the audit rule can be asserted. */
+  let appendedCards: unknown[];
 
   beforeEach(async () => {
     db = new DatabaseManager(":memory:");
     store = new EgressAllowlistStore(db);
     reloadEgress = vi.fn(async () => true);
     broadcasts = [];
+    reconcileOutcome = { action: "restarted" };
     liveContainers = new Map();
     resolvedEgress = new Map();
+    appendedCards = [];
+    knownSessions = new Map([
+      ["session-1", { id: "session-1", warm: false }],
+      ["s1", { id: "s1", warm: false }],
+    ]);
+    reconcileCalls = [];
     app = Fastify();
     const deps = {
       egressAllowlistStore: store,
@@ -64,7 +78,18 @@ describe("egress settings routes", () => {
         resolveEgress: (id: string) => resolvedEgress.get(id),
       } as unknown,
       runnerRegistry: { get: () => undefined },
-      chatHistoryManager: { append: () => {} },
+      chatHistoryManager: { append: (_id: string, m: unknown) => appendedCards.push(m) },
+      // docs/285 — both session routes now refuse an id no session owns, so the
+      // fixture has to say which ids exist. `warm` matters too: the audit card is
+      // suppressed while a session has not graduated.
+      sessionManager: { get: (id: string) => knownSessions.get(id) },
+      // docs/285 req 3 — the rebuild the PUT awaits. Records its calls so the
+      // tests can assert WHEN it runs; `reconcileOutcome` lets one drive the
+      // failure path.
+      reconcileSessionEgress: async (sid: string) => {
+        reconcileCalls.push(sid);
+        return reconcileOutcome;
+      },
     } as unknown as ApiDeps;
     await registerEgressRoutes(app, deps);
     await app.ready();
@@ -104,7 +129,12 @@ describe("egress settings routes", () => {
   it("GET /api/egress/settings returns the default-on toggle + empty allowlist + enforcement", async () => {
     const res = await app.inject({ method: "GET", url: "/api/egress/settings" });
     expect(res.statusCode).toBe(200);
-    expect(res.json<EgressSettings>()).toEqual({ globalEnabled: true, globalHosts: [], enforcementActive: true });
+    expect(res.json<EgressSettings>()).toEqual({
+      globalEnabled: true,
+      globalHosts: [],
+      enforcementActive: true,
+      enforcementStatus: "active",
+    });
   });
 
   it("PUT /api/egress/settings flips the global toggle + broadcasts (with enforcement)", async () => {
@@ -118,7 +148,7 @@ describe("egress settings routes", () => {
     expect(store.getGlobalEnabled()).toBe(false);
     expect(broadcasts).toContainEqual({
       event: "egress_settings",
-      data: { globalEnabled: false, globalHosts: [], enforcementActive: true },
+      data: { globalEnabled: false, globalHosts: [], enforcementActive: true, enforcementStatus: "active" },
     });
   });
 
@@ -301,6 +331,7 @@ describe("egress settings routes", () => {
           } as unknown,
           runnerRegistry: { get: () => undefined },
           chatHistoryManager: { append: () => {} },
+          sessionManager: { get: (id: string) => knownSessions.get(id) },
         } as unknown as ApiDeps);
         await floorApp.ready();
       });
@@ -457,6 +488,7 @@ describe("egress settings routes", () => {
       sessionId: "session-1",
       override: null,
       hosts: ["session.example.com"],
+      enforcementStatus: "active",
       effectiveContained: true,
       globalEnabled: true,
       enforcementActive: true,
@@ -478,11 +510,20 @@ describe("egress settings routes", () => {
       containerManager: { reloadEgress, get: () => undefined } as unknown,
       runnerRegistry: { get: () => undefined },
       chatHistoryManager: { append: () => {} },
+      sessionManager: { get: (id: string) => knownSessions.get(id) },
     } as unknown as ApiDeps);
     await app2.ready();
     try {
       const settings = (await app2.inject({ method: "GET", url: "/api/egress/settings" })).json<EgressSettings>();
-      expect(settings).toEqual({ globalEnabled: true, globalHosts: [], enforcementActive: false });
+      // docs/285 — with no explicit status, the deps-derived one can only be the
+      // sidecar case; the `disabled` case is reported by production, which
+      // passes the status rather than the boolean.
+      expect(settings).toEqual({
+        globalEnabled: true,
+        globalHosts: [],
+        enforcementActive: false,
+        enforcementStatus: "no-sidecar",
+      });
       const view = (await app2.inject({ method: "GET", url: "/api/egress/allowlist" })).json<EgressAllowlistView>();
       expect(view.enforcementActive).toBe(false);
     } finally {
@@ -507,6 +548,66 @@ describe("egress settings routes", () => {
     });
     expect(res.json<EgressSessionSettings>().override).toBeNull();
     expect(res.json<EgressSessionSettings>().effectiveContained).toBe(true);
+  });
+
+  // docs/285 — both session routes used to answer for any id at all, and the PUT
+  // used to accept any body. The composer hydrates from the GET on mount and
+  // releases its Send barrier on the PUT's response, so a confident answer about
+  // a session that does not exist, or a 200 for a write that changed nothing, is
+  // worse than an error.
+  describe("session-route validation", () => {
+    it("GET refuses an unknown session instead of inventing a view for it", async () => {
+      const res = await app.inject({ method: "GET", url: "/api/egress/session/nope" });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("PUT refuses an unknown session and writes nothing", async () => {
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/egress/session/nope",
+        payload: { override: true },
+      });
+      expect(res.statusCode).toBe(404);
+      expect(store.getSessionOverride("nope")).toBeNull();
+    });
+
+    it("writes NO audit card for the creation-time choice, and one for a later change", async () => {
+      // docs/285 — the docs/279 card records a CHANGE. A session that has not
+      // graduated has no prior state for one to describe: "changed network
+      // containment" above the first message would report an edit to a session
+      // the user experiences as still being created.
+      knownSessions.set("warm-1", { id: "warm-1", warm: true });
+      appendedCards.length = 0;
+      await app.inject({
+        method: "PUT",
+        url: "/api/egress/session/warm-1",
+        payload: { override: false },
+      });
+      expect(appendedCards).toHaveLength(0);
+      expect(store.getSessionOverride("warm-1")).toBe(false);
+
+      // The same write on a graduated session still carries the audit card.
+      await app.inject({
+        method: "PUT",
+        url: "/api/egress/session/session-1",
+        payload: { override: false },
+      });
+      expect(appendedCards).toHaveLength(1);
+    });
+
+    it("PUT refuses a body whose override is not one of the three values", async () => {
+      // The old route IGNORED this and returned 200 with the unchanged view —
+      // indistinguishable, to the caller, from a write that took effect.
+      for (const payload of [{ override: "open" }, { override: 1 }, {}]) {
+        const res = await app.inject({
+          method: "PUT",
+          url: "/api/egress/session/session-1",
+          payload,
+        });
+        expect(res.statusCode).toBe(400);
+      }
+      expect(store.getSessionOverride("session-1")).toBeNull();
+    });
   });
 
   // docs/172 — pending-restart diff: the resolved containment vs what the LIVE
@@ -653,6 +754,7 @@ describe("egress settings routes", () => {
           get: () => ({ emitMessage: (m: unknown) => emitted.push(m), running: false }),
         },
         chatHistoryManager: { append: (_id: string, m: unknown) => appended.push(m) },
+        sessionManager: { get: (id: string) => knownSessions.get(id) },
       } as unknown as ApiDeps);
       await app.ready();
     });
@@ -706,5 +808,177 @@ describe("egress settings routes", () => {
       expect(emitted).toEqual([]);
       expect(appended).toEqual([]);
     });
+  });
+});
+
+/**
+ * docs/285 req 3 — the mode the user picks before the first message is the mode
+ * that message's turn runs under, and this route is where that is delivered.
+ *
+ * Containment is plumbed at container creation and a running container cannot be
+ * re-plumbed, so the pick has to reach a NEW container. Doing that here — at the
+ * write, before the response — rather than at the first Send is the whole design:
+ * the container is created immediately after the value it reads was written, so
+ * there is no window for the two to disagree, and the composer's existing save
+ * barrier covers the wait.
+ */
+describe("changing an ungraduated session's mode rebuilds its container (docs/285)", () => {
+  let app: FastifyInstance;
+  let db: DatabaseManager;
+  let store: EgressAllowlistStore;
+  let reconcileCalls: string[];
+  let outcome: { action: string; message?: string; offerRescue?: boolean };
+  let sessions: Map<string, { id: string; warm: boolean }>;
+
+  beforeEach(async () => {
+    db = new DatabaseManager(":memory:");
+    store = new EgressAllowlistStore(db);
+    reconcileCalls = [];
+    outcome = { action: "restarted" };
+    sessions = new Map([
+      ["warm-1", { id: "warm-1", warm: true }],
+      ["live-1", { id: "live-1", warm: false }],
+    ]);
+    app = Fastify();
+    await registerEgressRoutes(app, {
+      egressAllowlistStore: store,
+      credentialStore: stubCredentialStore,
+      egressEnforcementActive: true,
+      sseBroadcast: () => {},
+      containerManager: { get: () => undefined, resolveEgress: () => undefined } as unknown,
+      runnerRegistry: { get: () => undefined },
+      chatHistoryManager: { append: () => {} },
+      sessionManager: { get: (id: string) => sessions.get(id) },
+      reconcileSessionEgress: async (sid: string) => {
+        reconcileCalls.push(sid);
+        return outcome;
+      },
+    } as unknown as ApiDeps);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+  });
+
+  const put = (id: string, override: boolean | null) =>
+    app.inject({ method: "PUT", url: `/api/egress/session/${id}`, payload: { override } });
+
+  it("rebuilds before answering, so the caller's save barrier covers the wait", async () => {
+    const res = await put("warm-1", false);
+    expect(res.statusCode).toBe(200);
+    expect(reconcileCalls).toEqual(["warm-1"]);
+    // The write is persisted BEFORE the rebuild, which is what lets container
+    // creation read the picked value rather than a snapshot of it.
+    expect(store.getSessionOverride("warm-1")).toBe(false);
+  });
+
+  it("leaves a GRADUATED session's container alone", async () => {
+    // Restarting a container out from under a session the user is working in is
+    // not a settings change, it is Rescue. Those keep the ordinary "applies on
+    // next container start" pending state.
+    const res = await put("live-1", false);
+    expect(res.statusCode).toBe(200);
+    expect(reconcileCalls).toEqual([]);
+    expect(store.getSessionOverride("live-1")).toBe(false);
+  });
+
+  it("re-asks for a rebuild even when the value did not change, so a failure can self-heal", async () => {
+    // Gating on "the override changed" saves nothing — the rebuild is already a
+    // no-op when the container matches — and it breaks recovery: after a rebuild
+    // FAILS, re-picking the same mode is exactly what the user does, and a gate
+    // would answer 200 with the container still on the old topology.
+    store.setSessionOverride("warm-1", false);
+    const res = await put("warm-1", false);
+    expect(res.statusCode).toBe(200);
+    expect(reconcileCalls).toEqual(["warm-1"]);
+  });
+
+  it("rolls the write back when the rebuild is refused", async () => {
+    // Leaving it persisted turns a refusal into a silent mismatch: the client
+    // re-reads after a failed write, reads back the value it just asked for, and
+    // releases Send — over a container still running the mode being replaced.
+    store.setSessionOverride("warm-1", true);
+    outcome = { action: "aborted", message: "breaker tripped", offerRescue: true };
+    const res = await put("warm-1", false);
+    expect(res.statusCode).toBe(503);
+    expect(store.getSessionOverride("warm-1")).toBe(true);
+  });
+
+  it("fails the write when the container could not be rebuilt", async () => {
+    // Answering 200 here would tell the composer the mode is in force and
+    // release Send — the one thing that must not happen, since the turn would
+    // then run under the mode the user just replaced.
+    outcome = { action: "aborted", message: "no space left on device", offerRescue: false };
+    const res = await put("warm-1", true);
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toMatch(/no space left on device/);
+  });
+
+  it("serializes two concurrent writes, so two rebuilds never interleave", async () => {
+    // `restartContainer` has no guard of its own: two concurrent calls for one
+    // session interleave a destroy and a create against each other. The client's
+    // save barrier orders ONE surface's writes; two tabs, or the composer and
+    // the settings dialog, are two clients.
+    let inFlight = 0;
+    let maxConcurrent = 0;
+    const localApp = Fastify();
+    await registerEgressRoutes(localApp, {
+      egressAllowlistStore: store,
+      credentialStore: stubCredentialStore,
+      egressEnforcementActive: true,
+      sseBroadcast: () => {},
+      containerManager: { get: () => undefined, resolveEgress: () => undefined } as unknown,
+      runnerRegistry: { get: () => undefined },
+      chatHistoryManager: { append: () => {} },
+      sessionManager: { get: (id: string) => sessions.get(id) },
+      reconcileSessionEgress: async () => {
+        inFlight += 1;
+        maxConcurrent = Math.max(maxConcurrent, inFlight);
+        // Long enough that two unserialized rebuilds, started in the same tick,
+        // are guaranteed to overlap.
+        await new Promise((r) => setTimeout(r, 25));
+        inFlight -= 1;
+        return { action: "restarted" };
+      },
+    } as unknown as ApiDeps);
+    await localApp.ready();
+
+    await Promise.all([
+      localApp.inject({
+        method: "PUT", url: "/api/egress/session/warm-1", payload: { override: true },
+      }),
+      localApp.inject({
+        method: "PUT", url: "/api/egress/session/warm-1", payload: { override: false },
+      }),
+    ]);
+
+    expect(maxConcurrent).toBe(1);
+    // Last write wins, and it is one of the two — not a torn value.
+    expect([true, false]).toContain(store.getSessionOverride("warm-1"));
+    await localApp.close();
+  });
+
+  it("still persists on a runtime with no rebuild wired", async () => {
+    // `RUNTIME_MODE=local` has no containers. The override is durable there and
+    // applies to whatever topology exists; the write must not fail.
+    const bare = Fastify();
+    await registerEgressRoutes(bare, {
+      egressAllowlistStore: store,
+      credentialStore: stubCredentialStore,
+      egressEnforcementActive: true,
+      sseBroadcast: () => {},
+      runnerRegistry: { get: () => undefined },
+      chatHistoryManager: { append: () => {} },
+      sessionManager: { get: (id: string) => sessions.get(id) },
+    } as unknown as ApiDeps);
+    await bare.ready();
+    const res = await bare.inject({
+      method: "PUT", url: "/api/egress/session/warm-1", payload: { override: true },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(store.getSessionOverride("warm-1")).toBe(true);
+    await bare.close();
   });
 });

@@ -838,11 +838,15 @@ describe("MessageInput", () => {
     it("collapses the settings into one control below 700px (req 3)", () => {
       renderComposer(520);
       expect(screen.getByTestId("composer-settings-trigger")).toBeInTheDocument();
-      // The four controls it replaces are gone from the row, not merely hidden.
+      // The three controls it replaces are gone from the row, not merely hidden.
       expect(screen.queryByTestId("harness-trigger")).toBeNull();
       expect(screen.queryByTestId("model-trigger")).toBeNull();
       expect(screen.queryByTestId("reasoning-trigger")).toBeNull();
-      expect(screen.queryByTestId("permission-mode-selector")).toBeNull();
+      // docs/285 — the permission mode is NOT among them any more. It carries
+      // the session's network access too, and that pair belongs in the row on
+      // every viewport (reqs 5, 6); folding it here is what left mobile with a
+      // nesting level whose only job was to lead somewhere else (req 9).
+      expect(screen.getByTestId("permission-mode-selector")).toBeInTheDocument();
     });
 
     it("leaves the row exactly as it was at 700px and above (req 3)", () => {
@@ -916,78 +920,6 @@ describe("MessageInput", () => {
       // ...and the labelled controls are the ones inside it.
       expect(group.contains(screen.getByTestId("model-trigger"))).toBe(true);
       expect(group.contains(screen.getByTestId("harness-trigger"))).toBe(true);
-    });
-
-    /**
-     * docs/260 req 19 — quick capture on desktop keeps the mode in the row.
-     *
-     * Its panel is `max-w-2xl` (672px) at every window size, so it is ALWAYS
-     * under the 700px breakpoint: the measurement that means "space is scarce"
-     * in a dragged chat panel means nothing here, and folding the mode took the
-     * one control this surface most needs before its first message.
-     */
-    describe("the quick-capture overlay's mode control (req 19)", () => {
-      beforeEach(() => {
-        // A neighbouring test leaves `voiceInputEnabled` on in the shared store,
-        // and on a mobile viewport that puts the recording surface in front of
-        // this row — the settings menu then never opens. These three are about
-        // the mode alone, so they start from the default.
-        useSettingsStore.setState({ voiceInputEnabled: false });
-      });
-
-      /**
-       * Open the anchor and WAIT for the menu, on a deadline of its own.
-       *
-       * **`fireEvent.pointerDown`, not `userEvent.click`**, and that is the
-       * whole reason this helper exists. Radix binds the trigger on
-       * `pointerdown`; `userEvent.click` synthesises a whole pointer sequence
-       * with its own waits, and on the mobile overlay path — where the surface
-       * also moves focus into the textarea on mount — that sequence did not
-       * settle within the 5s test timeout under a parallel run. It failed as
-       * "the mode row is missing", which is also what a real regression looks
-       * like, so the flake was indistinguishable from the bug.
-       *
-       * Then wait for the menu ITSELF before asserting on its rows: a row's
-       * absence is also true of a menu that never opened.
-       */
-      async function openSettingsMenu() {
-        fireEvent.pointerDown(screen.getByTestId("composer-settings-trigger"), {
-          button: 0,
-          ctrlKey: false,
-          pointerType: "mouse",
-        });
-        await screen.findByTestId("composer-settings-menu", {}, { timeout: 2000 });
-      }
-
-      it("stands in the row on a desktop viewport, and leaves the menu", async () => {
-        renderComposer(520, { surface: "overlay" });
-        expect(screen.getByTestId("permission-mode-selector")).toBeInTheDocument();
-        // Still the compact layout — only the mode came back out of it.
-        expect(screen.getByTestId("composer-settings-trigger")).toBeInTheDocument();
-        expect(screen.queryByTestId("harness-trigger")).toBeNull();
-        // One setting, one control: the menu must not offer the mode as well.
-        await openSettingsMenu();
-        // Waited for a row that IS there first — "the mode row is absent" is
-        // also true of a menu that never opened, which is exactly the flake the
-        // deadline below exists for.
-        expect(screen.getByTestId("composer-settings-row-model")).toBeInTheDocument();
-        expect(screen.queryByTestId("composer-settings-row-mode")).toBeNull();
-      });
-
-      it("folds it away on a mobile viewport, where the panel really is narrow", async () => {
-        mockMatchMedia(true);
-        renderComposer(390, { surface: "overlay" });
-        expect(screen.queryByTestId("permission-mode-selector")).toBeNull();
-        await openSettingsMenu();
-        expect(screen.getByTestId("composer-settings-row-mode")).toBeInTheDocument();
-      });
-
-      it("changes nothing for the chat composer at the same width", async () => {
-        renderComposer(520);
-        expect(screen.queryByTestId("permission-mode-selector")).toBeNull();
-        await openSettingsMenu();
-        expect(screen.getByTestId("composer-settings-row-mode")).toBeInTheDocument();
-      });
     });
 
     it("names a non-default permission mode by the mode alone (req 17)", () => {

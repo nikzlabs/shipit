@@ -7,6 +7,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import type {
   EgressAllowlistEntry,
   EgressAllowlistView,
+  EgressEnforcementStatus,
   EgressHostGrantOutcome,
 } from "../../server/shared/types.js";
 
@@ -27,10 +28,12 @@ function stubFetch(
   let defaultsCustomized = opts.defaultsCustomized ?? false;
   const enforcementActive = opts.enforcementActive ?? true;
   let override: boolean | null = null;
+  const enforcementStatus: EgressEnforcementStatus = enforcementActive ? "active" : "no-sidecar";
   const view = (): EgressAllowlistView => ({
     entries,
     globalEnabled,
     enforcementActive,
+    enforcementStatus,
     session: opts.withSession
       ? {
           sessionId: "s1",
@@ -39,6 +42,7 @@ function stubFetch(
           effectiveContained: override ?? globalEnabled,
           globalEnabled,
           enforcementActive,
+          enforcementStatus,
           startedContained: null,
           pendingRestart: false,
         }

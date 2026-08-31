@@ -28,6 +28,7 @@ import { useKeybinding } from "./keybindings/use-keybinding.js";
 import { useAutoFix } from "./hooks/useAutoFix.js";
 import { useAppBootstrap } from "./hooks/useAppBootstrap.js";
 import { usePreviewLinkIntent } from "./hooks/usePreviewLinkIntent.js";
+import { useComposerNetworkMode } from "./hooks/useSessionNetworkMode.js";
 import { useSessionActivation } from "./hooks/useSessionActivation.js";
 import { useAppKeyboardShortcuts } from "./hooks/useAppKeyboardShortcuts.js";
 import { useAppModals } from "./hooks/useAppModals.js";
@@ -484,6 +485,65 @@ export default function App() {
     bootstrapLoaded,
     reconnect,
   });
+
+  /**
+   * docs/285 — the composer's network-mode state.
+   *
+   * `wsSessionId` rather than the store's `sessionId` because it is the id the
+   * composer is actually bound to, and `isNewSessionRoute` is what tells the
+   * hook a claim is expected: a pick made before the claim lands is held as a
+   * draft and written when it arrives, but only when this composer is the thing
+   * that claimed it (req 8).
+   *
+   * `beforeFirstTurn` — whether the server will still reconcile this session's
+   * container for the picked mode, which is true exactly while the session is
+   * WARM. The two footers say opposite things ("in force from the first turn"
+   * vs "applies on the next container start") and each is true at its own
+   * moment, so the test has to match the server's.
+   *
+   * Read from session membership, not from `messages.length`. Warm sessions are
+   * excluded from the broadcast session list, so an absent `currentSession` IS
+   * the warm signal — whereas `messages` is per-session and momentarily empty
+   * right after switching to an existing session, which made the control
+   * promise a reconciliation the server was never going to run.
+   */
+  const composerNetworkState = useComposerNetworkMode(
+    wsSessionId ?? null,
+    isNewSessionRoute,
+    // req 8 — the draft belongs to THIS new-session route. Navigating from one
+    // repo's `/new` to another's before the first claim lands must abandon the
+    // pick, not carry it into the session that arrives next.
+    newSessionRepoSlug ?? null,
+  );
+  const composerNetwork = useMemo(
+    () => ({
+      mode: composerNetworkState.mode,
+      onChange: composerNetworkState.setMode,
+      globalEnabled: composerNetworkState.globalEnabled,
+      enforcementStatus: composerNetworkState.enforcementStatus,
+      pendingRestart: composerNetworkState.pendingRestart,
+      loaded: composerNetworkState.loaded,
+      saving: composerNetworkState.saving,
+      beforeFirstTurn: !currentSession,
+    }),
+    [composerNetworkState, currentSession],
+  );
+
+  // docs/285 — this session's runner was replaced (its container was rebuilt by
+  // a network-mode rebuild, or by Rescue in another tab), so this
+  // socket is attached to a runner that no longer has listeners and will never
+  // deliver another event. Reattach.
+  //
+  // It lives here for the same reason the preview-link effect below does: `App`
+  // owns the socket, and `reconnect` is not reachable from the SSE hook that
+  // learns about the replacement.
+  const staleRunnerNonce = useSessionStore((s) => s.staleRunnerNonce);
+  // eslint-disable-next-line no-restricted-syntax -- external system sync: reattach the WebSocket after the server replaced this session's runner
+  useEffect(() => {
+    // Zero is the initial value, not an event — reconnecting on mount would
+    // throw away the connection that was just established.
+    if (staleRunnerNonce > 0) reconnect();
+  }, [staleRunnerNonce, reconnect]);
 
   // docs/258 — an agent-authored `shipit-preview://` pointer records where it
   // wants the panel to go; this starts the named service if it isn't running
@@ -2248,6 +2308,13 @@ export default function App() {
           fileTree={fileTree}
           skills={skills}
           sessionId={wsSessionId}
+          /* docs/285 reqs 1, 3, 5, 6 — the session's network mode, rendered as
+             the second section of the permission-mode control.
+
+             Omitted for a SANDBOX session: its network access is one of its
+             capability grants (docs/211, docs/279), and offering this as well
+             would put two controls over one session's egress. */
+          {...(currentSession?.kind === "sandbox" ? {} : { network: composerNetwork })}
           agents={agentList}
           activeAgentId={activeAgentId}
           onAgentChange={handleAgentChange}

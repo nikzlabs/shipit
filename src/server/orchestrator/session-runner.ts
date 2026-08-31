@@ -2232,6 +2232,28 @@ export type SessionRunnerFactory = (opts: {
 
 export class SessionRunnerRegistry {
   private runners = new Map<string, SessionRunnerInterface>();
+  /**
+   * docs/285 — how many runners this session has had, bumped on every creation.
+   *
+   * The number itself is meaningless; **changing** is the whole signal. Runner
+   * disposal removes the old runner's listeners without closing the viewer's
+   * socket, and reattachment only happens when `attachToRunner` runs with the
+   * replacement — so a viewer that was attached when a container was rebuilt
+   * sits on a dead runner and receives nothing, forever, with no error anywhere.
+   * Nothing in the reconnect snapshot used to say an attachment was stale.
+   *
+   * Published in the `active_runners` snapshot so a viewer holding an older
+   * value reconnects on its own. That makes recovery converge from the
+   * AUTHORITATIVE state rather than from a live event: the session-scoped signal
+   * emitted at restart is an optimization, and a viewer that misses it during an
+   * SSE interruption still recovers on its next snapshot.
+   *
+   * Kept on the registry rather than the runner for the obvious reason — the
+   * runner whose replacement we need to detect is exactly the one that is gone.
+   * Retained after disposal so a session that goes idle and comes back does not
+   * restart the count and collide with a value a stale viewer still holds.
+   */
+  private incarnations = new Map<string, number>();
   private _runnerFactory: SessionRunnerFactory;
   private _depCacheDirResolver?: (sessionId: string) => string | undefined;
   private _onRunnerIdle?: (sessionId: string) => void;
@@ -2278,6 +2300,7 @@ export class SessionRunnerRegistry {
       defaultAgentId,
       depCacheDir: this._depCacheDirResolver?.(sessionId),
     });
+    this.incarnations.set(sessionId, (this.incarnations.get(sessionId) ?? 0) + 1);
     runner.on("disposed", () => this.runners.delete(sessionId));
     if (this._onRunnerIdle) {
       const cb = this._onRunnerIdle;
@@ -2286,6 +2309,14 @@ export class SessionRunnerRegistry {
     this._onRunnerCreated?.(runner);
     this.runners.set(sessionId, runner);
     return runner;
+  }
+
+  /**
+   * docs/285 — which runner generation this session is on. `0` for a session
+   * that has never had one. See {@link incarnations}.
+   */
+  incarnation(sessionId: string): number {
+    return this.incarnations.get(sessionId) ?? 0;
   }
 
   /** Get existing runner (if any). */

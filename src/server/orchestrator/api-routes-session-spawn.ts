@@ -115,6 +115,10 @@ export async function registerSessionSpawnRoutes(
     ...(deps.waitForWarmSession ? { waitForWarmSession: deps.waitForWarmSession } : {}),
     ...(deps.shouldSkipClaimFetch ? { shouldSkipClaimFetch: deps.shouldSkipClaimFetch } : {}),
     ...(deps.containerManager ? { containerManager: deps.containerManager } : {}),
+    // docs/285 req 8 — the reuse path would hand an abandoned `/new` draft back
+    // as a NEW session, so it has to see whether that draft carries a network
+    // override and refuse to recycle it if so.
+    ...(deps.egressAllowlistStore ? { egressAllowlistStore: deps.egressAllowlistStore } : {}),
   });
 
   // ---- Session-scoped reads ----

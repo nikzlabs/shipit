@@ -92,6 +92,25 @@ interface SessionState {
    */
   modelSelectionEcho: Record<string, number>;
   activeRunnerSessions: Set<string>;
+  /**
+   * docs/285 — which runner GENERATION each session is on, as the server last
+   * reported it. Bumped server-side whenever a session's runner is created, so a
+   * value that moves means the runner this tab is attached to has been replaced
+   * (a network-mode rebuild, a Rescue).
+   *
+   * It matters because disposal leaves the viewer's socket open with no
+   * listeners on the other end: a tab that was watching when the container was
+   * rebuilt receives nothing at all, forever, with no error to notice.
+   */
+  runnerIncarnations: Record<string, number>;
+  /**
+   * docs/285 — bumped when the ACTIVE session's runner generation moved, so this
+   * tab's WebSocket reattaches to the replacement.
+   *
+   * A counter rather than a boolean because the same thing can happen twice, and
+   * the second occurrence has to be distinguishable from the first.
+   */
+  staleRunnerNonce: number;
   /** docs/193 (Thread C) — sessions blocked awaiting a permission answer. */
   awaitingPermissionSessions: Set<string>;
   /**
@@ -252,6 +271,23 @@ interface SessionState {
   setActiveRunnerSessions: (
     updater: (prev: Set<string>) => Set<string>,
   ) => void;
+  /**
+   * docs/285 — fold in the server's view of runner generations, and raise
+   * `staleRunnerNonce` if the ACTIVE session's moved.
+   *
+   * `merge` distinguishes the two shapes that arrive here: the SSE connect
+   * snapshot is authoritative and replaces the map, while a live per-session
+   * signal carries one entry and must not erase what it does not mention.
+   */
+  noteRunnerIncarnations: (
+    next: Record<string, number>,
+    /**
+     * `live` marks the per-session `runner_replaced` event, which names the
+     * session it replaced and so needs no earlier generation to be believed.
+     * The snapshot path keeps the strict-greater rule.
+     */
+    opts?: { merge?: boolean; live?: boolean },
+  ) => void;
   setAwaitingPermissionSessions: (
     updater: (prev: Set<string>) => Set<string>,
   ) => void;
@@ -377,6 +413,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [] as SessionInfo[],
   modelSelectionEcho: {},
   activeRunnerSessions: new Set<string>(),
+  runnerIncarnations: {},
+  staleRunnerNonce: 0,
   awaitingPermissionSessions: new Set<string>(),
   backgroundTaskSessions: new Map<string, string[]>(),
   rewindRecoveries: {},
@@ -631,6 +669,39 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => ({
       activeRunnerSessions: updater(state.activeRunnerSessions),
     })),
+
+  noteRunnerIncarnations: (next, opts) =>
+    set((state) => {
+      const merged = opts?.merge
+        ? { ...state.runnerIncarnations, ...next }
+        : next;
+      const active = state.sessionId;
+      // STRICTLY greater, not merely different. A snapshot arriving from a
+      // server that restarted reports lower numbers for everything, and reading
+      // that as "your runner was replaced" would make every tab reconnect in a
+      // loop against a server that is already giving them fresh runners.
+      const previous = active ? state.runnerIncarnations[active] : undefined;
+      const current = active ? merged[active] : undefined;
+      // A LIVE replacement event names the session it replaced, so it needs no
+      // baseline to be believed. Requiring one silently excluded the sessions
+      // this matters most for: a `/new` viewer has no earlier generation to
+      // compare against, and warm sessions are absent from the session list the
+      // authoritative snapshot is built from — which is exactly the set a
+      // network-mode rebuild replaces.
+      const replaced =
+        active !== null
+        && current !== undefined
+        && (opts?.live === true
+          // The snapshot path keeps the strict-greater rule: a server that
+          // restarted reports lower numbers for everything, and reading that as
+          // "your runner was replaced" makes every tab reconnect in a loop.
+          ? previous === undefined || current > previous
+          : previous !== undefined && current > previous);
+      return {
+        runnerIncarnations: merged,
+        staleRunnerNonce: replaced ? state.staleRunnerNonce + 1 : state.staleRunnerNonce,
+      };
+    }),
 
   setAwaitingPermissionSessions: (updater) =>
     set((state) => ({

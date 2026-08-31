@@ -6,11 +6,8 @@ import {
   CaretLeftIcon,
   CaretRightIcon,
   CheckIcon,
-  FastForwardIcon,
   LockIcon,
-  NotepadIcon,
   RobotIcon,
-  ShieldCheckIcon,
   SlidersHorizontalIcon,
   SparkleIcon,
 } from "@phosphor-icons/react";
@@ -36,7 +33,7 @@ import {
   roleUnavailableDetail,
   useRolePickerState,
 } from "./RoleSelector.js";
-import type { AgentId, PermissionMode } from "../../../server/shared/types.js";
+import type { AgentId } from "../../../server/shared/types.js";
 import type { AgentOption, ModelChoice } from "../../agent-types.js";
 import type { ModelInfo } from "../../utils/model-info.js";
 
@@ -52,34 +49,14 @@ import type { ModelInfo } from "../../utils/model-info.js";
  * flat list because the menu has to survive catalogue growth (req 11): the root
  * stays four rows however many models or reasoning levels a harness offers.
  *
- * **The anchor never reacts to the permission mode.** The mode's own icon appears
- * on the menu's Mode row instead (req 12). The consequence — guarded and plan are
- * invisible until the menu opens — was accepted deliberately; see the receipts in
- * `docs/260-composer-toolbar-layout/requirements.md`.
+ * docs/285 — the permission mode is NOT behind this anchor at all any more. It
+ * moved to the composer row's own control, alongside network access, on every
+ * viewport (reqs 5, 6). docs/260 req 12's "the anchor never reacts to the mode"
+ * is therefore moot rather than upheld: there is no mode here to react to.
  */
 
-const MODE_META: Record<PermissionMode, { label: string; icon: typeof NotepadIcon; description: string }> = {
-  plan: {
-    label: "Plan",
-    icon: NotepadIcon,
-    description: "Read-only — research and plan, no edits.",
-  },
-  guarded: {
-    label: "Guarded",
-    icon: ShieldCheckIcon,
-    description: "Autonomous — commands are safety-checked before running.",
-  },
-  auto: {
-    label: "Auto",
-    icon: FastForwardIcon,
-    description: "Autonomous — no command safety check.",
-  },
-};
 
-/** Display order: most → least oversight, matching `PermissionModeSelector`. */
-const LADDER: PermissionMode[] = ["plan", "guarded", "auto"];
-
-type Panel = "root" | "mode" | "harness" | "model" | "reasoning" | "role";
+type Panel = "root" | "harness" | "model" | "reasoning" | "role";
 
 /** One root row: an icon, a label, the current value, and a chevron when it drills down. */
 function RootRow({
@@ -213,10 +190,6 @@ export function ComposerSettingsMenu({
   modelInfo,
   hasActiveSession = false,
   seedFromHistory = false,
-  permissionMode,
-  onPermissionModeChange,
-  modeInRow = false,
-  guardedModelOk = true,
   disabled = false,
   pickersLocked = false,
   onRoleChange,
@@ -245,17 +218,6 @@ export function ComposerSettingsMenu({
    * happened to be active behind it.
    */
   seedFromHistory?: boolean;
-  permissionMode: PermissionMode;
-  onPermissionModeChange?: (mode: PermissionMode) => void;
-  /**
-   * docs/260 req 19 — the composer row is carrying the mode control itself, so
-   * this menu drops its Mode row rather than offering the same setting twice.
-   * Only the quick-capture overlay on a desktop viewport does this; everywhere
-   * else the compact layout owns the mode, as req 3 says.
-   */
-  modeInRow?: boolean;
-  /** False when the effective model cannot run guarded (Haiku) — same gate the standalone selector applies. */
-  guardedModelOk?: boolean;
   /** The composer is dead as a whole (docs/257 `disabledReason`) — the anchor does not open. */
   disabled?: boolean;
   /**
@@ -264,10 +226,8 @@ export function ComposerSettingsMenu({
    * triggers.
    *
    * It deliberately does NOT disable the anchor. Everything behind it would
-   * become unreadable mid-turn, and the permission mode — which the wide row
-   * leaves changeable while a turn runs — would silently stop working here.
-   * So the anchor still opens, and only the three rows that must not move are
-   * inert.
+   * become unreadable mid-turn. So the anchor still opens, and only the three
+   * rows that must not move are inert.
    */
   pickersLocked?: boolean;
   /**
@@ -296,6 +256,8 @@ export function ComposerSettingsMenu({
    */
   roleLocked?: boolean;
 }) {
+  // Initialised below the row-shape computation, which decides whether a root
+  // exists worth showing at all (req 9).
   const [panel, setPanel] = useState<Panel>("root");
   const { roles, hasRoles } = useRolePickerState();
   // docs/272 req 16 — offered only once the user has a role of their own; a role
@@ -311,6 +273,28 @@ export function ComposerSettingsMenu({
   // nothing left, and the row goes inert rather than opening onto an empty panel.
   const roleRowOpens =
     !pickersLocked && (!roleLocked || (!!sessionRoleName && !roleParamsRevealed));
+  /**
+   * docs/285 req 9 — the root must never be a level that exists only to lead
+   * somewhere else.
+   *
+   * Under a role with its parameters folded away, removing the Mode row leaves
+   * exactly one row on the root: Role, whose only job is to open the role panel.
+   * Deleting the row was necessary and not sufficient — the user still traverses
+   * the nesting. So when Role is all that would be there, the menu opens ONTO the
+   * role list and the root is skipped entirely.
+   *
+   * Not "under a role": under the *shape* where nothing else is offered. A role
+   * whose parameters have been revealed has four rows and a real root, and a
+   * session with no role but a locked picker set is not this case either.
+   */
+  const rootIsRoleAlone = showRole && !showParams && roleRowOpens;
+  /**
+   * The panel actually rendered. Derived rather than stored, because the shape
+   * above depends on props that can change while the menu is mounted (a role is
+   * chosen, "Adjust parameters…" is used) — a `useState` initialiser would be
+   * read once, on the first render, and then be wrong.
+   */
+  const activePanel: Panel = rootIsRoleAlone && panel === "root" ? "role" : panel;
 
   const harness = useHarnessPickerState({ agents, activeAgentId, hasActiveSession, seedFromHistory });
   const model = useModelPickerState({
@@ -330,17 +314,6 @@ export function ComposerSettingsMenu({
     seedFromHistory: !hasActiveSession,
   });
 
-  // Only modes the harness advertises, plus `auto`, which every harness runs.
-  const supported = harness.displayAgent?.supportedPermissionModes ?? [];
-  const availableModes = LADDER.filter((m) => m === "auto" || supported.includes(m));
-  const displayMode: PermissionMode = availableModes.includes(permissionMode)
-    ? permissionMode
-    : "auto";
-  const modeMeta = MODE_META[displayMode];
-  const ModeIcon = modeMeta.icon;
-  const modeIsDefault = displayMode === "auto";
-  const canPickMode = !!onPermissionModeChange && availableModes.length > 1;
-
   // `displayName` is never empty — it answers "loading" and "nothing to pick"
   // itself, so this layout cannot label the second one as the first.
   const modelName = model.displayName;
@@ -359,8 +332,10 @@ export function ComposerSettingsMenu({
   return (
     <DropdownMenu
       onOpenChange={(open) => {
-        // Always reopen at the root — a panel left behind from last time reads
-        // as the menu having lost its place.
+        // Always reopen at the menu's OWN starting point — a panel left behind
+        // from last time reads as the menu having lost its place. That start is
+        // the role list rather than the root when the root would hold nothing
+        // but the row leading to it (req 9).
         if (!open) setPanel("root");
       }}
     >
@@ -378,7 +353,7 @@ export function ComposerSettingsMenu({
           title={
             sessionRoleName
               ? `Role: ${sessionRoleName}. Opens the roles, and the settings this one sets.`
-              : `Model: ${modelName}. Opens harness, model, reasoning and permission mode.`
+              : `Model: ${modelName}. Opens harness, model and reasoning.`
           }
           data-testid="composer-settings-trigger"
           // `flex-[0_1_auto] min-w-0` is what makes the name the elastic thing in
@@ -421,28 +396,17 @@ export function ComposerSettingsMenu({
         className="w-72"
         data-testid="composer-settings-menu"
       >
-        {panel === "root" && (
+        {activePanel === "root" && (
           <>
-            {/* docs/260 req 19 — absent, not inert, when the row carries the
-                control: a Mode row here as well would be a second place to
-                change one setting, and the two would have to agree about which
-                is the real one. */}
-            {!modeInRow && (
-            <RootRow
-              testId="composer-settings-row-mode"
-              icon={
-                <ModeIcon
-                  size={ICON_SIZE.SM}
-                  weight={modeIsDefault ? "regular" : "fill"}
-                  className={`shrink-0 ${modeIsDefault ? "" : "text-(--color-accent)"}`}
-                />
-              }
-              label="Mode"
-              value={modeMeta.label}
-              valueAccent={!modeIsDefault}
-              onSelect={canPickMode ? () => setPanel("mode") : undefined}
-            />
-            )}
+            {/* docs/285 req 9 — the Mode row is GONE, on every viewport. The
+                composer row carries the permission mode itself now (alongside
+                network access, in one control), and a row here as well would be
+                a second place to change one setting.
+
+                Removing it is what collapses the nesting this menu had under a
+                role: the root used to exist to hold Mode and Role, so a session
+                running as a role opened onto a two-row panel whose only purpose
+                was to lead somewhere else. */}
             {showRole && (
               <RootRow
                 testId="composer-settings-row-role"
@@ -511,9 +475,11 @@ export function ComposerSettingsMenu({
           </>
         )}
 
-        {panel === "role" && (
+        {activePanel === "role" && (
           <>
-            <PanelHeader title="Role" onBack={() => setPanel("root")} />
+            {/* req 9 — no back header when the role list IS the menu: there is
+                no root behind it to go back to. */}
+            {!rootIsRoleAlone && <PanelHeader title="Role" onBack={() => setPanel("root")} />}
             <DropdownMenuSeparator />
             {/* req 4 — a locked panel lists no roles. The server refuses
                 `set_role` on a pinned session, so rows here would all be
@@ -584,39 +550,7 @@ export function ComposerSettingsMenu({
           </>
         )}
 
-        {panel === "mode" && (
-          <>
-            <PanelHeader title="Permission mode" onBack={() => setPanel("root")} />
-            <DropdownMenuSeparator />
-            {availableModes.map((m) => {
-              const meta = MODE_META[m];
-              const Icon = meta.icon;
-              const blocked = m === "guarded" && !guardedModelOk;
-              return (
-                <ChoiceRow
-                  key={m}
-                  testId={`composer-settings-mode-${m}`}
-                  icon={
-                    <Icon
-                      size={ICON_SIZE.SM}
-                      className="mt-0.5 shrink-0"
-                      weight={m === displayMode ? "fill" : "regular"}
-                    />
-                  }
-                  label={`${meta.label} mode`}
-                  description={
-                    blocked ? "Guarded mode needs a Sonnet or Opus model." : meta.description
-                  }
-                  isCurrent={m === displayMode}
-                  disabled={blocked}
-                  onSelect={() => onPermissionModeChange?.(m)}
-                />
-              );
-            })}
-          </>
-        )}
-
-        {panel === "harness" && (
+        {activePanel === "harness" && (
           <>
             <PanelHeader title="Harness" onBack={() => setPanel("root")} />
             <DropdownMenuSeparator />
@@ -641,7 +575,7 @@ export function ComposerSettingsMenu({
           </>
         )}
 
-        {panel === "model" && (
+        {activePanel === "model" && (
           <>
             <PanelHeader title="Model" onBack={() => setPanel("root")} />
             <DropdownMenuSeparator />
@@ -673,7 +607,7 @@ export function ComposerSettingsMenu({
           </>
         )}
 
-        {panel === "reasoning" && reasoning && (
+        {activePanel === "reasoning" && reasoning && (
           <>
             <PanelHeader title={reasoning.label} onBack={() => setPanel("root")} />
             <DropdownMenuSeparator />

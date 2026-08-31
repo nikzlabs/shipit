@@ -397,6 +397,56 @@ describe("Integration: warm session lifecycle", () => {
       }
     }, 30000);
 
+    it("does not recycle an abandoned draft that carries a network mode (docs/285 req 8)", async () => {
+      // req 8 — every new session starts at "Inherit workspace". The REUSE path
+      // is the one place that would quietly break it, through machinery with
+      // nothing to do with the composer: pick Open on `/new`, walk away without
+      // sending, start another new session in that repo.
+      //
+      // Clearing the override and handing the session over is the cheaper fix
+      // and it is wrong: the mode is a container TOPOLOGY, and the recycled
+      // container is still running the abandoned draft's one. The next user
+      // would read "Inherit workspace — currently Contained" over an Open
+      // container. So the draft is not recycled at all.
+      await waitFor(
+        () => !!repoStore.get(REPO_URL)?.warmSessionId,
+        10000,
+        "first warm session",
+      );
+      const encodedUrl = encodeURIComponent(REPO_URL);
+
+      const first = (await app.inject({
+        method: "POST",
+        url: `/api/repos/${encodedUrl}/claim-session`,
+      })).json();
+      // The user picks Open, then abandons the draft without sending.
+      await app.inject({
+        method: "PUT",
+        url: `/api/egress/session/${first.sessionId}`,
+        payload: { override: false },
+      });
+
+      const second = (await app.inject({
+        method: "POST",
+        url: `/api/repos/${encodedUrl}/claim-session`,
+      })).json();
+      expect(second.sessionId).not.toBe(first.sessionId);
+
+      // The new session starts at Inherit…
+      const fresh = (await app.inject({
+        method: "GET",
+        url: `/api/egress/session/${second.sessionId}`,
+      })).json();
+      expect(fresh.override).toBeNull();
+      // …and the abandoned draft keeps its own mode, rather than being handed
+      // out with the setting silently rewritten underneath it.
+      const abandoned = (await app.inject({
+        method: "GET",
+        url: `/api/egress/session/${first.sessionId}`,
+      })).json();
+      expect(abandoned.override).toBe(false);
+    }, 30000);
+
     it("claim → graduate → claim yields a fresh, distinct usable session (docs/144 fix #1)", async () => {
       // The complement to the collapse case: once a claimed session graduates
       // (the user sends a message), the next claim must NOT reuse it — it gets a
