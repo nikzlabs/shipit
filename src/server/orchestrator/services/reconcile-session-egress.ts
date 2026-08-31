@@ -52,17 +52,20 @@ export interface ReconcileEgressDeps {
 }
 
 export type ReconcileEgressOutcome =
-  /** The container already matches, or there is nothing to reconcile. Send as normal. */
+  /** The container already matches, or there is nothing to rebuild. */
   | { action: "none"; reason: "matches" }
   /**
-   * The container was destroyed and a replacement created. The caller proceeds
-   * through the NEW runner's own worker-readiness gate — `restartContainer`
-   * bounds its wait at 8s and can return with the replacement still `starting`.
+   * The container was destroyed and a replacement created **with the new mode**.
+   * Not necessarily ready: `restartContainer` bounds its readiness wait at 8s and
+   * can return with the replacement still `starting`. That is enough, because
+   * containment is decided at creation and the first turn separately waits on the
+   * worker-readiness gate.
    */
   | { action: "restarted" }
   /**
-   * The Send must not go out. `message` is user-facing; `offerRescue` marks the
-   * one case the user can act on directly.
+   * The mode could not be applied, so the write that asked for it must fail.
+   * `message` is user-facing; `offerRescue` marks the one case the user can act
+   * on directly.
    */
   | { action: "aborted"; message: string; offerRescue: boolean };
 
@@ -92,9 +95,10 @@ export function resolveSessionContainment(
  *
  * "Running, and the recorded boot mode matches" is the only agreeing answer.
  * Mismatching, still `starting`, and unknown all count as disagreement: each
- * costs an unnecessary restart in a rare case, and none of them can silently run
- * the first turn under the wrong mode. `restartContainer` handles `starting`
- * too, since its destroy cancels a creation that has published no record yet.
+ * costs an unnecessary rebuild in a rare case, and none of them can silently
+ * leave the session on the mode the user just replaced. `restartContainer`
+ * handles `starting` too, since its destroy cancels a creation that has
+ * published no record yet.
  *
  * Keyed on the **container record**, never the standby marker, which lags it.
  */
@@ -110,10 +114,10 @@ export function containerDisagreesWithEgressPolicy(
   // mode fresh and there is nothing to rebuild.
   //
   // This also answers `RUNTIME_MODE=local`, where there is no container manager
-  // at all: `restartContainer` throws a 503 there, and the first Send must
-  // proceed (the override is persisted; there is simply no topology). No
-  // separate branch for it, because "no manager" and "no container" are the same
-  // question asked twice, and a second check would be unreachable code that
+  // at all: `restartContainer` throws a 503 there, and the write must still
+  // succeed (the override is persisted; there is simply no topology to rebuild).
+  // No separate branch for it, because "no manager" and "no container" are the
+  // same question asked twice, and a second check would be unreachable code that
   // reads like a guarantee.
   const container = deps.containerManager?.get(sessionId);
   if (!container) return false;
@@ -144,7 +148,7 @@ export async function reconcileSessionEgress(
   // the breaker because the user explicitly asked to retry, and a network-mode
   // change is not that request. Letting it through would mean a session that has
   // been OOM-killed repeatedly gets a free attempt by toggling a setting, while
-  // an unchanged first Send on that same session stays blocked.
+  // that same session left alone stays blocked.
   if (deps.oomBreaker?.isTripped(sessionId)) {
     return {
       action: "aborted",

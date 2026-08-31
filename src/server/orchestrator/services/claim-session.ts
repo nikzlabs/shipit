@@ -62,11 +62,11 @@ export interface ClaimSessionDeps {
    * REUSE path below is the one place that would quietly break it: an
    * interactive claim recycles an ungraduated warm session from the same repo,
    * so an abandoned `/new` draft carrying an explicit Contained/Open would hand
-   * that setting to the next new session in that repo — through a path with
-   * nothing to do with the composer that set it.
+   * both that setting AND the container built for it to the next new session.
+   * Read here to refuse that reuse.
    *
    * Optional, like `containerManager`: a runtime with no egress store has no
-   * override to clear.
+   * override to find.
    */
   egressAllowlistStore?: EgressAllowlistStore;
 }

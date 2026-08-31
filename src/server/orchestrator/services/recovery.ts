@@ -237,11 +237,11 @@ export interface RestartContainerOpts {
    * the OOM breaker and the loop detector's event window.
    *
    * True for Rescue itself, where the user explicitly asked to retry. False for
-   * the first-Send egress reconciliation, which is a side effect of changing a
-   * setting: a session that has been OOM-killed repeatedly would otherwise gain
-   * a free retry by toggling the network mode, while an *unchanged* first Send
-   * on the same session stays blocked. The caller checks `isTripped` and offers
-   * Rescue instead, rather than quietly becoming it.
+   * the egress rebuild, which is a side effect of changing a setting: a session
+   * that has been OOM-killed repeatedly would otherwise gain a free retry by
+   * toggling the network mode, while the same session left alone stays blocked.
+   * The caller checks `isTripped` and offers Rescue instead, rather than quietly
+   * becoming it.
    */
   resetBreakers?: boolean;
   /**

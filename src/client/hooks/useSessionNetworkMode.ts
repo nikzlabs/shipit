@@ -163,12 +163,13 @@ export interface SessionNetworkModeState {
   loaded: boolean;
   /**
    * docs/285 — **the Send barrier.** True while a write is in flight, and after
-   * a failed one until the displayed value has reverted.
+   * a failed one until the displayed value is one the server reported.
    *
-   * Without it, picking Contained and pressing Send in the same breath lets the
-   * server resolve the OLD value, find no mismatch, and run the first turn under
-   * the wrong policy — requirement 3 lost to ordinary mutation ordering. It is a
-   * save barrier on one control, not a transaction around Send.
+   * For an ungraduated session the write REBUILDS the container, so this is also
+   * the "wait for the container" state: picking Contained and pressing Send in
+   * the same breath would otherwise dispatch the first turn into the container
+   * that is being torn down. It is a save barrier on one control, not a
+   * transaction around Send.
    */
   saving: boolean;
   setMode: (next: NetworkMode) => void;
@@ -492,8 +493,8 @@ export function useComposerNetworkMode(
     // has nothing to say about a session that does not exist yet.
     mode: sessionId ? server.mode : (draft ?? "inherit"),
     // A held draft bars Send for the same reason an in-flight write does: the
-    // server has not been told, so a first turn started now would resolve the
-    // old value, find no mismatch, and run under the wrong policy.
+    // server has not been told, so nothing has rebuilt the container and a first
+    // turn started now would run under the mode the user is replacing.
     saving: server.saving || draft !== null,
     setMode,
   };

@@ -157,11 +157,8 @@ function allowlistView(
  * orders one surface's writes, not two clients'.
  *
  * Deliberately the smallest possible lock: this route with itself, per session.
- * It is not the cross-subsystem admission section an earlier revision of this
- * feature carried — that one spanned the Send path and had to be reasoned about
- * against dispatch, graduation and the reuse path. Nothing outside this handler
- * takes this one, so it cannot deadlock against anything and cannot make a
- * session read as busy.
+ * Nothing outside this handler takes it, so it cannot deadlock against anything
+ * and cannot make a session read as busy.
  */
 const networkModeWrites = new Map<string, Promise<unknown>>();
 
@@ -429,13 +426,11 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
           // the pick has to reach a *new* container before the first turn goes
           // out.
           //
-          // Doing it at the write rather than at the first Send is what keeps the
-          // feature small. The container is created immediately after the value it
-          // reads was written, by the only writer there is, so there is no window
-          // for the two to disagree and nothing to freeze. The composer's existing
-          // save barrier keeps Send unavailable for the duration, which is the
-          // "wait for the container" state — the same one `/new` already shows
-          // before its session is claimed.
+          // The container is created immediately after the value it reads was
+          // written, so there is no window for the two to disagree and nothing to
+          // freeze. The composer's existing save barrier keeps Send unavailable
+          // for the duration, which is the "wait for the container" state — the
+          // same one `/new` already shows before its session is claimed.
           //
           // A GRADUATED session is deliberately untouched: restarting a container
           // out from under a session the user is working in is not a settings
