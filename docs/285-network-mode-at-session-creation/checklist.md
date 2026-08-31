@@ -68,14 +68,14 @@ and the reuse path.
 Asked to hunt for **unrelated changes** and for residue left by deleting the old
 design incrementally rather than reverting.
 
-**Unrelated work is riding along in this PR.** The branch's oldest four commits
-predate the first docs/285 commit and belong to other changes: foreign-UID
-Compose writability (`ddbc685a`), a docs/265 trace (`3034a6e2`), push-divergence
-measurement (`59d2a3e0`), and highlight.js language binding (`f4587d69`). That is
-51 files and ~3,544 additions. The split is exact — **zero file overlap** with the
-42 docs/285 files, and no docs/285 commit touches any of them — so separating
-them is mechanical. Nothing in the feature depends on that work. Left in place:
-the branch is pushed, and rewriting its history is the user's call.
+**Unrelated work was riding along in this PR, and has since been removed.** The
+branch's oldest four commits predated the first docs/285 commit and belonged to
+other changes: foreign-UID Compose writability, a docs/265 trace, push-divergence
+measurement, and highlight.js language binding — 51 files and ~3,544 additions.
+The split was exact (**zero file overlap** with the docs/285 files, and no
+docs/285 commit touched any of them), which is what made a plain rebase onto
+`origin/main` sufficient. The branch now carries only its own commits, and the
+diff is docs/285 files alone.
 
 Fixed:
 
