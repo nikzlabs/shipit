@@ -901,6 +901,50 @@ describe("changing an ungraduated session's mode rebuilds its container (docs/28
     expect(res.json().error).toMatch(/no space left on device/);
   });
 
+  it("serializes two concurrent writes, so two rebuilds never interleave", async () => {
+    // `restartContainer` has no guard of its own: two concurrent calls for one
+    // session interleave a destroy and a create against each other. The client's
+    // save barrier orders ONE surface's writes; two tabs, or the composer and
+    // the settings dialog, are two clients.
+    let inFlight = 0;
+    let maxConcurrent = 0;
+    const localApp = Fastify();
+    await registerEgressRoutes(localApp, {
+      egressAllowlistStore: store,
+      credentialStore: stubCredentialStore,
+      egressEnforcementActive: true,
+      sseBroadcast: () => {},
+      containerManager: { get: () => undefined, resolveEgress: () => undefined } as unknown,
+      runnerRegistry: { get: () => undefined },
+      chatHistoryManager: { append: () => {} },
+      sessionManager: { get: (id: string) => sessions.get(id) },
+      reconcileSessionEgress: async () => {
+        inFlight += 1;
+        maxConcurrent = Math.max(maxConcurrent, inFlight);
+        // Long enough that two unserialized rebuilds, started in the same tick,
+        // are guaranteed to overlap.
+        await new Promise((r) => setTimeout(r, 25));
+        inFlight -= 1;
+        return { action: "restarted" };
+      },
+    } as unknown as ApiDeps);
+    await localApp.ready();
+
+    await Promise.all([
+      localApp.inject({
+        method: "PUT", url: "/api/egress/session/warm-1", payload: { override: true },
+      }),
+      localApp.inject({
+        method: "PUT", url: "/api/egress/session/warm-1", payload: { override: false },
+      }),
+    ]);
+
+    expect(maxConcurrent).toBe(1);
+    // Last write wins, and it is one of the two — not a torn value.
+    expect([true, false]).toContain(store.getSessionOverride("warm-1"));
+    await localApp.close();
+  });
+
   it("still persists on a runtime with no rebuild wired", async () => {
     // `RUNTIME_MODE=local` has no containers. The override is durable there and
     // applies to whatever topology exists; the write must not fail.

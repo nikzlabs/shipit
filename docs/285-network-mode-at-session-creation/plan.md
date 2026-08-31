@@ -158,6 +158,12 @@ been resolved but deliberately not persisted, so the replacement runner would ot
 seeded with the deployment default, and picking Codex *and* a network mode would dispatch the
 turn to Claude.
 
+**The write serializes against itself, per session.** `restartContainer` has no
+concurrency guard, so two writes for one session — two tabs, or the composer and the dialog —
+would interleave a destroy and a create. The lock spans this handler only; nothing outside
+takes it, which is what distinguishes it from the deleted admission section that spanned the
+Send path.
+
 **It is not Rescue.** The rebuild reuses Rescue's teardown/recreate path but not its privilege
 of clearing the OOM breaker: a tripped breaker aborts the write with a 503 that offers Rescue,
 because toggling a setting must not buy a retry an unchanged session is refused. And a failed

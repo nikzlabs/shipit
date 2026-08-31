@@ -147,6 +147,39 @@ function allowlistView(
   };
 }
 
+/**
+ * docs/285 — serialize a session's network-mode writes against each other.
+ *
+ * The write now rebuilds the container, and `restartContainer` has no guard of
+ * its own: two concurrent calls for one session would interleave a destroy and a
+ * create against each other. Two tabs on one session, or the composer and the
+ * Session settings dialog, can each issue a PUT — the client's save barrier
+ * orders one surface's writes, not two clients'.
+ *
+ * Deliberately the smallest possible lock: this route with itself, per session.
+ * It is not the cross-subsystem admission section an earlier revision of this
+ * feature carried — that one spanned the Send path and had to be reasoned about
+ * against dispatch, graduation and the reuse path. Nothing outside this handler
+ * takes this one, so it cannot deadlock against anything and cannot make a
+ * session read as busy.
+ */
+const networkModeWrites = new Map<string, Promise<unknown>>();
+
+function serializeNetworkModeWrite<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  const previous = networkModeWrites.get(sessionId) ?? Promise.resolve();
+  // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form: run `fn` whether or not the predecessor settled cleanly
+  const run = previous.then(fn, fn);
+  // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form: the chain tail must settle cleanly on both outcomes
+  const tail = run.then(() => {}, () => {});
+  networkModeWrites.set(sessionId, tail);
+  // eslint-disable-next-line no-restricted-syntax -- fire-and-forget cleanup in a sync function
+  void tail.then(() => {
+    // Only the CURRENT tail may clear the entry; a later writer has replaced it.
+    if (networkModeWrites.get(sessionId) === tail) networkModeWrites.delete(sessionId);
+  });
+  return run;
+}
+
 export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps): Promise<void> {
   const store = deps.egressAllowlistStore;
   // Whether this deployment can actually ENFORCE containment (enforcement on +
@@ -385,36 +418,44 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
           reply.code(400).send({ error: "override must be true, false, or null" });
           return;
         }
-        const previous = store.getSessionOverride(sessionId);
-        store.setSessionOverride(sessionId, override);
+        const rebuild = await serializeNetworkModeWrite(sessionId, async () => {
+          const previous = store.getSessionOverride(sessionId);
+          store.setSessionOverride(sessionId, override);
 
-        // docs/285 req 3 — a session that has NOT run a turn yet gets its
-        // container rebuilt right here, and this route does not answer until it
-        // has been. That is the whole mechanism: containment is plumbed at
-        // container creation and a running container cannot be re-plumbed, so
-        // the pick has to reach a *new* container before the first turn goes
-        // out.
-        //
-        // Doing it at the write rather than at the first Send is what keeps the
-        // feature small. The container is created immediately after the value it
-        // reads was written, by the only writer there is, so there is no window
-        // for the two to disagree and nothing to freeze. The composer's existing
-        // save barrier keeps Send unavailable for the duration, which is the
-        // "wait for the container" state — the same one `/new` already shows
-        // before its session is claimed.
-        //
-        // A GRADUATED session is deliberately untouched: restarting a container
-        // out from under a session the user is working in is not a settings
-        // change, it is Rescue. Those keep the "applies on next container start"
-        // pending state they have always had.
-        const stillWarm = deps.sessionManager.get(sessionId)?.warm === true;
-        if (stillWarm && previous !== override && deps.reconcileSessionEgress) {
-          const outcome = await deps.reconcileSessionEgress(sessionId);
-          if (outcome.action === "aborted") {
-            reply.code(503).send({ error: outcome.message, offerRescue: outcome.offerRescue });
-            return;
+          // docs/285 req 3 — a session that has NOT run a turn yet gets its
+          // container rebuilt right here, and this route does not answer until it
+          // has been. That is the whole mechanism: containment is plumbed at
+          // container creation and a running container cannot be re-plumbed, so
+          // the pick has to reach a *new* container before the first turn goes
+          // out.
+          //
+          // Doing it at the write rather than at the first Send is what keeps the
+          // feature small. The container is created immediately after the value it
+          // reads was written, by the only writer there is, so there is no window
+          // for the two to disagree and nothing to freeze. The composer's existing
+          // save barrier keeps Send unavailable for the duration, which is the
+          // "wait for the container" state — the same one `/new` already shows
+          // before its session is claimed.
+          //
+          // A GRADUATED session is deliberately untouched: restarting a container
+          // out from under a session the user is working in is not a settings
+          // change, it is Rescue. Those keep the "applies on next container start"
+          // pending state they have always had.
+          const stillWarm = deps.sessionManager.get(sessionId)?.warm === true;
+          if (stillWarm && previous !== override && deps.reconcileSessionEgress) {
+            const outcome = await deps.reconcileSessionEgress(sessionId);
+            if (outcome.action === "aborted") return { previous, stillWarm, aborted: outcome };
           }
+          return { previous, stillWarm, aborted: null };
+        });
+        if (rebuild.aborted) {
+          reply.code(503).send({
+            error: rebuild.aborted.message,
+            offerRescue: rebuild.aborted.offerRescue,
+          });
+          return;
         }
+        const { previous, stillWarm } = rebuild;
         // docs/285 — a card is written for a CHANGE. A session that has not
         // graduated has no prior state for one to describe: "changed network
         // containment" above the first message would report an edit to a session

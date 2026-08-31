@@ -52,6 +52,17 @@ lifetime and incarnation ownership (no pin), the `Inherit` requirement reversal
 claim, and the reuse reset is `main`'s behaviour), and the queued-message strand
 (no entry claim).
 
+One lock came BACK, deliberately, and it is not the one that was deleted: the
+settings PUT serializes against itself per session. `restartContainer` has no
+guard of its own, so two concurrent writes for one session — two tabs, or the
+composer and the dialog — would interleave a destroy and a create. It spans this
+handler only; nothing outside takes it, so it cannot deadlock and cannot make a
+session read as busy. That is the difference from the admission section, which
+spanned the Send path and had to be reasoned about against dispatch, graduation
+and the reuse path.
+
+- [x] `serializeNetworkModeWrite` — per-session chain around the write + rebuild, with a test that two concurrent PUTs never overlap
+
 What remains from those rounds, kept because it was right on its own terms:
 
 - [x] **P3** `beforeFirstTurn` reads session membership, not `messages.length` — the message list is momentarily empty right after switching to an existing session, which made the control promise a rebuild the server was never going to run
