@@ -144,10 +144,14 @@ export interface SubAgentConsultCard {
   status: "pending" | "success" | "error" | "timeout" | "cancelled";
   /**
    * planning#309 — a SHIPIT-authored one-line explanation of a terminal status, for
-   * the cases where the status alone is misleading. Currently set only by the
-   * boot reconcile, which cancels consults stranded `pending` by an orchestrator
-   * restart: without it "Cancelled Codex" is indistinguishable from a consult
-   * the user cancelled.
+   * the cases where the status alone is misleading. Set on EVERY `cancelled`
+   * card (docs/144 §8): since nothing on the primary turn's lifecycle can end a
+   * consult, a cancelled one always has a specific, sayable cause — the
+   * container being torn down, the worker going down under the run, or the boot
+   * reconcile finding a consult stranded `pending` by an orchestrator restart.
+   * Without it "Cancelled Codex" cannot distinguish those from each other, or
+   * from a consult the user cancelled — which is what made the 2026-08-31
+   * incident slow to diagnose.
    *
    * Deliberately NOT `outputMarkdown`. That field is the sub-agent's verbatim
    * words — it is what `shipit agent result` prints on stdout and what planning#247

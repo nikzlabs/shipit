@@ -228,6 +228,53 @@ function allAccountsExhaustedMessage(providerName: string, earliestResetAt: stri
 }
 
 /**
+ * Every `cancelled` consult card names the terminator that ended it.
+ *
+ * A consult now has exactly two terminators — its own wall-clock cap, and the
+ * container going away — so a `cancelled` card always has a specific, sayable
+ * cause. The 2026-08-31 incident took hours to diagnose because it did not say
+ * one: the card read "Cancelled", the agent reported the run "died", and
+ * nothing on either surface could adjudicate between them. `statusDetail` is
+ * ShipIt's own voice on both surfaces (the card face and `shipit agent result`'s
+ * stderr), so it is where the answer belongs.
+ *
+ * Container teardown reaches here as a {@link WorkerAbortedError} carrying the
+ * reason `cancelInFlightSubAgents` aborted with.
+ */
+export function teardownConsultDetail(reason?: string): string {
+  const named = reason ? ` (${reason})` : "";
+  return `The session container was torn down while this consult was running${named}`
+    + ", so its result was lost. Re-run the consult if you still need it.";
+}
+
+/**
+ * The other half of the same terminator, observed from the run's own side: the
+ * process hosting the spawn was shut down under it and the `cancelled` status
+ * came back through a NORMAL return rather than an aborted request.
+ *
+ * Deliberately does not name the worker. Two runtimes reach this: a container
+ * session, where `AgentController.stop()` SIGTERMs the spawn as the worker goes
+ * down; and local/dogfood mode, where there is no worker at all and a forced
+ * `SessionRunner.dispose()` cancels the in-process handle
+ * (`session-runner.ts`). Naming the container half would make the card lie in
+ * the other runtime.
+ */
+export const HOST_SHUTDOWN_CONSULT_DETAIL =
+  "The process running this consult was shut down with its session before the "
+  + "consult finished, so its result was lost. Re-run the consult if you still "
+  + "need it.";
+
+/**
+ * Backstop for a `cancelled` status arriving from a path that did not name its
+ * terminator. Deliberately vague AND logged: it says the true thing (we do not
+ * know), and the warning is the signal that a third terminator has appeared and
+ * needs its own detail — rather than the card silently going quiet again.
+ */
+export const UNATTRIBUTED_CONSULT_DETAIL =
+  "This consult was cancelled before it finished, and ShipIt could not "
+  + "determine what ended it. Re-run the consult if you still need it.";
+
+/**
  * Run a one-shot sub-agent on behalf of a pinned session's primary agent and
  * return its final assistant text. Throws {@link ServiceError} for every
  * authorization failure so the route maps it to the right HTTP status (the
@@ -579,7 +626,22 @@ export async function runSubAgent(
    *    recorded card while the turn still holds it, else patch the finalized DB
    *    row directly.
    */
-  const finalizeConsultCard = (card: SubAgentConsultCard) => {
+  const finalizeConsultCard = (terminal: SubAgentConsultCard) => {
+    // A `cancelled` card without a `statusDetail` is the defect this function
+    // closes structurally rather than at each call site: the caller that forgets
+    // one, or a terminator added later that nobody thought to describe, still
+    // produces a card that says something — and leaves a log line naming the
+    // gap. See {@link UNATTRIBUTED_CONSULT_DETAIL}.
+    const card: SubAgentConsultCard =
+      terminal.status === "cancelled" && !terminal.statusDetail
+        ? { ...terminal, statusDetail: UNATTRIBUTED_CONSULT_DETAIL }
+        : terminal;
+    if (card !== terminal) {
+      console.warn(
+        `[sub-agent] cancelled consult named no terminator session=${sessionId} `
+        + `spawn=${spawnId} card=${cardId} — falling back to the unattributed detail`,
+      );
+    }
     const live = deps.runnerRegistry.get(sessionId) ?? runner;
     // docs/244 / planning#299 — persist BEFORE emitting, and emit the projected copy.
     // The card face draws one 140-character preview line and puts the rest of the
@@ -918,6 +980,12 @@ export async function runSubAgent(
       durationMs: result.durationMs,
       costUsd: result.costUsd,
       truncated: result.truncated,
+      // A `cancelled` status that came back through a NORMAL return means the
+      // spawn was SIGTERMed where it ran and the result still made it out — the
+      // worker going down under it (container mode), or a forced runner dispose
+      // (local mode). Nothing on the primary turn cancels a spawn any more, so
+      // there is no third producer of this status to confuse it with.
+      ...(result.status === "cancelled" ? { statusDetail: HOST_SHUTDOWN_CONSULT_DETAIL } : {}),
       // docs/220 — carry the verbatim output so the brokered consult is visible,
       // not just attested. Already capped upstream (`maxOutputChars`), which is
       // also what flags `truncated`. Omitted when empty.
@@ -950,6 +1018,16 @@ export async function runSubAgent(
       durationMs: Math.max(0, Date.now() - startedAtMs),
       costUsd: 0,
       truncated: false,
+      // Name the terminator. `WorkerAbortedError.reason` is whatever
+      // `cancelInFlightSubAgents` aborted with, so the card carries the same
+      // word the orchestrator log does.
+      ...(status === "cancelled"
+        ? {
+          statusDetail: teardownConsultDetail(
+            err instanceof WorkerAbortedError ? err.reason : undefined,
+          ),
+        }
+        : {}),
     });
     throw err;
   } finally {

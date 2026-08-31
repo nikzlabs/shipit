@@ -275,3 +275,188 @@ describe("AgentController — /agent/spawn requires a model (docs/261)", () => {
     expect(spawned[0].lastParams?.homeDir).toBe("/credentials/sub-agent-homes/s-3");
   });
 });
+
+/**
+ * docs/144 §8 (reversed 2026-08-31) — a spawn's lifetime belongs to the spawn.
+ *
+ * The 2026-08-31 incident: the orchestrator interrupts the primary turn on every
+ * well-formed `AskUserQuestion` / `ExitPlanMode` tool call (the CLI auto-resolves
+ * those, so the turn must stop for the card to be answerable), and
+ * `/agent/interrupt` then SIGTERMed every in-flight sub-agent. A backgrounded
+ * review died 5.4 minutes in because the primary asked its user a question.
+ *
+ * These pin the rule at the ROUTE, which is where the fix lives — a per-trigger
+ * exemption would have left `ExitPlanMode`, `/agent/kill` and every future
+ * internal interrupt free to re-create it. Both routes are exercised, because
+ * both were coupled and each reaches the registry independently.
+ */
+describe("AgentController — the primary's lifecycle does not end a spawn (docs/144 §8)", () => {
+  /**
+   * A spawn-capable fake: records whether it was SIGTERMed, and can be driven to
+   * a real completion. `kill()` emits `done` the way a dying process does, so a
+   * cancelled run settles exactly as it would in production.
+   */
+  class SpawnAgent extends EventEmitter {
+    readonly agentId = "claude" as const;
+    killed = false;
+    lastParams: AgentRunParams | null = null;
+    run(params: AgentRunParams): void { this.lastParams = params; }
+    writeStdin(): void {}
+    interrupt(): void {}
+    writeMcpConfig(): Record<string, never> { return {}; }
+    kill(): void {
+      if (this.killed) return;
+      this.killed = true;
+      this.emit("done", 143);
+    }
+    /** Drive the run to a normal, successful finish. */
+    finish(text: string): void {
+      this.emit("event", {
+        type: "agent_assistant",
+        content: [{ type: "text", text }],
+        isStreamCompletion: true,
+      });
+      this.emit("event", { type: "agent_result", status: "success" });
+      this.emit("done", 0);
+    }
+  }
+
+  let app: FastifyInstance;
+  let workspace: string;
+  let agents: SpawnAgent[];
+  let controller: AgentController;
+
+  beforeEach(async () => {
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ac-life-"));
+    agents = [];
+    app = Fastify({ logger: false });
+    controller = new AgentController({
+      agentFactory: () => {
+        const a = new SpawnAgent();
+        agents.push(a);
+        return a as unknown as AgentProcess;
+      },
+      workspaceDir: workspace,
+      broadcast: () => {},
+      permissionBroker: new PermissionBroker({ broadcast: () => {} }),
+      mcpConfig: new McpConfigController({ broadcast: () => {} }),
+      latestSseSeq: () => 0,
+    });
+    controller.registerRoutes(app);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  /**
+   * Put a resident primary in the slot and a sub-agent spawn in flight, and hand
+   * back both fakes plus the un-awaited spawn response. The primary is real
+   * because the incident's shape is a LIVE turn interrupting itself — and because
+   * `/agent/kill` needs an occupant to have anything to kill.
+   */
+  async function startPrimaryAndSpawn(): Promise<{
+    primary: SpawnAgent;
+    sub: SpawnAgent;
+    spawnResponse: Promise<{ statusCode: number; json: () => { status: string; text: string } }>;
+  }> {
+    const started = await app.inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: {
+        agentId: "claude",
+        runToken: "rt-1",
+        params: { prompt: "do the work", cwd: workspace },
+      },
+    });
+    expect(started.statusCode, started.body).toBe(200);
+    const primary = agents.at(-1)!;
+
+    const spawnResponse = app.inject({
+      method: "POST",
+      url: "/agent/spawn",
+      payload: {
+        agentId: "claude",
+        prompt: "review the diff",
+        spawnId: "sp-1",
+        model: "claude-opus-5",
+      },
+    }) as unknown as Promise<{ statusCode: number; json: () => { status: string; text: string } }>;
+    // Let the route instantiate the adapter and register the handle before
+    // anything tries to cancel it — otherwise these tests would pass by racing
+    // an empty registry rather than by the rule they mean to pin.
+    for (let i = 0; i < 50 && agents.length < 2; i += 1) {
+      await new Promise((r) => setImmediate(r));
+    }
+    expect(agents).toHaveLength(2);
+    const sub = agents[1];
+    expect(sub).not.toBe(primary);
+    return { primary, sub, spawnResponse };
+  }
+
+  it("leaves an in-flight spawn running when the primary turn is interrupted", async () => {
+    // This is the incident verbatim: `AskUserQuestion` (and `ExitPlanMode`) both
+    // reach the worker as exactly this request, so one assertion covers both.
+    const { sub, spawnResponse } = await startPrimaryAndSpawn();
+
+    const res = await app.inject({ method: "POST", url: "/agent/interrupt" });
+    expect(res.statusCode).toBe(200);
+    expect(sub.killed).toBe(false);
+
+    // ...and the review the user is waiting on still delivers its whole answer.
+    sub.finish("9 findings");
+    const spawn = await spawnResponse;
+    expect(spawn.statusCode).toBe(200);
+    expect(spawn.json()).toMatchObject({ status: "success", text: "9 findings" });
+  });
+
+  it("leaves it running with no resident primary either", async () => {
+    // The removed call ran BEFORE the 404, so a spawn outliving a transient gap
+    // in the primary slot was cancelled by an interrupt that killed nothing.
+    const { primary, sub, spawnResponse } = await startPrimaryAndSpawn();
+    primary.emit("done", 0);
+    await new Promise((r) => setImmediate(r));
+
+    const res = await app.inject({ method: "POST", url: "/agent/interrupt" });
+    expect(res.statusCode).toBe(404);
+    expect(sub.killed).toBe(false);
+
+    sub.finish("still here");
+    expect((await spawnResponse).json()).toMatchObject({ status: "success", text: "still here" });
+  });
+
+  it("leaves it running when the primary is killed — an explicit Stop", async () => {
+    const { primary, sub, spawnResponse } = await startPrimaryAndSpawn();
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/kill",
+      payload: { runToken: "rt-1" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ killed: true });
+    expect(primary.killed).toBe(true);
+    expect(sub.killed).toBe(false);
+
+    // The turn that launched it is over; the consult finalizes anyway. After
+    // this change that ordering is the NORMAL shape, not an edge case.
+    sub.finish("outlived its turn");
+    const spawn = await spawnResponse;
+    expect(spawn.statusCode).toBe(200);
+    expect(spawn.json()).toMatchObject({ status: "success", text: "outlived its turn" });
+  });
+
+  it("still cancels spawns when the worker itself goes down", async () => {
+    // The one terminator left on this side: the child dies with the worker
+    // regardless, so `stop()` is orderly cleanup rather than policy.
+    const { sub, spawnResponse } = await startPrimaryAndSpawn();
+
+    controller.stop();
+    expect(sub.killed).toBe(true);
+
+    const spawn = await spawnResponse;
+    expect(spawn.json()).toMatchObject({ status: "cancelled" });
+  });
+});

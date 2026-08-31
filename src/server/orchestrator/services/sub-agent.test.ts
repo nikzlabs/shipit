@@ -14,7 +14,9 @@ import {
   runSubAgent,
   sweepSubAgentCredentialsOnSignOut,
   waitForSubAgentResult,
+  teardownConsultDetail,
   SUB_AGENT_PER_TURN_CAP,
+  HOST_SHUTDOWN_CONSULT_DETAIL,
 } from "./sub-agent.js";
 import { ServiceError } from "./types.js";
 import { DatabaseManager } from "../../shared/database.js";
@@ -1378,6 +1380,15 @@ describe("runSubAgent — durable in-flight consult card", () => {
         card: expect.objectContaining({ status: "cancelled" }),
       }),
     );
+    // docs/144 §8 — and it says WHICH terminator, carrying the same word the
+    // orchestrator log does. "Cancelled" alone is what made the 2026-08-31
+    // incident slow: the card, the agent and the log each told a different half.
+    const cancelledCard = liveEmit.mock.calls
+      .map((c) => c[0] as { type: string; card?: { status?: string; statusDetail?: string } })
+      .find((m) => m.type === "sub_agent_consult_card" && m.card?.status === "cancelled")!.card!;
+    expect(cancelledCard.statusDetail).toBe(teardownConsultDetail("runner disposed"));
+    expect(cancelledCard.statusDetail).toContain("torn down");
+    expect(cancelledCard.statusDetail).toContain("runner disposed");
     // and NOT through the disposed runner, whose viewers are gone
     const staleTerminal = emitMessage.mock.calls
       .map((c) => c[0] as { type: string; card?: { status?: string } })
@@ -1387,7 +1398,43 @@ describe("runSubAgent — durable in-flight consult card", () => {
     expect(updateSubAgentConsultCard).toHaveBeenCalledWith(
       "s1",
       expect.any(String),
-      expect.objectContaining({ status: "cancelled" }),
+      expect.objectContaining({
+        status: "cancelled",
+        statusDetail: teardownConsultDetail("runner disposed"),
+      }),
+    );
+  });
+
+  // The other terminator, arriving through a NORMAL return: the process hosting
+  // the spawn was shut down under it and the result still made it back — the
+  // worker going down (container mode) or a forced dispose (local mode, where
+  // there is no worker to name). Nothing on the primary turn can produce this
+  // status any more (docs/144 §8), so the card can name the cause outright.
+  it("names the host shutdown when a cancelled result comes back from the run", async () => {
+    const { deps, runner, updateSubAgentConsultCard } = makeDeps({});
+    runner.spawnSubAgent = vi.fn(async () => {
+      runner.running = false; // backgrounded: the launching turn ended first
+      return {
+        status: "cancelled",
+        text: "partial review",
+        truncated: true,
+        durationMs: 321_327,
+        costUsd: 0,
+      };
+    }) as never;
+
+    const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+    expect(res.status).toBe("cancelled");
+    expect(updateSubAgentConsultCard).toHaveBeenCalledWith(
+      "s1",
+      expect.any(String),
+      expect.objectContaining({
+        status: "cancelled",
+        statusDetail: HOST_SHUTDOWN_CONSULT_DETAIL,
+        // the partial answer is still carried — the card says what was lost AND
+        // shows what survived
+        outputMarkdown: "partial review",
+      }),
     );
   });
 
@@ -2033,5 +2080,48 @@ describe("runSubAgent — same-harness spawns never touch the session's live cre
     // Post-run: temporary auth wiped, marker cleared.
     expect(fs.existsSync(path.join(sessionDir, ".codex", "auth.json"))).toBe(false);
     expect(readSessionAccountMarker(root, "s1").codex).toBeUndefined();
+  });
+
+  /**
+   * docs/144 §8 — with the primary-turn coupling gone, the wall-clock cap is one
+   * of only two things that can end a consult, so it stops being an edge case.
+   * The cap is what stands between an unbounded run and a borrow of the
+   * reviewer's account held open in the session subtree forever, along with a
+   * live process and consumed subscription quota — so the release has to survive
+   * the non-success statuses too, not just the happy path above.
+   */
+  it("closes the credential borrow when the run ends on its wall-clock cap", async () => {
+    fs.mkdirSync(path.join(root, "provider-accounts", "codex", "acct-primary", ".codex"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "provider-accounts", "codex", "acct-primary", ".codex", "auth.json"),
+      '{"tokens":{"access_token":"codex-consult"}}',
+    );
+    const sessionDir = perSessionCredentialsDir(root, "s1");
+    seedClaude(sessionDir, "PRIMARY-LIVE");
+
+    const { deps, runner, updateSubAgentConsultCard } = makeDeps({ credentialsDir: root, containerRunner: true });
+    let borrowedDuringRun = false;
+    runner.spawnSubAgent = vi.fn(async () => {
+      borrowedDuringRun = fs.existsSync(path.join(sessionDir, ".codex", "auth.json"));
+      runner.running = false; // backgrounded: the launching turn ended first
+      // What `runAgentToCompletion` resolves with when its timer fires: the
+      // process is SIGTERMed and whatever text arrived is flagged truncated.
+      return { status: "timeout", text: "half a review", truncated: true, durationMs: 1_800_000, costUsd: 0 };
+    }) as never;
+
+    const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+
+    expect(res.status).toBe("timeout");
+    expect(borrowedDuringRun).toBe(true);
+    // The borrow is closed and the marker cleared — the same teardown a success
+    // gets, on the path that a runaway consult actually takes.
+    expect(fs.existsSync(path.join(sessionDir, ".codex", "auth.json"))).toBe(false);
+    expect(readSessionAccountMarker(root, "s1").codex).toBeUndefined();
+    // and the card is terminal, so nothing is left reading "Asking…"
+    expect(updateSubAgentConsultCard).toHaveBeenCalledWith(
+      "s1",
+      expect.any(String),
+      expect.objectContaining({ status: "timeout", truncated: true }),
+    );
   });
 });
