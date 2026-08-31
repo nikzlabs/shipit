@@ -199,6 +199,14 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
   mountedSession.current = sessionId;
   /** This hook's own subscription, so its writes do not notify itself. */
   const listenerRef = useRef<((changed: string) => void) | null>(null);
+  /**
+   * Writes this hook still has in flight. `saving` is per-hook — it is set by
+   * this hook's own `setMode` — so a read may only open the barrier when this
+   * hook is not itself mid-write. Otherwise an invalidation arriving at the same
+   * revision as an in-flight PUT would release Send before that PUT landed,
+   * which is the barrier's whole failure mode.
+   */
+  const writesInFlight = useRef(0);
 
   const applySettings = useCallback((settings: EgressSessionSettings) => {
     setModeState(modeFromOverride(settings.override));
@@ -224,6 +232,15 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
         if ((reads.get(id) ?? 0) !== readAt) return false;
         if (mountedSession.current !== id) return false;
         applySettings(settings);
+        // A successful read is a value the server reported, which is exactly
+        // what the Send barrier waits for — so it opens here too, not only on
+        // the write path. Without this, a failed PUT whose immediate recovery
+        // read ALSO failed left the barrier closed for good: the next
+        // invalidation would fetch the true value and display it, while Send
+        // stayed barred until the user navigated away. Staying barred on an
+        // unreachable server is the safe direction; staying barred after the
+        // server has answered is just broken.
+        if (writesInFlight.current === 0) setSaving(false);
         return true;
       } catch (err) {
         console.error("[session-network-mode] failed to read the session's mode:", err);
@@ -271,6 +288,7 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
       // the Send barrier below is what makes the optimism safe.
       setModeState(next);
       setSaving(true);
+      writesInFlight.current += 1;
       const revision = bumpRevision(sessionId);
       // Whether the displayed value is one the server actually reported. Set on
       // a successful write, and on a successful recovery read after a failure.
@@ -313,6 +331,7 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
             recovered = await refresh(sessionId);
           }
         } finally {
+          writesInFlight.current -= 1;
           // The barrier opens ONLY on a value the server reported, and only for
           // the session still mounted. Two ways it used to open on nothing: the
           // recovery read swallowed its own failure, leaving the optimistic

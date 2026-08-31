@@ -495,10 +495,17 @@ export default function App() {
    * draft and written when it arrives, but only when this composer is the thing
    * that claimed it (req 8).
    *
-   * `beforeFirstTurn` — a session with no messages yet has not run a turn, so
-   * the choice is still free and the menu says "in force from the first turn"
-   * rather than "applies on the next container start". The two footers say
-   * opposite things and each is true at its own moment.
+   * `beforeFirstTurn` — whether the server will still reconcile this session's
+   * container for the picked mode, which is true exactly while the session is
+   * WARM. The two footers say opposite things ("in force from the first turn"
+   * vs "applies on the next container start") and each is true at its own
+   * moment, so the test has to match the server's.
+   *
+   * Read from session membership, not from `messages.length`. Warm sessions are
+   * excluded from the broadcast session list, so an absent `currentSession` IS
+   * the warm signal — whereas `messages` is per-session and momentarily empty
+   * right after switching to an existing session, which made the control
+   * promise a reconciliation the server was never going to run.
    */
   const composerNetworkState = useComposerNetworkMode(
     wsSessionId ?? null,
@@ -517,9 +524,9 @@ export default function App() {
       pendingRestart: composerNetworkState.pendingRestart,
       loaded: composerNetworkState.loaded,
       saving: composerNetworkState.saving,
-      beforeFirstTurn: messages.length === 0,
+      beforeFirstTurn: !currentSession,
     }),
-    [composerNetworkState, messages.length],
+    [composerNetworkState, currentSession],
   );
 
   // docs/285 — this session's runner was replaced (its container was rebuilt by
