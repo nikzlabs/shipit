@@ -385,5 +385,10 @@ id or a bad flag, since neither condition can ever clear.
   out permanently. A background job finishing does not refill it.
 - **Bounded run.** Each spawn has a wall-clock cap (~30 min) and an output cap; an
   over-limit run is truncated and flagged.
-- **Cancel is symmetric.** If the user cancels your turn while a sub-agent is
-  running, the sub-agent is cancelled too.
+- **The run's lifetime is its own.** Nothing about your turn ends a consult —
+  not an interrupt, not a Stop, not asking the user a question, not your turn
+  finishing. It ends only on its own ~30-minute cap or if the session container
+  goes away (Restart agent, Restart container, archive). So you can safely
+  background a review and then ask the user something while it runs; collect it
+  afterwards with `shipit agent result`. A consult that *is* cancelled says on
+  its card which of the two ended it.

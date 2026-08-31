@@ -1,12 +1,18 @@
 /**
  * Agent controller — owns the worker's single resident agent slot and the
  * in-flight sub-agent registry, and registers the `/agent/*` endpoints
- * (start, interrupt, kill, spawn, cancel, stdin, permission-mode, message,
- * compact, status).
+ * (start, interrupt, kill, spawn, stdin, permission-mode, message, compact,
+ * status).
  *
  * The single-occupant `this.agent` slot is the primary turn; sub-agent spawns
  * (docs/144) run OUTSIDE it as plain subprocesses keyed by spawnId. Agent
  * events are wired to the SSE stream here so the orchestrator sees them.
+ *
+ * A spawn's lifetime belongs to the SPAWN, not to the primary turn
+ * (docs/144 §8, revised): nothing on the primary's lifecycle — an interrupt, a
+ * kill, a turn ending — may end one. The only two terminators are the spawn's
+ * own wall-clock cap (`DEFAULT_SUB_AGENT_TIMEOUT_MS`) and the container going
+ * away, which reaches the spawns here through {@link AgentController.stop}.
  */
 
 import type { FastifyInstance } from "fastify";
@@ -90,8 +96,9 @@ export class AgentController {
   // docs/144 — in-flight sub-agent spawns, keyed by orchestrator-supplied
   // spawnId. These run OUTSIDE the single-occupant `this.agent` slot as plain
   // subprocesses and never broadcast to SSE; their output is returned
-  // synchronously over the `/agent/spawn` HTTP response. Tracked so an explicit
-  // `/agent/cancel` (or a primary-turn interrupt/kill) can SIGTERM them.
+  // synchronously over the `/agent/spawn` HTTP response. Tracked ONLY so
+  // {@link stop} can SIGTERM them as the worker goes down — no route reaches
+  // into this map, by design (see the module docstring).
   private readonly spawnedAgents = new Map<string, SubAgentRunHandle>();
 
   /**
@@ -188,10 +195,18 @@ export class AgentController {
     });
 
     app.post("/agent/interrupt", async (_request, reply) => {
-      // docs/144 — interrupting the primary turn cancels any sub-agent running
-      // on its behalf (symmetric cancel). Do this even when `this.agent` is null
-      // (a sub-agent can outlive a transient primary-slot gap).
-      this.cancelAllSpawns();
+      // Deliberately does NOT touch `spawnedAgents`. Interrupting the primary
+      // turn used to cancel every sub-agent running on its behalf ("symmetric
+      // cancel", docs/144 §8) — but most interrupts are not user actions at
+      // all: the orchestrator interrupts the turn on every well-formed
+      // `AskUserQuestion` and `ExitPlanMode` tool call, because the CLI
+      // auto-resolves those and the turn has to stop for the card to be
+      // answerable (`ws-handlers/agent-listeners.ts`). In production that
+      // SIGTERMed a 5.4-minute review the primary had backgrounded moments
+      // earlier, purely because the primary then asked its user a question.
+      // Scoping the exemption to the trigger would have left `ExitPlanMode`,
+      // `/agent/kill` and every future internal interrupt free to re-create it,
+      // so the coupling is cut HERE, at the route.
       if (!this.agent) {
         return reply.code(404).send({ error: "No agent running" });
       }
@@ -208,9 +223,7 @@ export class AgentController {
       // a newer live one mid-turn (whose in-flight turn then died silently).
       // When the caller names its victim, refuse to kill anyone else. A body
       // without `runToken` (legacy caller / recovery paths that intentionally
-      // clear whatever is resident) keeps the unconditional behavior. The
-      // mismatch path deliberately does NOT `cancelAllSpawns()` either — the
-      // resident (newer) primary's sub-agents are not the victim's.
+      // clear whatever is resident) keeps the unconditional behavior.
       const victimRunToken = request.body?.runToken;
       if (typeof victimRunToken === "string" && this.residentSpawn?.runToken !== victimRunToken) {
         console.warn(
@@ -219,7 +232,13 @@ export class AgentController {
         );
         return { killed: false, staleVictim: true };
       }
-      this.cancelAllSpawns();
+      // Like `/agent/interrupt`, leaves `spawnedAgents` alone: the primary's
+      // death is not the sub-agent's. Killing the resident process from here is
+      // routine (the 409-retry dance, a superseded spawn, a failed-auth heal),
+      // none of which is a decision to abandon a consult. Container teardown —
+      // the one terminator that genuinely removes a spawn — goes through
+      // `stop()`, and orchestrator-side through
+      // `ContainerSessionRunner.cancelInFlightSubAgents`.
       if (!this.agent) {
         return reply.code(404).send({ error: "No agent running" });
       }
@@ -314,20 +333,6 @@ export class AgentController {
         }
       },
     );
-
-    // docs/144 — explicitly cancel an in-flight sub-agent spawn by id.
-    app.post<{ Body: { spawnId?: string } }>("/agent/cancel", async (request, reply) => {
-      const spawnId = request.body?.spawnId;
-      if (!spawnId) {
-        return reply.code(400).send({ error: "spawnId is required" });
-      }
-      const handle = this.spawnedAgents.get(spawnId);
-      if (!handle) {
-        return reply.code(404).send({ error: "No such spawn" });
-      }
-      handle.cancel();
-      return { cancelled: true };
-    });
 
     app.post<{ Body: { data: string } }>("/agent/stdin", async (request, reply) => {
       if (!this.agent) {
@@ -481,10 +486,15 @@ export class AgentController {
     }
   }
 
-  /** docs/144 — SIGTERM every in-flight sub-agent spawn (symmetric cancel). */
+  /**
+   * SIGTERM every in-flight sub-agent spawn. Reachable ONLY from {@link stop} —
+   * the worker is going down and the child process dies with it either way, so
+   * this is orderly cleanup, not policy. Nothing on the primary turn's
+   * lifecycle may call it (see the module docstring).
+   */
   private cancelAllSpawns(): void {
     for (const [spawnId, handle] of this.spawnedAgents) {
-      console.warn(`[sub-agent] worker cancelling spawn=${spawnId} (primary interrupt/kill)`);
+      console.warn(`[sub-agent] worker cancelling spawn=${spawnId} (worker shutting down)`);
       try { handle.cancel(); } catch { /* best-effort */ }
     }
   }

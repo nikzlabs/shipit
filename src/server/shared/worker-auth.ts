@@ -107,7 +107,6 @@ export const LIFECYCLE_PATHS: ReadonlySet<string> = new Set([
   "/agent/interrupt",
   "/agent/kill",
   "/agent/spawn",
-  "/agent/cancel",
   "/agent/stdin",
   "/agent/message",
   "/agent/permission-mode",

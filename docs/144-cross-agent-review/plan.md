@@ -336,13 +336,14 @@ Flow:
 - **Crash handling.** Subprocess exits non-zero → the orchestrator returns
   an error; the CLI exits non-zero with the message; the primary sees it and
   can react. Credential wipe (§4) fires in `finally` regardless.
-- **Cancel handling.** If the user cancels the primary's turn while the
-  sub-agent subprocess is running, the orchestrator SIGTERMs the subprocess
-  (`POST /agent/cancel` with `spawnId`); the sub-agent exit triggers the
-  wipe; the `shipit agent` command exits non-zero ("cancelled"). Cancelling
-  the primary cancels the sub-agent running on its behalf.
-- **The run survives the caller (planning#247).** Cancel above is an *explicit
-  user* interrupt. A caller that merely goes away is different: when the shim
+- **Cancel handling.** *Superseded 2026-08-31 — see §8.* Cancelling the
+  primary's turn does **not** cancel the sub-agent running on its behalf, and
+  the `POST /agent/cancel` primitive this bullet described is gone. A spawn ends
+  only on its own wall-clock cap or when the container goes away; either way the
+  exit triggers the credential wipe and the `shipit agent` command exits
+  non-zero, with the card's `statusDetail` naming which of the two it was.
+- **The run survives the caller (planning#247).** A caller that merely goes away
+  is not a cancel either: when the shim
   process dies — overwhelmingly because the calling agent's foreground shell
   tool hit its cap and SIGTERMed it (10 min in Claude Code, well under the
   30-minute consult cap) — the spawn is **not** cancelled. The orchestrator
@@ -787,8 +788,11 @@ persisted output and `shipit agent result` are unaffected.
   the sandbox/ops kind gates and a persisted notice. Never throws. Paired with
   `SessionRunnerInterface.schedulePostTurnPush()`, which exposes the shared
   `SystemTurnDeps.scheduleAutoPush` closure to non-turn callers.
-- **`session-worker.ts`** — new `POST /agent/spawn` and `POST /agent/cancel`
-  endpoints. The handler instantiates the appropriate per-agent adapter
+- **`session-worker.ts`** — new `POST /agent/spawn` endpoint (a companion
+  `POST /agent/cancel` shipped here and was deleted in the §8 reversal — with
+  no primary-turn coupling left it had no caller, and a dormant cancel
+  primitive is how the coupling comes back). The handler instantiates the
+  appropriate per-agent adapter
   (`ClaudeAdapter` / `CodexAdapter`) fresh — NOT through the `/agent/start`
   slot — wires events into a **local result accumulator** rather than the
   broadcast SSE, stamps `SHIPIT_AGENT_DEPTH` on the subprocess env. The slot
@@ -846,8 +850,9 @@ persisted output and `shipit agent result` are unaffected.
     spawning.
   - Cost cap: synthetic over-limit output truncated, result flagged.
   - Crash path: subprocess killed → primary sees error, creds wiped.
-  - Cancel path: user cancels primary turn during sub-agent → subprocess
-    SIGTERMed, creds wiped, command exits non-zero.
+  - Spawn lifetime (§8): a primary-turn interrupt or kill leaves an in-flight
+    spawn running and its result still reaches the card; only `dispose()` and
+    the wall-clock cap end one, and both name themselves on the card.
   - Sign-out propagation: signing out of the other agent wipes its subtree
     from sessions where it was provisioned for a spawn.
   - Two-CLI memory: primary and sub-agent processes alive concurrently.
@@ -940,13 +945,41 @@ Traceability for the product decisions made during design:
    `shipit agent result` re-reads a finished run's output. Callers are told to
    background anything review-sized, so "blocks" is a property of the command,
    not a promise that the answer lands inside the shell call.
-8. **Cancel = symmetric.** Cancelling the primary's turn cancels the
-   sub-agent running on its behalf. No queue, so no "preserve the queue"
-   question. This is scoped to an **explicit** user interrupt/kill
-   (`cancelAllSpawns`); a caller merely going away is not a cancel (§3,
-   planning#247). An earlier attempt to make caller disconnect SIGTERM the
-   sub-agent was reverted for exactly that reason — the recovery path depends
-   on the spawn surviving.
+8. **A spawn's lifetime belongs to the spawn.** *Reversed 2026-08-31 — this
+   used to read "Cancel = symmetric: cancelling the primary's turn cancels the
+   sub-agent running on its behalf", scoped to an explicit user interrupt/kill.
+   Do not restore that coupling as a correctness fix; it is the bug.*
+
+   **Nothing on the primary turn's lifecycle ends a spawn.** Not an interrupt,
+   not a kill, not the turn finishing. There are exactly **two terminators**:
+
+   - the spawn's own **wall-clock cap** (`DEFAULT_SUB_AGENT_TIMEOUT_MS`, 30
+     min), backstopped on the transport by `SUB_AGENT_TRANSPORT_TIMEOUT_MS`;
+   - the **container going away** — `ContainerSessionRunner.dispose()`
+     (Restart agent, Restart container, Rescue, archive, full reset) via
+     `cancelInFlightSubAgents`, and `AgentController.stop()` worker-side, where
+     the child process dies with the worker regardless.
+
+   The symmetric rule read as safe and was not, because **most interrupts are
+   not user actions**: `ws-handlers/agent-listeners.ts` interrupts the turn on
+   every well-formed `AskUserQuestion` and `ExitPlanMode` tool call, since the
+   CLI auto-resolves those and the turn has to stop for the card to be
+   answerable. In production (2026-08-31, session 8e578394) that SIGTERMed a
+   5.4-minute review 3 ms after the primary asked its user a question, leaving
+   1111 characters of partial output. Accidental cancellation is frequent; a
+   deliberate one has no known use case.
+
+   So the coupling is cut at the **route**, not at the trigger:
+   `POST /agent/interrupt` and `POST /agent/kill` no longer touch the spawn
+   registry, and the dormant `POST /agent/cancel` primitive was deleted rather
+   than left for a future caller to rediscover. A per-consult cancel is
+   deliberately **not** offered — a runaway consult is already reachable
+   through Restart agent, which goes via `dispose()`.
+
+   A caller merely going away is not a cancel either (§3, planning#247); the
+   recovery path depends on the spawn surviving. And **every card that does
+   reach `cancelled` names its terminator** in `statusDetail` — the incident was
+   slow to diagnose precisely because "Cancelled" could not say who did it.
 
 ## Implementation status (v0)
 
@@ -982,10 +1015,11 @@ v0 is implemented end-to-end behind the `enableSubAgents` global setting
   with the setting/auth/pin/recursion/per-turn-cap gates, lazy account-correct
   credential provisioning, usage attribution, the spawn chip, and token-sync-back
   + wipe in `finally`; `sweepSubAgentCredentialsOnSignOut`).
-- **Worker spawn execution** — `session-worker.ts` (`POST /agent/spawn` +
-  `/agent/cancel`, a fresh adapter outside the slot, `SHIPIT_AGENT_DEPTH`
-  stamping, `cancelAllSpawns` on interrupt/kill), sharing the adapter-run core
-  with local mode via `shared/sub-agent-run.ts` (`runAgentToCompletion`).
+- **Worker spawn execution** — `session/agent-controller.ts` (`POST /agent/spawn`,
+  a fresh adapter outside the slot, `SHIPIT_AGENT_DEPTH` stamping, and
+  `cancelAllSpawns` reachable only from `stop()` — see §8), sharing the
+  adapter-run core with local mode via `shared/sub-agent-run.ts`
+  (`runAgentToCompletion`).
 - **Runner wiring** — `session-runner.ts` (interface + in-process
   `SessionRunner.spawnSubAgent`, `subAgentSpawnsThisTurn` reset in
   `resetRunnerTurnState`), `container-session-runner.ts`

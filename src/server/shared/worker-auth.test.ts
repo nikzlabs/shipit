@@ -82,7 +82,6 @@ describe("isLifecyclePath", () => {
       "/agent/interrupt",
       "/agent/kill",
       "/agent/spawn",
-      "/agent/cancel",
       "/agent/stdin",
       "/agent/message",
       "/agent/permission-mode",
@@ -94,7 +93,7 @@ describe("isLifecyclePath", () => {
     // A literal list can only catch a typo in the set, never a route added to
     // `AgentController` and forgotten here — that is pinned against the real
     // route table in `session/worker-auth-guard.test.ts`.
-    expect(LIFECYCLE_PATHS.size).toBe(10);
+    expect(LIFECYCLE_PATHS.size).toBe(9);
   });
 
   it("excludes the status probe and anything outside the exact set", () => {
