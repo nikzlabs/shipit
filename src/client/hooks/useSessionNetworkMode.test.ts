@@ -41,12 +41,10 @@ describe("useSessionNetworkMode (docs/285)", () => {
     // that a write waits for a container rebuild — would otherwise let the one
     // that answered first open the barrier while the other is still tearing a
     // container down and building its replacement. Send would go out mid-rebuild.
-    const puts: { body: unknown; resolve: (v: Response) => void }[] = [];
+    const puts: ((v: Response) => void)[] = [];
     vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
       if (init?.method === "PUT") {
-        return new Promise<Response>((resolve) => {
-          puts.push({ body: JSON.parse(String(init.body)), resolve });
-        });
+        return new Promise<Response>((r) => { puts.push(r); });
       }
       return { ok: true, status: 200, json: async () => settings() } as Response;
     }));
@@ -61,7 +59,7 @@ describe("useSessionNetworkMode (docs/285)", () => {
 
     // The SECOND write answers first — its rebuild happened to be a no-op.
     await act(async () => {
-      puts[1]!.resolve({
+      puts[1]!({
         ok: true, status: 200, json: async () => settings({ override: false }),
       } as Response);
     });
@@ -69,7 +67,7 @@ describe("useSessionNetworkMode (docs/285)", () => {
     expect(result.current.saving).toBe(true);
 
     await act(async () => {
-      puts[0]!.resolve({
+      puts[0]!({
         ok: true, status: 200, json: async () => settings({ override: true }),
       } as Response);
     });
