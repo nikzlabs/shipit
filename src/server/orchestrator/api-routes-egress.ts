@@ -50,7 +50,7 @@ import type {
 } from "../shared/types.js";
 import { computeEgressGrantOutcome } from "./egress-grant-outcome.js";
 import { emitSessionSettingsChangeCard } from "./services/session-settings.js";
-import { withFirstTurnAdmission, awaitFirstTurnClaim } from "./services/first-turn-admission.js";
+import { withFirstTurnAdmission } from "./services/first-turn-admission.js";
 import type { PersistedEgressPrompt } from "./chat-history.js";
 
 /**
@@ -387,28 +387,24 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
           return;
         }
         // docs/285 — the write takes the SAME session-keyed section the first
-        // Send does. The control stays deliberately editable during a
-        // reconciliation restart, so without this a change from this tab or
-        // another could land after the comparison — or after the replacement
-        // container had already booted — and the first turn would run under a
-        // mode different from the one now on screen. Once a first Send is
-        // admitted its target is frozen: this waits, then becomes an ordinary
-        // post-first-turn change with the normal pending state.
+        // Send does, so it cannot interleave with the comparison that decides
+        // whether the first turn's container is rebuilt. Cheap in the ordinary
+        // case: nothing holds the section outside a first Send, so this resolves
+        // on the next microtask.
         //
-        // Cheap in the ordinary case: nothing holds the section outside a first
-        // Send, so this resolves on the next microtask.
+        // It does NOT wait for the first turn to be dispatched, and that is the
+        // deliberate half. An earlier revision did — the reasoning being that a
+        // replacement container resolves its containment later, when creation
+        // reaches the plumbing step, so a write landing in between would move a
+        // turn already admitted. True, but blocking was the wrong answer to it:
+        // the wait needed a timeout (a leaked claim must not wedge this dialog
+        // for the life of the process), and a timeout that then writes anyway
+        // violates the very guarantee it was added to keep. The turn now carries
+        // its containment as a pin on its claim (`first-turn-admission.ts`), so
+        // creation reads the admitted value and a write landing mid-flight is
+        // simply an ordinary post-first-turn change with the normal pending
+        // state — no waiting, and no window.
         const previous = await withFirstTurnAdmission(sessionId, async () => {
-          // docs/285 — the section alone is not enough. It ends when the first
-          // Send's RECONCILIATION returns, and the replacement container may
-          // still be `starting` at that point: its containment is resolved later,
-          // when creation reaches the plumbing step. A write landing in between
-          // is sampled by that container, and the already-admitted first turn
-          // silently runs under a policy the user changed after committing to it.
-          //
-          // So the write waits for the turn to be dispatched. Bounded, because a
-          // claim leaked by some future path must not wedge the Session settings
-          // dialog for the life of the process.
-          await awaitFirstTurnClaim(sessionId);
           const before = store.getSessionOverride(sessionId);
           store.setSessionOverride(sessionId, override);
           return before;

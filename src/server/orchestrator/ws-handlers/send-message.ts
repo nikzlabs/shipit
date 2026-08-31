@@ -13,7 +13,7 @@ import { shouldSteerMessage } from "../dispatch-steering.js";
 import { resetSubAgentSpawnBudget } from "../session-runner.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { agentAdmissionError } from "../services/agent-auth-gate.js";
-import { withFirstTurnAdmission, claimFirstTurn } from "../services/first-turn-admission.js";
+import { withFirstTurnAdmission, claimFirstTurn, firstTurnClaimed } from "../services/first-turn-admission.js";
 import { announceRunnerReplaced } from "../services/recovery.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
 
@@ -81,6 +81,7 @@ function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
 class FirstTurnClaim {
   private runner: { turnStartInProgress: boolean } | null = null;
   private releaseSession: (() => void) | null = null;
+  private sessionId: string | null = null;
 
   /**
    * Take the SESSION-scoped claim, before anything that could replace the
@@ -88,11 +89,17 @@ class FirstTurnClaim {
    * destroys the runner this is called on.
    */
   takeSession(sessionId: string): boolean {
-    if (this.releaseSession) return true;
+    if (this.releaseSession) return this.sessionId === sessionId;
     const release = claimFirstTurn(sessionId);
     if (!release) return false;
     this.releaseSession = release;
+    this.sessionId = sessionId;
     return true;
+  }
+
+  /** Whether THIS handler is the one holding `sessionId`'s first turn. */
+  owns(sessionId: string): boolean {
+    return this.releaseSession !== null && this.sessionId === sessionId;
   }
 
   /**
@@ -110,7 +117,38 @@ class FirstTurnClaim {
     this.runner = null;
     this.releaseSession?.();
     this.releaseSession = null;
+    this.sessionId = null;
   }
+}
+
+/**
+ * docs/285 — hand this message to the runner's own send-or-queue rule, because
+ * someone else's first turn owns the session.
+ *
+ * Returns whether it was handed off; `false` means there is no runner and the
+ * caller carries on. Shared by the two places that discover the loss — the
+ * admission section, and the direct turn start further down, which does not go
+ * through `dispatch()` and so cannot inherit its busy check.
+ */
+function handOffToOwner(ctx: FullCtx, msg: WsSendMessage, sessionId: string): boolean {
+  const owner = ctx.getRunnerRegistry().get(sessionId);
+  if (!owner) return false;
+  owner.dispatch(prepareDispatch({
+    text: msg.text,
+    agentInterface: undefined,
+    execution: "interactive",
+    images: msg.images,
+    files: msg.files,
+    uploads: msg.uploads,
+    permissionMode: msg.permissionMode,
+    activity: undefined,
+    postTurn: undefined,
+    systemTurn: undefined,
+    onTurnComplete: undefined,
+    deliveryId: undefined,
+    dictated: msg.dictated,
+  }));
+  return true;
 }
 
 export async function handleSendMessage(
@@ -130,6 +168,27 @@ async function sendMessage(
   msg: WsSendMessage,
   firstTurnClaim: FirstTurnClaim,
 ): Promise<void> {
+  // docs/285 — claim a WARM session's first turn HERE, at handler entry, before
+  // the first await.
+  //
+  // The reconciliation block far below is where the claim is *used*, but taking
+  // it there is too late: everything between — auth, attachment reads, upload
+  // resolution, `activateSession` — yields, and a session that is still warm and
+  // unclaimed is a session the interactive `/new` path may RECYCLE. It resets a
+  // recycled draft's override to Inherit (req 8, correctly), so a second tab
+  // opening `/new` could rewrite the mode out from under a Send already in
+  // flight, and that Send would then reconcile to a value its user never picked.
+  // The claim is what makes the reuse path skip it, so it has to exist before
+  // the first yield.
+  //
+  // Failing to take it is not an error and not handled here: it means another
+  // handler owns the first turn, and the two places that care re-ask and hand
+  // off. Released for every exit path by `handleSendMessage`'s `finally`.
+  const warmTarget = msg.sessionId ?? ctx.getActiveAppSessionId();
+  if (warmTarget && ctx.sessionManager.get(warmTarget)?.warm === true) {
+    firstTurnClaim.takeSession(warmTarget);
+  }
+
   // Check auth before spawning — some CLIs hang if not authenticated.
   if (!ensureActiveAgentAuthenticated(ctx)) return;
 
@@ -615,25 +674,7 @@ async function sendMessage(
         // Someone else's first Send owns the turn. Hand this message to the
         // runner's own send-or-queue rule instead of continuing on a decision
         // that stopped being true while we waited.
-        const owner = ctx.getRunnerRegistry().get(effectiveSessionId);
-        if (owner) {
-          owner.dispatch(prepareDispatch({
-            text: msg.text,
-            agentInterface: undefined,
-            execution: "interactive",
-            images: msg.images,
-            files: msg.files,
-            uploads: msg.uploads,
-            permissionMode: msg.permissionMode,
-            activity: undefined,
-            postTurn: undefined,
-            systemTurn: undefined,
-            onTurnComplete: undefined,
-            deliveryId: undefined,
-            dictated: msg.dictated,
-          }));
-          return;
-        }
+        if (handOffToOwner(ctx, msg, effectiveSessionId)) return;
       } else if (outcome.action === "restarted") {
         reconciled = true;
       } else if (outcome.action === "aborted") {
@@ -754,6 +795,19 @@ async function sendMessage(
     // `attachToRunner` above just used — leaving a viewer that can never be
     // detached, because its close event already fired.
     if (reconciled) announceRunnerReplaced({ sseBroadcast: ctx.sseBroadcast, runnerRegistry: registry }, activeId);
+  }
+
+  // docs/285 — the LAST busy check, and the only one on this path.
+  //
+  // The check at the top of this handler ran before any await; a first turn can
+  // have been claimed for this session at any point since. Everything else that
+  // starts a turn goes through `dispatch()`, which treats a held claim as busy —
+  // but this path does not: it sets `running` and calls `runAgentWithMessage`
+  // directly. So a handler that arrived while the session was still un-warm (or
+  // that lost the claim between entry and here) would start a second turn beside
+  // the first, under a container the first turn is still rebuilding.
+  if (activeId && firstTurnClaimed(activeId) && !firstTurnClaim.owns(activeId)) {
+    if (handOffToOwner(ctx, msg, activeId)) return;
   }
 
   // Collect all upload paths for chat history (so hydrateUploads can detect sent uploads)

@@ -24,6 +24,13 @@
  *  - **It is not Rescue.** It reuses Rescue's teardown/recreate path but not its
  *    privilege of clearing the OOM breaker: toggling a setting must not buy a
  *    retry that an unchanged first Send is refused.
+ *
+ * The comparison alone is not the guarantee, because it answers at a different
+ * moment from the one that matters: the rebuild is asynchronous and creation
+ * re-reads the store when it reaches the plumbing step. So the first act here is
+ * to PIN the resolved mode onto the session's first-turn claim
+ * ({@link pinFirstTurnEgress}); creation then reads the pin, and the answer this
+ * function compared against is the answer the container is actually built with.
  */
 
 import type { AgentId } from "../../shared/types.js";
@@ -31,6 +38,7 @@ import type { SessionContainerManager } from "../session-container.js";
 import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
 import type { SessionOomCircuitBreaker } from "../oom-circuit-breaker.js";
 import { restartContainer, type RecoveryDeps } from "./recovery.js";
+import { pinFirstTurnEgress } from "./first-turn-admission.js";
 
 export interface ReconcileEgressDeps {
   containerManager: SessionContainerManager | null;
@@ -54,6 +62,27 @@ export type ReconcileEgressOutcome =
    * one case the user can act on directly.
    */
   | { action: "aborted"; message: string; offerRescue: boolean };
+
+/**
+ * The containment this session resolves to, read through the SAME seam that
+ * decides it at container creation — `resolveEgressConfig`, reached via the
+ * container manager. `null` when nothing can answer (no manager, no store).
+ *
+ * Going through the resolver rather than straight to the store is what keeps the
+ * restart decision and the creation from answering differently. The store is one
+ * of the resolver's inputs, not its output: a docs/211 sandbox with `network`
+ * off resolves to contained no matter what the override says, so comparing the
+ * store's answer against a container built from the resolver's would report a
+ * disagreement that rebuilding cannot fix.
+ */
+export function resolveSessionContainment(
+  deps: Pick<ReconcileEgressDeps, "containerManager" | "egressAllowlistStore">,
+  sessionId: string,
+): boolean | null {
+  const resolved = deps.containerManager?.resolveEgress(sessionId);
+  if (resolved) return resolved.contained;
+  return deps.egressAllowlistStore?.resolveContained(sessionId) ?? null;
+}
 
 /**
  * Does the live container disagree with the mode this session resolves to?
@@ -88,7 +117,9 @@ export function containerDisagreesWithEgressPolicy(
   if (container.status !== "running") return true; // `starting`/`stopped` — rebuild rather than guess.
   const bootedContained = container.egressContainedAtStart;
   if (bootedContained === undefined || bootedContained === null) return true; // unknown ≠ matching.
-  return bootedContained !== store.resolveContained(sessionId);
+  const target = resolveSessionContainment(deps, sessionId);
+  if (target === null) return false;
+  return bootedContained !== target;
 }
 
 /**
@@ -101,6 +132,15 @@ export async function reconcileSessionEgress(
   sessionId: string,
   opts: { agentSeed?: AgentId } = {},
 ): Promise<ReconcileEgressOutcome> {
+  // FIRST, before any comparison and before any await. From here until the
+  // caller releases the first-turn claim, this session's containment is frozen
+  // at the value the user's choice resolves to right now — so a settings write
+  // landing during the rebuild persists without moving the turn already admitted
+  // under the old one. A no-op when the caller holds no claim (nothing to
+  // protect), which is why every caller takes one first.
+  const target = resolveSessionContainment(deps, sessionId);
+  if (target !== null) pinFirstTurnEgress(sessionId, target);
+
   if (!containerDisagreesWithEgressPolicy(deps, sessionId)) {
     return { action: "none", reason: "matches" };
   }

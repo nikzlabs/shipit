@@ -45,6 +45,28 @@ verified at the source.
 - [x] **req 10** the control names no workspace default until one has been read; the store's optimistic `Contained` is a placeholder, not a fact
 - [x] stale tooltip and doc comments claiming this menu still holds the permission mode
 
+## Review round 4 — the races fixed at the cause
+
+Round 3 hardened the locks and round 4's review found two more ways past them,
+which is the signal that locking was the wrong shape. The cause is that
+containment is resolved when the container is *created* — an unbounded time
+after the turn is admitted — by re-reading a store anyone may write. So the
+admitted turn now carries its answer and creation reads that.
+
+- [x] **P1** the first turn's containment is **pinned** onto its claim and read at `resolveEgressConfig`, the one seam that decides it — a write landing during the rebuild persists without moving the admitted turn
+- [x] **P1** the settings PUT no longer waits on the claim: the 30 s bounded wait wrote through on timeout, violating the guarantee it existed to keep. `awaitFirstTurnClaim` and its timeout are deleted, not tuned
+- [x] **P1** `handleSendMessage` claims a warm session's first turn at **entry**, before its first await — the interactive `/new` reuse path may otherwise recycle the session and reset its override out from under a Send already in flight
+- [x] **P1** the direct turn start re-checks the claim: it sets `running` and calls `runAgentWithMessage` without going through `dispatch()`, so it inherited nothing from that check and could start a turn beside the first
+- [x] the disagreement check resolves through the container manager's seam, not the store — a docs/211 sealed sandbox otherwise reports a disagreement no rebuild can fix
+- [x] `Inherit` is pinned to what it resolved to at admission, so a concurrent workspace-default change cannot move an admitted turn either — a case round 3 explicitly gave up on
+- [x] the claim entry is simpler, not more complex: no promise, no timer, released by identity so a late `finally` cannot drop a newer turn's pin
+
+Every new guard was verified by deleting it alone and watching its test go red.
+One thing is deliberately **not** covered by a test: that the entry claim is taken
+*early enough*. Its placement is an argument about the code above it, not an
+observable the harness can drive — what is tested is the consequence, that a
+held claim makes the reuse path stand down.
+
 **Three tests in the previous round were blind by construction** and were rebuilt:
 a `dispatch` test on a runner with no system-turn deps enqueues for that reason
 alone; a second one reused a runner whose control turn was still in flight; and

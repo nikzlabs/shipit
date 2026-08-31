@@ -42,6 +42,7 @@ import {
   seedRepoCacheWithLocalBare,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
+import { claimFirstTurn } from "../services/first-turn-admission.js";
 import {
   INSTALL_MARKER_FILE,
   sessionSharedStateDir,
@@ -433,6 +434,51 @@ describe("Integration: warm session lifecycle", () => {
         url: `/api/egress/session/${second.sessionId}`,
       })).json();
       expect(view.override).toBeNull();
+    }, 30000);
+
+    it("refuses to recycle a session whose first turn is already in flight (docs/285)", async () => {
+      // The other half of req 8, and the one that can lose a user's choice. The
+      // reset above is correct for an ABANDONED draft; applied to a session whose
+      // Send is in flight it rewrites the mode out from under a turn already
+      // being admitted, and that turn then reconciles to Inherit. The draft is
+      // still warm and still un-graduated at that moment, so nothing about the
+      // session distinguishes the two cases — only the first-turn claim does.
+      await waitFor(
+        () => !!repoStore.get(REPO_URL)?.warmSessionId,
+        10000,
+        "first warm session",
+      );
+      const encodedUrl = encodeURIComponent(REPO_URL);
+
+      const first = (await app.inject({
+        method: "POST",
+        url: `/api/repos/${encodedUrl}/claim-session`,
+      })).json();
+      await app.inject({
+        method: "PUT",
+        url: `/api/egress/session/${first.sessionId}`,
+        payload: { override: false }, // the user picked Open, then pressed Send
+      });
+
+      // `handleSendMessage` takes this at entry, before its first await, for
+      // exactly this reason.
+      const release = claimFirstTurn(first.sessionId)!;
+      try {
+        const second = (await app.inject({
+          method: "POST",
+          url: `/api/repos/${encodedUrl}/claim-session`,
+        })).json();
+        expect(second.sessionId).not.toBe(first.sessionId);
+
+        // …and the in-flight session kept the mode its turn was admitted under.
+        const view = (await app.inject({
+          method: "GET",
+          url: `/api/egress/session/${first.sessionId}`,
+        })).json();
+        expect(view.override).toBe(false);
+      } finally {
+        release();
+      }
     }, 30000);
 
     it("claim → graduate → claim yields a fresh, distinct usable session (docs/144 fix #1)", async () => {

@@ -3,7 +3,8 @@ import {
   withFirstTurnAdmission,
   claimFirstTurn,
   firstTurnClaimed,
-  awaitFirstTurnClaim,
+  pinFirstTurnEgress,
+  firstTurnEgressPin,
   _resetFirstTurnAdmission,
 } from "./first-turn-admission.js";
 
@@ -117,26 +118,6 @@ describe("the first-turn claim (docs/285)", () => {
     expect(firstTurnClaimed("s1")).toBe(false);
   });
 
-  it("makes a writer wait until the turn is dispatched", async () => {
-    // The first turn's mode is not sampled when reconciliation RETURNS — the
-    // replacement can still be starting, and resolves its containment later. A
-    // write landing in that gap is the one the container reads, so the admitted
-    // turn silently changes policy. Writers wait here instead.
-    const release = claimFirstTurn("s1")!;
-    let wrote = false;
-    // eslint-disable-next-line no-restricted-syntax -- the point is to observe that it has NOT resolved yet, which awaiting would defeat
-    const writer = awaitFirstTurnClaim("s1").then(() => { wrote = true; });
-    await Promise.resolve();
-    expect(wrote).toBe(false);
-    release();
-    await writer;
-    expect(wrote).toBe(true);
-  });
-
-  it("does not block a writer when nothing is claimed", async () => {
-    await awaitFirstTurnClaim("s-idle");
-  });
-
   it("REFUSES a second claimant rather than handing it a no-op release", () => {
     // A no-op release made a loser indistinguishable from a winner, so it
     // carried on as though it owned the span and started a second first turn.
@@ -152,9 +133,73 @@ describe("the first-turn claim (docs/285)", () => {
     expect(claimFirstTurn("s1")).not.toBeNull();
   });
 
-  it("does not block a writer on a DIFFERENT session's turn", async () => {
+});
+
+/**
+ * docs/285 — the egress PIN, which is what actually keeps the first turn's mode
+ * from moving.
+ *
+ * The claim marks the span; the pin carries the answer across it. Container
+ * creation resolves containment when it reaches the plumbing step — an unbounded
+ * time after the turn was admitted — so without a pin, whatever the store says
+ * at that arbitrary moment decides the mode, and no amount of locking around the
+ * admission changes that.
+ */
+describe("the first-turn egress pin (docs/285)", () => {
+  beforeEach(() => _resetFirstTurnAdmission());
+
+  it("answers the pinned value for the life of the claim, and nothing after it", () => {
     const release = claimFirstTurn("s1")!;
-    await awaitFirstTurnClaim("s2");
+    expect(firstTurnEgressPin("s1")).toBeUndefined();
+    pinFirstTurnEgress("s1", true);
+    expect(firstTurnEgressPin("s1")).toBe(true);
     release();
+    // Released, so creation resolves from the store again — a mode changed after
+    // the first turn is an ordinary "applies on next container start".
+    expect(firstTurnEgressPin("s1")).toBeUndefined();
+  });
+
+  it("pins Open as firmly as Contained", () => {
+    // `false` must be distinguishable from "no pin", or an explicit Open pick
+    // falls back to the store — which is the direction that silently REMOVES
+    // containment the user asked to keep, or restores it after they opted out.
+    const release = claimFirstTurn("s1")!;
+    pinFirstTurnEgress("s1", false);
+    expect(firstTurnEgressPin("s1")).toBe(false);
+    release();
+  });
+
+  it("is scoped to its session", () => {
+    const a = claimFirstTurn("s1")!;
+    const b = claimFirstTurn("s2")!;
+    pinFirstTurnEgress("s1", true);
+    expect(firstTurnEgressPin("s2")).toBeUndefined();
+    pinFirstTurnEgress("s2", false);
+    expect(firstTurnEgressPin("s1")).toBe(true);
+    expect(firstTurnEgressPin("s2")).toBe(false);
+    a();
+    b();
+  });
+
+  it("ignores a pin with no claim to own it", () => {
+    // A pin needs a holder, because the holder's release is what ends it. One
+    // stored without a claim would never be cleared, and every later container
+    // for that session would boot under a decision nobody is still making.
+    pinFirstTurnEgress("orphan", true);
+    expect(firstTurnEgressPin("orphan")).toBeUndefined();
+  });
+
+  it("does not let a stale release drop a newer turn's pin", () => {
+    const first = claimFirstTurn("s1")!;
+    pinFirstTurnEgress("s1", true);
+    first();
+    const second = claimFirstTurn("s1")!;
+    pinFirstTurnEgress("s1", false);
+    // The first handler's `finally` can run late. Releasing by presence rather
+    // than identity would clear the second turn's pin here.
+    first();
+    expect(firstTurnEgressPin("s1")).toBe(false);
+    second();
+    expect(firstTurnEgressPin("s1")).toBeUndefined();
   });
 });

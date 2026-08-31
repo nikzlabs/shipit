@@ -270,14 +270,34 @@ state is unknown — precisely how "unknown" would come to read as "matching". T
 silently run the first turn under the wrong mode; `restartContainer` handles both, since its
 destroy cancels a creation that has not published a record.
 
-**`Inherit` resolves at container start, and is not snapshotted** (req 3, resolved
-2026-08-29). Containment is re-read when the container is created
-(`container-lifecycle.ts` ~1435), so a Send-time snapshot would need new claim-owned boot
-state threaded through materialization — machinery for a race that requires a concurrent
-workspace-default change. So reconciliation compares against the mode the session *resolves
-to now*, and a container created afterwards resolves again; for an explicit Contained or Open
-those are the same answer, which is why explicit picks keep the hard guarantee and `Inherit`
-means what the word says.
+**The admitted turn carries its own containment; creation reads that instead of the store.**
+This is what makes req 3 a guarantee rather than a narrow window, and it replaces an earlier
+design that tried to hold the mode still with locks alone.
+
+The comparison above answers at a different moment from the one that matters. Containment is
+resolved when the container is *created*, at the plumbing step — and the rebuild is
+asynchronous, with `restartContainer`'s readiness wait bounded at 8 s and free to return with
+the replacement still `starting`. So creation samples the mutable override store an unbounded
+time after the turn was admitted. Every lock around the admission narrows that window; none
+closes it, and three review rounds each found another way in.
+
+So the first-turn **claim carries a pin** (`first-turn-admission.ts`): the containment the
+turn was admitted under, set by `reconcileSessionEgress` before it compares anything, dropped
+when the claim is released. It is applied at exactly one seam — `resolveEgressConfig`
+(`index.ts` ~173), the single function that turns the stores into a per-session egress
+decision — so the restart decision and the creation cannot answer differently, and
+`container-lifecycle.ts` needs no change at all. It sits **below** the docs/211 sandbox
+lifeline check: a sealed sandbox is a tightening a user's pick must not reopen.
+
+Two consequences worth stating. A settings write landing mid-flight still persists and still
+takes effect — on the next container start, which is what a mode changed after the first turn
+has always done; so the settings PUT no longer waits on anything (the earlier revision waited
+up to 30 s and then wrote through anyway, which violated the guarantee it was added to keep).
+And on the interactive path `Inherit` is pinned to *what it resolved to* at admission, so a
+concurrent workspace-default change cannot move an admitted turn either — a case the earlier
+design explicitly gave up on. Quick Capture pins only an explicit pick, because it creates and
+dispatches in one server-side act: until that call returns there is no session id for anyone
+to write a setting to.
 
 **What "hard guarantee" means, precisely.** It is about *policy*: an explicit Contained or
 Open cannot be moved by a workspace-default race. It is **not** a promise of physical
@@ -366,6 +386,9 @@ reuse branch itself, not in the composer, because the composer is not involved i
 
 **Verified dependencies, not expected to change:** `session-container.ts` (the raw
 `egressContainedAtStart` record, and why `isEgressContained()` is wrong here) and
-`container-lifecycle.ts` (teardown-epoch cancellation, and where `Inherit` re-resolves at
-~1435). The design leans on their current behaviour; if either needs editing, that is a
-signal the design drifted.
+`container-lifecycle.ts` (teardown-epoch cancellation, and the `resolveEgressConfig` call at
+~1435 that decides containment at the plumbing step). The design leans on their current
+behaviour; if either needs editing, that is a signal the design drifted. The first-turn pin
+deliberately honours that tripwire: it is applied inside `resolveEgressConfig` (`index.ts`
+~173), which `container-lifecycle.ts` already calls, rather than by threading a per-creation
+containment value through materialization.

@@ -7,6 +7,11 @@ import {
   type ReconcileEgressDeps,
 } from "./reconcile-session-egress.js";
 import type { RecoveryDeps } from "./recovery.js";
+import {
+  claimFirstTurn,
+  firstTurnEgressPin,
+  _resetFirstTurnAdmission,
+} from "./first-turn-admission.js";
 
 /**
  * docs/285 — the first-Send reconciliation: does the live container disagree
@@ -29,6 +34,11 @@ describe("reconcileSessionEgress (docs/285)", () => {
   const deps = (over: Partial<ReconcileEgressDeps> = {}): ReconcileEgressDeps => ({
     containerManager: {
       get: (id: string) => containers.get(id),
+      // Mirrors production's `resolveEgressConfig`, whose containment input IS
+      // the store. Present on the fake because it is present on the real
+      // manager: a fake missing it would send every case down the store
+      // fallback, and the sandbox test below could not tell the two apart.
+      resolveEgress: (id: string) => ({ contained: store.resolveContained(id), extraHosts: [] }),
     } as unknown as ReconcileEgressDeps["containerManager"],
     egressAllowlistStore: store,
     recovery: {} as RecoveryDeps,
@@ -40,6 +50,7 @@ describe("reconcileSessionEgress (docs/285)", () => {
     store = new EgressAllowlistStore(db);
     store.setGlobalEnabled(true); // workspace default: Contained
     containers = new Map();
+    _resetFirstTurnAdmission();
     restartMock.mockReset();
     restartMock.mockResolvedValue({
       ok: true,
@@ -86,6 +97,83 @@ describe("reconcileSessionEgress (docs/285)", () => {
     it("has nothing to reconcile when no container exists yet", () => {
       // The next create resolves the mode fresh, so there is nothing to rebuild.
       expect(containerDisagreesWithEgressPolicy(deps(), "s1")).toBe(false);
+    });
+  });
+
+  /**
+   * docs/285 — the pin is what makes the guarantee hold, and the restart is only
+   * how the container catches up to it.
+   *
+   * The rebuild is asynchronous and creation resolves containment when it reaches
+   * the plumbing step, so a settings write landing after this function returns
+   * used to decide the mode of a turn already admitted. These cover the value
+   * being frozen, surviving the write, and ending with the turn.
+   */
+  describe("freezing the admitted turn's mode", () => {
+    it("pins the resolved mode onto the first-turn claim", async () => {
+      containers.set("s1", { status: "running", egressContainedAtStart: true });
+      store.setSessionOverride("s1", false); // the user picked Open
+      const release = claimFirstTurn("s1")!;
+      await reconcileSessionEgress(deps(), "s1");
+      expect(firstTurnEgressPin("s1")).toBe(false);
+      release();
+    });
+
+    it("pins even when no restart was needed", async () => {
+      // The agreeing case returns before any restart, and it still has to freeze:
+      // "the container already matches" is a statement about NOW, and creation
+      // can re-resolve later for reasons this function never saw.
+      containers.set("s1", { status: "running", egressContainedAtStart: true });
+      const release = claimFirstTurn("s1")!;
+      const outcome = await reconcileSessionEgress(deps(), "s1");
+      expect(outcome).toEqual({ action: "none", reason: "matches" });
+      expect(firstTurnEgressPin("s1")).toBe(true);
+      release();
+    });
+
+    it("holds the admitted mode against a write that lands during the rebuild", async () => {
+      // The failure this replaces: the write won, because whatever the store said
+      // when creation reached the plumbing step decided the mode. Now the store
+      // moves and the admitted turn does not.
+      containers.set("s1", { status: "running", egressContainedAtStart: true });
+      store.setSessionOverride("s1", false); // admitted as Open
+      const release = claimFirstTurn("s1")!;
+      await reconcileSessionEgress(deps(), "s1");
+
+      store.setSessionOverride("s1", true); // a settings PUT, mid-rebuild
+      expect(store.resolveContained("s1")).toBe(true);
+      // Creation reads the pin, so the turn still runs Open — and the write is
+      // not lost, it is pending the next container start.
+      expect(firstTurnEgressPin("s1")).toBe(false);
+
+      release();
+      // Released: the write now governs, exactly as an ordinary post-first-turn
+      // change always has.
+      expect(firstTurnEgressPin("s1")).toBeUndefined();
+      expect(store.resolveContained("s1")).toBe(true);
+    });
+
+    it("resolves through the container manager's seam, not the store directly", async () => {
+      // The store is an INPUT to the resolver, not its output: a docs/211 sandbox
+      // with `network` off resolves contained however the override reads.
+      // Comparing the store's answer against a container built from the
+      // resolver's would report a disagreement no rebuild can fix — a first Send
+      // that restarts the container and still disagrees.
+      containers.set("s1", { status: "running", egressContainedAtStart: true });
+      store.setSessionOverride("s1", false); // Open, per the store
+      const sealed = deps({
+        containerManager: {
+          get: (id: string) => containers.get(id),
+          // …but this session is sealed, so the resolver says contained.
+          resolveEgress: () => ({ contained: true, extraHosts: [] }),
+        } as unknown as ReconcileEgressDeps["containerManager"],
+      });
+      expect(containerDisagreesWithEgressPolicy(sealed, "s1")).toBe(false);
+      const release = claimFirstTurn("s1")!;
+      await reconcileSessionEgress(sealed, "s1");
+      expect(restartMock).not.toHaveBeenCalled();
+      expect(firstTurnEgressPin("s1")).toBe(true);
+      release();
     });
   });
 

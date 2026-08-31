@@ -69,7 +69,6 @@ export function withFirstTurnAdmission<T>(
 /** Test-only: drop every chain and claim, so one case cannot leak into the next. */
 export function _resetFirstTurnAdmission(): void {
   chains.clear();
-  for (const entry of claims.values()) entry.release();
   claims.clear();
 }
 
@@ -91,29 +90,19 @@ export function _resetFirstTurnAdmission(): void {
  *    replacement and then waits for readiness — and in that interval a
  *    programmatic `dispatch()` (a CI fix, a wake, a parent's message) saw an
  *    unclaimed runner and started a turn alongside the first Send.
- *  - **It has to be awaitable.** The first turn's mode is not sampled when
- *    reconciliation returns: the replacement can still be `starting`, and its
- *    containment is resolved later, when creation reaches the plumbing step. A
- *    write landing in between silently moves the admitted turn to another
- *    policy. So every writer of a session's egress override waits here first.
+ *  - **It has to carry the turn's mode.** The first turn's containment is not
+ *    sampled when reconciliation returns: the replacement can still be
+ *    `starting`, and its policy is resolved later, when creation reaches the
+ *    plumbing step. So the claim carries a **pin** — the containment this turn
+ *    was admitted under — and creation reads that instead of re-reading the
+ *    store. See {@link pinFirstTurnEgress}.
  */
 interface FirstTurnClaimEntry {
-  done: Promise<void>;
-  release: () => void;
+  /** The containment frozen for this turn; `undefined` until reconciliation pins it. */
+  pinnedContained?: boolean;
 }
 
 const claims = new Map<string, FirstTurnClaimEntry>();
-
-/**
- * How long a writer will wait for an in-flight first turn before giving up and
- * writing anyway.
- *
- * Generous relative to the work it covers (an 8s readiness wait plus spawn), and
- * bounded because the alternative failure is worse: a claim leaked by some future
- * path would otherwise wedge the Session settings dialog for the life of the
- * process, with no error and nothing to retry.
- */
-const CLAIM_WAIT_TIMEOUT_MS = 30_000;
 
 /**
  * Take the claim, or return `null` when someone already holds it.
@@ -127,17 +116,14 @@ const CLAIM_WAIT_TIMEOUT_MS = 30_000;
  * The winner MUST call the returned release in a `finally`.
  */
 export function claimFirstTurn(sessionId: string): (() => void) | null {
-  const existing = claims.get(sessionId);
-  if (existing) return null;
-  let release!: () => void;
-  const done = new Promise<void>((resolve) => {
-    release = () => {
-      if (claims.get(sessionId)?.done === done) claims.delete(sessionId);
-      resolve();
-    };
-  });
-  claims.set(sessionId, { done, release });
-  return release;
+  if (claims.has(sessionId)) return null;
+  const entry: FirstTurnClaimEntry = {};
+  claims.set(sessionId, entry);
+  return () => {
+    // Only the holder may clear it. Identity rather than presence, so a release
+    // arriving after a LATER claim was taken cannot drop that one's pin.
+    if (claims.get(sessionId) === entry) claims.delete(sessionId);
+  };
 }
 
 /** True while a first turn is being started for this session. */
@@ -146,19 +132,48 @@ export function firstTurnClaimed(sessionId: string): boolean {
 }
 
 /**
- * Wait for an in-flight first turn to be dispatched, so a write cannot change
- * the mode that turn's container is about to sample. Resolves immediately when
- * nothing is claimed.
+ * docs/285 — freeze the containment this session's first turn was admitted
+ * under, for as long as the claim is held.
+ *
+ * This is the whole fix, and it is a fix at the *cause* rather than another
+ * lock. Containment is decided when a container is CREATED, by re-reading the
+ * mutable override store at the plumbing step — a moment the Send path does not
+ * control and cannot be made to control: `restartContainer` bounds its readiness
+ * wait at 8s and can return with the replacement still `starting`, so creation
+ * samples the store an unbounded time after the turn was admitted. Every lock
+ * around that samples narrows the window; none closes it.
+ *
+ * So the admitted turn stops depending on when creation happens to look. It
+ * carries its answer with it, and creation reads the answer instead of asking
+ * again. A write landing mid-span still persists and still takes effect — on the
+ * next container start, which is exactly what a mode changed after the first
+ * turn has always done. That is why the writer no longer waits for anything: a
+ * settings PUT that used to block for up to 30s (and then wrote through anyway,
+ * silently moving the in-flight turn) is now an ordinary write.
+ *
+ * Applied at ONE seam — `resolveEgressConfig` in `index.ts`, the single function
+ * that turns the stores into a per-session egress decision — so the restart
+ * decision and the creation cannot answer differently. Deliberately does NOT
+ * widen a docs/211 sandbox lifeline: that check runs first and a user's pick
+ * must not reopen a sealed sandbox.
+ *
+ * A no-op when nothing is claimed: with no claim there is no admitted turn to
+ * protect, and a pin with no owner would have no one to release it.
  */
-export async function awaitFirstTurnClaim(sessionId: string): Promise<void> {
+export function pinFirstTurnEgress(sessionId: string, contained: boolean): void {
   const entry = claims.get(sessionId);
   if (!entry) return;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  await Promise.race([
-    entry.done,
-    new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, CLAIM_WAIT_TIMEOUT_MS);
-    }),
-  ]);
-  if (timer) clearTimeout(timer);
+  entry.pinnedContained = contained;
+}
+
+/**
+ * The containment frozen for this session's in-flight first turn, or `undefined`
+ * when there is none — in which case the caller resolves normally.
+ *
+ * Lives on the claim entry rather than in a map of its own so the two cannot
+ * outlive each other: releasing the claim drops the pin in the same statement,
+ * and there is no second lifetime to leak.
+ */
+export function firstTurnEgressPin(sessionId: string): boolean | undefined {
+  return claims.get(sessionId)?.pinnedContained;
 }
