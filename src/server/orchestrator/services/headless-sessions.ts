@@ -24,7 +24,6 @@ import { saveUploadedFile, MAX_UPLOAD_FILES_PER_REQUEST } from "./files.js";
 import type { ClaimSessionService } from "./claim-session.js";
 import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
 import type { ReconcileEgressOutcome } from "./reconcile-session-egress.js";
-import { claimFirstTurn } from "./first-turn-admission.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { resolveUserRole } from "./session-role.js";
 import { buildIssueSeedPrompt } from "../../shared/issue-ref.js";
@@ -462,77 +461,71 @@ export async function createHeadlessSession(
   // runner would otherwise be seeded with the deployment default — picking Codex
   // *and* changing the network mode would dispatch this turn to Claude.
   //
-  // The claim is what the reconcile PINS this turn's containment onto, and it is
-  // held until `dispatch` below. Without it the pin has no owner and is dropped,
-  // and the replacement container would re-read the store when creation reaches
-  // the plumbing step — after this function has returned, so a settings write
-  // arriving in that window would decide the mode of a turn already committed.
-  let releaseFirstTurn: (() => void) | null = null;
-  try {
-    if (egressDeps && opts.networkMode !== undefined && opts.networkMode !== null) {
-      releaseFirstTurn = claimFirstTurn(newSessionId);
-      egressDeps.store.setSessionOverride(newSessionId, opts.networkMode);
-      const outcome = await egressDeps.reconcile(newSessionId, { agentSeed: agentId });
-      if (outcome.action === "aborted") {
-        throw new ServiceError(503, outcome.message);
-      }
+  // It takes NO first-turn claim, unlike the WS Send path, and must not: this
+  // path starts its turn through the shared `dispatch()`, which treats a held
+  // claim as busy — so a claim taken here would make Quick Capture enqueue its
+  // own prompt behind itself and return success with nothing running to drain
+  // it. The claim's two jobs (marking the session busy, making the `/new` reuse
+  // path stand down) are both meaningless for a session created right here. The
+  // pin the reconcile sets is what freezes the mode, and it outlives this call
+  // on its own.
+  if (egressDeps && opts.networkMode !== undefined && opts.networkMode !== null) {
+    egressDeps.store.setSessionOverride(newSessionId, opts.networkMode);
+    const outcome = await egressDeps.reconcile(newSessionId, { agentSeed: agentId });
+    if (outcome.action === "aborted") {
+      throw new ServiceError(503, outcome.message);
     }
-
-    const runner = runnerRegistry.getOrCreate(newSessionId, newWorkspaceDir, agentId);
-    if (credentialsDir && credentialStore) {
-      await prepareSessionAgentEnvironment(runner, {
-        sessionId: newSessionId,
-        agentId,
-        deps: {
-          credentialsDir,
-          credentialStore,
-          sessionManager,
-          ...(providerAccountManager ? { providerAccountManager } : {}),
-        },
-      });
-    } else {
-      sessionManager.setAgentId(newSessionId, agentId);
-      sessionManager.setAgentPinned(newSessionId);
-    }
-
-    // Persist any uploaded files into the new session's uploads dir before the
-    // first turn fires, so the resulting UploadRefs are visible to the agent.
-    // Uploads live as a sibling of the workspace checkout (same convention as
-    // /api/sessions/:id/files/uploads — see `api-routes-files.ts`).
-    const uploadInputs = opts.uploads ?? [];
-    if (uploadInputs.length > MAX_UPLOAD_FILES_PER_REQUEST) {
-      throw new ServiceError(400, `Maximum ${MAX_UPLOAD_FILES_PER_REQUEST} files per upload`);
-    }
-    const uploadRefs: UploadRef[] = [];
-    if (uploadInputs.length > 0) {
-      const uploadsDir = path.join(path.dirname(newWorkspaceDir), "uploads");
-      for (const input of uploadInputs) {
-        const saved = await saveUploadedFile(uploadsDir, input.filename, input.data);
-        uploadRefs.push({ path: saved.path, type: "upload" });
-      }
-    }
-
-    runner.dispatch(prepareDispatch({
-      text: trimmedPrompt,
-      agentInterface: undefined,
-      uploads: uploadRefs.length > 0 ? uploadRefs : undefined,
-      execution: undefined,
-      activity: undefined,
-      images: undefined,
-      files: undefined,
-      permissionMode: undefined,
-      postTurn: undefined,
-      systemTurn: undefined,
-      onTurnComplete: undefined,
-      deliveryId: undefined,
-      dictated: opts.dictated,
-    }));
-  } finally {
-    // The turn is dispatched, so the pin has done its job. Released here rather
-    // than at the end of the function: everything below is post-dispatch work
-    // (graduation, auto-merge) that a later settings write may freely outrun.
-    releaseFirstTurn?.();
   }
+
+  const runner = runnerRegistry.getOrCreate(newSessionId, newWorkspaceDir, agentId);
+  if (credentialsDir && credentialStore) {
+    await prepareSessionAgentEnvironment(runner, {
+      sessionId: newSessionId,
+      agentId,
+      deps: {
+        credentialsDir,
+        credentialStore,
+        sessionManager,
+        ...(providerAccountManager ? { providerAccountManager } : {}),
+      },
+    });
+  } else {
+    sessionManager.setAgentId(newSessionId, agentId);
+    sessionManager.setAgentPinned(newSessionId);
+  }
+
+  // Persist any uploaded files into the new session's uploads dir before the
+  // first turn fires, so the resulting UploadRefs are visible to the agent.
+  // Uploads live as a sibling of the workspace checkout (same convention as
+  // /api/sessions/:id/files/uploads — see `api-routes-files.ts`).
+  const uploadInputs = opts.uploads ?? [];
+  if (uploadInputs.length > MAX_UPLOAD_FILES_PER_REQUEST) {
+    throw new ServiceError(400, `Maximum ${MAX_UPLOAD_FILES_PER_REQUEST} files per upload`);
+  }
+  const uploadRefs: UploadRef[] = [];
+  if (uploadInputs.length > 0) {
+    const uploadsDir = path.join(path.dirname(newWorkspaceDir), "uploads");
+    for (const input of uploadInputs) {
+      const saved = await saveUploadedFile(uploadsDir, input.filename, input.data);
+      uploadRefs.push({ path: saved.path, type: "upload" });
+    }
+  }
+
+  runner.dispatch(prepareDispatch({
+    text: trimmedPrompt,
+    agentInterface: undefined,
+    uploads: uploadRefs.length > 0 ? uploadRefs : undefined,
+    execution: undefined,
+    activity: undefined,
+    images: undefined,
+    files: undefined,
+    permissionMode: undefined,
+    postTurn: undefined,
+    systemTurn: undefined,
+    onTurnComplete: undefined,
+    deliveryId: undefined,
+    dictated: opts.dictated,
+  }));
 
   // graduate-session.ts owns the warm → active transition (docs/156).
   // Do not inline setWarm / track / setBranchRenamed / scheduleSessionNaming /

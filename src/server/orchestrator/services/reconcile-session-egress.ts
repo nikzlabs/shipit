@@ -132,14 +132,21 @@ export async function reconcileSessionEgress(
   sessionId: string,
   opts: { agentSeed?: AgentId } = {},
 ): Promise<ReconcileEgressOutcome> {
-  // FIRST, before any comparison and before any await. From here until the
-  // caller releases the first-turn claim, this session's containment is frozen
-  // at the value the user's choice resolves to right now — so a settings write
-  // landing during the rebuild persists without moving the turn already admitted
-  // under the old one. A no-op when the caller holds no claim (nothing to
-  // protect), which is why every caller takes one first.
+  // FIRST, before any comparison and before any await: freeze this turn's mode,
+  // so a settings write landing during the rebuild persists without moving the
+  // turn already admitted under the old one. Held until a container is built
+  // with it, NOT until this call returns — the rebuild outlives both.
+  //
+  // **Only an EXPLICIT Contained or Open is pinned** (req 3). `Inherit workspace`
+  // means "the workspace setting as it stands when the session's container
+  // starts — the only case a workspace-default change during Send can move", and
+  // req 10 says the control must not present the inherited value as pinned. So
+  // pinning what Inherit happens to resolve to would close a race the human
+  // deliberately left open, and make the UI's own words false. The hard
+  // guarantee is scoped to the explicit picks, exactly as written.
   const target = resolveSessionContainment(deps, sessionId);
-  if (target !== null) pinFirstTurnEgress(sessionId, target);
+  const explicit = deps.egressAllowlistStore?.getSessionOverride(sessionId) ?? null;
+  if (target !== null && explicit !== null) pinFirstTurnEgress(sessionId, target);
 
   if (!containerDisagreesWithEgressPolicy(deps, sessionId)) {
     return { action: "none", reason: "matches" };

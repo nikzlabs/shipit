@@ -75,6 +75,7 @@ import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { readonlyRootfsTmpfs } from "./container-hardening.js";
 import { generateWorkerToken, setWorkerAuthToken, clearWorkerAuthToken } from "./worker-auth.js";
 import { clearEgressDecisionTokens } from "./egress-decision-auth.js";
+import { consumeFirstTurnEgressPin } from "./services/first-turn-admission.js";
 import { WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
 
 // ---------------------------------------------------------------------------
@@ -1438,6 +1439,14 @@ export async function createContainer(
     // re-plumbed live, so this is the source of truth the egress API diffs
     // against the current policy to show "pending — restart to apply" (docs/172).
     sc.egressContainedAtStart = egressCfg.contained;
+    // docs/285 — this container has now been BUILT with the mode the session's
+    // first turn was admitted under (`resolveEgressConfig` returned the pin, if
+    // one was set), so the pin has done its job and must not reach the next
+    // container. Consumed here rather than when the Send handler returns: the
+    // agent start is fire-and-forget, so the handler returns while this creation
+    // is still in flight, and a pin released there would be gone before the line
+    // above ever read it.
+    consumeFirstTurnEgressPin(config.sessionId);
     // docs/172 ordering fix — expose a readiness promise the moment we know the
     // egress policy, resolved once the Tier-A install below has finished. A
     // concurrent compose-network join (`allowEgressToSessionNetwork`) awaits it

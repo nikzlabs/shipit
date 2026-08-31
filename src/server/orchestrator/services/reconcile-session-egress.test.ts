@@ -8,8 +8,8 @@ import {
 } from "./reconcile-session-egress.js";
 import type { RecoveryDeps } from "./recovery.js";
 import {
-  claimFirstTurn,
   firstTurnEgressPin,
+  consumeFirstTurnEgressPin,
   _resetFirstTurnAdmission,
 } from "./first-turn-admission.js";
 
@@ -110,13 +110,11 @@ describe("reconcileSessionEgress (docs/285)", () => {
    * being frozen, surviving the write, and ending with the turn.
    */
   describe("freezing the admitted turn's mode", () => {
-    it("pins the resolved mode onto the first-turn claim", async () => {
+    it("pins the explicitly picked mode", async () => {
       containers.set("s1", { status: "running", egressContainedAtStart: true });
       store.setSessionOverride("s1", false); // the user picked Open
-      const release = claimFirstTurn("s1")!;
       await reconcileSessionEgress(deps(), "s1");
       expect(firstTurnEgressPin("s1")).toBe(false);
-      release();
     });
 
     it("pins even when no restart was needed", async () => {
@@ -124,11 +122,25 @@ describe("reconcileSessionEgress (docs/285)", () => {
       // "the container already matches" is a statement about NOW, and creation
       // can re-resolve later for reasons this function never saw.
       containers.set("s1", { status: "running", egressContainedAtStart: true });
-      const release = claimFirstTurn("s1")!;
+      store.setSessionOverride("s1", true);
       const outcome = await reconcileSessionEgress(deps(), "s1");
       expect(outcome).toEqual({ action: "none", reason: "matches" });
       expect(firstTurnEgressPin("s1")).toBe(true);
-      release();
+    });
+
+    it("does NOT pin Inherit — req 3 leaves that one movable, and req 10 says so", async () => {
+      // Requirement 3, in the human's words: "Inherit workspace means the
+      // workspace setting as it stands when the session's container starts —
+      // which is what 'inherit' says, and the only case a workspace-default
+      // change during Send can move." Requirement 10 then requires the control
+      // not to present the inherited value as pinned. Pinning what Inherit
+      // happens to resolve to would close a race the human deliberately left
+      // open AND make the UI's own words false — a requirement reversed by
+      // mechanism rather than by the human.
+      containers.set("s1", { status: "running", egressContainedAtStart: true });
+      expect(store.getSessionOverride("s1")).toBeNull(); // Inherit
+      await reconcileSessionEgress(deps(), "s1");
+      expect(firstTurnEgressPin("s1")).toBeUndefined();
     });
 
     it("holds the admitted mode against a write that lands during the rebuild", async () => {
@@ -137,7 +149,6 @@ describe("reconcileSessionEgress (docs/285)", () => {
       // moves and the admitted turn does not.
       containers.set("s1", { status: "running", egressContainedAtStart: true });
       store.setSessionOverride("s1", false); // admitted as Open
-      const release = claimFirstTurn("s1")!;
       await reconcileSessionEgress(deps(), "s1");
 
       store.setSessionOverride("s1", true); // a settings PUT, mid-rebuild
@@ -146,9 +157,10 @@ describe("reconcileSessionEgress (docs/285)", () => {
       // not lost, it is pending the next container start.
       expect(firstTurnEgressPin("s1")).toBe(false);
 
-      release();
-      // Released: the write now governs, exactly as an ordinary post-first-turn
-      // change always has.
+      // The pin ends when a container is BUILT with it, not when the handler
+      // returns — the agent start is fire-and-forget, so the handler returns
+      // while the rebuild is still in flight.
+      consumeFirstTurnEgressPin("s1");
       expect(firstTurnEgressPin("s1")).toBeUndefined();
       expect(store.resolveContained("s1")).toBe(true);
     });
@@ -169,11 +181,10 @@ describe("reconcileSessionEgress (docs/285)", () => {
         } as unknown as ReconcileEgressDeps["containerManager"],
       });
       expect(containerDisagreesWithEgressPolicy(sealed, "s1")).toBe(false);
-      const release = claimFirstTurn("s1")!;
       await reconcileSessionEgress(sealed, "s1");
       expect(restartMock).not.toHaveBeenCalled();
+      // Pinned to what the RESOLVER said (contained), not to the override (open).
       expect(firstTurnEgressPin("s1")).toBe(true);
-      release();
     });
   });
 

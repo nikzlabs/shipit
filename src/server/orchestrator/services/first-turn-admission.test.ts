@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   withFirstTurnAdmission,
   claimFirstTurn,
   firstTurnClaimed,
   pinFirstTurnEgress,
   firstTurnEgressPin,
+  consumeFirstTurnEgressPin,
   _resetFirstTurnAdmission,
 } from "./first-turn-admission.js";
 
@@ -148,58 +149,79 @@ describe("the first-turn claim (docs/285)", () => {
 describe("the first-turn egress pin (docs/285)", () => {
   beforeEach(() => _resetFirstTurnAdmission());
 
-  it("answers the pinned value for the life of the claim, and nothing after it", () => {
-    const release = claimFirstTurn("s1")!;
+  it("holds the pinned value until a container consumes it", () => {
     expect(firstTurnEgressPin("s1")).toBeUndefined();
     pinFirstTurnEgress("s1", true);
     expect(firstTurnEgressPin("s1")).toBe(true);
-    release();
-    // Released, so creation resolves from the store again — a mode changed after
-    // the first turn is an ordinary "applies on next container start".
+    consumeFirstTurnEgressPin("s1");
+    // Consumed: the next container for this session resolves from the store
+    // again, so a mode changed after the first turn is an ordinary "applies on
+    // next container start".
     expect(firstTurnEgressPin("s1")).toBeUndefined();
+  });
+
+  it("OUTLIVES the first-turn claim, because the container outlives the handler", () => {
+    // The failure this exists for: the agent start is fire-and-forget
+    // (`ProxyAgentProcess.run()`), so `handleSendMessage` returns — and its
+    // `finally` runs — while the replacement container is still being built. A
+    // pin tied to the claim was therefore gone before the creation it exists
+    // for ever read it, and that creation sampled the store instead.
+    const release = claimFirstTurn("s1")!;
+    pinFirstTurnEgress("s1", false);
+    release();
+    expect(firstTurnClaimed("s1")).toBe(false);
+    expect(firstTurnEgressPin("s1")).toBe(false);
+    consumeFirstTurnEgressPin("s1");
   });
 
   it("pins Open as firmly as Contained", () => {
     // `false` must be distinguishable from "no pin", or an explicit Open pick
-    // falls back to the store — which is the direction that silently REMOVES
-    // containment the user asked to keep, or restores it after they opted out.
-    const release = claimFirstTurn("s1")!;
+    // falls back to the store — the direction that silently RESTORES containment
+    // the user opted out of.
     pinFirstTurnEgress("s1", false);
     expect(firstTurnEgressPin("s1")).toBe(false);
-    release();
+    consumeFirstTurnEgressPin("s1");
   });
 
   it("is scoped to its session", () => {
-    const a = claimFirstTurn("s1")!;
-    const b = claimFirstTurn("s2")!;
     pinFirstTurnEgress("s1", true);
     expect(firstTurnEgressPin("s2")).toBeUndefined();
     pinFirstTurnEgress("s2", false);
     expect(firstTurnEgressPin("s1")).toBe(true);
     expect(firstTurnEgressPin("s2")).toBe(false);
-    a();
-    b();
   });
 
-  it("ignores a pin with no claim to own it", () => {
-    // A pin needs a holder, because the holder's release is what ends it. One
-    // stored without a claim would never be cleared, and every later container
-    // for that session would boot under a decision nobody is still making.
-    pinFirstTurnEgress("orphan", true);
-    expect(firstTurnEgressPin("orphan")).toBeUndefined();
-  });
-
-  it("does not let a stale release drop a newer turn's pin", () => {
-    const first = claimFirstTurn("s1")!;
+  it("consumes only the named session's pin", () => {
     pinFirstTurnEgress("s1", true);
-    first();
-    const second = claimFirstTurn("s1")!;
+    pinFirstTurnEgress("s2", false);
+    consumeFirstTurnEgressPin("s1");
+    expect(firstTurnEgressPin("s1")).toBeUndefined();
+    expect(firstTurnEgressPin("s2")).toBe(false);
+  });
+
+  it("expires rather than deciding a container built much later", async () => {
+    // The backstop for the case that never arrives: a failed rebuild, local
+    // mode, a closed tab. Without it the pin would still be there when some
+    // unrelated later container is built, and would decide its mode from a
+    // choice nobody is still making.
+    vi.useFakeTimers();
+    try {
+      pinFirstTurnEgress("s1", true);
+      expect(firstTurnEgressPin("s1")).toBe(true);
+      await vi.advanceTimersByTimeAsync(119_000);
+      expect(firstTurnEgressPin("s1")).toBe(true); // still inside a container build
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(firstTurnEgressPin("s1")).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("re-pinning restarts the expiry rather than inheriting the old one", () => {
+    pinFirstTurnEgress("s1", true);
     pinFirstTurnEgress("s1", false);
-    // The first handler's `finally` can run late. Releasing by presence rather
-    // than identity would clear the second turn's pin here.
-    first();
     expect(firstTurnEgressPin("s1")).toBe(false);
-    second();
+    consumeFirstTurnEgressPin("s1");
     expect(firstTurnEgressPin("s1")).toBeUndefined();
   });
 });

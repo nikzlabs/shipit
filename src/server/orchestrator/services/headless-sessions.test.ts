@@ -33,6 +33,9 @@ vi.mock("../../shared/installed-harnesses.js", async (importOriginal) => {
   return { ...actual, isHarnessInstalled: (id: string) => !uninstalledHarnesses.has(id) };
 });
 
+import { firstTurnClaimed } from "./first-turn-admission.js";
+import { EgressAllowlistStore } from "../egress-allowlist-store.js";
+
 interface FakeRunner {
   running: boolean;
   dispatch: ReturnType<typeof vi.fn>;
@@ -272,6 +275,53 @@ describe("createHeadlessSession", () => {
       }),
     };
   }
+
+  it("holds no first-turn claim when it dispatches an explicit network mode (docs/285)", async () => {
+    // Quick Capture starts its turn through the SHARED dispatcher, and that
+    // dispatcher treats any held first-turn claim as busy (`session-runner.ts`,
+    // guarded there). So a claim taken on this path makes Quick Capture enqueue
+    // its own prompt behind itself and return success with nothing running to
+    // drain the queue — the prompt is simply lost. The claim's two jobs (mark
+    // the session busy, make the `/new` reuse path stand down) are both
+    // meaningless for a session created right here.
+    //
+    // Asserted at the moment of dispatch, because that is when it decides. The
+    // fake dispatcher cannot enqueue, so asserting the OUTCOME here would prove
+    // nothing; the dispatcher's own behaviour under a held claim is what
+    // `session-runner.test.ts` pins.
+    let claimedAtDispatch: boolean | null = null;
+    const reusedRunner: FakeRunner = {
+      running: false,
+      dispatch: vi.fn(() => {
+        claimedAtDispatch = firstTurnClaimed("quick-1");
+      }),
+    };
+    const store = new EgressAllowlistStore(new DatabaseManager(":memory:"));
+
+    await createHeadlessSession(
+      sessionManager,
+      registry as unknown as SessionRunnerRegistry,
+      claimService({ reusedRunner }),
+      {
+        repoUrl: "https://github.com/acme/app.git",
+        prompt: "run it open",
+        title: "run it open",
+        networkMode: false, // an EXPLICIT pick — the path that took the claim
+      },
+      "claude",
+      undefined,
+      undefined,
+      undefined,
+      graduationDeps,
+      undefined,
+      { store, reconcile: async () => ({ action: "none", reason: "matches" }) },
+    );
+
+    expect(reusedRunner.dispatch).toHaveBeenCalled();
+    expect(claimedAtDispatch).toBe(false);
+    // …and the pick was still persisted, so the reconcile had something to pin.
+    expect(store.getSessionOverride("quick-1")).toBe(false);
+  });
 
   it("claims a workspace, starts the runner with the prompt, and returns the session", async () => {
     const result = await createHeadlessSession(

@@ -61,11 +61,30 @@ admitted turn now carries its answer and creation reads that.
 - [x] `Inherit` is pinned to what it resolved to at admission, so a concurrent workspace-default change cannot move an admitted turn either — a case round 3 explicitly gave up on
 - [x] the claim entry is simpler, not more complex: no promise, no timer, released by identity so a late `finally` cannot drop a newer turn's pin
 
+## Review round 5 — the pin's lifetime, and a requirement it had reversed
+
+Round 4's review found the pin correct in shape and wrong in lifetime, plus one
+outright break. All verified at the source before touching anything.
+
+- [x] **P1** Quick Capture took a first-turn claim and then dispatched through the shared dispatcher, which treats a held claim as busy — so an explicit Contained/Open **enqueued its own prompt behind itself** and returned success with nothing to drain it. It now takes no claim; the claim's two jobs are meaningless for a session created in that same call
+- [x] **P1** the pin was released before the container consumed it: the agent start is fire-and-forget, so `handleSendMessage` returns — and its `finally` runs — while the replacement is still being built. The pin is no longer tied to the claim; it ends when a container is **built** with it (`container-lifecycle.ts`), with a 2-minute backstop for the build that never comes
+- [x] **P1** round 4 pinned `Inherit` too, which **reverses requirements 3 and 10** — the human's words leave Inherit as "the workspace setting as it stands when the session's container starts … the only case a workspace-default change during Send can move", and req 10 forbids presenting it as pinned. Only an explicit pick is pinned now. A requirement is not something a mechanism gets to change
+- [x] **P2** the `/new` reuse path now **takes** the first-turn claim across its workspace reset instead of only checking it: the check passed, `refreshClaimedSession` yielded, and a Send arriving in that window claimed and ran while the reset moved the tree under it
+- [x] the claim is a plain `Set` again — no promise, no timer, no pin — and its release is idempotent
+
+**Known and bounded, not fixed:** a programmatic dispatch that queues while a
+first Send holds the entry claim stays queued if that Send then fails validation,
+until some later turn drains it. The precondition is a programmatic dispatch into
+a still-**warm** session, which the sources of such dispatches (CI fix, wake,
+parent message — all targeting graduated sessions, and spawns which set
+`skipReuse`) do not produce. Fixing it properly means a new drain entry point on
+the runner; that is more mechanism than the case earns.
+
 Every new guard was verified by deleting it alone and watching its test go red.
 One thing is deliberately **not** covered by a test: that the entry claim is taken
 *early enough*. Its placement is an argument about the code above it, not an
 observable the harness can drive — what is tested is the consequence, that a
-held claim makes the reuse path stand down.
+held claim makes the reuse path stand down, from both sides.
 
 **Three tests in the previous round were blind by construction** and were rebuilt:
 a `dispatch` test on a runner with no system-turn deps enqueues for that reason

@@ -281,23 +281,39 @@ the replacement still `starting`. So creation samples the mutable override store
 time after the turn was admitted. Every lock around the admission narrows that window; none
 closes it, and three review rounds each found another way in.
 
-So the first-turn **claim carries a pin** (`first-turn-admission.ts`): the containment the
-turn was admitted under, set by `reconcileSessionEgress` before it compares anything, dropped
-when the claim is released. It is applied at exactly one seam — `resolveEgressConfig`
-(`index.ts` ~173), the single function that turns the stores into a per-session egress
-decision — so the restart decision and the creation cannot answer differently, and
-`container-lifecycle.ts` needs no change at all. It sits **below** the docs/211 sandbox
-lifeline check: a sealed sandbox is a tightening a user's pick must not reopen.
+So the turn carries a **pin** (`first-turn-admission.ts`): the containment it was admitted
+under, set by `reconcileSessionEgress` before it compares anything. It is applied at exactly
+one seam — `resolveEgressConfig` (`index.ts` ~173), the single function that turns the stores
+into a per-session egress decision — so the restart decision and the creation cannot answer
+differently. It sits **below** the docs/211 sandbox lifeline check: a sealed sandbox is a
+tightening a user's pick must not reopen.
+
+**The pin's lifetime is the container build, not the handler.** It is deliberately not tied
+to the first-turn claim, and a first attempt that tied them together was wrong in both
+directions. The claim ends when `handleSendMessage` returns — but the agent start is
+fire-and-forget (`ProxyAgentProcess.run()`), so the handler returns while the replacement
+container is still being built, and a pin released there was gone before the creation it
+exists for ever read it. The pin instead ends when a container **consumes** it, at
+`container-lifecycle.ts` ~1440 where the boot containment is recorded, with a 2-minute
+backstop for the build that never arrives (a failed rebuild, `RUNTIME_MODE=local`, a closed
+tab). This is the one place the design edits `container-lifecycle.ts`, and it is a two-line
+consumption call rather than a threaded creation parameter.
+
+**Only an explicit pick is pinned.** `Inherit` is left to resolve at container start, because
+that is what req 3 says it means and what req 10 requires the control to say about it.
+Pinning what Inherit happens to resolve to would close a race the human deliberately left
+open, and make the UI's own words false.
 
 Two consequences worth stating. A settings write landing mid-flight still persists and still
 takes effect — on the next container start, which is what a mode changed after the first turn
 has always done; so the settings PUT no longer waits on anything (the earlier revision waited
 up to 30 s and then wrote through anyway, which violated the guarantee it was added to keep).
-And on the interactive path `Inherit` is pinned to *what it resolved to* at admission, so a
-concurrent workspace-default change cannot move an admitted turn either — a case the earlier
-design explicitly gave up on. Quick Capture pins only an explicit pick, because it creates and
-dispatches in one server-side act: until that call returns there is no session id for anyone
-to write a setting to.
+And **Quick Capture takes no first-turn claim**, unlike the WS Send path. It starts its turn
+through the shared `dispatch()`, which treats a held claim as busy — so a claim taken there
+made Quick Capture enqueue its own prompt behind itself and return success with nothing
+running to drain it. The claim's two jobs (mark the session busy, make the `/new` reuse path
+stand down) are both meaningless for a session created in that same call; the pin is what
+freezes the mode, and it outlives the call on its own.
 
 **What "hard guarantee" means, precisely.** It is about *policy*: an explicit Contained or
 Open cannot be moved by a workspace-default race. It is **not** a promise of physical
