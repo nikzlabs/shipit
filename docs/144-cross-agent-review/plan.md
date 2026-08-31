@@ -996,8 +996,9 @@ Traceability for the product decisions made during design:
    unrecoverable, not because anything ended the run — and
    `ORPHANED_CONSULT_DETAIL` is worded to say exactly that. Recovering such a run
    would take a durable worker-side record plus a re-attach path, which docs/249
-   ruled out of scope. So "two terminators" is a claim about what can **end a
-   spawn**; it is not a claim that every `cancelled` card corresponds to one.
+   ruled out of scope and planning#487 tracks. So "two terminators" is a claim
+   about what can **end a spawn**; it is not a claim that every `cancelled` card
+   corresponds to one.
 
 ## Implementation status (v0)
 
