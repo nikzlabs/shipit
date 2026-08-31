@@ -908,11 +908,12 @@ export async function registerRoutes(
       // reads a live session's role from the session row it already holds, and
       // that row was fetched before this connect wrote to it. On `/{repo}/new`
       // that never showed, because a warm session has no row and the composer
-      // displays the seed there instead; but every surface that lands the user
-      // straight on a FRESH session it can already see — an ops session
-      // (docs/128), a sandbox (docs/211) — reads the stale copy and shows no
-      // role at all, while the session quietly runs on it. So the seed's answer
-      // is emitted below, next to `activateSession`, exactly as `set_role`'s is.
+      // displays the seed there instead; but a surface that navigates the user
+      // straight onto a FRESH session the browser has already listed — an ops
+      // session (docs/128), a sandbox (docs/211), both of which refresh the list
+      // and only then navigate — reads the stale copy and shows no role at all,
+      // while the session quietly runs on it. So the seed's answer is emitted
+      // below, next to `activateSession`, exactly as `set_role`'s is.
       let seededRoleApplied = false;
       if (
         requestedRole

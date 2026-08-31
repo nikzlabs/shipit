@@ -117,6 +117,22 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     }
   });
 
+  /**
+   * An ops session through the route the sidebar uses (docs/128) — a session the
+   * server creates and the browser then navigates onto, which is the shape the
+   * seeded-role display gap was reported on.
+   */
+  async function createOpsSession(): Promise<{ id: string; kind?: string }> {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/new/template",
+      payload: { templateId: "ops" },
+    });
+    const body = res.json() as { session?: { id: string; kind?: string } };
+    if (!body.session) throw new Error(`ops session creation failed: ${res.body}`);
+    return body.session;
+  }
+
   async function drainUntil(
     client: TestClient,
     predicate: (m: AnyMsg) => boolean,
@@ -334,6 +350,34 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     expect(answer.agentId).toBe("claude");
     expect(answer.modelId).toBe(ROLE_MODEL);
     expect(answer.reasoningEffort).toBe("high");
+    // The service and billing mode ride in `selection`, and the model picker's
+    // checkmark lands on THAT pair rather than on the bare id (docs/252) — a
+    // frame carrying the right model under the wrong service still shows the
+    // user a group the role did not pick.
+    expect(answer.selection?.serviceId).toBe("openrouter");
+    expect(answer.selection?.billingMode).toBe("key");
+
+    client.close();
+  });
+
+  it("tells the viewer about the role it seeded onto an OPS session (docs/128)", async () => {
+    // The reported case, through the route it was reported on. An ops session is
+    // created server-side and the browser navigates straight onto it, so unlike
+    // `/{repo}/new` the composer has a row for it — the stale one it fetched at
+    // creation. Kept separate from the test above because the connect handler is
+    // deliberately kind-agnostic: this is what would catch an ops-specific path
+    // growing a rule of its own.
+    const created = await createOpsSession();
+    expect(created.kind).toBe("ops");
+
+    const client = await TestClient.connect(port, created.id, { role: "deep dive" });
+    const answer: AnyMsg = await drainUntil(client, (m) => m.type === "model_selection_changed");
+    expect(answer).toBeTruthy();
+    expect(answer.roleName).toBe("deep dive");
+    expect(sessionManager.get(created.id)?.roleName).toBe("deep dive");
+    // Still an ops session: a role sets the harness, model and level, and
+    // nothing else about what the session IS.
+    expect(sessionManager.get(created.id)?.kind).toBe("ops");
 
     client.close();
   });
