@@ -311,6 +311,57 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     client.close();
   });
 
+  it("tells the connecting viewer about the role it just seeded (reqs 12, 13)", async () => {
+    // Applying the seed is only half of req 12. The composer reads a LIVE
+    // session's role from the session row the browser already holds, and that
+    // copy was fetched before this connect wrote to it. On `/{repo}/new` the gap
+    // never showed — a warm session has no row, so the composer displays the
+    // seed there — but a surface that lands the user straight on a fresh session
+    // it can already see (an ops session, a sandbox) read the stale copy and
+    // showed no role at all while the session ran on one.
+    const client = await TestClient.connect(port, undefined, {
+      agent: "codex",
+      model: "gpt-5-codex",
+      reasoning: "low",
+      role: "deep dive",
+    });
+    const answer: AnyMsg = await drainUntil(client, (m) => m.type === "model_selection_changed");
+    expect(answer).toBeTruthy();
+    expect(answer.sessionId).toBe(client.sessionId);
+    // All four, because the role wrote all four together: a viewer told only
+    // about the name would show a role beside parameters it did not set.
+    expect(answer.roleName).toBe("deep dive");
+    expect(answer.agentId).toBe("claude");
+    expect(answer.modelId).toBe(ROLE_MODEL);
+    expect(answer.reasoningEffort).toBe("high");
+
+    client.close();
+  });
+
+  it("says nothing about the selection on a connect that seeds no role", async () => {
+    // The pair to the test above: the answer is feedback on something this
+    // connect DID, so an ordinary reconnect — the common case, on backoff after
+    // every network blip — must not carry a frame with it.
+    const first = await TestClient.connect(port, undefined, { role: "deep dive" });
+    await drainUntil(first, (m) => m.type === "model_selection_changed");
+    const sessionId = first.sessionId!;
+    first.close();
+
+    const again = await TestClient.connect(port, sessionId, { role: "deep dive" });
+    // Nothing to wait FOR, so this drains whatever the reconnect does send until
+    // the socket goes quiet, and asserts on what was not among it.
+    const seen: AnyMsg[] = [];
+    for (let i = 0; i < 12; i++) {
+      try {
+        seen.push(await again.receive(400));
+      } catch {
+        break;
+      }
+    }
+    expect(seen.map((m) => m.type)).not.toContain("model_selection_changed");
+    again.close();
+  });
+
   it("keeps a cleared role cleared across a reconnect that still seeds it (reqs 12, 18)", async () => {
     // The browser's seed lives inside a per-session memoized WebSocket URL, so a
     // socket that reconnects after the clear still carries the role's name. The

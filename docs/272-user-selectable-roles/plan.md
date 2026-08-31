@@ -78,6 +78,19 @@ mechanism and, when it resolves, **overrides all three** — it is the thing tha
 applies only while the session is unpinned and carries no role of its own, which is the same guard
 the other three params take.
 
+**Applying it is only half: the connect answers with `model_selection_changed`.** The composer
+reads a live session's role from the session-list row the browser already holds, and that copy was
+fetched before the connect wrote to it — so the row said "no role" while the session ran on one.
+On `/{repo}/new` this never showed, because a warm session has no row at all and the seed is the
+display there (see [Before a session is active](#before-a-session-is-active-the-seed-is-the-display));
+it showed on every surface that lands the user straight on a **fresh session they can already see**
+— an ops session (docs/128), a sandbox (docs/211) — where the composer named no role and picking
+one again was the only way to get it back. The answer carries all four fields for the reason
+`set_role`'s does: the role wrote them together, and a viewer told only the name shows a role
+beside parameters it did not set. Emitted only when the seed actually applied, so an ordinary
+reconnect — the common case, on backoff after any blip — adds no frame. Guarded by a pair of tests
+in `integration_tests/user-selectable-roles.test.ts`.
+
 ## Selection is refused after the first turn (req 4)
 
 `agentPinned` is already the "this session has taken its first turn" fact — it is set when the
