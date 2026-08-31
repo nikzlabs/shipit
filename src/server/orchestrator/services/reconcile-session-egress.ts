@@ -9,28 +9,32 @@
  * arrival, so by the time the user picks a mode a container usually exists —
  * built under whatever the workspace default was.
  *
- * So the first Send reconciles: compare what the session resolves to now against
- * what the live container actually booted with, and on a disagreement destroy
- * and rebuild it before the turn goes out. Every later message skips this
- * entirely — a mode changed after the first turn shows the ordinary "applies on
- * next container start" pending state, exactly as it does today.
+ * **So the rebuild happens when the mode CHANGES, not when the message is sent,
+ * and the write does not return until it has happened.** Reconciling at the
+ * first Send instead reads as more efficient and is a race generator: the write,
+ * the comparison, the teardown, the replacement's creation and the turn's
+ * dispatch are five moments with a mutable store underneath, and the container
+ * samples that store at a moment the Send path does not control. Doing it at the
+ * write costs a slow settings PUT and buys the rest — the container is created
+ * immediately after the value it reads was written, by the only writer there is,
+ * so nothing has to be frozen because nothing has time to move. The composer is
+ * already barred for the duration by the save barrier the control has always
+ * had, which is the "wait for the container" state the user sees.
  *
  * Two properties are load-bearing and easy to lose:
  *
  *  - **It reads the raw boot record**, never `isEgressContained()`. That helper
  *    re-derives the *current policy* when the boot state is unknown, which is
- *    precisely how "unknown" would come to read as "matching" and run the first
- *    turn under the wrong mode.
+ *    precisely how "unknown" would come to read as "matching" and leave the
+ *    session running under the mode the user just replaced.
  *  - **It is not Rescue.** It reuses Rescue's teardown/recreate path but not its
  *    privilege of clearing the OOM breaker: toggling a setting must not buy a
- *    retry that an unchanged first Send is refused.
+ *    retry that an unchanged session is refused.
  *
- * The comparison alone is not the guarantee, because it answers at a different
- * moment from the one that matters: the rebuild is asynchronous and creation
- * re-reads the store when it reaches the plumbing step. So the first act here is
- * to PIN the resolved mode onto the session's first-turn claim
- * ({@link pinFirstTurnEgress}); creation then reads the pin, and the answer this
- * function compared against is the answer the container is actually built with.
+ * Only a session that has not run a turn yet is rebuilt. A mode changed after
+ * the first turn keeps the ordinary "applies on next container start" pending
+ * state, exactly as it does today — restarting a container out from under a
+ * session the user is working in is not a settings change, it is Rescue.
  */
 
 import type { AgentId } from "../../shared/types.js";
@@ -38,7 +42,6 @@ import type { SessionContainerManager } from "../session-container.js";
 import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
 import type { SessionOomCircuitBreaker } from "../oom-circuit-breaker.js";
 import { restartContainer, type RecoveryDeps } from "./recovery.js";
-import { pinFirstTurnEgress } from "./first-turn-admission.js";
 
 export interface ReconcileEgressDeps {
   containerManager: SessionContainerManager | null;
@@ -124,30 +127,14 @@ export function containerDisagreesWithEgressPolicy(
 
 /**
  * Bring the session's container in line with its resolved network mode, if the
- * two disagree. Safe to call on every first Send: the common case (nobody
- * touched the mode) returns `none` without doing any work.
+ * two disagree. Safe to call on every write: the common case (the mode already
+ * matches what the container booted with) returns `none` without doing any work.
  */
 export async function reconcileSessionEgress(
   deps: ReconcileEgressDeps,
   sessionId: string,
   opts: { agentSeed?: AgentId } = {},
 ): Promise<ReconcileEgressOutcome> {
-  // FIRST, before any comparison and before any await: freeze this turn's mode,
-  // so a settings write landing during the rebuild persists without moving the
-  // turn already admitted under the old one. Held until a container is built
-  // with it, NOT until this call returns — the rebuild outlives both.
-  //
-  // **Only an EXPLICIT Contained or Open is pinned** (req 3). `Inherit workspace`
-  // means "the workspace setting as it stands when the session's container
-  // starts — the only case a workspace-default change during Send can move", and
-  // req 10 says the control must not present the inherited value as pinned. So
-  // pinning what Inherit happens to resolve to would close a race the human
-  // deliberately left open, and make the UI's own words false. The hard
-  // guarantee is scoped to the explicit picks, exactly as written.
-  const target = resolveSessionContainment(deps, sessionId);
-  const explicit = deps.egressAllowlistStore?.getSessionOverride(sessionId) ?? null;
-  if (target !== null && explicit !== null) pinFirstTurnEgress(sessionId, target);
-
   if (!containerDisagreesWithEgressPolicy(deps, sessionId)) {
     return { action: "none", reason: "matches" };
   }
@@ -165,17 +152,13 @@ export async function reconcileSessionEgress(
       message:
         "This session's container can't be rebuilt right now — it has been stopped "
         + "repeatedly, so automatic restarts are paused. Rescue the session to try again, "
-        + "then send your message.",
+        + "then change the network mode.",
     };
   }
 
   const result = await restartContainer(deps.recovery, sessionId, {
     // NOT Rescue: see the breaker check above.
     resetBreakers: false,
-    // The CALLER announces, after it has attached to the replacement. Announcing
-    // from inside would reach the sending tab mid-handler, and a tab that
-    // reconnects there closes the very socket the handler goes on to attach.
-    announceReplacement: false,
     ...(opts.agentSeed ? { agentSeed: opts.agentSeed } : {}),
   });
 
@@ -189,7 +172,7 @@ export async function reconcileSessionEgress(
       offerRescue: false,
       message: `Couldn't rebuild this session's container for the network mode you chose${
         result.error ? `: ${result.error}` : "."
-      } Your message was not sent.`,
+      } The mode was not applied.`,
     };
   }
 

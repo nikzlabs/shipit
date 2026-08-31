@@ -18,7 +18,6 @@ import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
 import type { PersistedMessage, ResolvedBugReport } from "./chat-history.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
 import type { UnreadableWorkspace } from "../shared/git.js";
-import { firstTurnClaimed } from "./services/first-turn-admission.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from "../shared/sub-agent-run.js";
 import { runAgentToCompletion, buildSubAgentRunParams } from "../shared/sub-agent-run.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
@@ -411,27 +410,7 @@ export function dispatchOnRunner(
     return settlement;
   };
 
-  // docs/285 — `turnStartInProgress` counts as busy here, and this is the seam
-  // that makes the reservation mean anything. The WS handler checks it at its own
-  // entry, but a first Send that LOST the admission race re-enters through this
-  // shared dispatcher instead, and `running` alone is false for the whole
-  // pre-spawn window — environment preparation, parameter assembly, and the
-  // container restart that window exists for. So the loser dispatched while the
-  // winner was still starting, and two first turns ran against one session.
-  //
-  // The SESSION claim is asked as well as the runner flag, and it is the one that
-  // actually covers the gap: reconciliation destroys this runner and builds a
-  // replacement, so a flag on the runner object is dropped in the middle of the
-  // window it guards. `restartContainer` publishes that replacement and then
-  // waits for readiness, and a programmatic dispatch arriving in between saw a
-  // runner with nothing set on it.
-  //
-  // Safe against self-deadlock: a turn's own start path (`runAgentWithMessage`)
-  // does not come through `dispatch`, so the holder never queues behind itself.
-  // Steering is unreachable in this state too — there is no resident streaming
-  // process yet — so this falls through to the enqueue below, which is the
-  // intended outcome.
-  if (runner.running || runner.turnStartInProgress || firstTurnClaimed(runner.sessionId)) {
+  if (runner.running) {
     // docs/163 — honor live steering on the dispatch path too: when the running
     // turn is steerable+streaming and live steering is on, inject the message
     // via `sendUserMessage` instead of queuing it. Shares the
@@ -1202,23 +1181,6 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * false in the `done` handler.
    */
   systemTurnInProgress: boolean;
-  /**
-   * docs/285 — the session is claimed for a turn that has NOT reached
-   * `agent.run()` yet: environment preparation, parameter assembly, and — the
-   * case this was added for — a first-Send container restart.
-   *
-   * `running` alone cannot express that window, because the state it describes
-   * is *checkable against the worker* and this one is not. `verifyRunningState()`
-   * asks the worker whether an agent is up; during pre-spawn preparation the
-   * honest answer is "no", so the probe cleared `running` and a second, near-
-   * simultaneous first Send fell straight through into a concurrent turn against
-   * the one already being started. Both probes return early while this is set.
-   *
-   * Owned by whoever claims the turn, set in the SAME synchronous tick as
-   * `running`, and cleared in a `finally` — a leak here reads as a permanently
-   * busy session, so it must never be cleared on a path the claimant can miss.
-   */
-  turnStartInProgress: boolean;
   wasInterrupted: boolean;
   /**
    * planning#318 follow-up — monotonic per-runner TURN identity, bumped by
@@ -1809,8 +1771,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _agentId: AgentId;
   private _isRunning = false;
   private _systemTurnInProgress = false;
-  /** docs/285 — see `SessionRunnerInterface.turnStartInProgress`. */
-  private _turnStartInProgress = false;
   private _wasInterrupted = false;
   /** See `SessionRunnerInterface.turnEpoch`. */
   turnEpoch = 0;
@@ -1884,8 +1844,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set running(v: boolean) { this._isRunning = v; }
   get systemTurnInProgress(): boolean { return this._systemTurnInProgress; }
   set systemTurnInProgress(v: boolean) { this._systemTurnInProgress = v; }
-  get turnStartInProgress(): boolean { return this._turnStartInProgress; }
-  set turnStartInProgress(v: boolean) { this._turnStartInProgress = v; }
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
   get lastTurnErrored(): boolean { return this._lastTurnErrored; }
@@ -2180,10 +2138,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
    * events. Just return the local flag.
    */
   async verifyRunningState(): Promise<boolean> {
-    // docs/285 — a claimed-but-not-yet-spawned turn reads as running. Nothing
-    // is probed here, but the two implementations must answer this the same way
-    // or the concurrency guarantee holds only on the container path.
-    if (this._turnStartInProgress) return true;
     return this._isRunning;
   }
 

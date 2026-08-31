@@ -7,8 +7,7 @@ import {
   PUSH_AGENT_SECRETS_TIMEOUT_MS,
 } from "./session-agent-env.js";
 import type { AgentId } from "../shared/types.js";
-import { testDispatch, makeDispatchTurnDeps, type FakeAgent } from "./integration_tests/dispatch-test-helpers.js";
-import { claimFirstTurn } from "./services/first-turn-admission.js";
+import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
 import { TURN_COMPLETED } from "./turn-settlement.js";
 
 describe("SessionRunner", () => {
@@ -139,69 +138,6 @@ describe("SessionRunner", () => {
     runner.dispatch(testDispatch({ text: "fix ci" }));
     expect(runner.queueLength).toBe(1);
     expect(runner.dequeue()?.text).toBe("fix ci");
-    runner.dispose({ force: true });
-  });
-
-  it("dispatch enqueues during a pre-spawn turn claim, not only while running (docs/285)", () => {
-    // `turnStartInProgress` covers the window between claiming the session and
-    // `agent.run()` — environment preparation, and the container restart a
-    // first-Send reconciliation performs. `running` is false throughout.
-    //
-    // Two SEPARATE runners, and real system-turn deps on both. A bare runner
-    // enqueues because it cannot start a turn at all, and reusing one runner
-    // leaves the control's in-flight turn to enqueue the second dispatch for a
-    // reason that has nothing to do with the flag — either way the test passes
-    // whatever the busy check says.
-    const mk = (id: string): SessionRunner => {
-      const { deps } = makeDispatchTurnDeps([] as FakeAgent[], []);
-      const r = new SessionRunner({
-        sessionId: id,
-        sessionDir: `/tmp/${id}`,
-        defaultAgentId: "claude" as AgentId,
-      });
-      r.setSystemTurnDeps(deps);
-      return r;
-    };
-
-    // Control: nothing claimed, so this dispatch STARTS rather than queues.
-    const control = mk("s-control");
-    control.dispatch(testDispatch({ text: "starts", systemTurn: true }));
-    expect(control.queueLength).toBe(0);
-    control.dispose({ force: true });
-
-    const claimed = mk("s-flagged");
-    claimed.turnStartInProgress = true;
-    claimed.dispatch(testDispatch({ text: "second first send", systemTurn: true }));
-    expect(claimed.queueLength).toBe(1);
-    claimed.dispose({ force: true });
-  });
-
-  it("dispatch enqueues while the SESSION holds a first-turn claim (docs/285)", () => {
-    // The runner flag alone is not enough, and this is the case that proves it:
-    // reconciliation destroys the runner and builds a replacement, so between
-    // the replacement being published and the handler marking it, a programmatic
-    // dispatch (a CI fix, a wake, a parent's message) saw a runner with nothing
-    // set on it. The claim is keyed by session precisely to span that.
-    const agents: FakeAgent[] = [];
-    const { deps } = makeDispatchTurnDeps(agents, []);
-    const runner = new SessionRunner({
-      sessionId: "s-claimed",
-      sessionDir: "/tmp/s-claimed",
-      defaultAgentId: "claude" as AgentId,
-    });
-    runner.setSystemTurnDeps(deps);
-
-    const release = claimFirstTurn("s-claimed")!;
-    try {
-      // A freshly built replacement: nothing on the runner says it is taken.
-      expect(runner.running).toBe(false);
-      expect(runner.turnStartInProgress).toBe(false);
-      runner.dispatch(testDispatch({ text: "ci fix", systemTurn: true }));
-      expect(runner.queueLength).toBe(1);
-      expect(runner.running).toBe(false);
-    } finally {
-      release();
-    }
     runner.dispose({ force: true });
   });
 

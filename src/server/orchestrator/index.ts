@@ -3,7 +3,6 @@ import type { FastifyInstance } from "fastify";
 import { composeEgressExtraHosts, composeEgressIdentityRules, sandboxLifelineEgressConfig } from "./egress-allowlist.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { setEgressDurableSource } from "./egress-policy.js";
-import { firstTurnEgressPin } from "./services/first-turn-admission.js";
 import { assertWorkerUidConsistency } from "./worker-uid-guard.js";
 import { assertWorkerUidNotReserved, sealLegacySessionDirs, sessionWorkerGid } from "./session-worker-uid.js";
 import { assertSessionUidRange, configureSessionUidLedger } from "./session-uid-allocator.js";
@@ -183,20 +182,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       composeEgressIdentityRules(),
     );
     if (lifeline) return lifeline;
-    // docs/285 — a session whose FIRST turn has been admitted carries the
-    // containment it was admitted under, and creation reads that instead of
-    // re-reading the store. Containment is plumbed when the container is
-    // created, which happens an unbounded time after the turn was admitted (the
-    // readiness wait is bounded at 8s and can return with the replacement still
-    // `starting`), so a settings write landing in between used to move the
-    // in-flight turn to a policy the user never chose for it. `undefined`
-    // whenever no first turn is in flight, which is almost always.
-    //
-    // BELOW the lifeline check on purpose: a docs/211 sandbox with `network`
-    // off is a tightening the user's Contained/Open pick must not reopen.
-    const pinned = firstTurnEgressPin(sessionId);
     return {
-      contained: pinned ?? egressAllowlistStore.resolveContained(sessionId),
+      contained: egressAllowlistStore.resolveContained(sessionId),
       extraHosts: composeEgressExtraHosts({
         credentialStore,
         durableHosts: egressAllowlistStore.effectiveHosts(sessionId),

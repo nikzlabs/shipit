@@ -255,15 +255,6 @@ export interface RestartContainerOpts {
    * cannot repair that — an existing runner is returned unchanged.
    */
   agentSeed?: AgentId;
-  /**
-   * docs/285 — whether to broadcast `runner_replaced` from inside this call.
-   *
-   * `false` for a caller that still has its own attachment to finish, which must
-   * announce afterwards: the broadcast reaches the calling tab as well, and a
-   * reconnect triggered mid-handler leaves that handler attaching a socket that
-   * has already closed.
-   */
-  announceReplacement?: boolean;
 }
 
 /**
@@ -273,7 +264,7 @@ export interface RestartContainerOpts {
  * need telling are attached to the runner that was just disposed, and the
  * replacement has no viewers yet — there is no runner channel that reaches them.
  */
-export function announceRunnerReplaced(
+function announceRunnerReplaced(
   deps: Pick<RecoveryDeps, "sseBroadcast" | "runnerRegistry">,
   sessionId: string,
 ): void {
@@ -420,20 +411,13 @@ export async function restartContainer(
     opts.agentSeed ?? session.agentId ?? deps.defaultAgentId,
   );
 
-  // docs/285 — tell every viewer the runner was replaced.
+  // docs/285 — tell every viewer the runner was replaced. Disposal removed the
+  // old runner's listeners without closing their sockets, so an attached viewer
+  // is otherwise left on a dead runner receiving nothing, with no error anywhere.
   //
-  // Announced HERE only for callers that have no attachment of their own to
-  // finish (Rescue: an HTTP route, whose own tab reconnects itself). The
-  // first-Send reconciliation opts out with `announceReplacement: false` and
-  // announces after it has attached — because this broadcast reaches the SENDING
-  // tab too, and a tab that reconnects mid-handler closes the socket the handler
-  // is still holding. Its close listener fires, detaches, and then the handler
-  // attaches that already-closed connection to the replacement runner: a viewer
-  // that can never be detached, holding the session's viewer count above zero
-  // and idle cleanup open indefinitely. Ordering, not a guard, is the fix.
-  if (opts.announceReplacement !== false) {
-    announceRunnerReplaced(deps, sessionId);
-  }
+  // Every caller is an HTTP route (Rescue, and the network-mode write), so none
+  // of them has an attachment of its own that this broadcast could disturb.
+  announceRunnerReplaced(deps, sessionId);
 
   const { newContainerState, error } = await waitForContainerReady(
     deps.containerManager,

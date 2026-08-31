@@ -3,12 +3,10 @@
 - [x] `EgressEnforcementStatus` — report WHICH inactive deployment it is, since the two cases point in opposite directions
 - [x] Strict validation on both session egress routes (unknown id → 404, bad `override` → 400)
 - [x] No audit card for the creation-time choice; a card for every later change
-- [x] `reconcileSessionEgress` — compare the resolved mode against the raw `egressContainedAtStart`, restart on disagreement
-- [x] `restartContainer` gains `resetBreakers` / `agentSeed`; reconciliation takes neither of Rescue's privileges
-- [x] `withFirstTurnAdmission` — session-keyed section covering competing first Sends **and** the override PUT
-- [x] `turnStartInProgress` — a pre-spawn reservation `verifyRunningState()` cannot clear
-- [x] First-Send reconciliation wired into `send-message.ts`, released in a `finally` around the whole handler
-- [x] Quick Capture: `networkMode` through the request, persisted and reconciled before `getOrCreate`, with the agent seed
+- [x] `reconcileSessionEgress` — compare the resolved mode against the raw `egressContainedAtStart`, rebuild on disagreement
+- [x] `restartContainer` gains `resetBreakers` / `agentSeed`; the rebuild takes neither of Rescue's privileges
+- [x] The rebuild runs inside `PUT /api/egress/session/:id`, before it answers, for ungraduated sessions only
+- [x] Quick Capture: `networkMode` through the request, persisted and rebuilt before `getOrCreate`, with the agent seed
 - [x] Interactive claim resets a reused draft's override (req 8)
 - [x] Runner incarnation in the `active_runners` snapshot + live `runner_replaced`, so a second viewer converges
 - [x] Combined flat control: Permission mode + Network access, one trigger, every viewport
@@ -16,7 +14,48 @@
 - [x] `useSessionNetworkMode` / `useComposerNetworkMode` — shared mutation clock, pre-claim draft, Send barrier
 - [x] `session_egress_changed` invalidation; the global egress fields stay fresh without the Settings editor
 - [x] Session settings dialog: shared copy, one name for one value, enforcement warning that names the case
-- [x] Tests: reconciliation states, admission lock, the combined control, route validation, req 8 through the reuse path
+- [x] Tests: rebuild states, the write-time trigger, the combined control, route validation, req 8 through the reuse path
+
+## Rounds 2–5, and the simplification that ended them
+
+Four independent review rounds each found a race in the first-Send
+reconciliation, and each was answered with more mechanism: a session-keyed
+admission section, a runner-local pre-spawn reservation, a session claim, a
+hand-off path, a timer-backed policy snapshot. Round 5 still found four P1s, and
+named the real problem — the ownership model, not the plumbing.
+
+**The fix was to move the rebuild from the first Send to the write itself.** The
+container is then created immediately after the value it reads was written, by
+the only writer there is, so there is no window for the two to disagree and
+nothing to freeze. The composer's existing save barrier covers the wait, which is
+the "locked until the container is available" state the product already shows on
+`/new`.
+
+Deleted rather than fixed:
+
+- [x] `services/first-turn-admission.ts` in full — admission section, session claim, egress pin, and the 2-minute pin expiry
+- [x] `turnStartInProgress` on both runner implementations, and the `verifyRunningState()` early-returns that read it
+- [x] the `dispatch()` busy-check addition
+- [x] the first-Send block, entry claim, hand-off and direct-turn-start guard in `ws-handlers/send-message.ts`
+- [x] the pin application in `index.ts`'s `resolveEgressConfig` and its consumption in `container-lifecycle.ts`
+
+`ws-handlers/send-message.ts`, `container-session-runner.ts`,
+`container-lifecycle.ts` and `index.ts` are now **identical to `main`**, and
+`session-runner.ts` keeps only the runner-incarnation counter (+31 lines), which
+a container rebuild needs whoever triggers it. That is the honest measure of how
+much of this feature had become mechanism defending mechanism.
+
+Every P1 from rounds 4 and 5 is answered by the deletion rather than by a patch:
+the Quick Capture self-queue (no claim exists to queue behind), the pin's
+lifetime and incarnation ownership (no pin), the `Inherit` requirement reversal
+(nothing is pinned, so req 3's wording stands unchanged), the reuse TOCTOU (no
+claim, and the reuse reset is `main`'s behaviour), and the queued-message strand
+(no entry claim).
+
+What remains from those rounds, kept because it was right on its own terms:
+
+- [x] **P3** `beforeFirstTurn` reads session membership, not `messages.length` — the message list is momentarily empty right after switching to an existing session, which made the control promise a rebuild the server was never going to run
+- [x] **P3** a successful read opens the Send barrier, so a failed write whose recovery read also failed no longer bars Send until the user navigates away — guarded by an in-flight-write count so an invalidation cannot release it early
 
 ## Review round 2 — findings fixed
 

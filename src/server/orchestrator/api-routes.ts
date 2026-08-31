@@ -20,6 +20,7 @@ import type {
   LimitsRefreshResult,
   EgressEnforcementStatus,
 } from "../shared/types.js";
+import type { ReconcileEgressOutcome } from "./services/reconcile-session-egress.js";
 import type { UsageManager } from "./usage.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionContainerManager } from "./session-container.js";
@@ -294,6 +295,17 @@ export interface ApiDeps {
    * why production passes the status explicitly.
    */
   egressEnforcementStatus?: EgressEnforcementStatus;
+  /**
+   * docs/285 req 3 — rebuild an ungraduated session's container so the network
+   * mode just written is the one it actually boots with. The settings PUT awaits
+   * this, which is what keeps the composer's save barrier closed until the
+   * container is ready. Optional: a runtime with no containers has nothing to
+   * rebuild.
+   */
+  reconcileSessionEgress?: (
+    sessionId: string,
+    opts?: { agentSeed?: AgentId },
+  ) => Promise<ReconcileEgressOutcome>;
   /**
    * docs/172 Tier B (planning#383) — whether this deployment installs the
    * controlled resolver at all (`egressDnsEnabled()`). False

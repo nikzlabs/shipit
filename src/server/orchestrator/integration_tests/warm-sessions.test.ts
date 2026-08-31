@@ -42,7 +42,6 @@ import {
   seedRepoCacheWithLocalBare,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
-import { claimFirstTurn } from "../services/first-turn-admission.js";
 import {
   INSTALL_MARKER_FILE,
   sessionSharedStateDir,
@@ -434,56 +433,6 @@ describe("Integration: warm session lifecycle", () => {
         url: `/api/egress/session/${second.sessionId}`,
       })).json();
       expect(view.override).toBeNull();
-    }, 30000);
-
-    it("refuses to recycle a session whose first turn is already in flight (docs/285)", async () => {
-      // The other half of req 8, and the one that can lose a user's choice. The
-      // reset above is correct for an ABANDONED draft; applied to a session whose
-      // Send is in flight it rewrites the mode out from under a turn already
-      // being admitted, and that turn then reconciles to Inherit. The draft is
-      // still warm and still un-graduated at that moment, so nothing about the
-      // session distinguishes the two cases — only the first-turn claim does.
-      await waitFor(
-        () => !!repoStore.get(REPO_URL)?.warmSessionId,
-        10000,
-        "first warm session",
-      );
-      const encodedUrl = encodeURIComponent(REPO_URL);
-
-      const first = (await app.inject({
-        method: "POST",
-        url: `/api/repos/${encodedUrl}/claim-session`,
-      })).json();
-      await app.inject({
-        method: "PUT",
-        url: `/api/egress/session/${first.sessionId}`,
-        payload: { override: false }, // the user picked Open, then pressed Send
-      });
-
-      // `handleSendMessage` takes this at entry, before its first await, for
-      // exactly this reason.
-      const release = claimFirstTurn(first.sessionId)!;
-      try {
-        await app.inject({
-          method: "POST",
-          url: `/api/repos/${encodedUrl}/claim-session`,
-        });
-
-        // The surviving override IS the observable, and the reason to assert on
-        // it rather than on the second claim returning a different session id:
-        // the reuse path ALWAYS clears the override (the test above pins that),
-        // so an intact one can only mean the reuse stood down. Which session the
-        // second claim ends up with instead — a recycled older draft, the warm
-        // pool, or a fresh clone — depends on how far pool replenishment has got,
-        // and asserting on that made this flake under a loaded full-suite run.
-        const view = (await app.inject({
-          method: "GET",
-          url: `/api/egress/session/${first.sessionId}`,
-        })).json();
-        expect(view.override).toBe(false);
-      } finally {
-        release();
-      }
     }, 30000);
 
     it("claim → graduate → claim yields a fresh, distinct usable session (docs/144 fix #1)", async () => {

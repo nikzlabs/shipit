@@ -29,7 +29,6 @@ import type { RepoStore } from "../repo-store.js";
 import type { SessionContainerManager } from "../session-container.js";
 import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
 import { ServiceError } from "./types.js";
-import { firstTurnClaimed } from "./first-turn-admission.js";
 import {
   generateBranchPrefix,
   fetchAndResolveDefaultBranch,
@@ -357,30 +356,9 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         const reusable = skipReuse
           ? undefined
           : deps.sessionManager.findUngraduatedWarm(url, repoAfterWarm.warmSessionId ?? undefined);
-        // docs/285 — a session whose FIRST TURN is being started is not an
-        // abandoned draft, whatever its `warm` flag still says: graduation
-        // happens moments later, and until then `findUngraduatedWarm` will
-        // happily return it.
-        //
-        // Refusing it, rather than waiting for it, is the point. Waiting would
-        // block this repo's whole claim chain behind another session's container
-        // restart — and then hand the session over anyway, at which point
-        // `refreshClaimedSession` resets its clone onto latest main underneath a
-        // turn that is already running. Falling through to the warm or clone path
-        // costs one unused warm session and cannot corrupt anything.
-        // A CHECK, not a claim, and the difference was measured. Taking the
-        // claim here to cover the yield in `refreshClaimedSession` below closes
-        // a sub-second window and opens a worse one: the losing Send hands its
-        // message to `dispatch()`, which queues it because this claim marks the
-        // session busy — and releasing a claim drains nothing, so with no owner
-        // turn behind it the message is simply lost. Trading a rare reset-under-
-        // a-turn for a routinely-reachable lost message is the wrong direction.
-        // The residual is recorded in the feature's checklist rather than papered
-        // over here.
         if (
           reusable?.workspaceDir &&
           !excluded.has(reusable.id) &&
-          !firstTurnClaimed(reusable.id) &&
           existsSync(path.join(reusable.workspaceDir, ".git"))
         ) {
           claimPath = "reuse";

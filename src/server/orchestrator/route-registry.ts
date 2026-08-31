@@ -371,6 +371,31 @@ export async function registerRoutes(
     // image" (session refuses to start) into one false, and the warning copy has
     // to tell the user which of those is about to happen to them.
     egressEnforcementStatus: egressEnforcementStatus(),
+    // docs/285 req 3 — changing an ungraduated session's network mode rebuilds
+    // its container, and the settings PUT awaits that. Assembled here because
+    // this is where the recovery dependencies live; the route sees one call.
+    reconcileSessionEgress: (sid: string, opts?: { agentSeed?: AgentId }) => reconcileSessionEgress(
+      {
+        containerManager: containerManager ?? null,
+        egressAllowlistStore,
+        ...(oomBreaker ? { oomBreaker } : {}),
+        recovery: {
+          sessionManager,
+          containerManager: containerManager ?? null,
+          runnerRegistry,
+          defaultAgentId,
+          ...(oomBreaker ? { oomBreaker } : {}),
+          ...(loopDetector ? { loopDetector } : {}),
+          // docs/285 — the rebuild replaces the runner, so every attached viewer
+          // has to be told to reattach. This caller has no attachment of its own
+          // to finish (it is an HTTP route), so `restartContainer` announces it
+          // directly, exactly as Rescue does.
+          sseBroadcast,
+        },
+      },
+      sid,
+      opts ?? {},
+    ),
     // planning#383 — the other honest deployment signal: with Tier B off there
     // is no resolver to pin an allowed name's IPs and no proxy to permit its
     // SNI, so every host surface must stop offering grants that cannot work.
@@ -1474,29 +1499,6 @@ export async function registerRoutes(
         repoStore, warmSessionForRepo, generateText,
         egressAllowlistStore,
         ...(containerManager ? { containerManager } : {}),
-        // docs/285 — the first Send reconciles the container against the network
-        // mode chosen in the composer. Assembled here because this is where the
-        // recovery dependencies live; the handler sees one call.
-        reconcileSessionEgress: (sid, opts) => reconcileSessionEgress(
-          {
-            containerManager: containerManager ?? null,
-            egressAllowlistStore,
-            ...(oomBreaker ? { oomBreaker } : {}),
-            recovery: {
-              sessionManager,
-              containerManager: containerManager ?? null,
-              runnerRegistry,
-              defaultAgentId,
-              ...(oomBreaker ? { oomBreaker } : {}),
-              ...(loopDetector ? { loopDetector } : {}),
-              // docs/285 — so a SECOND tab on this session leaves the runner
-              // the reconcile just disposed.
-              sseBroadcast,
-            },
-          },
-          sid,
-          opts ?? {},
-        ),
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,
         releaseStatusPoller,

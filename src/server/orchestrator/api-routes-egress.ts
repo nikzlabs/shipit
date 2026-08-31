@@ -50,7 +50,6 @@ import type {
 } from "../shared/types.js";
 import { computeEgressGrantOutcome } from "./egress-grant-outcome.js";
 import { emitSessionSettingsChangeCard } from "./services/session-settings.js";
-import { withFirstTurnAdmission } from "./services/first-turn-admission.js";
 import type { PersistedEgressPrompt } from "./chat-history.js";
 
 /**
@@ -386,36 +385,42 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
           reply.code(400).send({ error: "override must be true, false, or null" });
           return;
         }
-        // docs/285 — the write takes the SAME session-keyed section the first
-        // Send does, so it cannot interleave with the comparison that decides
-        // whether the first turn's container is rebuilt. Cheap in the ordinary
-        // case: nothing holds the section outside a first Send, so this resolves
-        // on the next microtask.
+        const previous = store.getSessionOverride(sessionId);
+        store.setSessionOverride(sessionId, override);
+
+        // docs/285 req 3 — a session that has NOT run a turn yet gets its
+        // container rebuilt right here, and this route does not answer until it
+        // has been. That is the whole mechanism: containment is plumbed at
+        // container creation and a running container cannot be re-plumbed, so
+        // the pick has to reach a *new* container before the first turn goes
+        // out.
         //
-        // It does NOT wait for the first turn to be dispatched, and that is the
-        // deliberate half. An earlier revision did — the reasoning being that a
-        // replacement container resolves its containment later, when creation
-        // reaches the plumbing step, so a write landing in between would move a
-        // turn already admitted. True, but blocking was the wrong answer to it:
-        // the wait needed a timeout (a leaked claim must not wedge this dialog
-        // for the life of the process), and a timeout that then writes anyway
-        // violates the very guarantee it was added to keep. The turn now carries
-        // its containment as a pin on its claim (`first-turn-admission.ts`), so
-        // creation reads the admitted value and a write landing mid-flight is
-        // simply an ordinary post-first-turn change with the normal pending
-        // state — no waiting, and no window.
-        const previous = await withFirstTurnAdmission(sessionId, async () => {
-          const before = store.getSessionOverride(sessionId);
-          store.setSessionOverride(sessionId, override);
-          return before;
-        });
+        // Doing it at the write rather than at the first Send is what keeps the
+        // feature small. The container is created immediately after the value it
+        // reads was written, by the only writer there is, so there is no window
+        // for the two to disagree and nothing to freeze. The composer's existing
+        // save barrier keeps Send unavailable for the duration, which is the
+        // "wait for the container" state — the same one `/new` already shows
+        // before its session is claimed.
+        //
+        // A GRADUATED session is deliberately untouched: restarting a container
+        // out from under a session the user is working in is not a settings
+        // change, it is Rescue. Those keep the "applies on next container start"
+        // pending state they have always had.
+        const stillWarm = deps.sessionManager.get(sessionId)?.warm === true;
+        if (stillWarm && previous !== override && deps.reconcileSessionEgress) {
+          const outcome = await deps.reconcileSessionEgress(sessionId);
+          if (outcome.action === "aborted") {
+            reply.code(503).send({ error: outcome.message, offerRescue: outcome.offerRescue });
+            return;
+          }
+        }
         // docs/285 — a card is written for a CHANGE. A session that has not
         // graduated has no prior state for one to describe: "changed network
         // containment" above the first message would report an edit to a session
         // the user experiences as still being created. The creation-time choice
         // is therefore silent, and every later change still carries the docs/279
         // audit card.
-        const stillWarm = deps.sessionManager.get(sessionId)?.warm === true;
         if (previous !== override && !stillWarm) {
           // The card's `pendingRestart` is the SAME value this route is about
             // to report to the dialog, read after the write. It used to be
