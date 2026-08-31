@@ -117,6 +117,22 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     }
   });
 
+  /**
+   * An ops session through the route the sidebar uses (docs/128) — a session the
+   * server creates and the browser then navigates onto, which is the shape the
+   * seeded-role display gap was reported on.
+   */
+  async function createOpsSession(): Promise<{ id: string; kind?: string }> {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/new/template",
+      payload: { templateId: "ops" },
+    });
+    const body = res.json() as { session?: { id: string; kind?: string } };
+    if (!body.session) throw new Error(`ops session creation failed: ${res.body}`);
+    return body.session;
+  }
+
   async function drainUntil(
     client: TestClient,
     predicate: (m: AnyMsg) => boolean,
@@ -309,6 +325,85 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     expect(row?.reasoningEffort).toBe("high");
 
     client.close();
+  });
+
+  it("tells the connecting viewer about the role it just seeded (reqs 12, 13)", async () => {
+    // Applying the seed is only half of req 12. The composer reads a LIVE
+    // session's role from the session row the browser already holds, and that
+    // copy was fetched before this connect wrote to it. On `/{repo}/new` the gap
+    // never showed — a warm session has no row, so the composer displays the
+    // seed there — but a surface that lands the user straight on a fresh session
+    // it can already see (an ops session, a sandbox) read the stale copy and
+    // showed no role at all while the session ran on one.
+    const client = await TestClient.connect(port, undefined, {
+      agent: "codex",
+      model: "gpt-5-codex",
+      reasoning: "low",
+      role: "deep dive",
+    });
+    const answer: AnyMsg = await drainUntil(client, (m) => m.type === "model_selection_changed");
+    expect(answer).toBeTruthy();
+    expect(answer.sessionId).toBe(client.sessionId);
+    // All four, because the role wrote all four together: a viewer told only
+    // about the name would show a role beside parameters it did not set.
+    expect(answer.roleName).toBe("deep dive");
+    expect(answer.agentId).toBe("claude");
+    expect(answer.modelId).toBe(ROLE_MODEL);
+    expect(answer.reasoningEffort).toBe("high");
+    // The service and billing mode ride in `selection`, and the model picker's
+    // checkmark lands on THAT pair rather than on the bare id (docs/252) — a
+    // frame carrying the right model under the wrong service still shows the
+    // user a group the role did not pick.
+    expect(answer.selection?.serviceId).toBe("openrouter");
+    expect(answer.selection?.billingMode).toBe("key");
+
+    client.close();
+  });
+
+  it("tells the viewer about the role it seeded onto an OPS session (docs/128)", async () => {
+    // The reported case, through the route it was reported on. An ops session is
+    // created server-side and the browser navigates straight onto it, so unlike
+    // `/{repo}/new` the composer has a row for it — the stale one it fetched at
+    // creation. Kept separate from the test above because the connect handler is
+    // deliberately kind-agnostic: this is what would catch an ops-specific path
+    // growing a rule of its own.
+    const created = await createOpsSession();
+    expect(created.kind).toBe("ops");
+
+    const client = await TestClient.connect(port, created.id, { role: "deep dive" });
+    const answer: AnyMsg = await drainUntil(client, (m) => m.type === "model_selection_changed");
+    expect(answer).toBeTruthy();
+    expect(answer.roleName).toBe("deep dive");
+    expect(sessionManager.get(created.id)?.roleName).toBe("deep dive");
+    // Still an ops session: a role sets the harness, model and level, and
+    // nothing else about what the session IS.
+    expect(sessionManager.get(created.id)?.kind).toBe("ops");
+
+    client.close();
+  });
+
+  it("says nothing about the selection on a connect that seeds no role", async () => {
+    // The pair to the test above: the answer is feedback on something this
+    // connect DID, so an ordinary reconnect — the common case, on backoff after
+    // every network blip — must not carry a frame with it.
+    const first = await TestClient.connect(port, undefined, { role: "deep dive" });
+    await drainUntil(first, (m) => m.type === "model_selection_changed");
+    const sessionId = first.sessionId!;
+    first.close();
+
+    const again = await TestClient.connect(port, sessionId, { role: "deep dive" });
+    // Nothing to wait FOR, so this drains whatever the reconnect does send until
+    // the socket goes quiet, and asserts on what was not among it.
+    const seen: AnyMsg[] = [];
+    for (let i = 0; i < 12; i++) {
+      try {
+        seen.push(await again.receive(400));
+      } catch {
+        break;
+      }
+    }
+    expect(seen.map((m) => m.type)).not.toContain("model_selection_changed");
+    again.close();
   });
 
   it("keeps a cleared role cleared across a reconnect that still seeds it (reqs 12, 18)", async () => {

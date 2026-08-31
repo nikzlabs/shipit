@@ -903,6 +903,18 @@ export async function registerRoutes(
       // `roleExplicitlyCleared` the clear would silently undo itself, standing
       // instructions and all. It reads the row directly because "chose none" and
       // "never chose" are one value in `SessionInfo` on purpose.
+      //
+      // **Applying it is only half — the viewer has to be TOLD.** The composer
+      // reads a live session's role from the session row it already holds, and
+      // that row was fetched before this connect wrote to it. On `/{repo}/new`
+      // that never showed, because a warm session has no row and the composer
+      // displays the seed there instead; but a surface that navigates the user
+      // straight onto a FRESH session the browser has already listed — an ops
+      // session (docs/128), a sandbox (docs/211), both of which refresh the list
+      // and only then navigate — reads the stale copy and shows no role at all,
+      // while the session quietly runs on it. So the seed's answer is emitted
+      // below, next to `activateSession`, exactly as `set_role`'s is.
+      let seededRoleApplied = false;
       if (
         requestedRole
         && !session.agentPinned
@@ -915,6 +927,7 @@ export async function registerRoutes(
           perConnectionAgentId = seededRole.params.harnessId;
           selectedModel = seededRole.params.modelId;
           selectedReasoning = seededRole.params.reasoningEffort;
+          seededRoleApplied = true;
         } catch {
           // Skipped, deliberately — see above.
         }
@@ -1463,6 +1476,15 @@ export async function registerRoutes(
 
       // Auto-activate the session on connect
       void activateSession(sessionId);
+
+      // docs/272-user-selectable-roles reqs 12, 13 — the seeded role's answer,
+      // sent for the same reason `set_role`'s is: the row is what the composer
+      // displays, and the browser's copy of it predates this connect. Emitted
+      // only when the seed actually applied, so an ordinary reconnect adds no
+      // frame. It carries the harness, model and level too — the role wrote all
+      // four together, and a viewer told about one of them is a row showing a
+      // role beside parameters it did not set.
+      if (seededRoleApplied) sendSelectionChanged(perConnectionAgentId);
 
       // Send log buffer and git identity check.
       // Replay only THIS session's buffered entries so a newly-connected

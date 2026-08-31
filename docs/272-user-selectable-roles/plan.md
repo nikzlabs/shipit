@@ -78,6 +78,30 @@ mechanism and, when it resolves, **overrides all three** — it is the thing tha
 applies only while the session is unpinned and carries no role of its own, which is the same guard
 the other three params take.
 
+**Applying it is only half: the connect answers with `model_selection_changed`.** The composer
+reads a live session's role from the session-list row the browser already holds, and that copy was
+fetched before the connect wrote to it — so the row said "no role" while the session ran on one.
+On `/{repo}/new` this never showed, because a warm session has no row at all and the seed is the
+display there (see [Before a session is active](#before-a-session-is-active-the-seed-is-the-display));
+it showed on every surface that **navigates the user straight onto a fresh session the browser has
+already listed** — an ops session (docs/128), a sandbox (docs/211), both of which refresh the
+session list and only then navigate — where the composer named no role and picking one again was
+the only way to get it back. The answer carries the service and billing mode as well as the name,
+harness, model and level, for the reason `set_role`'s does: the role wrote them together, and the
+model picker's checkmark lands on the `(service, billing mode)` pair rather than on the bare id.
+Emitted only when the seed actually applied, so an ordinary reconnect — the common case, on backoff
+after any blip — adds no frame.
+
+**Two convergence gaps stay open, both older than this and neither reachable from the flow above.**
+A **second viewer** does not get the frame: it is per-connection, and the connection that loses the
+race to the `!session.roleName` guard is told nothing, so it names no role until its next
+session-list refresh. Broadcasting the message as it stands would be worse rather than better —
+every unpinned recipient runs `saveRoleName`, so one viewer's pick would become another browser's
+req-12 default. And on a **cold load onto a session that has no role yet**, the frame can arrive
+before the bootstrap snapshot installs the list, where `handleModelSelectionChanged` drops it (it
+maps existing rows and adds none). Closing either means a session-state sync distinguishable from
+"this viewer selected a role", which is a mechanism this feature does not have and did not need.
+
 ## Selection is refused after the first turn (req 4)
 
 `agentPinned` is already the "this session has taken its first turn" fact — it is set when the
