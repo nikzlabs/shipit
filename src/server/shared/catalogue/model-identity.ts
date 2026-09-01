@@ -107,6 +107,11 @@ export const MODEL_IDENTITIES = {
   sonnet5: identity("claude-sonnet-5", "claude"),
   haiku45: identity("claude-haiku-4.5", "claude"),
   fable5: identity("claude-fable-5", "claude"),
+  // Fable 5.1 (2026-09-01) is a DISTINCT canonical model rather than a spelling
+  // of Fable 5 — same reasoning as the GLM-5.2/5.3 pair below. Both stay
+  // declared: OpenCode Zen does not serve 5.1 yet, so the catalogue carries a
+  // live Fable 5 row there (see `services.ts`).
+  fable51: identity("claude-fable-5.1", "claude"),
 
   // OpenAI's line. The `gpt-5.6-*` variants are distinct models of one family,
   // as are the older 5.2–5.5 rows.
@@ -191,6 +196,11 @@ export const MODEL_ID_ALIASES: Record<string, string> = {
   // second model: Zen is a gateway serving Anthropic's own Haiku 4.5, at
   // Anthropic's own rate.
   "claude-haiku-4-5": "claude-haiku-4.5",
+  // Anthropic (and OpenCode Zen, which mirrors Anthropic's ids) spell Fable 5.1
+  // `claude-fable-5-1`, where OpenRouter spells the same model
+  // `anthropic/claude-fable-5.1`. The dotted form is the canonical key, matching
+  // Haiku 4.5 above and every other point-version key in this file.
+  "claude-fable-5-1": "claude-fable-5.1",
   "x-preview-f-free": "ox-alpha",
   "ox-alpha-free": "ox-alpha",
 };

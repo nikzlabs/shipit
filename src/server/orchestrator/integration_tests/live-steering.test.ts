@@ -600,11 +600,11 @@ describe("Integration: live steering (docs/140)", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    client.send({ type: "set_model", model: "claude-fable-5" });
+    client.send({ type: "set_model", model: "claude-fable-5-1" });
     client.send({ type: "send_message", text: "Turn one" });
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.initSession("model-switch-session");
-    expect(claude1.lastModel).toBe("claude-fable-5");
+    expect(claude1.lastModel).toBe("claude-fable-5-1");
 
     // End turn 1 — process stays alive (streaming).
     claude1.emit("event", {
@@ -639,7 +639,7 @@ describe("Integration: live steering (docs/140)", () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    client.send({ type: "set_model", model: "claude-fable-5" });
+    client.send({ type: "set_model", model: "claude-fable-5-1" });
     client.send({ type: "send_message", text: "Turn one" });
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.initSession("model-same-session");
@@ -652,7 +652,7 @@ describe("Integration: live steering (docs/140)", () => {
     });
     await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
 
-    client.send({ type: "set_model", model: "claude-fable-5" });
+    client.send({ type: "set_model", model: "claude-fable-5-1" });
     client.send({ type: "send_message", text: "Turn two" });
 
     await new Promise<void>((resolve, reject) => {

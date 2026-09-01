@@ -107,6 +107,14 @@ const ANTHROPIC_PRICES = {
   haiku45: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
   // Fable 5 — $10 / $50.
   fable5: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+  // Fable 5.1 (2026-09-01) — $10 / $50, the same headline rate as Fable 5, and
+  // its own constant for ONE field: `cacheRead` is $0.25, not $1. Anthropic's
+  // pricing page (checked 2026-09-01) carries a footnote making this explicit —
+  // "cache hits and refreshes on Claude Fable 5.1 and Claude Mythos 5.1 are
+  // priced at 0.025x the base input price. All other models use the standard
+  // 0.1x multiplier." So the 0.1× rule every other row here follows is wrong for
+  // this one model, which is exactly why it cannot reuse `fable5`.
+  fable51: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
 } as const;
 
 /**
@@ -369,7 +377,12 @@ export const SERVICES = [
             carriers: ["claude"],
           },
         ],
-        retired: [],
+        // Fable 5 left this mode when 5.1 replaced it (2026-09-01). Anthropic
+        // has NOT deprecated `claude-fable-5` — it stays servable until at least
+        // June 2027 — so this record is ShipIt's curation (req 6) rather than the
+        // vendor's retirement, and it is what carries a session pinned to the
+        // old id onto the new one instead of stranding it (req 13).
+        retired: [{ id: "claude-fable-5", styles: [A_MSG], successors: { [A_MSG]: "claude-fable-5-1" } }],
         models: [
           { id: "claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           { id: "claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
@@ -386,19 +399,19 @@ export const SERVICES = [
           // is the LAST thing asserting it. Deleting the set is a user-visible
           // change (it drives a `$` icon), so it belongs to phase 3's picker
           // rebuild — see plan.md. Do not resurrect the claim from that comment.
-          { id: "claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
+          { id: "claude-fable-5-1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },
         ],
       },
       {
         kind: "key",
         endpoints: { [A_MSG]: "https://api.anthropic.com" },
         credentials: [{ via: "string", storageEnv: "ANTHROPIC_API_KEY" }],
-        retired: [],
+        retired: [{ id: "claude-fable-5", styles: [A_MSG], successors: { [A_MSG]: "claude-fable-5-1" } }],
         models: [
           { id: "claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           { id: "claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
           { id: "haiku", label: "Haiku 4.5", ...MODEL_IDENTITIES.haiku45, styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
-          { id: "claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
+          { id: "claude-fable-5-1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },
         ],
       },
     ],
@@ -714,7 +727,15 @@ export const SERVICES = [
           [A_MSG]: "https://openrouter.ai/api",
         },
         credentials: [{ via: "string", storageEnv: "OPENROUTER_API_KEY" }],
-        retired: [],
+        // Fable 5 left this mode when 5.1 replaced it (2026-09-01). Both styles
+        // need a successor because the retired row was declared under both.
+        retired: [
+          {
+            id: "anthropic/claude-fable-5",
+            styles: [A_MSG, O_CC],
+            successors: { [A_MSG]: "anthropic/claude-fable-5.1", [O_CC]: "anthropic/claude-fable-5.1" },
+          },
+        ],
         // ✅ 2026-08-15 — OpenRouter DOES serve the Responses API at
         // `https://openrouter.ai/api/v1/responses` (authenticated POST → 200
         // with a genuine `"object":"response"` body; a bogus sibling route on
@@ -786,7 +807,15 @@ export const SERVICES = [
           // siblings above — and the distinction earned its keep: the identical
           // inheritance argument for this model at VERCEL predicted a pass on
           // Codex that the sweep refuted.
-          { id: "anthropic/claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
+          //
+          // 2026-09-01 — the row moved to Fable 5.1, which OpenRouter spells
+          // `anthropic/claude-fable-5.1` (a dot, where Anthropic's own id uses a
+          // hyphen). Both styles are CARRIED OVER from the 5.0 measurement above
+          // rather than re-measured: the gateway skin translating a request is
+          // the same code path for either point version. That inference is
+          // weaker than a measurement, and the sweep that produced the sentence
+          // above is exactly why it is labelled as one.
+          { id: "anthropic/claude-fable-5.1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },
           { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.v4flash },
           { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.v4pro },
           { id: "z-ai/glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.glm52 },
@@ -825,7 +854,15 @@ export const SERVICES = [
         // leaves ShipIt: `applyServiceRouting` copies the value into the
         // *harness's* variable at spawn, so nothing downstream reads this one.
         credentials: [{ via: "string", storageEnv: "VERCEL_AI_GATEWAY_API_KEY" }],
-        retired: [],
+        // Fable 5 left this mode when 5.1 replaced it (2026-09-01), under both
+        // styles it was declared with.
+        retired: [
+          {
+            id: "anthropic/claude-fable-5",
+            styles: [A_MSG, O_CC],
+            successors: { [A_MSG]: "anthropic/claude-fable-5.1", [O_CC]: "anthropic/claude-fable-5.1" },
+          },
+        ],
         // ✅ 2026-08-16 — measured the same way as the OpenRouter row above (one
         // live turn per (harness, model), serial, `pair-verification.md`), and
         // Vercel turns out to be OpenRouter's MIRROR IMAGE. That is the single
@@ -853,7 +890,13 @@ export const SERVICES = [
         models: [
           { id: "anthropic/claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
-          { id: "anthropic/claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
+          // 2026-09-01 — Fable 5.1, spelled with a dot as at OpenRouter. Vercel's
+          // live list (`GET https://ai-gateway.vercel.sh/v1/models`) carries it
+          // at 1M/128K with `input_cache_read: 0.00000025`, i.e. Anthropic's own
+          // 5.1 rate down to the changed cache field. Styles carried over from
+          // the 5.0 sweep below rather than re-measured — the same inference the
+          // OpenRouter row states, and the same caveat applies.
+          { id: "anthropic/claude-fable-5.1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },
           // Vercel documents a Responses-compatible surface, so these reach
           // Codex as well as any OpenAI-chat-completions consumer. They also
           // carry the namespaced-id caveat written out on the OpenRouter row
@@ -1022,6 +1065,24 @@ export const SERVICES = [
           // Zen undercuts Anthropic's own rate here (2/10 against 3/15) — the
           // reason this service carries its own price constants at all.
           { id: "claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.sonnet5 },
+          // ❌ 2026-09-01 — stays on Fable 5 while every other Anthropic row
+          // moved to 5.1, because Zen does not serve 5.1 yet, and BOTH catalogue
+          // sources say otherwise. models.dev's `opencode` provider (api
+          // `https://opencode.ai/zen/v1` — Zen itself) carries `claude-fable-5-1`
+          // with `release_date: 2026-09-01`; the docs table lists only Fable 5.
+          //
+          // The endpoint settles it, and neither list does. Probed with a
+          // deliberately invalid key, so the two ids differ only in how far the
+          // request gets:
+          //
+          //   claude-fable-5-1 → 'ModelError: Model claude-fable-5-1 is not supported'
+          //   claude-fable-5   → 'AuthError: Invalid API key.'
+          //
+          // 5.0 clears model validation and dies at auth; 5.1 never reaches auth.
+          // `GET /zen/v1/models` (the runtime list, not the docs page) agrees:
+          // Fable 5 only. **A model's presence in models.dev is a catalogue
+          // claim, not runtime availability** — that is the lesson this row
+          // records. Move it when the probe above returns the auth error.
           { id: "claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
           // Zen spells Haiku `claude-haiku-4-5` where Anthropic's own row is
           // `haiku`; both reduce to one canonical model through
