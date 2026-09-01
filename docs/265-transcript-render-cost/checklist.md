@@ -1,5 +1,17 @@
 # 265 — Transcript render cost: checklist
 
+- [x] An infinite animation animates only `transform`/`opacity` and steps at ~10 Hz, so an
+      indicator stops dragging the main-thread rendering lifecycle through every vsync (req 13)
+- [x] Decorative illustration (the rocket scene, the preview-setup art) is finite instead, so an
+      idle empty screen settles at nothing rather than at 10 Hz (req 13)
+- [x] The `running` service dot stops animating — a steady state is not in-flight work, and it
+      was what made a session with nothing happening animate at all (req 13)
+- [x] Guard test over every infinite animation, checking the animated properties as well as the
+      step rate (`index.animation-policy.test.ts`) — the saving is the union, so one animation
+      breaking either rule cancels it
+- [x] `trace-idle-frames.mjs` measured its window over every event in the trace, including the
+      browser process and Perfetto's flush, so every per-second rate it has ever reported was
+      1.35x too low
 - [x] Cancel a superseded `/history` load instead of parsing and discarding it (req 8)
 - [x] Stable element identity from `buildVisualElements` (design 1a)
 - [x] Ref-backed handler context so upstream callbacks stop invalidating rows (design 1b)
@@ -502,7 +514,162 @@ isolation of the observers alone. It slightly exceeding the `today` row is consi
    so much larger than anything reproduced here, and they are fixable independently — the first is
    understood today, the second is not.
 
+### FIXED (2026-09-01) — the third ingredient nobody had varied
+
+**First, a correction to the instrument, because it changes every number in this file.**
+`trace-idle-frames.mjs` measured its window as the span of *every* event in the trace. The
+browser process is already producing frames when tracing starts and Perfetto's flush runs after
+`Tracing.end`, so an 8 s recording measured **10.77 s** and every per-second rate came out
+**1.35x too low** — a 60 Hz display read as 44.7. The window is now the span of this renderer's
+own main-thread work and frames. **Numbers recorded above this line use the old denominator and
+are not comparable with the ones below it.**
+
+Everything above treated the pairing as a choice between two removable things,
+`content-visibility: auto` and `@formkit/auto-animate`. Both are load-bearing, so the answer
+kept coming out "neither".
+
+**The animation is the third ingredient, and it is the cheap one.** On `idle-frame-cost.html` at
+`n=2000`, one run per cell (the frame rates are deterministic; the busy figures move a few per
+cent with container load):
+
+| n=2000 | main-thread frames/s | main-thread busy |
+|---|---|---|
+| animation + `content-visibility` rows + live JS observer | 60 | 176.6 ms/s |
+| animation + `content-visibility` rows only | 60 | 229.1 ms/s |
+| animation + live JS observer only | 60 | 166.9 ms/s |
+| animation, **both** observer sources removed | **0** | 1.8 ms/s |
+| **no animation**, both observer sources present | **0** | **0.2 ms/s** |
+
+The last two rows cost the same. So removing the animation is not a worse fix than removing both
+observers — it is the **same** fix, reached by moving one ingredient instead of two, and the one
+it moves has no unmeasured benefit behind it.
+
+#### `content-visibility: auto` now has its numbers, and it stays
+
+The experiment this file specifies was run, with the variant it says is needed:
+`scripts/trace-load-and-scroll.mjs` traces from *before* navigation. (Its phase spans come from
+markers the page emits, so the denominator correction above does not apply to it.) `n=2000`, no
+animation, two runs per condition:
+
+| | first contentful paint | load-phase busy | 6 s top-to-bottom scroll |
+|---|---|---|---|
+| `content-visibility: auto` | **123 / 124 ms** | 127 / 117 ms | 3,415 / 3,777 ms |
+| removed | 227 / 256 ms | 220 / 227 ms | **1,026 / 1,000 ms** |
+
+Two results, and the second was not expected. It **halves first paint** on a long transcript —
+the benefit it was put there for, which nobody had measured. And it makes a full-transcript
+scroll **3.5x more expensive**, not cheaper; about a third of that scroll cost (1,026–1,170 ms)
+is `computeIntersections`. This file's premise that it exists "so a long transcript does not lay
+out and paint every off-screen row" is right about load and wrong about scroll.
+
+Neither number decides anything now, because the idle cost it was being traded against is gone
+once the animation stops scheduling frames. It stays as it is.
+
+**The scroll figure is a separate open finding, tracked as planning#491 — and the answer there
+is not "remove it".** Applying `content-visibility: auto` to *groups* of rows rather than to each
+row beats both current options on both axes: same first paint as today, and a 6 s
+full-transcript scroll of **619 / 565 ms at 20 rows per group** and **409 / 445 ms at 50**,
+against 4,578 / 4,529 ms per-row and 901 / 819 ms with no `content-visibility` at all.
+Intersection work falls 44–148x. Not done here because the grouping has to stay stable across
+renders or it remounts every row inside a group, which is the failure mode the rest of this
+folder is about.
+
+#### The fix, and the rule it turned into
+
+`steps(N)` wakes the main thread only when the animated value changes. Sweeping N at 300 rows,
+with a live observer and `content-visibility` rows present throughout:
+
+| `steps(N)` | 4 | 8 | 10 | 16 | 30 | linear |
+|---|---|---|---|---|---|---|
+| main-thread frames/s | 4.1 | 8.0 | 10.1 | 16.1 | 30.0 | 60.1 |
+| main-thread busy | 4.7 | 8.4 | 10.8 | 15.8 | 26.3 | 44.9 ms/s |
+
+Exactly N frames per second. Three constraints came out of the same fixture, and all three shape
+what got written:
+
+- **It only works for a COMPOSITOR-ONLY property.** `steps(10)` on an animation of `left` still
+  costs **60** main-thread frames/s (against 10 for the same `steps()` on `transform`), because
+  the main thread has to run layout for it whatever the timing function says. This was missed in
+  the first draft of this change and caught in review: `.preview-art-dash` animates
+  `stroke-dashoffset`, so the preview empty state would have cancelled the whole saving while
+  every syntactic check passed.
+- **The cost is the UNION over running animations.** One linear animation beside a `steps(10)`
+  one puts the page back at 60.1 frames/s.
+- **Step boundaries run from each animation's own start time.** Two `steps(10)` animations
+  mounted 37 ms apart cost **20.1** frames/s, not 10; mounted together they cost 10.1. So there
+  is **no shared clock** — an earlier draft of this section called it a "shared 10 Hz grid" and
+  that was wrong. Each animation is individually capped at 10 value changes a second, and
+  independently-phased ones add.
+
+So the rule is two-part and lives in `src/client/index.animation-policy.test.ts`: an **infinite**
+animation may animate only `transform`/`opacity`, and must step at about 10 Hz. `--animate-spin`,
+`--animate-ping` and `--animate-pulse` are re-declared in an `@theme` block, and `.tool-spinner`
+takes `steps(10)`.
+
+**Decorative illustration is finite instead.** The rocket scene and the preview-setup art are
+both mounted on *empty* screens that a user can sit on indefinitely, so stepping them would have
+left an idle page waking 10 times a second rather than not at all — and one of them could not be
+stepped usefully anyway. They now run for about 24 s and stop, at their original smooth easing:
+a finite animation is exempt from both rules because it costs nothing once it ends.
+
+#### An idle session was animating, and the section below says it should not have been
+
+The section below states the cost "is paid only while something animates, i.e. while a tool
+runs". That is wrong, and it is why an idle session could cost a quarter of a core. `ServiceList`
+and `PreviewServicesDrawer` drew the **running** service dot with `animate-ping` — a service that
+is up is a *steady state*, and that ping ran for as long as the service did. It is now a static
+dot; `starting` keeps its spinner, because that one is genuinely in flight.
+
+Auditing the rest found no second steady-state case: every other infinite animation (CI pending,
+cloning, agent-running, recording, the skeleton pulses) marks work that really is in flight.
+Several can run for many minutes, which is what the 10 Hz cap is for.
+
+#### Before and after
+
+Real UI, dogfood session, 60 Hz, indicators injected with the app's own classes
+(`scripts/fixtures/inject-app-spinner.js`, which reports each element's resolved `animation` as
+its positive control — a run reading `linear` is measuring the wrong build):
+
+| | before | after |
+|---|---|---|
+| one indicator animating | 60.1 fps / 40.5 ms/s | **17.9 fps / 14.7 ms/s** |
+| three indicators, staggered | 60.1 fps / 45.8 ms/s | **31.1 fps / 27.4 ms/s** |
+| nothing animating (control) | — | 4.7 fps / 4.9 ms/s |
+
+On the long transcript the report is about — `idle-frame-cost.html?spin=1&io=1&cv=1&n=2000`:
+**179 → 47.4 ms/s**, frames **60 → 10.1**.
+
+The two changes compose in the order that matters for the report: an idle session with a running
+service used to sit on the "one indicator animating" row and now sits on the control row.
+
+Verified in the real app rather than inferred: every animation resolves to its stepped form, and
+the spinner shows **3 distinct transforms in 300 ms** — 10 Hz, not 60.
+
+#### What this does not do
+
+- It does not make an animating page free. Three staggered indicators still cost 31.1 frames/s,
+  and six independently-phased ones would saturate. The union rule is a real ceiling.
+- **It does not make an idle page free the instant it loads.** The two illustrations animate for
+  about 24 s before stopping. An idle screen showing one costs display-rate frames for that long
+  and nothing afterwards.
+- It does not touch correction 2's open question — what makes a production frame cost 0.65 ms. It
+  removes 5/6 of the frames, so it pays that unknown back at the frame rate, which is the reason
+  the two problems were worth separating.
+- **The main thread is not the whole 25%.** The production trace attributes 11.8% of a core to
+  the renderer main thread and reaches ~22% only by adding the GPU main thread (5.8%), the viz
+  compositor (1.5%) and the renderer compositor (1.3%). Those are driven by the same frames, so
+  removing frames should move them together — but only the main-thread half is measured here.
+- The `cc` category was **again** absent from the 2026-09-01 production trace (0 events with
+  category exactly `cc`), so `visible_layers` is still unread. One new datum for correction 2:
+  `Layerize` costs **0.180 ms/call** there, against 0.650 and 0.559 in the two earlier traces —
+  so whatever drives that number varies threefold across production recordings rather than being
+  a fixed property of the app.
+
+
 ### Decision: no code change, and what would justify one
+
+*(Superseded by the section above, which fixes it. Kept because it is the record of what was
+measured before, and its decision rule is the one that was followed.)*
 
 Not fixed here, deliberately. The cost is real: **~28 ms/s of main thread** on this 21-row
 session while any tool runs (36.8 today against 9.1 with both sources removed), and it grows with

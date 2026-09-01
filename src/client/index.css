@@ -50,6 +50,44 @@
   --ease-in: ease-in;
 }
 
+/* ── What an INFINITE animation costs, and the two rules (docs/265) ────────────
+   A page holding a live IntersectionObserver runs the whole main-thread
+   rendering lifecycle on every frame the browser SCHEDULES, and a running
+   animation schedules one per vsync. ShipIt always holds such observers (one per
+   `content-visibility: auto` transcript row, plus auto-animate and Present
+   cards), and none of them is removable — so a single ever-running spinner cost
+   an *idle* session ~150 ms of main thread per second.
+
+   Two rules, both enforced by `index.animation-policy.test.ts`, which is also
+   where the reasoning about how they can be got wrong lives:
+
+     1. An infinite animation may animate ONLY `transform` and `opacity`.
+        Rule 2 does nothing without this: stepping an animation of `left` or of
+        `stroke-dashoffset` still wakes the main thread 60 times a second.
+     2. It must use `steps(N)` at about 10 steps a second. A stepped compositor
+        animation wakes the main thread only when its value changes.
+
+   The cost is the UNION over running animations, so a single animation that
+   breaks either rule cancels the saving from every other one — which is why
+   these are a test and not a convention.
+
+   A FINITE animation is exempt from both and stays smooth: it stops, so it costs
+   nothing in the steady state. That is the right shape for a decorative
+   illustration (the rocket scene, the preview-setup art), and preferring it is
+   also how an idle empty screen gets to cost nothing rather than 10 Hz.
+
+   Note that the step boundaries are per-animation, measured from its own start
+   time. Two 10 Hz animations mounted 37 ms apart cost 15 frames a second, not
+   10. Siblings that mount together (the stars, the three blinking dots) do share
+   a train if their delays are whole multiples of the step period — worth keeping
+   when it is free, but it is not a document-wide clock and nothing relies on
+   it. */
+@theme {
+  --animate-spin: spin 1s steps(10) infinite;
+  --animate-ping: ping 1s steps(10) infinite;
+  --animate-pulse: pulse 2s steps(20) infinite;
+}
+
 /* docs/211 — sandbox-session accent: teal, distinct from PR violet, ops amber,
    and folder yellow. Only the TEXT/solid accent (--color-sandbox) changes per
    surface: teal-800 on light themes (legible on the pale pill) and the bright
@@ -168,7 +206,7 @@ html, body {
   position: absolute;
   border-radius: 50%;
   background: var(--color-text-tertiary);
-  animation: twinkle 2s ease-in-out infinite alternate;
+  animation: twinkle 2s ease-in-out 9 alternate forwards;
 }
 .star-1 { width: 3px; height: 3px; top: 10%; left: 15%; animation-delay: 0s; }
 .star-2 { width: 2px; height: 2px; top: 20%; left: 75%; animation-delay: 0.4s; }
@@ -246,7 +284,7 @@ html, body {
 }
 
 .flame-main, .flame-left, .flame-right {
-  animation: flame-flicker 0.6s ease-in-out infinite alternate;
+  animation: flame-flicker 0.6s ease-in-out 29 alternate forwards;
 }
 .flame-left  { animation-delay: 0.2s; }
 .flame-right { animation-delay: 0.4s; }
@@ -295,7 +333,7 @@ html, body {
   border-radius: 50%;
   background: #f7c948;
   opacity: 0;
-  animation: particle-burst 4.5s ease-out infinite;
+  animation: particle-burst 4.5s ease-out 4;
 }
 
 /* Sideways-biased particles (fire during ignition) */
@@ -387,7 +425,7 @@ html, body {
 }
 
 .tool-spinner {
-  animation: spin-slow 1s linear infinite;
+  animation: spin-slow 1s steps(10) infinite;
 }
 
 /* ── Preview empty-state illustration (PreviewSetupInvite.tsx) ──
@@ -431,29 +469,32 @@ html, body {
 }
 
 .preview-art-dash {
-  animation: preview-art-march 24s linear infinite;
+  animation: preview-art-march 24s linear 1;
 }
 
 .preview-art-float {
   transform-origin: 80px 60px;
-  animation: preview-art-drift 6s ease-in-out infinite;
+  animation: preview-art-drift 6s ease-in-out 4;
 }
 
 .preview-art-blink {
-  animation: preview-art-pulse 2.4s ease-in-out infinite;
+  animation: preview-art-pulse 2.4s ease-in-out 10;
 }
 
+/* 0.2s / 0.4s rather than the original 0.25s / 0.5s: the stagger stays even, and
+   both land on the 10 Hz grid so the three dots share one tick train instead of
+   opening three. */
 .preview-art-blink-2 {
-  animation-delay: 0.25s;
+  animation-delay: 0.2s;
 }
 
 .preview-art-blink-3 {
-  animation-delay: 0.5s;
+  animation-delay: 0.4s;
 }
 
 .preview-art-sparkle {
   transform-origin: center;
-  animation: preview-art-shine 3.6s ease-in-out infinite;
+  animation: preview-art-shine 3.6s ease-in-out 6;
 }
 
 .preview-art-sparkle-late {

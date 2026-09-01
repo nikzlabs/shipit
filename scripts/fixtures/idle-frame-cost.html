@@ -31,10 +31,32 @@
   the recorded negative: 1,500 of them leave both `visibleLayers` and Layerize
   untouched, which is why "many paint chunks" is not the explanation for
   production's expensive Layerize.
+
+  `steps=N` / `spinmode` vary HOW the always-on animation is written. This is the
+  knob the docs/265 fix came out of, and the two conditions that matter are:
+
+    ?spin=1&io=1&cv=1&n=300&steps=10           10 main frames/s, not 60
+    ?spin=1&io=1&cv=1&n=300&steps=10&spinmode=nonComp   still 60
+
+  So `steps(N)` schedules exactly N main-thread frames per iteration — but ONLY
+  for a compositor-only property. `nonComp` animates `left`, and stepping it
+  saves nothing, because the main thread has to run layout for it either way.
+  `spinmode=slow` (one rotation every 8s) is the recorded negative: duration
+  alone changes nothing.
+
+  `second=linear|<N>` adds a second animation, `secondOffsetMs` staggers its
+  mount. Cost is the UNION over running animations and step boundaries are
+  per-animation, so one linear animation pins the page at display rate, and two
+  `steps(10)` mounted 37 ms apart cost 20/s rather than 10.
 -->
 <style>
   @keyframes spin-slow { to { transform: rotate(360deg); } }
+  @keyframes slide-left { to { left: 40px; } }
   .tool-spinner { animation: spin-slow 1s linear infinite; }
+  .tool-spinner.steps8 { animation-timing-function: steps(8); }
+  .tool-spinner.steps { animation-timing-function: steps(var(--steps)); }
+  .tool-spinner.slow { animation-duration: 8s; }
+  .tool-spinner.nonComp { position: relative; animation-name: slide-left; }
   .sp { display: inline-block; width: 12px; height: 12px; border: 1px solid #39f;
         border-top-color: transparent; border-radius: 9999px; }
   body { font: 13px system-ui; margin: 0; padding: 8px; }
@@ -45,14 +67,48 @@
                   will-change: transform; }
 </style>
 <body>
-  <div><span id="spin" class="sp"></span> <span id="label"></span></div>
+  <div><span id="spin" class="sp"></span> <span id="spin2" class="sp"></span> <span id="label"></span></div>
   <div id="list"></div>
   <script>
     const q = new URLSearchParams(location.search);
     const rows = Number(q.get("n") ?? 0);
     const list = document.getElementById("list");
 
-    if (q.get("spin") === "1") document.getElementById("spin").classList.add("tool-spinner");
+    if (q.get("spin") === "1") {
+      document.getElementById("spin").classList.add("tool-spinner");
+      const mode = q.get("spinmode");
+      if (mode) document.getElementById("spin").classList.add(mode);
+      // `?steps=N` is the falsifiable form of the steps() finding: main frames
+      // per second should track N, not the display rate.
+      const steps = q.get("steps");
+      if (steps) {
+        document.getElementById("spin").classList.add("steps");
+        document.getElementById("spin").style.setProperty("--steps", steps);
+      }
+    }
+
+    // `?second=linear|<N>` adds a SECOND always-on animation, to test whether
+    // frame scheduling is the union over running animations. It is: one linear
+    // animation pins the page at display rate however the first one is written.
+    const second = q.get("second");
+    if (second) {
+      // `&secondOffsetMs=N` starts it N ms late. A CSS animation's step
+      // boundaries are measured from ITS OWN start time, so two stepped
+      // animations that mounted at different moments tick on different grids
+      // and their frame costs ADD. That is the real-world case — components
+      // mount when their state changes, not together — so it is the number
+      // that decides how much stepping is worth.
+      const offset = Number(q.get("secondOffsetMs") ?? 0);
+      const start = () => {
+        const el = document.getElementById("spin2");
+        el.classList.add("tool-spinner");
+        if (second !== "linear") {
+          el.classList.add("steps");
+          el.style.setProperty("--steps", second);
+        }
+      };
+      if (offset > 0) setTimeout(start, offset); else start();
+    }
     if (q.get("cv") === "1") list.className = "cv";
 
     for (let i = 0; i < rows; i++) {

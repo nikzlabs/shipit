@@ -52,11 +52,17 @@
  * point — always measure A and B the same way, in the same run.
  *
  * Two reporting details, so nobody re-derives them from surprise. `windowSeconds`
- * is measured from event timestamps and so runs a second or so longer than the
- * window asked for (trace stop and flush latency); the per-second rates divide by
- * it and stay right. And `mainThreadBusyPerSecondMs` is total `RunTask` time,
- * which exceeds the sum of the named events below it — the breakdown lists the
- * rendering lifecycle, not everything the thread did.
+ * spans this renderer's own main-thread work and frames, NOT every event in the
+ * trace — see the comment on it for why that distinction was worth 1.35x. And
+ * `mainThreadBusyPerSecondMs` is total `RunTask` time, which exceeds the sum of
+ * the named events below it — the breakdown lists the rendering lifecycle, not
+ * everything the thread did.
+ *
+ * One thing this measures that `steps()` does NOT fix: a stepped animation only
+ * stops scheduling frames if it animates a COMPOSITOR-ONLY property. Stepping an
+ * animation of `left`, or of `stroke-dashoffset` on an SVG, still wakes the main
+ * thread every vsync — measured at 60 against 10 for the same steps() on
+ * `transform`.
  */
 
 import { spawn } from "node:child_process";
@@ -245,17 +251,31 @@ if (!mainKey) {
 }
 const mainPid = mainKey ? Number(mainKey.split(":")[0]) : null;
 
+
 let mainBusyUs = 0;
 for (const e of events) {
   if (e.ph === "X" && e.name === "RunTask" && `${e.pid}:${e.tid}` === mainKey) mainBusyUs += e.dur ?? 0;
 }
 
+// The window is the span of the work the rates are ABOUT — this renderer's main
+// thread and its frames — not the span of every event in the trace.
+//
+// Spanning every event overstates it badly and silently: the browser process is
+// already producing frames when tracing starts, and Perfetto's own flush runs
+// after `Tracing.end`. An 8 s recording measured 10.77 s that way, so every
+// per-second rate came out 1.35x too low and 60 Hz read as 44.7. Caught in
+// review of the docs/265 animation work; numbers in that doc recorded BEFORE
+// 2026-09-01 use the old denominator and are not comparable with later ones.
+//
 // Fold rather than spread: a 10 s trace of a real app is hundreds of thousands
 // of events, and `Math.min(...arr)` overflows the stack well before that.
 let traceStart = Infinity;
 let traceEnd = -Infinity;
 for (const e of events) {
   if (!e.ts) continue;
+  const onMainThread = `${e.pid}:${e.tid}` === mainKey && e.ph === "X";
+  const isFrame = e.pid === mainPid && (e.name === "DrawFrame" || e.name === "BeginMainThreadFrame");
+  if (!onMainThread && !isFrame) continue;
   if (e.ts < traceStart) traceStart = e.ts;
   const end = e.ts + (e.dur ?? 0);
   if (end > traceEnd) traceEnd = end;

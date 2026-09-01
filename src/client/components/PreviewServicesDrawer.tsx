@@ -47,10 +47,11 @@ function saveHeight(v: number): void {
 }
 
 function StatusDot({ status }: { status: ManagedServiceState["status"] }) {
+  // docs/265 — `running` is a steady state and does not animate; see the same
+  // switch in ServiceList.tsx for why an always-on animation is expensive here.
   if (status === "running") {
     return (
       <span className="relative flex items-center justify-center w-2 h-2 shrink-0">
-        <span className="absolute inline-flex w-2 h-2 rounded-full bg-(--color-success) opacity-60 animate-ping" />
         <span className="relative inline-flex w-2 h-2 rounded-full bg-(--color-success)" />
       </span>
     );

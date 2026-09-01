@@ -385,6 +385,62 @@ the GC reading above, that is the expected result rather than a missing explanat
 `JSEventListeners` counts registrations, not calls, so the production figure is not subject to the
 call-counting error either. What remains unidentified is the subtree whose mount registers ~620.
 
+### 2c. What an infinite animation is allowed to be (req 13)
+
+A page holding a live `IntersectionObserver` runs the whole main-thread rendering lifecycle on
+every frame the browser *schedules*, and a running animation schedules one per vsync. ShipIt
+always holds such observers — Chrome makes one internally per `content-visibility: auto`
+transcript row, `@formkit/auto-animate` makes more, and so does every inline Present card — so a
+single ever-running indicator cost an **idle** session ~177 ms of main thread per second on a
+long transcript. That is the reported "25% of a core on a session where nothing is happening",
+of which the main thread is the largest but not the only part.
+
+`checklist.md` had this recorded and left unfixed, because it read the choice as being between
+the two observer sources and both are load-bearing. **The animation is a third ingredient and
+the cheap one**: with it stopped, 2,000 `content-visibility` rows plus a live observer cost
+0.2 ms/s — the same as removing both observer sources, from moving one thing instead of two.
+
+Three changes.
+
+**Steady states stop animating.** `ServiceList` and `PreviewServicesDrawer` drew a *running*
+service with `animate-ping`. A service that is up is not in-flight work, and that ping ran for
+as long as the service did — which is how a session with nothing happening had something
+animating. `starting` keeps its spinner. An audit of the other infinite animations found no
+second case of the same mistake.
+
+**An infinite animation must be compositor-only and stepped.** `steps(N)` wakes the main thread
+only when the value changes, and the frame rate is measured to be exactly N per second — *but
+only for a property Chrome can animate off the main thread*. `steps(10)` on an animation of
+`left` still costs 60 frames/s. So the rule is two-part: `transform`/`opacity` only, stepped at
+about 10 Hz. `--animate-spin`, `--animate-ping` and `--animate-pulse` are re-declared in an
+`@theme` block; `.tool-spinner` takes `steps(10)`.
+
+**Decoration is finite instead.** The rocket scene and the preview-setup illustration both sit
+on *empty* screens a user can stay on indefinitely, and one of them animates
+`stroke-dashoffset`, which stepping cannot help. They now run about 24 s at their original
+easing and stop — a finite animation is exempt from both rules because it ends.
+
+Two more measured constraints make this a rule enforced by a test rather than a convention:
+
+- **The cost is the union over running animations.** One animation breaking either rule puts the
+  whole page back at display rate, cancelling the saving from every other one.
+- **Step boundaries run from each animation's own start time**, so there is no shared clock:
+  two `steps(10)` animations mounted 37 ms apart cost 20.1 frames/s, not 10. Each animation is
+  individually capped; independently-phased ones add.
+
+`index.animation-policy.test.ts` checks the properties and the step rate over every `animation:`
+shorthand, every `--animate-*` theme value, and the longhand spelling.
+
+Not changed: `content-visibility: auto`. Its benefit is now measured rather than assumed — it
+**halves first contentful paint** on a 2,000-row transcript (123 ms against 227 ms) — so the
+trade the old decision rule was about no longer has to be made. The same measurement found it
+makes a full-transcript scroll 3.5x *more* expensive, tracked as planning#491: applying it to
+*groups* of rows rather than to each row keeps the load benefit and makes scrolling 7–11x
+cheaper than today, so the answer there is a granularity change rather than a removal.
+
+Numbers, the instrument correction they rest on, and what this does not fix are in
+[`checklist.md`](./checklist.md#fixed-2026-09-01--the-third-ingredient-nobody-had-varied).
+
 ### 3. Revalidate instead of re-download (reqs 10, 11)
 
 `GET /api/sessions/:id/history` gains an **ETag that is the hash of the response body**, and
@@ -442,6 +498,11 @@ and it is the guard that makes out-of-order application impossible.
 | `src/client/components/message-markdown.tsx` | `CodeBlock` highlights through that cache |
 | `src/client/utils/doc-paths.ts` | `DocIndex` — two linear passes replace the per-doc list scans behind the Docs-tab freeze |
 | `src/client/components/DocsViewer.tsx` | Groups through that index, memoized on the doc list |
+| `src/client/index.css` | Infinite = compositor-only + stepped (`@theme` overrides for Tailwind's utilities); decoration made finite |
+| `src/client/index.animation-policy.test.ts` | New — enforces both halves of the rule over every infinite animation |
+| `src/client/components/ServiceList.tsx`, `PreviewServicesDrawer.tsx` | A running service is a steady state and stops animating |
+| `scripts/trace-load-and-scroll.mjs` | New — traces from before navigation, so what `content-visibility: auto` BUYS can be measured |
+| `scripts/fixtures/inject-app-spinner.js` | New — drives a real page with the app's own animation classes, reporting each resolved `animation` as its positive control |
 
 ## Verification
 

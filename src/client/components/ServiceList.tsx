@@ -55,10 +55,13 @@ function IconAction({
 
 function StatusIndicator({ status }: { status: ManagedServiceState["status"] }) {
   switch (status) {
+    // docs/265 — no animation on `running`. A service that is up is a STEADY
+    // state, and an always-on animation is what drags the main-thread rendering
+    // lifecycle through every vsync on a session where nothing is happening.
+    // `starting` keeps its spinner: that one is genuinely in flight.
     case "running":
       return (
         <span className="relative flex items-center justify-center w-2.5 h-2.5">
-          <span className="absolute inline-flex w-2.5 h-2.5 rounded-full bg-(--color-success) opacity-60 animate-ping" />
           <span className="relative inline-flex w-2 h-2 rounded-full bg-(--color-success)" />
         </span>
       );
