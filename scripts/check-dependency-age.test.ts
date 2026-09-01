@@ -8,6 +8,7 @@ import {
   MIN_AGE_DAYS,
   POLICY_MANIFESTS,
   applyWaivers,
+  evaluatePolicy,
   findViolations,
   loadWaivers,
   parseWaivers,
@@ -82,6 +83,19 @@ describe("readManifestDeps", () => {
         ["a", "1.0.0"],
         ["b", "2.0.0"],
       ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads optionalDependencies too — it installs like a dependency", () => {
+    const dir = mkdtempSync(join(os.tmpdir(), "check-deps-"));
+    try {
+      writeFileSync(
+        join(dir, "package.json"),
+        JSON.stringify({ optionalDependencies: { fsevents: "2.3.3" } }),
+      );
+      expect(readManifestDeps(dir, "package.json").deps).toEqual([["fsevents", "2.3.3"]]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -186,6 +200,17 @@ describe("findViolations", () => {
     expect(asked).toEqual([]);
   });
 
+  it("does not fail open on an unparseable publish timestamp", () => {
+    // `Date.parse` gives NaN and `NaN < MIN_AGE_MS` is false, so a malformed or
+    // hostile registry response would otherwise read as "old enough".
+    const violations = findViolations([manifest("package.json", { demo: "1.0.0" })], {
+      now: NOW,
+      lookup: () => "not-a-date",
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0].kind).toBe("lookup-failed");
+  });
+
   it("reports a version the registry has no timestamp for", () => {
     const violations = findViolations([manifest("package.json", { ghost: "9.9.9" })], {
       now: NOW,
@@ -266,6 +291,15 @@ describe("applyWaivers", () => {
     expect(result.suppressed).toEqual([]);
   });
 
+  it("does not leak across packages sharing a manifest and version", () => {
+    // The near-miss the version and manifest cases do not cover: same manifest,
+    // same version string, different package.
+    const result = applyWaivers([tooNew({ name: "opencode-ai" })], [waiver()], NOW);
+    expect(result.violations).toHaveLength(1);
+    expect(result.violations[0].name).toBe("opencode-ai");
+    expect(result.suppressed).toEqual([]);
+  });
+
   it("stops suppressing once expired, and says so", () => {
     const result = applyWaivers([tooNew()], [waiver({ expires: "2026-08-20" })], NOW);
     expect(result.violations).toHaveLength(1);
@@ -334,6 +368,42 @@ describe("parseWaivers", () => {
     expect(() => parseWaivers(JSON.stringify({ package: "x" }))).toThrow(/JSON array/);
     expect(() => parseWaivers("{oops")).toThrow(/not valid JSON/);
   });
+
+  it("rejects a duplicate key — the diff would not mean what JSON.parse reads", () => {
+    // Valid JSON. `JSON.parse` keeps the LAST "package", so a reviewer reading
+    // the diff approves opencode-ai and the file waives claude-code.
+    const raw = `[{
+      "manifest": "docker/agent-cli/package.json",
+      "package": "opencode-ai",
+      "package": "@anthropic-ai/claude-code",
+      "version": "2.1.251",
+      "reason": "approved only opencode-ai",
+      "expires": "2026-08-25"
+    }]`;
+    expect(JSON.parse(raw)[0].package).toBe("@anthropic-ai/claude-code"); // the trap is real
+    expect(() => parseWaivers(raw, NOW)).toThrow(/duplicate "package" key/);
+  });
+
+  it("allows the same key in sibling objects — only same-object duplicates are the bug", () => {
+    const raw = JSON.stringify([waiver(), waiver({ version: "2.1.252" })]);
+    expect(parseWaivers(raw, NOW)).toHaveLength(2);
+  });
+
+  it("does not mistake a string VALUE containing a colon or brace for a key", () => {
+    const raw = JSON.stringify([waiver({ reason: 'sign-off: {"package": "x"} — see PR' })]);
+    expect(parseWaivers(raw, NOW)).toHaveLength(1);
+  });
+
+  it("caps the expiry horizon — a canonical far-future date is not a waiver", () => {
+    expect(() => parseWaivers(JSON.stringify([waiver({ expires: "9999-12-31" })]), NOW)).toThrow(
+      /beyond the 90-day limit/,
+    );
+  });
+
+  it("accepts an expiry inside the horizon", () => {
+    const inside = new Date(NOW + 89 * DAY_MS).toISOString().slice(0, 10);
+    expect(parseWaivers(JSON.stringify([waiver({ expires: inside })]), NOW)).toHaveLength(1);
+  });
 });
 
 describe("loadWaivers", () => {
@@ -360,6 +430,84 @@ describe("loadWaivers", () => {
     try {
       writeFileSync(join(dir, ALLOWLIST_PATH), JSON.stringify([waiver({ expires: "never" })]));
       expect(() => loadWaivers(dir)).toThrow(/expires/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * The wiring, not the pieces. Every helper above can be correct and green while
+ * `evaluatePolicy` never loads the allowlist or never calls `applyWaivers` —
+ * a regression no pure-helper test can fail on, because those call the helpers
+ * directly. These drive the composition over a temp repo root instead.
+ */
+describe("evaluatePolicy", () => {
+  function repoWith(pins: Record<string, string>, allowlist?: unknown): string {
+    const dir = mkdtempSync(join(os.tmpdir(), "check-deps-"));
+    mkdirSync(join(dir, "docker", "agent-cli"), { recursive: true });
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ dependencies: {} }));
+    writeFileSync(
+      join(dir, "docker", "agent-cli", "package.json"),
+      JSON.stringify({ dependencies: pins }),
+    );
+    if (allowlist !== undefined) {
+      writeFileSync(join(dir, ALLOWLIST_PATH), JSON.stringify(allowlist));
+    }
+    return dir;
+  }
+
+  const YOUNG = { "@anthropic-ai/claude-code": "2.1.251" };
+
+  it("fails a young pin when no allowlist file exists", () => {
+    const dir = repoWith(YOUNG);
+    try {
+      const { partition, total } = evaluatePolicy(dir, {
+        now: NOW,
+        lookup: lookupFrom({ "@anthropic-ai/claude-code@2.1.251": daysAgo(4) }),
+      });
+      expect(total).toBe(1);
+      expect(partition.violations).toHaveLength(1);
+      expect(partition.violations[0].kind).toBe("too-new");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads the allowlist off disk and applies it — the end-to-end path", () => {
+    const dir = repoWith(YOUNG, [waiver()]);
+    try {
+      const { partition } = evaluatePolicy(dir, {
+        now: NOW,
+        lookup: lookupFrom({ "@anthropic-ai/claude-code@2.1.251": daysAgo(4) }),
+      });
+      expect(partition.violations).toEqual([]);
+      expect(partition.suppressed).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still fails when the allowlist waives a different version", () => {
+    const dir = repoWith(YOUNG, [waiver({ version: "2.1.999" })]);
+    try {
+      const { partition } = evaluatePolicy(dir, {
+        now: NOW,
+        lookup: lookupFrom({ "@anthropic-ai/claude-code@2.1.251": daysAgo(4) }),
+      });
+      expect(partition.violations).toHaveLength(1);
+      expect(partition.stale).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates a malformed allowlist as a throw, so the CLI can exit non-zero", () => {
+    const dir = repoWith(YOUNG, [waiver({ reason: "" })]);
+    try {
+      expect(() =>
+        evaluatePolicy(dir, { now: NOW, lookup: lookupFrom({}) }),
+      ).toThrow(/reason/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

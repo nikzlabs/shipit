@@ -55,8 +55,13 @@ ShipIt locks its dependency graph down hard.
   a bump that genuinely cannot wait, is a signed-off entry in
   `.dependency-age-allowlist.json` carrying a reason and an expiry date — never a lowered
   threshold, so the waiver is visible in the diff and scoped to one exact version in one
-  manifest. It suppresses the age rule alone; an unpinned or unresolvable version is not
-  waivable at all.
+  manifest, with the expiry capped so a temporary exception cannot be written to outlive
+  the problem. It suppresses the age rule alone; an unpinned or unresolvable version is
+  not waivable at all.
+- **What these two checks read.** Both cover `dependencies`, `devDependencies`, and
+  `optionalDependencies` in each listed manifest. Transitive pins in `overrides` are a
+  different shape and are governed by the audit check (`npm run check-audit`) rather than
+  the cooldown, so the age rule is a gate on what we add directly, not on the whole tree.
 - **Both checks read both manifests.** The root `package.json` and
   `docker/agent-cli/package.json` are listed in the script's `POLICY_MANIFESTS`. The
   second one matters most: it pins the agent CLIs, which run inside the session
