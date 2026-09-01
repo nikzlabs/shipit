@@ -563,8 +563,16 @@ is `computeIntersections`. This file's premise that it exists "so a long transcr
 out and paint every off-screen row" is right about load and wrong about scroll.
 
 Neither number decides anything now, because the idle cost it was being traded against is gone
-once the animation stops scheduling frames. It stays as it is. **The scroll figure is a separate
-open finding.**
+once the animation stops scheduling frames. It stays as it is.
+
+**The scroll figure is a separate open finding, tracked as planning#491 — and the answer there
+is not "remove it".** Applying `content-visibility: auto` to *groups* of rows rather than to each
+row beats both current options on both axes: same first paint as today, and a 6 s
+full-transcript scroll of **619 / 565 ms at 20 rows per group** and **409 / 445 ms at 50**,
+against 4,578 / 4,529 ms per-row and 901 / 819 ms with no `content-visibility` at all.
+Intersection work falls 44–148x. Not done here because the grouping has to stay stable across
+renders or it remounts every row inside a group, which is the failure mode the rest of this
+folder is about.
 
 #### The fix, and the rule it turned into
 

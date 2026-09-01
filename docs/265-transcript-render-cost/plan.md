@@ -434,7 +434,9 @@ shorthand, every `--animate-*` theme value, and the longhand spelling.
 Not changed: `content-visibility: auto`. Its benefit is now measured rather than assumed — it
 **halves first contentful paint** on a 2,000-row transcript (123 ms against 227 ms) — so the
 trade the old decision rule was about no longer has to be made. The same measurement found it
-makes a full-transcript scroll 3.5x *more* expensive, which is a separate open finding.
+makes a full-transcript scroll 3.5x *more* expensive, tracked as planning#491: applying it to
+*groups* of rows rather than to each row keeps the load benefit and makes scrolling 7–11x
+cheaper than today, so the answer there is a granularity change rather than a removal.
 
 Numbers, the instrument correction they rest on, and what this does not fix are in
 [`checklist.md`](./checklist.md#fixed-2026-09-01--the-third-ingredient-nobody-had-varied).
