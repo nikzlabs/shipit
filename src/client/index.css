@@ -50,31 +50,38 @@
   --ease-in: ease-in;
 }
 
-/* ── The 10 Hz rule for always-on animation (docs/265) ─────────────────────────
+/* ── What an INFINITE animation costs, and the two rules (docs/265) ────────────
    A page holding a live IntersectionObserver runs the whole main-thread
    rendering lifecycle on every frame the browser SCHEDULES, and a running
    animation schedules one per vsync. ShipIt always holds such observers (one per
    `content-visibility: auto` transcript row, plus auto-animate and Present
    cards), and none of them is removable — so a single ever-running spinner cost
-   an *idle* session ~118 ms of main thread per second.
+   an *idle* session ~150 ms of main thread per second.
 
-   The removable half is the frame RATE: a `steps(N)` animation wakes the main
-   thread only when its value changes, N times per iteration rather than 60 times
-   a second. Every infinite animation here therefore steps on a shared 10 Hz
-   grid — still reads as motion, 6x cheaper.
+   Two rules, both enforced by `index.animation-policy.test.ts`, which is also
+   where the reasoning about how they can be got wrong lives:
 
-   The grid is 0.1s. It is a literal rather than a custom property because a
-   `steps()` count must be an integer, so nothing could consume the variable —
-   `index.animation-policy.test.ts` is what holds the two rules instead:
-     1. An infinite animation needs `steps(duration ÷ 0.1s)`. Cost is the UNION
-        over running animations, so one un-stepped one pins the page back at
-        display rate.
-     2. Its `animation-delay` must be a whole multiple of 0.1s. Step boundaries
-        run from each animation's own start, so an off-grid delay adds a second
-        tick train.
+     1. An infinite animation may animate ONLY `transform` and `opacity`.
+        Rule 2 does nothing without this: stepping an animation of `left` or of
+        `stroke-dashoffset` still wakes the main thread 60 times a second.
+     2. It must use `steps(N)` at about 10 steps a second. A stepped compositor
+        animation wakes the main thread only when its value changes.
 
-   A finite animation is exempt — it stops, so it costs nothing at steady state
-   and stays smooth. */
+   The cost is the UNION over running animations, so a single animation that
+   breaks either rule cancels the saving from every other one — which is why
+   these are a test and not a convention.
+
+   A FINITE animation is exempt from both and stays smooth: it stops, so it costs
+   nothing in the steady state. That is the right shape for a decorative
+   illustration (the rocket scene, the preview-setup art), and preferring it is
+   also how an idle empty screen gets to cost nothing rather than 10 Hz.
+
+   Note that the step boundaries are per-animation, measured from its own start
+   time. Two 10 Hz animations mounted 37 ms apart cost 15 frames a second, not
+   10. Siblings that mount together (the stars, the three blinking dots) do share
+   a train if their delays are whole multiples of the step period — worth keeping
+   when it is free, but it is not a document-wide clock and nothing relies on
+   it. */
 @theme {
   --animate-spin: spin 1s steps(10) infinite;
   --animate-ping: ping 1s steps(10) infinite;
@@ -199,7 +206,7 @@ html, body {
   position: absolute;
   border-radius: 50%;
   background: var(--color-text-tertiary);
-  animation: twinkle 2s steps(20) infinite alternate;
+  animation: twinkle 2s ease-in-out 9 alternate forwards;
 }
 .star-1 { width: 3px; height: 3px; top: 10%; left: 15%; animation-delay: 0s; }
 .star-2 { width: 2px; height: 2px; top: 20%; left: 75%; animation-delay: 0.4s; }
@@ -277,7 +284,7 @@ html, body {
 }
 
 .flame-main, .flame-left, .flame-right {
-  animation: flame-flicker 0.6s steps(6) infinite alternate;
+  animation: flame-flicker 0.6s ease-in-out 29 alternate forwards;
 }
 .flame-left  { animation-delay: 0.2s; }
 .flame-right { animation-delay: 0.4s; }
@@ -326,7 +333,7 @@ html, body {
   border-radius: 50%;
   background: #f7c948;
   opacity: 0;
-  animation: particle-burst 4.5s steps(45) infinite;
+  animation: particle-burst 4.5s ease-out 4;
 }
 
 /* Sideways-biased particles (fire during ignition) */
@@ -462,16 +469,16 @@ html, body {
 }
 
 .preview-art-dash {
-  animation: preview-art-march 24s steps(240) infinite;
+  animation: preview-art-march 24s linear 1;
 }
 
 .preview-art-float {
   transform-origin: 80px 60px;
-  animation: preview-art-drift 6s steps(60) infinite;
+  animation: preview-art-drift 6s ease-in-out 4;
 }
 
 .preview-art-blink {
-  animation: preview-art-pulse 2.4s steps(24) infinite;
+  animation: preview-art-pulse 2.4s ease-in-out 10;
 }
 
 /* 0.2s / 0.4s rather than the original 0.25s / 0.5s: the stagger stays even, and
@@ -487,7 +494,7 @@ html, body {
 
 .preview-art-sparkle {
   transform-origin: center;
-  animation: preview-art-shine 3.6s steps(36) infinite;
+  animation: preview-art-shine 3.6s ease-in-out 6;
 }
 
 .preview-art-sparkle-late {

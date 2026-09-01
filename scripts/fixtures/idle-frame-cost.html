@@ -32,16 +32,22 @@
   untouched, which is why "many paint chunks" is not the explanation for
   production's expensive Layerize.
 
-  `spinmode` varies HOW the always-on animation is written, to test whether a
-  cheaper-looking animation schedules fewer main frames:
+  `steps=N` / `spinmode` vary HOW the always-on animation is written. This is the
+  knob the docs/265 fix came out of, and the two conditions that matter are:
 
-    ?spin=1&io=1&spinmode=steps8    1s spin in 8 discrete steps
-    ?spin=1&io=1&spinmode=slow      one rotation every 8s
-    ?spin=1&io=1&spinmode=nonComp   animates `left`, so NOT compositor-only
+    ?spin=1&io=1&cv=1&n=300&steps=10           10 main frames/s, not 60
+    ?spin=1&io=1&cv=1&n=300&steps=10&spinmode=nonComp   still 60
 
-  The recorded answer is that none of them help: the browser schedules a frame
-  per vsync for any running animation, whatever its timing function or duration.
-  Only stopping the animation stops the frames.
+  So `steps(N)` schedules exactly N main-thread frames per iteration — but ONLY
+  for a compositor-only property. `nonComp` animates `left`, and stepping it
+  saves nothing, because the main thread has to run layout for it either way.
+  `spinmode=slow` (one rotation every 8s) is the recorded negative: duration
+  alone changes nothing.
+
+  `second=linear|<N>` adds a second animation, `secondOffsetMs` staggers its
+  mount. Cost is the UNION over running animations and step boundaries are
+  per-animation, so one linear animation pins the page at display rate, and two
+  `steps(10)` mounted 37 ms apart cost 20/s rather than 10.
 -->
 <style>
   @keyframes spin-slow { to { transform: rotate(360deg); } }
