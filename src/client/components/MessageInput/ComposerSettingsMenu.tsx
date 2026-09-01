@@ -478,9 +478,15 @@ export function ComposerSettingsMenu({
         {activePanel === "role" && (
           <>
             {/* req 9 — no back header when the role list IS the menu: there is
-                no root behind it to go back to. */}
-            {!rootIsRoleAlone && <PanelHeader title="Role" onBack={() => setPanel("root")} />}
-            <DropdownMenuSeparator />
+                no root behind it to go back to. The separator goes with it: it
+                divides the header from the list, so on its own it is a rule with
+                nothing above it — an empty band at the top of the sheet. */}
+            {!rootIsRoleAlone && (
+              <>
+                <PanelHeader title="Role" onBack={() => setPanel("root")} />
+                <DropdownMenuSeparator />
+              </>
+            )}
             {/* req 4 — a locked panel lists no roles. The server refuses
                 `set_role` on a pinned session, so rows here would all be
                 unselectable; the one line says why, and "Adjust parameters…"
