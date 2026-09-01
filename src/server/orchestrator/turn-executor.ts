@@ -169,8 +169,29 @@ export interface TurnInput {
   persistGuard?: { done: boolean };
   /** Fallback chat title when AI naming hasn't produced one yet. */
   fallbackTitle: string;
-  /** HEAD at turn start, for the "branch tip moved, no working-tree change" auto-push. */
+  /**
+   * HEAD at turn start, for the "branch tip moved, no working-tree change"
+   * auto-push.
+   *
+   * Describes the turn this executor was INVOKED for, and only that turn. A
+   * turn the CLI starts on its own runs through the same closure (see
+   * `rearmForCliStartedTurn`) with a HEAD that may be hours newer, so the
+   * executor keeps a mutable copy and re-reads it on every re-arm; the field
+   * itself stays the initial value. Never read it past turn one — read the
+   * executor-local `turnStartHeadHash`.
+   */
   turnStartHeadHash: string | null;
+  /**
+   * Re-read HEAD for a turn the CLI started on its own, so an adopted turn gets
+   * a turn-start head of its OWN rather than inheriting the invoking turn's.
+   *
+   * Optional, and its absence is not a gap: a caller that omits it (dispatch,
+   * restart adoption) already passes `turnStartHeadHash: null`, which is the
+   * correct fallback — docs/240 chose null deliberately, and a STALE non-null
+   * head is strictly worse than none. So the re-arm clears the value first and
+   * refreshes it only when this is wired.
+   */
+  readTurnStartHeadHash?: () => Promise<string | null>;
   /** Start the next queued message (each transport supplies its own re-entry). */
   drainNext: () => Promise<void>;
   /** Broadcast to viewers (runner.emitMessage) with a per-connection fallback for a null runner. */
@@ -1229,6 +1250,24 @@ export async function executeAgentTurn(
     armPendingPush();
   });
 
+  /**
+   * HEAD as of the start of the turn currently being served — which is NOT
+   * always the turn this executor was invoked for.
+   *
+   * `input.turnStartHeadHash` is read once, before the agent spawns, and frozen
+   * on the input. A turn the CLI starts on its own (a self-wake after a
+   * backgrounded consult returns, or a live steer acked too late) is adopted by
+   * this same closure hours later, and the frozen value then names the head of
+   * some earlier turn. `postTurnCommit`'s clean-tree branch reads that as "the
+   * agent moved HEAD itself this turn" and, on every such turn, re-scans the
+   * whole already-pushed `turnStartHead..HEAD` range for secrets and re-pushes a
+   * head the remote already holds — announcing the same commit again in chat
+   * once per adopted turn, and standing ready to false-block the push on a
+   * finding anywhere in that history. So the value lives here, mutable, and
+   * `rearmForCliStartedTurn` gives each adopted turn its own.
+   */
+  let turnStartHeadHash: string | null = input.turnStartHeadHash;
+
   let tokenSyncFired = false;
   const trySyncToken = (): void => {
     if (tokenSyncFired) return;
@@ -1358,7 +1397,7 @@ export async function executeAgentTurn(
           sessionDir: runner.sessionDir,
           sessionId,
           summary,
-          turnStartHeadHash: input.turnStartHeadHash,
+          turnStartHeadHash,
           runner,
           emit,
           deferPushArm: (arm) => { pendingPushArm = arm; },
@@ -1649,12 +1688,33 @@ export async function executeAgentTurn(
     commitPromise = null;
     commitAndPrPromise = null;
     resultTurnSummary = null;
+    // Give the adopted turn a turn-start head of its own. Cleared here, in the
+    // same synchronous block as every other guard, so that each way this can go
+    // wrong lands on `null` — the docs/240 value, which skips the clean-tree
+    // heuristic and falls back to the ordinary working-tree auto-commit —
+    // rather than on the invoking turn's stale head. That covers a caller with
+    // no reader wired and a `getHeadHash` that throws alike.
+    turnStartHeadHash = null;
     // The adopted turn now owns these closures. `agent-listeners` already gave
     // it a fresh epoch (`adoptCliStartedTurn` runs `resetRunnerTurnState` before
     // this listener fires); adopt it so that turn's own teardown — e.g.
     // `onInterruptedTurn` after a crash — is not mistaken for a stale
     // predecessor's.
     thisTurnEpoch = runner?.turnEpoch;
+    // …and only now, past the last of the synchronous guard flips, go to disk
+    // for the adopted turn's turn-start head. Ordering, twice over. It runs
+    // AFTER the block above so a second wake edge landing in this await still
+    // meets a cleared `streamingPostTurnFired` and stands down, exactly as
+    // before — the "first one through re-arms and the rest stand down" property
+    // is what an await placed any earlier would break. And it runs after this
+    // function's opening await on the finished turn's post-turn sequence, so
+    // that turn's commit is in and HEAD is the true baseline for the adopted
+    // one. Nothing can read the value in between: `runCommit` is reached only
+    // through a post-turn flow, and the adopted turn's `agent_result` awaits
+    // `rearmInFlight` before it starts one.
+    await postTurnStep("refresh-turn-start-head", async () => {
+      turnStartHeadHash = (await input.readTurnStartHeadHash?.()) ?? null;
+    });
   };
 
   /**

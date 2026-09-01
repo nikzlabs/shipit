@@ -642,6 +642,31 @@ in which that state is not this turn's:
   path over. Only the row finalize is widened; the no-result hook stays disarmed,
   because arming it would re-run the user's original prompt.
 
+**And one thing an adopted turn must inherit but could not: its own turn-start
+HEAD.** `turnStartHeadHash` is read once, before the agent spawns, and frozen on
+`TurnInput`, so it named the head of whatever turn the *orchestrator* last
+started — hours old on a session that self-wakes for a consult repeatedly. It is
+now an executor-local mutable value that `rearmForCliStartedTurn` clears and
+re-reads through a new optional `TurnInput.readTurnStartHeadHash`, wired on the
+WS path only. Callers that pass `turnStartHeadHash: null` (dispatch, docs/240
+restart adoption) wire no reader and keep null, which stays deliberately correct
+there — and the re-arm clears BEFORE it refreshes, so a caller with no reader
+and a `getHeadHash` that throws both land on null rather than on a stale head.
+The refresh `await` sits at the very end of the re-arm, past the last
+synchronous guard flip, so a second wake edge landing in it still meets a
+cleared `streamingPostTurnFired` and stands down.
+
+What the stale value cost, in production: `postTurnCommit`'s clean-tree branch
+reads `currentHead !== turnStartHead` as "the agent moved HEAD itself this
+turn", and an adopted turn that reads a review and answers changes no files, so
+that branch was entered on every one of them. It re-scanned the whole
+already-pushed `turnStartHead..HEAD` range for secrets — a range that grows with
+each turn, so a finding anywhere in shipped history would have false-blocked the
+push — and it pushed a head the remote already holds. That push moves nothing
+but still emits the `Auto-pushed to origin/<branch>` card, which is the reported
+symptom: the same commit announced again once per self-wake, with no error on
+any surface because every step believed it had succeeded.
+
 **Known residual, accepted.** An adopted turn that edits the tree BEFORE the
 finished turn's `git add -A` has those edits swept into the finished turn's
 commit. The work reaches git — the tree ends clean and the adopted turn's own
@@ -654,7 +679,9 @@ Coverage: `turn-self-wake-commit.test.ts` (a late-acked steer's CLI-started turn
 commits its own work under its own summary; a bare post-`result` init does NOT
 adopt; mid-turn output and a backgrounded subagent's output do not adopt; the
 drain stands down after an adoption; an adopted turn that ends before the re-arm
-settles still runs its post-turn flow) and `live-steering.test.ts` (the session
+settles still runs its post-turn flow; an adopted turn gets its own turn-start
+head, so a no-op wake re-scans no already-pushed range and re-pushes no
+already-held head) and `live-steering.test.ts` (the session
 reads busy, the accumulator is clean, and each turn persists once).
 
 **Phase 6.10 — a mid-session model change never reached the resident process.**
