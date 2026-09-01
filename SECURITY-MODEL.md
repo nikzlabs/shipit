@@ -51,7 +51,12 @@ ShipIt locks its dependency graph down hard.
   (`npm run check-deps`), which is wired into CI and fails the build on any violation.
 - **Minimum release age.** Dependencies must have been published for a cooldown window
   before they can be added, giving the community, scanners, and npm's own abuse pipeline
-  time to catch a compromised release before it reaches the build.
+  time to catch a compromised release before it reaches the build. The escape hatch, for
+  a bump that genuinely cannot wait, is a signed-off entry in
+  `.dependency-age-allowlist.json` carrying a reason and an expiry date — never a lowered
+  threshold, so the waiver is visible in the diff and scoped to one exact version in one
+  manifest. It suppresses the age rule alone; an unpinned or unresolvable version is not
+  waivable at all.
 - **Both checks read both manifests.** The root `package.json` and
   `docker/agent-cli/package.json` are listed in the script's `POLICY_MANIFESTS`. The
   second one matters most: it pins the agent CLIs, which run inside the session

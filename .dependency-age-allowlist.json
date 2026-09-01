@@ -1,0 +1,9 @@
+[
+  {
+    "manifest": "docker/agent-cli/package.json",
+    "package": "@anthropic-ai/claude-code",
+    "version": "2.1.251",
+    "reason": "Requested bump to 2.1.251 (published 2026-08-28), waived by Nik on 2026-09-01 at 4.2 days old rather than waiting out the cooldown. First-party Anthropic package; the waiver names this exact version, so the next bump gets the full 7-day window again.",
+    "expires": "2026-09-05"
+  }
+]

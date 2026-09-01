@@ -4,12 +4,18 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import os from "node:os";
 import {
+  ALLOWLIST_PATH,
   MIN_AGE_DAYS,
   POLICY_MANIFESTS,
+  applyWaivers,
   findViolations,
+  loadWaivers,
+  parseWaivers,
   readManifestDeps,
+  type AgeWaiver,
   type ManifestDeps,
   type PublishLookup,
+  type Violation,
 } from "./check-dependency-age.js";
 
 /**
@@ -204,5 +210,158 @@ describe("findViolations", () => {
     expect(violations[0]).toMatchObject({ name: "broken", kind: "lookup-failed" });
     // Only the first line of the error reaches the report — a stack would bury it.
     expect(violations[0].detail).not.toContain("stack line");
+  });
+});
+
+/**
+ * The age waiver — `.dependency-age-allowlist.json`. It is an escape hatch on a
+ * supply-chain control, so what it must NOT waive is as load-bearing as what it
+ * does: a different version, a different manifest, an expired entry, and any
+ * violation that is not `too-new` all have to survive it.
+ */
+const TODAY = new Date(NOW).toISOString().slice(0, 10); // "2026-08-21"
+
+function waiver(over: Partial<AgeWaiver> = {}): AgeWaiver {
+  return {
+    manifest: "docker/agent-cli/package.json",
+    package: "@anthropic-ai/claude-code",
+    version: "2.1.251",
+    reason: "signed off while 4 days old",
+    expires: "2026-08-25",
+    ...over,
+  };
+}
+
+function tooNew(over: Partial<Violation> = {}): Violation {
+  return {
+    manifest: "docker/agent-cli/package.json",
+    name: "@anthropic-ai/claude-code",
+    version: "2.1.251",
+    kind: "too-new",
+    detail: `published 4.2 days ago (< ${MIN_AGE_DAYS})`,
+    ...over,
+  };
+}
+
+describe("applyWaivers", () => {
+  it("suppresses the exact manifest+package+version it names", () => {
+    const result = applyWaivers([tooNew()], [waiver()], NOW);
+    expect(result.violations).toEqual([]);
+    expect(result.suppressed).toHaveLength(1);
+    expect(result.suppressed[0].waiver.reason).toBe("signed off while 4 days old");
+    expect(result.stale).toEqual([]);
+  });
+
+  it("does not carry forward to the next bump — a waiver is per-version", () => {
+    const result = applyWaivers([tooNew({ version: "2.1.257" })], [waiver()], NOW);
+    expect(result.violations).toHaveLength(1);
+    expect(result.violations[0].version).toBe("2.1.257");
+    // The 2.1.251 entry now matches nothing, so it is reported as dead weight.
+    expect(result.stale).toHaveLength(1);
+  });
+
+  it("does not leak across manifests", () => {
+    const result = applyWaivers([tooNew({ manifest: "package.json" })], [waiver()], NOW);
+    expect(result.violations).toHaveLength(1);
+    expect(result.suppressed).toEqual([]);
+  });
+
+  it("stops suppressing once expired, and says so", () => {
+    const result = applyWaivers([tooNew()], [waiver({ expires: "2026-08-20" })], NOW);
+    expect(result.violations).toHaveLength(1);
+    expect(result.expired).toHaveLength(1);
+    expect(result.expired[0].waiver.expires).toBe("2026-08-20");
+    expect(result.suppressed).toEqual([]);
+  });
+
+  it("holds the expiry boundary: expiring today still suppresses", () => {
+    const result = applyWaivers([tooNew()], [waiver({ expires: TODAY })], NOW);
+    expect(result.suppressed).toHaveLength(1);
+    expect(result.violations).toEqual([]);
+  });
+
+  it("cannot waive a floating range — not-pinned is not a cooldown question", () => {
+    const notPinned = tooNew({ kind: "not-pinned", detail: "must be exact" });
+    const result = applyWaivers([notPinned], [waiver()], NOW);
+    expect(result.violations).toEqual([notPinned]);
+    expect(result.suppressed).toEqual([]);
+  });
+
+  it("cannot waive a failed lookup", () => {
+    const failed = tooNew({ kind: "lookup-failed", detail: "npm view failed" });
+    const result = applyWaivers([failed], [waiver()], NOW);
+    expect(result.violations).toEqual([failed]);
+  });
+
+  it("reports a waiver that no longer violates as stale, without failing", () => {
+    const result = applyWaivers([], [waiver()], NOW);
+    expect(result.violations).toEqual([]);
+    expect(result.stale).toHaveLength(1);
+  });
+});
+
+describe("parseWaivers", () => {
+  it("accepts a well-formed entry", () => {
+    expect(parseWaivers(JSON.stringify([waiver()]))).toEqual([waiver()]);
+  });
+
+  it("accepts an empty allowlist", () => {
+    expect(parseWaivers("[]")).toEqual([]);
+  });
+
+  it.each(["never", "9999", "2026-8-25", "2026-02-31", "2026-08-25T00:00:00Z"])(
+    "rejects %j as an expiry — it would read as unexpired forever",
+    (expires) => {
+      expect(() => parseWaivers(JSON.stringify([waiver({ expires })]))).toThrow(/expires/);
+    },
+  );
+
+  it("rejects an entry with no reason — a waiver without one is not a decision", () => {
+    expect(() => parseWaivers(JSON.stringify([waiver({ reason: "  " })]))).toThrow(/reason/);
+  });
+
+  it("rejects a manifest the policy does not cover", () => {
+    expect(() => parseWaivers(JSON.stringify([waiver({ manifest: "other/package.json" })]))).toThrow(
+      /manifest/,
+    );
+  });
+
+  it("rejects a range where an exact version belongs", () => {
+    expect(() => parseWaivers(JSON.stringify([waiver({ version: "^2.1.251" })]))).toThrow(/version/);
+  });
+
+  it("rejects a non-array and unparseable JSON rather than failing open", () => {
+    expect(() => parseWaivers(JSON.stringify({ package: "x" }))).toThrow(/JSON array/);
+    expect(() => parseWaivers("{oops")).toThrow(/not valid JSON/);
+  });
+});
+
+describe("loadWaivers", () => {
+  it("treats a missing allowlist as no waivers", () => {
+    const dir = mkdtempSync(join(os.tmpdir(), "check-deps-"));
+    try {
+      expect(loadWaivers(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("parses the repo's own allowlist, whatever is in it today", () => {
+    // Guards a hand-edit: a malformed entry fails here rather than at the point
+    // where it would have silently waived nothing.
+    expect(() => loadWaivers(REPO_ROOT)).not.toThrow();
+    for (const entry of loadWaivers(REPO_ROOT)) {
+      expect(POLICY_MANIFESTS).toContain(entry.manifest);
+    }
+  });
+
+  it("surfaces a malformed allowlist as a throw", () => {
+    const dir = mkdtempSync(join(os.tmpdir(), "check-deps-"));
+    try {
+      writeFileSync(join(dir, ALLOWLIST_PATH), JSON.stringify([waiver({ expires: "never" })]));
+      expect(() => loadWaivers(dir)).toThrow(/expires/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
