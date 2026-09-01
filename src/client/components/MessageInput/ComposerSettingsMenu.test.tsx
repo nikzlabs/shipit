@@ -228,6 +228,23 @@ describe("ComposerSettingsMenu — no one-row root (docs/285 req 9)", () => {
     expect(screen.queryByTestId("composer-settings-back")).toBeNull();
   });
 
+  it("starts the sheet at the first role, with no header-shaped gap above it", async () => {
+    const user = userEvent.setup();
+    // Same shape as above — the header is dropped because there is no root
+    // behind the list. The separator that divided the two must go with it: on
+    // its own it is a rule with nothing above, which renders as an empty band
+    // at the very top of the sheet.
+    renderMenu({ onRoleChange: vi.fn(), sessionRoleName: "reviewer", roleParamsRevealed: false });
+    await user.click(screen.getByTestId("composer-settings-trigger"));
+    const menu = screen.getByTestId("composer-settings-menu");
+    const first = menu.firstElementChild;
+    expect(first).not.toBeNull();
+    expect(first!.getAttribute("role")).not.toBe("separator");
+    // "Adjust parameters…" keeps its own divider, so the panel is not simply
+    // separator-free — the top one specifically is gone.
+    expect(menu.querySelectorAll("[role='separator']")).toHaveLength(1);
+  });
+
   it("keeps the root when there is more than one row on it", async () => {
     const user = userEvent.setup();
     // Parameters revealed → harness, model and level are back, so the root is a
