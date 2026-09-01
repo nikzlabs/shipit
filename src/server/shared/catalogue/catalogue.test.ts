@@ -624,21 +624,33 @@ describe("resolving a retired model (req 13, phase 8)", () => {
     // form takes a preferred service and why no spawn boundary calls it: an id
     // one service retired while another still offers it must not be rewritten
     // to the first service's successor at the second service's endpoint.
-    const anyRetiredElsewhere = CATALOGUE.some((service) =>
-      service.modes.some((mode) =>
-        mode.retired.some((retired) =>
-          CATALOGUE.some(
-            (other) =>
-              other.id !== service.id &&
-              other.modes.some((m) => m.models.some((model) => model.id === retired.id)),
-          ),
-        ),
-      ),
-    );
-    // Not true of the shipped catalogue today; the assertion is that when it
-    // becomes true, `retirementSuccessor` still consults only the mode it was
-    // handed — which the "never crosses" test above already pins.
-    expect(anyRetiredElsewhere).toBe(false);
+    // **This shape now exists in the shipped catalogue**, so the assertion is no
+    // longer hypothetical: Fable 5.1 (2026-09-01) replaced Fable 5 at OpenRouter,
+    // which retired `anthropic/claude-fable-5` — while Vercel, whose gateway had
+    // not listed 5.1 on the day, still offers that exact id as a current model.
+    // One string, retired at one service and live at another.
+    const CONTESTED = "anthropic/claude-fable-5";
+    expect(
+      CATALOGUE.find((s) => s.id === "openrouter")!
+        .modes.some((m) => m.retired.some((r) => r.id === CONTESTED)),
+    ).toBe(true);
+    expect(
+      CATALOGUE.find((s) => s.id === "vercel")!
+        .modes.some((m) => m.models.some((model) => model.id === CONTESTED)),
+    ).toBe(true);
+
+    // Asked about Vercel, the id is current there and there is nothing to move:
+    // OpenRouter's successor must NOT leak across, because
+    // `anthropic/claude-fable-5.1` is a row Vercel does not serve.
+    expect(
+      retirementSuccessor("claude", { serviceId: "vercel", billingMode: "key", modelId: CONTESTED }),
+    ).toBeUndefined();
+    // Asked about OpenRouter, the same id does move — the lookup consults only
+    // the mode it was handed.
+    expect(
+      retirementSuccessor("claude", { serviceId: "openrouter", billingMode: "key", modelId: CONTESTED }),
+    ).toEqual({ serviceId: "openrouter", billingMode: "key", modelId: "anthropic/claude-fable-5.1" });
+
     expect(retirementSuccessor("codex", { serviceId: "anthropic", billingMode: "sub", modelId: "gpt-5.6" })).toBeUndefined();
   });
 });
@@ -689,7 +701,7 @@ describe("the harness\u00d7service join", () => {
       "claude-opus-5",
       "claude-sonnet-5",
       "haiku",
-      "claude-fable-5",
+      "claude-fable-5-1",
     ]);
     expect(catalogueModelIdsForHarness("codex").slice(0, 9)).toEqual([
       "gpt-5.6-sol",
@@ -1055,7 +1067,9 @@ describe("spawn shaping", () => {
     const windows = catalogueContextWindows();
     expect(windows["claude-opus-5"]).toBe(1_000_000);
     expect(windows["claude-sonnet-5"]).toBe(1_000_000);
-    expect(windows["claude-fable-5"]).toBe(1_000_000);
+    // Fable 5 → 5.1 (2026-09-01). The window the dial reads is unchanged; only
+    // the id that carries it moved.
+    expect(windows["claude-fable-5-1"]).toBe(1_000_000);
     expect(windows.haiku).toBe(200_000);
     // Codex's assignment, deliberately not OpenAI's advertised maximum.
     expect(windows["gpt-5.6-sol"]).toBe(272_000);
@@ -1072,7 +1086,11 @@ describe("spawn shaping", () => {
       "claude-opus-5": "Opus 5",
       "claude-sonnet-5": "Sonnet 5",
       "haiku": "Haiku 4.5",
-      "claude-fable-5": "Fable 5",
+      // Fable's row moved to 5.1 on 2026-09-01. The pre-catalogue record is
+      // still what this test freezes — this is the one id in it the catalogue
+      // has since retired, so the entry tracks the successor rather than
+      // asserting a label no row carries.
+      "claude-fable-5-1": "Fable 5.1",
       "gpt-5.6-sol": "GPT-5.6 Sol",
       "gpt-5.6-terra": "GPT-5.6 Terra",
       "gpt-5.6-luna": "GPT-5.6 Luna",
@@ -1273,12 +1291,15 @@ describe("resolving a bare model id", () => {
     // under a `provider/` namespace like the two gateways — so one bare id now
     // names rows at two services. Catalogue order keeps Anthropic first, which
     // is what makes a legacy bare id still resolve where it came from.
-    expect(modesOfferingModel("claude-fable-5")).toEqual([
+    expect(modesOfferingModel("claude-fable-5-1")).toEqual([
       { serviceId: "anthropic", billingMode: "sub" },
       { serviceId: "anthropic", billingMode: "key" },
       { serviceId: "opencode", billingMode: "key" },
     ]);
-    expect(resolveModelSelection("claude-fable-5")?.serviceId).toBe("anthropic");
+    expect(resolveModelSelection("claude-fable-5-1")?.serviceId).toBe("anthropic");
+    // And the predecessor is offered by nobody under its bare id — it is a
+    // retirement now, which `resolveRetiredModelId` answers instead.
+    expect(modesOfferingModel("claude-fable-5")).toEqual([]);
     expect(modesOfferingModel("nope")).toEqual([]);
   });
 });

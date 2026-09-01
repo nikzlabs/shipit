@@ -34,6 +34,13 @@ const LEGACY_CONTEXT_WINDOWS: Record<string, number> = {
   "claude-sonnet": 200_000,
   // claude-opus-4-8 stays for sessions created before the Opus 5 default swap.
   "claude-opus-4-8": 1_000_000,
+  // Same reason: Fable 5.1 replaced Fable 5 in the catalogue on 2026-09-01, so
+  // the bare `claude-fable-5` id no longer has a row to derive a window from —
+  // and without a key here it falls through the substring pass to the 200K
+  // default, quietly showing a wrong number on the dial of every session still
+  // pinned to it. (`anthropic/claude-fable-5` needs no key: Vercel still offers
+  // it, so the catalogue still declares its window.)
+  "claude-fable-5": 1_000_000,
   "claude-haiku": 200_000,
   "opus-1m": 1_000_000,
   // Codex / GPT-5 family. Use Codex's context window rather than the model's

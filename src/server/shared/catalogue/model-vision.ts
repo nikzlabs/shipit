@@ -88,6 +88,7 @@ export const MODEL_VISION: Record<CanonicalModelKey, VisionSupport> = {
   "claude-sonnet-5": "yes",
   "claude-haiku-4.5": "yes",
   "claude-fable-5": "yes",
+  "claude-fable-5.1": "yes",
 
   // OpenAI's line — image on both sources for every row that a gateway serves.
   "gpt-5.6-sol": "yes",
