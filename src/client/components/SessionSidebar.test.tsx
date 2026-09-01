@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -1598,7 +1599,9 @@ describe("SessionSidebar needs-attention view", () => {
     expect(findSwitch().textContent).toContain("2");
 
     fireEvent.click(findSwitch());
-    expect(screen.getByRole("button", { name: /Show all sessions/ }).textContent).toContain("2");
+    // Selected by the count, not by "Show all sessions" — req 17 gives the
+    // collapse control that same name while this view is showing.
+    expect(findSwitch().textContent).toContain("2");
   });
 
   it("swaps the repo tree for a flat list with no repo headers", () => {
@@ -1631,5 +1634,90 @@ describe("SessionSidebar needs-attention view", () => {
     // action behind the same glyph. The rail shows no session state at all.
     render(<SessionSidebar {...defaultProps} sessions={waiting()} collapsed />);
     expect(screen.queryByRole("button", { name: /need you/ })).toBeNull();
+  });
+
+  // req 17 — the corner button is the one the hand reaches for when the goal is
+  // "put the sidebar back to normal", so in this view it does that instead of
+  // collapsing. Collapsing is still reachable, one press later.
+  describe("the collapse control", () => {
+    it("leaves the view on the first press and collapses on the next", () => {
+      const onToggleCollapse = vi.fn();
+      render(
+        <SessionSidebar {...defaultProps} sessions={waiting()} onToggleCollapse={onToggleCollapse} />,
+      );
+      fireEvent.click(findSwitch());
+      expect(useUiStore.getState().sidebarView).toBe("attention");
+
+      // First press: the view goes, the sidebar stays open — the repo tree is
+      // back on screen, not merely a flag flipped in the store.
+      fireEvent.click(screen.getByRole("button", { name: "Back to all sessions" }));
+      expect(onToggleCollapse).not.toHaveBeenCalled();
+      expect(useUiStore.getState().sidebarView).toBe("all");
+      expect(screen.getAllByText("New session").length).toBeGreaterThan(0);
+
+      // Second press, now in the all-sessions view: it collapses, as labelled.
+      fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+      expect(onToggleCollapse).toHaveBeenCalledTimes(1);
+    });
+
+    it("names itself for the press it will make, so the state is not hidden", async () => {
+      // Without this the button keeps saying "Collapse sidebar" and then changes
+      // the view — the mistake this fixes, moved into the screen reader. The
+      // TOOLTIP is asserted too: it is the sighted half of the same promise, and
+      // an aria-label-only check would pass if someone hard-coded it back.
+      const user = userEvent.setup();
+      render(<SessionSidebar {...defaultProps} sessions={waiting()} />);
+      expect(screen.getByRole("button", { name: "Collapse sidebar" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Back to all sessions" })).toBeNull();
+
+      fireEvent.click(findSwitch());
+      const control = screen.getByRole("button", { name: "Back to all sessions" });
+      expect(screen.queryByRole("button", { name: "Collapse sidebar" })).toBeNull();
+
+      // Radix renders tooltip copy twice (visible + the aria live region).
+      await user.hover(control);
+      expect(await screen.findAllByText("Back to all sessions")).not.toHaveLength(0);
+    });
+
+    it("does not borrow the switch's own name, which collides at a count of zero", () => {
+      // Two adjacent buttons under one name is ambiguous to a voice command and
+      // noise to a screen reader. At inbox zero the switch drops its count, so
+      // its active label is a bare "Show all sessions" — the colliding case.
+      render(<SessionSidebar {...defaultProps} sessions={[]} />);
+      fireEvent.click(screen.getByRole("button", { name: "Show sessions that need you" }));
+      expect(screen.getAllByRole("button", { name: "Show all sessions" })).toHaveLength(1);
+      expect(screen.getByRole("button", { name: "Back to all sessions" })).toBeTruthy();
+    });
+
+    it("expands into the remembered view, where the header press still leaves it", () => {
+      // Reachable from saved state (req 13) or from mod+alt+a while collapsed.
+      // The rail expands unconditionally; the header control then means whatever
+      // the restored view says it means, not whatever it meant before collapsing.
+      const onToggleCollapse = vi.fn();
+      function Harness() {
+        const [collapsed, setCollapsed] = useState(true);
+        return (
+          <SessionSidebar
+            {...defaultProps}
+            sessions={waiting()}
+            collapsed={collapsed}
+            onToggleCollapse={() => {
+              onToggleCollapse();
+              setCollapsed((c) => !c);
+            }}
+          />
+        );
+      }
+      useUiStore.getState().setSidebarView("attention");
+      render(<Harness />);
+
+      fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+      expect(useUiStore.getState().sidebarView).toBe("attention");
+
+      fireEvent.click(screen.getByRole("button", { name: "Back to all sessions" }));
+      expect(useUiStore.getState().sidebarView).toBe("all");
+      // Only the expand moved the collapse state; the header press did not.
+      expect(onToggleCollapse).toHaveBeenCalledTimes(1);
+    });
   });
 });

@@ -58,7 +58,17 @@ async function waitFor(fn: () => boolean, label: string, timeoutMs = 5000): Prom
   throw new Error(`Timed out waiting for ${label}`);
 }
 
-const EXHAUSTED = "You've hit your weekly usage limit. It resets at 2026-09-01T00:00:00.000Z.";
+/**
+ * The reset instant must stay in the FUTURE forever, hence 2099 — the same
+ * literal every sibling quota fixture uses. `resolveResetAt` accepts a stated
+ * reset only while `parsed > now` (a past one describes the window that just
+ * ended), so a near-future date does not fail loudly when it arrives: the
+ * detector quietly reports `resetAt: null` and the stamp becomes
+ * `now + UNKNOWN_RESET_LOCKOUT_MS`. This fixture said 2026-09-01 and broke CI on
+ * 2026-09-01, nine hours after midnight UTC.
+ */
+const RESET_AT = "2099-01-01T00:00:00.000Z";
+const EXHAUSTED = `You've hit your weekly usage limit. It resets at ${RESET_AT}.`;
 
 describe("same-turn quota failover (docs/252 phase 5, req 12)", () => {
   let repoDir: string;
@@ -214,7 +224,7 @@ describe("same-turn quota failover (docs/252 phase 5, req 12)", () => {
     // `agent_result` — without it the retry re-selects the spent credential.
     expect(markSessionAccountExhausted).toHaveBeenCalledWith(
       "s1",
-      Date.parse("2026-09-01T00:00:00.000Z"),
+      Date.parse(RESET_AT),
       undefined,
     );
     runner.dispose({ force: true });
