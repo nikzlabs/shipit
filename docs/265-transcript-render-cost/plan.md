@@ -487,9 +487,18 @@ as a failing test before being fixed:
 with the containment on each row, a skipped row still contributed its own margin to the layout;
 with it on the group, the margins are inside the skipped subtree, so a 20-row group that reserved
 only `100rem` would be 19 gaps short. It assumes the `sm` gap, so below `sm` a cold group reserves
-0.25rem/row short. **Not verified in a browser:** whether that changes where a *search jump* lands
-when its target is in a group that has never rendered — `useMessageScroll` calls `scrollIntoView`
-once with no settle pass, unlike bottom-pinning, which the ResizeObserver corrects continuously.
+0.25rem/row short.
+
+**An estimate that wrong would have broken the search jump (req 7), so that path gained a settle
+loop.** Jumping to a match inside a group that has never been on screen renders the group for real,
+and the real height replaces the estimate in the same frame — moving the match out from under the
+scroll that just landed on it, by however wrong 20 rows' worth of estimate was. `useMessageScroll`
+called `scrollIntoView` exactly once and had no correction at all; bottom-pinning never had the
+problem because its ResizeObserver corrects continuously. It now re-centres whenever the height
+changes, stops once the height has held for a few frames, and stands down on a user gesture — the
+same shape as `scheduleScrollToBottom`, and the same reasons. Deciding this by measuring how far
+off the jump landed would have cost a fixture and settled nothing: the loop removes the dependence
+on the estimate being good, which is worth more than knowing how bad it is.
 
 Spacing is declared on the group as well as the container, so a group boundary looks like every
 other gap.
@@ -565,6 +574,7 @@ and it is the guard that makes out-of-order application impossible.
 | `src/client/components/MessageList/MessageList.tsx` | `content-visibility: auto` on groups of 20 rows, boundaries counted over anchor rows from the front |
 | `src/client/components/MessageList/transcript-row-groups.test.tsx` | New — counts MOUNTS, which the memo guard cannot, so a row that changes group fails the build |
 | `scripts/fixtures/transcript-highlight-probe.jsx` | `?turns=N` — a transcript long enough to measure containment granularity on the real component |
+| `src/client/components/MessageList/hooks/useMessageScroll.ts` | The search jump re-centres until the height settles, so a group-sized estimate cannot strand it |
 | `src/client/components/ServiceList.tsx`, `PreviewServicesDrawer.tsx` | A running service is a steady state and stops animating |
 | `scripts/trace-load-and-scroll.mjs` | New — traces from before navigation, so what `content-visibility: auto` BUYS can be measured |
 | `scripts/fixtures/inject-app-spinner.js` | New — drives a real page with the app's own animation classes, reporting each resolved `animation` as its positive control |

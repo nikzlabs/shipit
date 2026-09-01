@@ -3,6 +3,9 @@
 - [x] `content-visibility: auto` on groups of 20 rows rather than every row, with boundaries counted
       over anchor rows from the front and groups keyed by ordinal, so no UNCHANGED row changes DOM
       parent — the task panel does move, deliberately (req 13, planning#491)
+- [x] The search jump re-centres until the transcript's height settles (req 7). A group-sized
+      `contain-intrinsic-size` estimate resolves to the real height in the frame the jump reveals
+      it, so a single `scrollIntoView` lands beside the match rather than on it
 - [x] An infinite animation animates only `transform`/`opacity` and steps at ~10 Hz, so an
       indicator stops dragging the main-thread rendering lifecycle through every vsync (req 13)
 - [x] Decorative illustration (the rocket scene, the preview-setup art) is finite instead, so an
