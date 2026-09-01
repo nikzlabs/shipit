@@ -13,3 +13,11 @@
 - [x] Tests — list behaviour, hook membership, sidebar wiring, theme contrast guard.
 - [x] Browser check of both views in a light and a dark theme.
 - [x] Cross-backend review (Codex) of the branch diff against every numbered requirement.
+
+## Follow-up — req 17, the mis-pressed collapse control (2026-09-01)
+
+- [x] `requirements.md` — requirement 17 plus a dated receipt for the decision.
+- [x] `plan.md` — why one control carries two meanings here, and the two rejected alternatives.
+- [x] `SessionSidebar` — the header button's press and label follow the view.
+- [x] Tests — first press leaves the view, next press collapses, label follows; both proven red without the fix.
+- [x] Browser check in both views.

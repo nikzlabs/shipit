@@ -49,6 +49,33 @@ The count renders in both views (req 5) and counts sessions that need attention
 *right now* — not the sticky set below, which would let it disagree with the
 markers on screen.
 
+### The collapse control beside it (req 17)
+
+While the "Needs you" view is showing, the header's leftmost button **leaves the
+view**; only the press after that collapses. Its tooltip and `aria-label` change
+with it, to "Show all sessions" — the same words the switch beside it uses,
+because the two do the same thing there.
+
+This is a deliberate exception to "one control, one meaning". Overloading a
+control on a mode normally *causes* mode errors rather than curing one, and three
+things make it safe here:
+
+- **The label follows the press**, so the state is visible, not hidden. Without
+  that clause the fix would move the original mistake into the screen reader.
+- **Collapsing from this view is worse than a no-op.** The rail carries no
+  attention count (see "No view switch on the collapsed rail" below), so it hides
+  what the view exists to show and leaves the view on but invisible.
+- **`SidebarSimpleIcon` marks the sidebar, not the collapse direction**, so it
+  stays true of both presses. The button is the sidebar-*state* control, which is
+  also the mental model that produces the mistake.
+
+Two alternatives are out. **Hiding the button** in this view shifts the header and
+makes collapsing unreachable. **Swapping the two buttons** so the switch takes the
+corner just moves the same mistake into the all-sessions view.
+
+Desktop only — the mobile bar has no collapse control (req 15), and there is no
+keyboard chord for collapse, so this button is the single entry point.
+
 ### Contrast (req 16)
 
 `--color-attention` is `#f59e0b` on dark themes and `#d97706` on light ones.

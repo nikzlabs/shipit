@@ -127,8 +127,19 @@ export function SessionSidebar({
   // never appear in the other.
   const sidebarView = useUiStore((s) => s.sidebarView);
   const toggleSidebarView = useUiStore((s) => s.toggleSidebarView);
+  const setSidebarView = useUiStore((s) => s.setSidebarView);
   const attentionIds = useAttentionSessions(visibleSessions);
   const attentionView = sidebarView === "attention";
+
+  // docs/260-attention-sidebar-view req 17 — in the "Needs you" view the header's
+  // leftmost button leaves the view; only a second press collapses. Overloading a
+  // control on a mode normally causes this class of mistake instead of curing it,
+  // so what makes it safe here is the label: it follows the press, so the state is
+  // visible rather than hidden. Collapsing from this view is also worse than a
+  // no-op — the rail carries no attention count (see the collapsed branch below),
+  // so it hides what the view exists to show and leaves the view on but invisible.
+  const collapseLabel = attentionView ? "Show all sessions" : "Collapse sidebar";
+  const onCollapsePress = attentionView ? () => setSidebarView("all") : onToggleCollapse;
 
   const handleViewAll = useCallback((repoUrl: string) => {
     // Open AllSessionsDialog filtered to the repo whose menu was clicked — NOT
@@ -435,13 +446,13 @@ export function SessionSidebar({
           avoid duplicating them. */}
       <div className="flex items-center gap-2 px-3 h-10.25 border-b border-(--color-border-primary) shrink-0">
         {!mobile && (
-          <WithTooltip label="Collapse sidebar">
+          <WithTooltip label={collapseLabel}>
           <Button
             variant="ghost"
             size="sm"
-            onClick={onToggleCollapse}
+            onClick={onCollapsePress}
             className="p-0! w-7 h-7 text-(--color-text-tertiary)"
-            aria-label="Collapse sidebar"
+            aria-label={collapseLabel}
           >
             <SidebarSimpleIcon size={ICON_SIZE.SM} />
           </Button>

@@ -42,6 +42,10 @@ terms. Design lives in `plan.md` (not written yet); the visual reference is
     other shortcuts and can be changed the same way they can.
 15. The mobile session list has the same switch, on the left of its own top bar.
 16. The switch and its count are legible in every theme, light and dark.
+17. While the second view is showing, the sidebar's collapse control leaves that
+    view instead of collapsing the sidebar. A second press then collapses it. The
+    control says what it will do: in the second view its tooltip and its
+    accessible name read "Show all sessions".
 
 ## Open questions
 
@@ -49,6 +53,25 @@ _(none — see the receipts below)_
 
 ## Resolved questions
 
+- **2026-09-01 · The collapse button is pressed by mistake in the second view.**
+  Nik, from use: *"I often click on the collapse sidebar button, meaning to
+  switch the mode to the regular mode of showing all the sessions. I always do
+  that."* His proposal — the first press in the second view switches the view,
+  and only the next press collapses — is requirement 17. His reasoning: nobody
+  wants to collapse the sidebar from this view, because collapsing does not help
+  there. The code agrees for a sharper reason: the collapsed rail carries no
+  attention count at all (a deliberate choice recorded below), so collapsing from
+  the second view hides the exact information that view exists to show, and
+  leaves the view active but invisible.
+  Hiding the collapse button in that view was considered and rejected by Nik as
+  more confusing; it would also shift the header and make collapsing
+  unreachable. Swapping the two buttons was rejected too — it moves the same
+  mistake into the first view, where a corner press would switch view instead of
+  collapsing. The tooltip and accessible-name clause is the agent's addition, to
+  keep the state visible rather than hidden: without it a screen reader still
+  hears "Collapse sidebar" and gets a view change. The glyph stays
+  `SidebarSimpleIcon`, which marks the sidebar rather than the collapse
+  direction, so it remains true of both presses.
 - **2026-08-10 · Does the amber hold up on light themes?** Not as drawn. Nik:
   *"I would like to see how this new colored switcher icon would look in the
   light theme to make sure that the contrast is okay."* → requirement 16. The

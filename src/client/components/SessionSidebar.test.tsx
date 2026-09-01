@@ -1598,7 +1598,9 @@ describe("SessionSidebar needs-attention view", () => {
     expect(findSwitch().textContent).toContain("2");
 
     fireEvent.click(findSwitch());
-    expect(screen.getByRole("button", { name: /Show all sessions/ }).textContent).toContain("2");
+    // Selected by the count, not by "Show all sessions" — req 17 gives the
+    // collapse control that same name while this view is showing.
+    expect(findSwitch().textContent).toContain("2");
   });
 
   it("swaps the repo tree for a flat list with no repo headers", () => {
@@ -1631,5 +1633,40 @@ describe("SessionSidebar needs-attention view", () => {
     // action behind the same glyph. The rail shows no session state at all.
     render(<SessionSidebar {...defaultProps} sessions={waiting()} collapsed />);
     expect(screen.queryByRole("button", { name: /need you/ })).toBeNull();
+  });
+
+  // req 17 — the corner button is the one the hand reaches for when the goal is
+  // "put the sidebar back to normal", so in this view it does that instead of
+  // collapsing. Collapsing is still reachable, one press later.
+  describe("the collapse control", () => {
+    it("leaves the view on the first press and collapses on the next", () => {
+      const onToggleCollapse = vi.fn();
+      render(
+        <SessionSidebar {...defaultProps} sessions={waiting()} onToggleCollapse={onToggleCollapse} />,
+      );
+      fireEvent.click(findSwitch());
+      expect(useUiStore.getState().sidebarView).toBe("attention");
+
+      // First press: the view goes, the sidebar stays open.
+      fireEvent.click(screen.getByRole("button", { name: "Show all sessions" }));
+      expect(onToggleCollapse).not.toHaveBeenCalled();
+      expect(useUiStore.getState().sidebarView).toBe("all");
+
+      // Second press, now in the all-sessions view: it collapses, as labelled.
+      fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+      expect(onToggleCollapse).toHaveBeenCalledTimes(1);
+    });
+
+    it("names itself for the press it will make, so the state is not hidden", () => {
+      // Without this the button keeps saying "Collapse sidebar" and then changes
+      // the view — the mistake this fixes, moved into the screen reader.
+      render(<SessionSidebar {...defaultProps} sessions={waiting()} />);
+      expect(screen.getByRole("button", { name: "Collapse sidebar" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Show all sessions" })).toBeNull();
+
+      fireEvent.click(findSwitch());
+      expect(screen.getByRole("button", { name: "Show all sessions" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Collapse sidebar" })).toBeNull();
+    });
   });
 });
