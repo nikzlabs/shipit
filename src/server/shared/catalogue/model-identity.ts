@@ -107,11 +107,10 @@ export const MODEL_IDENTITIES = {
   sonnet5: identity("claude-sonnet-5", "claude"),
   haiku45: identity("claude-haiku-4.5", "claude"),
   fable5: identity("claude-fable-5", "claude"),
-  // Fable 5.1 (2026-09-01) succeeds Fable 5 everywhere ShipIt can reach it, and
-  // is a DISTINCT canonical model rather than a spelling of its predecessor —
-  // same reasoning as the GLM-5.2/5.3 pair above. Both stay declared because
-  // Vercel had not picked 5.1 up on the day this landed, so the catalogue still
-  // carries a live Fable 5 row there (see `services.ts`).
+  // Fable 5.1 (2026-09-01) is a DISTINCT canonical model rather than a spelling
+  // of Fable 5 — same reasoning as the GLM-5.2/5.3 pair below. Both stay
+  // declared: OpenCode Zen does not serve 5.1 yet, so the catalogue carries a
+  // live Fable 5 row there (see `services.ts`).
   fable51: identity("claude-fable-5.1", "claude"),
 
   // OpenAI's line. The `gpt-5.6-*` variants are distinct models of one family,

@@ -854,7 +854,15 @@ export const SERVICES = [
         // leaves ShipIt: `applyServiceRouting` copies the value into the
         // *harness's* variable at spawn, so nothing downstream reads this one.
         credentials: [{ via: "string", storageEnv: "VERCEL_AI_GATEWAY_API_KEY" }],
-        retired: [],
+        // Fable 5 left this mode when 5.1 replaced it (2026-09-01), under both
+        // styles it was declared with.
+        retired: [
+          {
+            id: "anthropic/claude-fable-5",
+            styles: [A_MSG, O_CC],
+            successors: { [A_MSG]: "anthropic/claude-fable-5.1", [O_CC]: "anthropic/claude-fable-5.1" },
+          },
+        ],
         // ✅ 2026-08-16 — measured the same way as the OpenRouter row above (one
         // live turn per (harness, model), serial, `pair-verification.md`), and
         // Vercel turns out to be OpenRouter's MIRROR IMAGE. That is the single
@@ -882,14 +890,13 @@ export const SERVICES = [
         models: [
           { id: "anthropic/claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
-          // The ONE service still on Fable 5, and not by choice: Vercel's live
-          // model list (`GET https://ai-gateway.vercel.sh/v1/models`, checked
-          // 2026-09-01) carries `anthropic/claude-fable-5` and no 5.1 entry, on
-          // the day 5.1 shipped. Authoring `anthropic/claude-fable-5.1` here on
-          // the strength of the other three services would name a row this
-          // gateway cannot serve. Revisit once Vercel lists it; the identity for
-          // it already exists (`MODEL_IDENTITIES.fable51`).
-          { id: "anthropic/claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
+          // 2026-09-01 — Fable 5.1, spelled with a dot as at OpenRouter. Vercel's
+          // live list (`GET https://ai-gateway.vercel.sh/v1/models`) carries it
+          // at 1M/128K with `input_cache_read: 0.00000025`, i.e. Anthropic's own
+          // 5.1 rate down to the changed cache field. Styles carried over from
+          // the 5.0 sweep below rather than re-measured — the same inference the
+          // OpenRouter row states, and the same caveat applies.
+          { id: "anthropic/claude-fable-5.1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },
           // Vercel documents a Responses-compatible surface, so these reach
           // Codex as well as any OpenAI-chat-completions consumer. They also
           // carry the namespaced-id caveat written out on the OpenRouter row
@@ -1028,7 +1035,7 @@ export const SERVICES = [
             carriers: ["opencode", "codex"],
           },
         ],
-        retired: [{ id: "claude-fable-5", styles: [A_MSG], successors: { [A_MSG]: "claude-fable-5-1" } }],
+        retired: [],
         // The maintained subset is the **frontier coding set that overlaps
         // ShipIt's existing families** (docs/272 requirements, 2026-08-17
         // receipt) — Zen advertises 63 current models and most of them are
@@ -1037,9 +1044,7 @@ export const SERVICES = [
         //
         // **Style is per model and the vendor publishes it**, in the endpoint
         // table on `opencode.ai/docs/zen` and as `provider.npm` in models.dev
-        // (the two agree on the style of every row below, checked 2026-08-17;
-        // on 2026-09-01 they stopped agreeing on which Fable Zen serves, which
-        // that row spells out):
+        // (the two agree for every row below, checked 2026-08-17):
         // `@ai-sdk/anthropic` → `/messages`, `@ai-sdk/openai` → `/responses`,
         // no entry → `/chat/completions`. It is NOT a free choice: ✅ live, the
         // gateway does not translate between styles — a chat-completions-upstream
@@ -1060,16 +1065,25 @@ export const SERVICES = [
           // Zen undercuts Anthropic's own rate here (2/10 against 3/15) — the
           // reason this service carries its own price constants at all.
           { id: "claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.sonnet5 },
-          // 2026-09-01 — Fable 5.1, and the one row below where the two sources
-          // named above DISAGREE. models.dev's `opencode` provider (id
-          // `opencode`, api `https://opencode.ai/zen/v1` — Zen itself) carries
-          // `claude-fable-5-1` with `release_date: 2026-09-01`; the endpoint
-          // table on `opencode.ai/docs/zen` still lists only `claude-fable-5`.
-          // Authored from models.dev because that is the list the OpenCode
-          // client itself reads to enumerate Zen, so it leads the hand-written
-          // docs table rather than contradicting it. If a Zen turn on this id
-          // 400s, the docs table was right and this row reverts to 5.0.
-          { id: "claude-fable-5-1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },
+          // ❌ 2026-09-01 — stays on Fable 5 while every other Anthropic row
+          // moved to 5.1, because Zen does not serve 5.1 yet, and BOTH catalogue
+          // sources say otherwise. models.dev's `opencode` provider (api
+          // `https://opencode.ai/zen/v1` — Zen itself) carries `claude-fable-5-1`
+          // with `release_date: 2026-09-01`; the docs table lists only Fable 5.
+          //
+          // The endpoint settles it, and neither list does. Probed with a
+          // deliberately invalid key, so the two ids differ only in how far the
+          // request gets:
+          //
+          //   claude-fable-5-1 → 'ModelError: Model claude-fable-5-1 is not supported'
+          //   claude-fable-5   → 'AuthError: Invalid API key.'
+          //
+          // 5.0 clears model validation and dies at auth; 5.1 never reaches auth.
+          // `GET /zen/v1/models` (the runtime list, not the docs page) agrees:
+          // Fable 5 only. **A model's presence in models.dev is a catalogue
+          // claim, not runtime availability** — that is the lesson this row
+          // records. Move it when the probe above returns the auth error.
+          { id: "claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
           // Zen spells Haiku `claude-haiku-4-5` where Anthropic's own row is
           // `haiku`; both reduce to one canonical model through
           // `MODEL_ID_ALIASES`.
