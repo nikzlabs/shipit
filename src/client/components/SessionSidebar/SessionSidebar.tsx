@@ -138,7 +138,12 @@ export function SessionSidebar({
   // visible rather than hidden. Collapsing from this view is also worse than a
   // no-op — the rail carries no attention count (see the collapsed branch below),
   // so it hides what the view exists to show and leaves the view on but invisible.
-  const collapseLabel = attentionView ? "Show all sessions" : "Collapse sidebar";
+  //
+  // The name is NOT the switch's own "Show all sessions": at a count of zero the
+  // switch reads exactly that, and two adjacent buttons sharing one name is
+  // ambiguous to a voice command ("click Show all sessions") and noise in
+  // screen-reader navigation. Distinct wording, same destination.
+  const collapseLabel = attentionView ? "Back to all sessions" : "Collapse sidebar";
   const onCollapsePress = attentionView ? () => setSidebarView("all") : onToggleCollapse;
 
   const handleViewAll = useCallback((repoUrl: string) => {

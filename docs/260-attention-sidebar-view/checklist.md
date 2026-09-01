@@ -19,5 +19,6 @@
 - [x] `requirements.md` — requirement 17 plus a dated receipt for the decision.
 - [x] `plan.md` — why one control carries two meanings here, and the two rejected alternatives.
 - [x] `SessionSidebar` — the header button's press and label follow the view.
-- [x] Tests — first press leaves the view, next press collapses, label follows; both proven red without the fix.
+- [x] Tests — first press leaves the view, next press collapses, label and tooltip follow, no name collision at inbox zero, and the expand-into-the-remembered-view path; all four proven red without the fix.
 - [x] Browser check in both views.
+- [x] Independent review (Codex) — no severe finding; its name-collision and test-gap findings are folded in above.

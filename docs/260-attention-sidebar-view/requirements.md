@@ -45,7 +45,8 @@ terms. Design lives in `plan.md` (not written yet); the visual reference is
 17. While the second view is showing, the sidebar's collapse control leaves that
     view instead of collapsing the sidebar. A second press then collapses it. The
     control says what it will do: in the second view its tooltip and its
-    accessible name read "Show all sessions".
+    accessible name name the view it goes to, in wording of its own that no other
+    control on the row shares.
 
 ## Open questions
 
@@ -72,6 +73,15 @@ _(none — see the receipts below)_
   hears "Collapse sidebar" and gets a view change. The glyph stays
   `SidebarSimpleIcon`, which marks the sidebar rather than the collapse
   direction, so it remains true of both presses.
+- **2026-09-01 · Must the two controls share a name?** No. The first draft of
+  requirement 17 gave the collapse control the switch's own words, "Show all
+  sessions", on the grounds that identical actions should read identically. The
+  review rejected that: at a count of zero the switch reads exactly those words
+  too, so two adjacent buttons carried one name — ambiguous to a voice command
+  ("click Show all sessions") and noise in screen-reader navigation. The clause
+  now asks only for distinct wording that names the destination; the build says
+  **"Back to all sessions"**. This was the agent's clause to begin with, not
+  Nik's, so it is corrected here rather than re-asked.
 - **2026-08-10 · Does the amber hold up on light themes?** Not as drawn. Nik:
   *"I would like to see how this new colored switcher icon would look in the
   light theme to make sure that the contrast is okay."* → requirement 16. The

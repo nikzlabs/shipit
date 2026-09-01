@@ -53,8 +53,13 @@ markers on screen.
 
 While the "Needs you" view is showing, the header's leftmost button **leaves the
 view**; only the press after that collapses. Its tooltip and `aria-label` change
-with it, to "Show all sessions" — the same words the switch beside it uses,
-because the two do the same thing there.
+with it, to **"Back to all sessions"**.
+
+Deliberately *not* the switch's own "Show all sessions", tempting as the symmetry
+is: with the count at zero the switch reads exactly those words, so the two
+adjacent buttons would carry one name — ambiguous to a voice command ("click Show
+all sessions") and noise in screen-reader navigation. Distinct wording, same
+destination.
 
 This is a deliberate exception to "one control, one meaning". Overloading a
 control on a mode normally *causes* mode errors rather than curing one, and three
