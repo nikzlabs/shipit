@@ -169,8 +169,32 @@ export interface TurnInput {
   persistGuard?: { done: boolean };
   /** Fallback chat title when AI naming hasn't produced one yet. */
   fallbackTitle: string;
-  /** HEAD at turn start, for the "branch tip moved, no working-tree change" auto-push. */
+  /**
+   * HEAD at turn start, for the "branch tip moved, no working-tree change"
+   * auto-push.
+   *
+   * Describes the turn this executor was INVOKED for, and only that turn. A
+   * turn the CLI starts on its own runs through the same closure (see
+   * `rearmForCliStartedTurn`) with a HEAD that may be hours newer, so the
+   * executor keeps a mutable copy and re-samples it per adoption; the field
+   * itself stays the initial value. Never read it past turn one — read the
+   * executor-local `turnStartHeadHash`.
+   */
   turnStartHeadHash: string | null;
+  /**
+   * Sample HEAD for a turn the CLI started on its own, so an adopted turn gets
+   * a turn-start head of its OWN rather than inheriting the invoking turn's.
+   * Called once per adoption, at the edge that announces it —
+   * `rearmForCliStartedTurn` explains why the timing is the whole point.
+   *
+   * Optional, and omitting it is not silent breakage: a caller that does
+   * (dispatch, docs/240 restart adoption) already passes
+   * `turnStartHeadHash: null`, and the re-arm lands on null too, which is the
+   * documented fallback — docs/240 chose it deliberately, and a STALE non-null
+   * head is strictly worse than none. Wiring it is what buys an adopted turn
+   * the clean-tree moved-HEAD scan and push; without it that turn has neither.
+   */
+  readTurnStartHeadHash?: () => Promise<string | null>;
   /** Start the next queued message (each transport supplies its own re-entry). */
   drainNext: () => Promise<void>;
   /** Broadcast to viewers (runner.emitMessage) with a per-connection fallback for a null runner. */
@@ -1229,6 +1253,24 @@ export async function executeAgentTurn(
     armPendingPush();
   });
 
+  /**
+   * HEAD as of the start of the turn currently being served — which is NOT
+   * always the turn this executor was invoked for.
+   *
+   * `input.turnStartHeadHash` is read once, before the agent spawns, and frozen
+   * on the input. A turn the CLI starts on its own (a self-wake after a
+   * backgrounded consult returns, or a live steer acked too late) is adopted by
+   * this same closure hours later, and the frozen value then names the head of
+   * some earlier turn. `postTurnCommit`'s clean-tree branch reads that as "the
+   * agent moved HEAD itself this turn" and, on every such turn, re-scans the
+   * whole already-pushed `turnStartHead..HEAD` range for secrets and re-pushes a
+   * head the remote already holds — announcing the same commit again in chat
+   * once per adopted turn, and standing ready to false-block the push on a
+   * finding anywhere in that history. So the value lives here, mutable, and
+   * `rearmForCliStartedTurn` gives each adopted turn its own.
+   */
+  let turnStartHeadHash: string | null = input.turnStartHeadHash;
+
   let tokenSyncFired = false;
   const trySyncToken = (): void => {
     if (tokenSyncFired) return;
@@ -1358,7 +1400,7 @@ export async function executeAgentTurn(
           sessionDir: runner.sessionDir,
           sessionId,
           summary,
-          turnStartHeadHash: input.turnStartHeadHash,
+          turnStartHeadHash,
           runner,
           emit,
           deferPushArm: (arm) => { pendingPushArm = arm; },
@@ -1635,6 +1677,42 @@ export async function executeAgentTurn(
    * dispatch handle is waiting on, so it must not settle it a second time.
    */
   const rearmForCliStartedTurn = async (reason: string): Promise<void> => {
+    /**
+     * HEAD as of the moment we LEARNED of the adoption — read before the await
+     * below, not after it.
+     *
+     * There is no instant at which the orchestrator can read HEAD and be sure
+     * the adopted turn has not already moved it: the CLI opened that turn
+     * before it told us, so the agent is running the whole time. The best
+     * available sample is therefore the earliest one, and this is it.
+     *
+     * Reading it AFTER the predecessor's post-turn sequence instead — a commit
+     * plus a PR round-trip, seconds during which the CLI is not paused — is
+     * what makes that gap wide enough to matter: an adopted turn that runs its
+     * own `git commit` in that window would have had its commit sampled AS the
+     * baseline, so `postTurnCommit` would see `currentHead === turnStartHead`
+     * and neither scan nor push it. The commit would sit local and unscanned
+     * until some later turn swept it up.
+     *
+     * The predecessor's own commit hash was considered as a baseline instead —
+     * a value rather than a sample, so nothing concurrent can overtake it. It
+     * is rejected because it is narrower than the truth in exactly the shape
+     * this scan exists for: a wake landing BEFORE the predecessor's auto-commit
+     * means an adopted-turn commit is an ancestor of it, and a baseline at the
+     * predecessor's commit skips that content entirely. The earliest reading is
+     * never narrower than the adopted turn's true start, which is the property
+     * "do not weaken the secret scan" asks for. The cost is the narrow case it
+     * is over-wide in: a wake in that same pre-commit window re-scans the
+     * predecessor's one commit and re-arms one redundant push of it. One
+     * commit, in a window docs/140 already documents as a known residual — not
+     * the unbounded, every-turn range this replaces.
+     *
+     * Held in an object because it is assigned inside a callback.
+     */
+    const headAtAdoption: { value: string | null } = { value: null };
+    await postTurnStep("read-head-at-adoption", async () => {
+      headAtAdoption.value = (await input.readTurnStartHeadHash?.()) ?? null;
+    });
     await postTurnStep("await-post-turn", () => streamingPostTurn ?? Promise.resolve());
     // A second edge can arrive while we await (a wake and the wake turn's first
     // assistant event are separate frames): the first one through re-arms and
@@ -1646,6 +1724,19 @@ export async function executeAgentTurn(
     drainFired = false;
     streamingPostTurnFired = false;
     streamingPostTurn = null;
+    // Give the adopted turn the turn-start head sampled above.
+    //
+    // It can be null — no reader wired (dispatch, docs/240 restart adoption) or
+    // a `getHeadHash` that threw — and null is the right landing point for
+    // both: it is the docs/240 value, which skips the clean-tree heuristic
+    // entirely and leaves the adopted turn to the ordinary working-tree
+    // auto-commit. Note what that costs, rather than calling it simply correct:
+    // a commit the AGENT makes during such a turn is then neither scanned nor
+    // pushed, and stays local until a later turn moves it. Strictly better than
+    // the stale head this replaces — which pushed and re-scanned on EVERY
+    // adopted turn — but not free, and a reader that threw says so only in the
+    // server log.
+    turnStartHeadHash = headAtAdoption.value;
     commitPromise = null;
     commitAndPrPromise = null;
     resultTurnSummary = null;
@@ -1679,7 +1770,23 @@ export async function executeAgentTurn(
     // work — `done` follows `agent_result` synchronously on those paths, so an
     // unconditional await reorders the two — and the reset keeps a settled
     // re-arm from doing the same to the adopted turn's own result.
-    if (!useStreaming || !streamingPostTurnFired) return Promise.resolve();
+    if (!useStreaming) return Promise.resolve();
+    // A re-arm already running OWNS this adoption — join it, never race it.
+    //
+    // Two edges routinely describe one adopted turn: `agent_self_wake` and that
+    // turn's first `agent_assistant` are separate frames. Both used to build a
+    // re-arm of their own, because the first one's flag clearing happens after
+    // an await, so the second passed the same `streamingPostTurnFired` check.
+    // The loser then stood down harmlessly — but its `.finally` had already
+    // overwritten `rearmInFlight`, so on settling it set the handle to null
+    // while the WINNER was still working. Every terminal path here waits by
+    // reading that handle (`agent_result`, the adapter `error`, the crash
+    // `done`, the failed auth heal), so a null one means "no re-arm is running"
+    // — and each of them would then have run against a half-handed-over set of
+    // guards. Returning the in-flight promise makes the handle name the one
+    // re-arm there actually is.
+    if (rearmInFlight) return rearmInFlight;
+    if (!streamingPostTurnFired) return Promise.resolve();
     const pending = rearmForCliStartedTurn(reason).finally(() => {
       if (rearmInFlight === pending) rearmInFlight = null;
     });

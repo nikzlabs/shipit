@@ -29,6 +29,7 @@ import { execFileSync } from "node:child_process";
 import { SessionRunner } from "./session-runner.js";
 import type { SystemTurnDeps } from "./session-runner.js";
 import { executeAgentTurn } from "./turn-executor.js";
+import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import type { AgentId } from "../shared/types.js";
 import { GitManager } from "../shared/git.js";
 
@@ -196,6 +197,55 @@ describe("post-turn flow for a self-woken turn", () => {
     vi.restoreAllMocks();
     fs.rmSync(repoDir, { recursive: true, force: true });
   });
+
+  /**
+   * A `commitTurn` wired to the REAL `postTurnCommit` over the temp repo, so a
+   * test can observe the two things the turn-start-head heuristic actually does
+   * — the secret scan's `diffRange`, and the auto-push arm — instead of
+   * asserting them by proxy.
+   *
+   * Only the two collaborators `postTurnCommit` reaches for outside git are
+   * faked, and neither can decide the heuristic: `sessionManager` makes the
+   * merged-branch guard allow a push, and `chatHistoryManager` takes the
+   * commit→message link. Everything the assertions turn on — HEAD, ancestry,
+   * the diff — comes from real git.
+   */
+  function makeRealCommitTurn() {
+    const gitManager = new GitManager(repoDir);
+    const diffRange = vi.spyOn(gitManager, "diffRange");
+    const scheduleAutoPush = vi.fn();
+    const ctx = {
+      createGitManager: () => gitManager,
+      chatHistoryManager: {
+        updateLastMessage: vi.fn().mockReturnValue(null),
+        indexOfMessageId: vi.fn().mockReturnValue(-1),
+        append: vi.fn(),
+      },
+      sessionManager: {
+        get: vi.fn().mockReturnValue({ id: "s1" }),
+        getPrStatus: vi.fn().mockReturnValue(undefined),
+        getSecretBlock: vi.fn().mockReturnValue(undefined),
+        setSecretBlock: vi.fn(),
+      },
+      scheduleAutoPush,
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+
+    /** Every `turnStartHeadHash` the executor hands the commit, in turn order. */
+    const headsSeen: (string | null | undefined)[] = [];
+    const commitTurn: SystemTurnDeps["commitTurn"] = async (args) => {
+      headsSeen.push(args.turnStartHeadHash);
+      return postTurnCommit(ctx, {
+        sessionDir: args.sessionDir,
+        sessionId: args.sessionId,
+        emit: args.emit,
+        turnSummary: args.summary,
+        turnStartHeadHash: args.turnStartHeadHash,
+        runner: args.runner,
+        ...(args.deferPushArm ? { deferPushArm: args.deferPushArm } : {}),
+      });
+    };
+    return { commitTurn, gitManager, diffRange, scheduleAutoPush, headsSeen };
+  }
 
   /**
    * Set up the production shape: one streaming WS turn that ends normally on
@@ -1199,6 +1249,349 @@ describe("post-turn flow for a self-woken turn", () => {
 
     expect(drainNext).toHaveBeenCalledTimes(1);
     expect(autoCommit).toHaveBeenCalledTimes(1);
+
+    runner.dispose({ force: true });
+  });
+
+  /**
+   * The re-arm's ninth hand-over, and the one it was missing: the adopted turn's
+   * TURN-START HEAD.
+   *
+   * `turnStartHeadHash` is read once, before the agent spawns, and frozen on the
+   * executor's `TurnInput` — so an adopted turn inherited the head of whatever
+   * turn the orchestrator last started, which on a session that self-wakes for
+   * an hour is arbitrarily old. `postTurnCommit`'s clean-tree branch reads
+   * `currentHead !== turnStartHead` as "the agent moved HEAD itself this turn",
+   * and a self-wake turn that reads a review and answers stages nothing — so
+   * that branch was entered on every one of them:
+   *
+   *  - it re-scanned the whole already-pushed `turnStartHead..HEAD` range for
+   *    secrets, a range that grows with every turn, so a finding anywhere in
+   *    shipped history would have false-blocked the push; and
+   *  - it pushed a head the remote already holds, which moves nothing but still
+   *    emits the `Auto-pushed to origin/<branch>` card — the reported symptom,
+   *    the same commit announced again once per self-wake, with no error on any
+   *    surface because every step believed it had succeeded.
+   *
+   * This drives the REAL `postTurnCommit` so both halves are observable: the
+   * `diffRange` the scan would run, and the push arm.
+   */
+  it("gives an adopted turn its own turn-start head, so a no-op wake neither re-scans nor re-pushes", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: repoDir,
+      defaultAgentId: "claude" as AgentId,
+    });
+    const agent = makeFakeAgent(() => fs.writeFileSync(filePath, "turn-1 work\n"));
+
+    const { commitTurn, gitManager, diffRange, scheduleAutoPush, headsSeen } = makeRealCommitTurn();
+
+    let settledTurns = 0;
+    runner.on("idle", () => { settledTurns += 1; });
+
+    const deps: SystemTurnDeps = {
+      agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
+      autoCommit: realAutoCommit,
+      commitTurn,
+      scheduleAutoPush: vi.fn(),
+      postTurnPrFlow: vi.fn(async () => {}),
+      listenerDeps: makeListenerDeps(),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+
+    // The head the ORCHESTRATOR-started turn was spawned against — read before
+    // the agent runs, exactly as `agent-execution.ts` does.
+    const headBeforeTurn1 = gitOut("rev-parse", "HEAD").trim();
+
+    await executeAgentTurn(runner, deps, agent as never, {
+      agentId: "claude" as AgentId,
+      sessionId: "s1",
+      prompt: "p",
+      userText: "kick off a background job",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: headBeforeTurn1,
+      readTurnStartHeadHash: () => gitManager.getHeadHash(),
+      drainNext: vi.fn(async () => {}),
+      emit: () => {},
+      useStreaming: true,
+      emitErrorOnNoResult: true,
+    });
+    await waitFor(() => agent.run.mock.calls.length === 1, "turn 1 started");
+
+    // Turn 1 ends: its edit is committed, and that commit is pushed — once.
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Backgrounding the consult" }],
+    });
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => settledTurns === 1, "turn 1 post-turn flow settled");
+    const headAfterTurn1 = gitOut("rev-parse", "HEAD").trim();
+    expect(headAfterTurn1).not.toBe(headBeforeTurn1);
+    expect(scheduleAutoPush).toHaveBeenCalledTimes(1);
+    diffRange.mockClear();
+
+    // The consult returns and the CLI wakes itself. This turn reads the review
+    // and answers — no file changes at all, which is the ordinary shape.
+    await selfWake(agent);
+    expect(runner.running).toBe(true);
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "The reviewer found nothing blocking" }],
+    });
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => headsSeen.length === 2, "wake turn reached the commit");
+    await waitFor(() => settledTurns === 2, "wake turn post-turn flow settled");
+
+    // The symptom first. Nothing was committed and HEAD did not move, so the
+    // clean-tree branch has nothing to do: already-pushed history is not
+    // re-scanned for secrets…
+    expect(diffRange).not.toHaveBeenCalled();
+    // …and the commit the remote already holds is not pushed — and therefore
+    // not announced — a second time.
+    expect(scheduleAutoPush).toHaveBeenCalledTimes(1);
+    expect(commitSubjects()).toHaveLength(2);
+    // Then the cause: the adopted turn was handed the head it actually started
+    // from, not the head of the turn that opened this closure.
+    expect(headsSeen).toEqual([headBeforeTurn1, headAfterTurn1]);
+
+    runner.dispose({ force: true });
+  });
+
+  /**
+   * …and the baseline must not be sampled so late that the adopted turn has
+   * already moved it.
+   *
+   * There is no instant at which the orchestrator can read HEAD and be sure the
+   * adopted turn has not committed: the CLI opened that turn before it told us.
+   * Reading HEAD *after* the predecessor's whole post-turn sequence — a commit
+   * plus a PR round-trip, seconds during which the CLI keeps running — makes
+   * that gap wide enough to lose work: the adopted turn's own `git commit` gets
+   * sampled AS the baseline, so `postTurnCommit` sees `currentHead ===
+   * turnStartHead` and neither scans nor pushes it, and the commit sits local
+   * until some later turn happens to move it.
+   *
+   * So the baseline is sampled at the adoption EDGE — the earliest reading
+   * available, taken before the re-arm waits the predecessor out.
+   *
+   * Reported by the docs/261 reviewer (codex) against the first version of this
+   * fix, which read HEAD at the end of the re-arm.
+   */
+  it("samples an adopted turn's baseline at the adoption edge, so a commit the adopted turn makes itself is still scanned and pushed", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: repoDir,
+      defaultAgentId: "claude" as AgentId,
+    });
+    const agent = makeFakeAgent(() => fs.writeFileSync(filePath, "turn-1 work\n"));
+    const { commitTurn, gitManager, diffRange, scheduleAutoPush, headsSeen } = makeRealCommitTurn();
+    /** Every baseline the executor sampled, as it resolved. */
+    const headsRead: (string | null)[] = [];
+
+    // Park turn 1's post-turn sequence AFTER its commit — `postTurnPrFlow` runs
+    // inside `runCommitAndPr`, downstream of `commitOnce`. That is the real
+    // window: the predecessor has committed, its PR round-trip is still going,
+    // and the CLI is not waiting for any of it.
+    let releasePrFlow: () => void = () => {};
+    let signalPrFlowEntered: () => void = () => {};
+    const parked = new Promise<void>((r) => { releasePrFlow = r; });
+    const prFlowEntered = new Promise<void>((r) => { signalPrFlowEntered = r; });
+    // The runner's "idle" event is no use as turn 1's settle signal here: the
+    // wake flips `running` back to true before the sequence reaches it, so it
+    // is correctly suppressed (same reason as the mid-post-turn-flow case
+    // above). Latch the parked step's own completion instead.
+    let prFlowDone = false;
+    const postTurnPrFlow = vi.fn(async () => {
+      signalPrFlowEntered();
+      await parked;
+      prFlowDone = true;
+    });
+
+    const deps: SystemTurnDeps = {
+      agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
+      autoCommit: realAutoCommit,
+      commitTurn,
+      scheduleAutoPush: vi.fn(),
+      postTurnPrFlow,
+      listenerDeps: makeListenerDeps(),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+
+    const headBeforeTurn1 = gitOut("rev-parse", "HEAD").trim();
+    await executeAgentTurn(runner, deps, agent as never, {
+      agentId: "claude" as AgentId,
+      sessionId: "s1",
+      prompt: "p",
+      userText: "kick off a background job",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: headBeforeTurn1,
+      readTurnStartHeadHash: async () => {
+        const head = await gitManager.getHeadHash();
+        headsRead.push(head);
+        return head;
+      },
+      drainNext: vi.fn(async () => {}),
+      emit: () => {},
+      useStreaming: true,
+      emitErrorOnNoResult: true,
+    });
+    await waitFor(() => agent.run.mock.calls.length === 1, "turn 1 started");
+
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Backgrounding the consult" }],
+    });
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await prFlowEntered;
+    const predecessorCommit = gitOut("rev-parse", "HEAD").trim();
+    expect(predecessorCommit).not.toBe(headBeforeTurn1);
+
+    // The wake lands while that PR round-trip is still parked…
+    agent.emit("event", { type: "agent_self_wake", taskId: "bg-1" });
+    await flush();
+    expect(runner.running).toBe(true);
+    // `getHeadHash` is a real subprocess, so wait for the sample to actually
+    // land rather than assuming two flushes covered it — otherwise the commit
+    // below races the read and the test asserts nothing on a slow box.
+    await waitFor(() => headsRead.length === 1, "baseline sampled at the adoption edge");
+
+    // …and the adopted turn does what a real agent does after a consult comes
+    // back with a fix worth keeping: it commits, itself, right away — before
+    // the predecessor's flow has finished and released the re-arm.
+    fs.writeFileSync(path.join(repoDir, "fix.txt"), "the consult's fix\n");
+    git("add", "-A");
+    git("commit", "-qm", "Agent's own commit during the adopted turn");
+    const adoptedCommit = gitOut("rev-parse", "HEAD").trim();
+
+    releasePrFlow();
+    await waitFor(() => prFlowDone, "turn 1 post-turn flow settled");
+
+    // The adopted turn ends having staged nothing further, so `autoCommit`
+    // returns no hash and the clean-tree branch is the only thing that can
+    // notice its commit.
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Applied and committed the consult's fix" }],
+    });
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => headsSeen.length === 2, "adopted turn reached the commit");
+    await waitFor(() => scheduleAutoPush.mock.calls.length === 2, "adopted turn's commit pushed");
+
+    // The baseline is HEAD as of the adoption edge — NOT the adopted turn's own
+    // commit, which a read taken after the release would have sampled.
+    expect(headsRead).toEqual([predecessorCommit]);
+    expect(headsSeen[1]).toBe(predecessorCommit);
+    expect(headsSeen[1]).not.toBe(adoptedCommit);
+    // So the agent's commit is seen as newly added on top: scanned over exactly
+    // its own range, and pushed.
+    expect(diffRange).toHaveBeenCalledWith(predecessorCommit, adoptedCommit);
+    expect(scheduleAutoPush).toHaveBeenCalledTimes(2);
+
+    runner.dispose({ force: true });
+  });
+
+  /**
+   * One adopted turn gets ONE re-arm, however many edges announce it.
+   *
+   * `agent_self_wake` and the adopted turn's first `agent_assistant` are
+   * separate frames, and both reach `beginRearm`. Each used to build a re-arm of
+   * its own — the winner's flag clearing happens after an await, so the loser
+   * passed the same `streamingPostTurnFired` check — and the loser's `.finally`
+   * had already overwritten `rearmInFlight`, so on settling it nulled the handle
+   * while the winner was still working. Every terminal path waits by reading
+   * that handle, so a null one reads as "no re-arm is running".
+   *
+   * Counting the reader's calls is the observable form: one adoption, one
+   * baseline read, whichever edge arrives first.
+   *
+   * Reported by the docs/261 reviewer (codex).
+   */
+  it("builds one re-arm for one adopted turn, however many edges announce it", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: repoDir,
+      defaultAgentId: "claude" as AgentId,
+    });
+    const agent = makeFakeAgent(() => fs.writeFileSync(filePath, "turn-1 work\n"));
+    const { commitTurn, gitManager, headsSeen } = makeRealCommitTurn();
+
+    let releasePrFlow: () => void = () => {};
+    let signalPrFlowEntered: () => void = () => {};
+    const parked = new Promise<void>((r) => { releasePrFlow = r; });
+    const prFlowEntered = new Promise<void>((r) => { signalPrFlowEntered = r; });
+    let prFlowDone = false;
+    const postTurnPrFlow = vi.fn(async () => {
+      signalPrFlowEntered();
+      await parked;
+      prFlowDone = true;
+    });
+    const readTurnStartHeadHash = vi.fn(() => gitManager.getHeadHash());
+
+    const deps: SystemTurnDeps = {
+      agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
+      autoCommit: realAutoCommit,
+      commitTurn,
+      scheduleAutoPush: vi.fn(),
+      postTurnPrFlow,
+      listenerDeps: makeListenerDeps(),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+
+    const headBeforeTurn1 = gitOut("rev-parse", "HEAD").trim();
+    await executeAgentTurn(runner, deps, agent as never, {
+      agentId: "claude" as AgentId,
+      sessionId: "s1",
+      prompt: "p",
+      userText: "kick off a background job",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: headBeforeTurn1,
+      readTurnStartHeadHash,
+      drainNext: vi.fn(async () => {}),
+      emit: () => {},
+      useStreaming: true,
+      emitErrorOnNoResult: true,
+    });
+    await waitFor(() => agent.run.mock.calls.length === 1, "turn 1 started");
+
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await prFlowEntered;
+    const predecessorCommit = gitOut("rev-parse", "HEAD").trim();
+
+    // Both edges land while the predecessor's flow is parked, so neither can
+    // see the other's flag clearing — the shape that used to produce two.
+    agent.emit("event", { type: "agent_self_wake", taskId: "bg-1" });
+    await flush();
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Reading the consult" }],
+    });
+    await flush();
+
+    releasePrFlow();
+    await waitFor(() => prFlowDone, "turn 1 post-turn flow settled");
+
+    // The adopted turn ends. Reaching the commit at all means the one re-arm
+    // completed and handed the guards over — so both assertions below are made
+    // against a fully settled adoption, not a half-done one.
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => headsSeen.length === 2, "adopted turn reached the commit");
+
+    // Two edges, one re-arm, one baseline read.
+    expect(readTurnStartHeadHash).toHaveBeenCalledTimes(1);
+    // …and it handed over intact: the adopted turn commits under its own
+    // baseline, not the invoking turn's.
+    expect(headsSeen[1]).toBe(predecessorCommit);
 
     runner.dispose({ force: true });
   });

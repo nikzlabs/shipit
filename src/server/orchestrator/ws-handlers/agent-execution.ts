@@ -798,6 +798,15 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       isNewSession,
       fallbackTitle: userText.slice(0, 80) || "New session",
       turnStartHeadHash,
+      // The value above is frozen at spawn, and this closure outlives the turn
+      // it was built for: a turn the CLI starts on its own is adopted by it
+      // hours later (`rearmForCliStartedTurn`). Hand the executor a way to read
+      // HEAD again so that turn gets a turn-start head of its own instead of
+      // inheriting this one. Same captured `sessionDir` as the read above — a
+      // mid-turn session switch must not redirect it.
+      ...(capturedSessionDir
+        ? { readTurnStartHeadHash: () => ctx.createGitManager(capturedSessionDir).getHeadHash() }
+        : {}),
       drainNext,
       emit,
       useStreaming,
