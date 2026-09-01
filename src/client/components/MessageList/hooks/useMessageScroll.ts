@@ -273,12 +273,58 @@ export function useMessageScroll(
     };
   }, [messages, isLoading]);
 
-  // Scroll to the current search match when it changes
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  // Scroll to the current search match when it changes, then keep re-centring it
+  // until the transcript's height settles.
+  //
+  // planning#491 — the re-centring is not belt-and-braces. `content-visibility:
+  // auto` sits on GROUPS of 20 rows, and a group that has never been on screen
+  // has only an ESTIMATED height (`contain-intrinsic-size`). Jumping to a match
+  // inside such a group renders it for real, and the real height replaces the
+  // estimate in the same frame — moving the match out from under the scroll that
+  // just landed on it, by however wrong the estimate was for those 20 rows. One
+  // `scrollIntoView` therefore lands next to the match rather than on it.
+  //
+  // Bottom-pinning never had this problem because its ResizeObserver corrects
+  // continuously; this path had no correction at all. The loop is the same shape
+  // as `scheduleScrollToBottom`: re-centre whenever the height changed, stop
+  // once it has held for a few frames, and stand down the moment the user takes
+  // hold of the scroll.
+  // eslint-disable-next-line no-restricted-syntax -- scroll settle loop with cleanup
   useEffect(() => {
-    if (currentMatch && currentMatchRef.current) {
-      currentMatchRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
+    if (!currentMatch || !currentMatchRef.current) return;
+    currentMatchRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+
+    let cancelled = false;
+    let lastHeight = -1;
+    let stableFrames = 0;
+    const start = now();
+
+    const tick = () => {
+      if (cancelled) return;
+      const container = containerRef.current;
+      // Re-read the ref each frame: a re-render can replace the highlighted
+      // element, and centring a detached node does nothing.
+      const target = currentMatchRef.current;
+      if (!container || !target || userIsDriving(touchDraggingRef, lastGestureAtRef)) return;
+
+      const height = container.scrollHeight;
+      if (height === lastHeight) {
+        stableFrames += 1;
+      } else {
+        stableFrames = 0;
+        lastHeight = height;
+        // Instant, not smooth: a second smooth scroll would restart the easing
+        // and the match would drift for as long as the groups keep resolving.
+        target.scrollIntoView({ block: "center" });
+      }
+
+      if (stableFrames < STABLE_FRAMES && now() - start < MAX_SCROLL_SETTLE_MS) {
+        window.requestAnimationFrame(tick);
+      }
+    };
+
+    window.requestAnimationFrame(tick);
+    return () => { cancelled = true; };
   }, [currentMatch]);
 
   return { containerRef, contentRef, currentMatchRef };

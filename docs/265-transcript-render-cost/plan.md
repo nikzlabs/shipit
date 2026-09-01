@@ -434,9 +434,80 @@ shorthand, every `--animate-*` theme value, and the longhand spelling.
 Not changed: `content-visibility: auto`. Its benefit is now measured rather than assumed — it
 **halves first contentful paint** on a 2,000-row transcript (123 ms against 227 ms) — so the
 trade the old decision rule was about no longer has to be made. The same measurement found it
-makes a full-transcript scroll 3.5x *more* expensive, tracked as planning#491: applying it to
-*groups* of rows rather than to each row keeps the load benefit and makes scrolling 7–11x
-cheaper than today, so the answer there is a granularity change rather than a removal.
+makes a full-transcript scroll *more* expensive, which section 2d picks up.
+
+### 2d. `content-visibility: auto` sits on groups of rows, not on every row (req 13)
+
+Chrome keeps an internal `IntersectionObserver` for every `content-visibility: auto` element, so
+the per-frame cost of that containment scales with **how many elements carry it** — and the
+transcript put one on every row. Section 2c removed 5/6 of the frames; this removes most of what
+each remaining frame costs on a long transcript. They compose.
+
+Rows go into fixed groups of 20 (`ROWS_PER_GROUP`), and the group carries the containment. On the
+real `MessageList` over 803 messages (`scripts/fixtures/transcript-highlight-probe.*` at
+`?turns=400`), two runs per cell:
+
+| | before | after |
+|---|---|---|
+| one indicator animating | 56.2 ms/s, `computeIntersections` 358.6 ms | **10.0 / 10.2 ms/s, 14.0 / 14.9 ms** |
+| 6 s full-transcript scroll | 482 / 501 ms, io 98 / 101 ms | **339 / 346 ms, io 3.7 / 3.7 ms** |
+| first paint, load-phase busy | — | no systematic difference |
+
+**The animating row is the large one, and it is not what planning#491 was filed for.** The issue
+was about scrolling, and on the real component that gains ~30% rather than the 7–11x a *synthetic*
+fixture predicted: the fixture's rows were trivial, so intersections dominated its scroll cost,
+while a real scroll is dominated by rendering rich rows. The intersection component itself does
+fall ~25x as predicted. What that same 25x is worth on a page where something is animating is
+~46 ms/s, because every scheduled frame runs the intersection pass over every element carrying
+containment. Section 2c cut the frames ~6x; this cuts what each remaining one costs ~5x.
+
+**The whole difficulty is that grouping gives rows a DOM parent they did not have.** A row whose
+group changes changes its parent, which React can only do by unmounting and remounting it — the
+expensive event the rest of this folder is about. Three decisions follow, and each was reproduced
+as a failing test before being fixed:
+
+- **Boundaries count from the FRONT.** An append then only grows the last group and a rewind only
+  drops trailing ones, so no row already placed moves. From the end, every boundary would shift on
+  every append.
+- **They count ANCHOR rows only** — every row except the ones that can move. The task panel is the
+  one such row: `buildVisualElements` emits it wherever the todo list last changed, so it
+  relocates whenever the agent rewrites its todos, which on a long transcript is a jump from last
+  turn's anchor to this one's. Counting it would push every row it passed one place along and move
+  one row out of each group it crossed. It rides in whichever group it falls in instead, and so
+  does the compacting indicator, which would otherwise do the same thing twice per compaction.
+- **A group is keyed by its ORDINAL, not by its first row.** Found in review, with a reproduction:
+  most row keys are positional (`m-${index}`), so a mid-transcript removal renumbers every row
+  after it, while a subagent row keyed by its tool id does not — so a group whose first row was
+  the subagent changes key, React replaces the group element, and all 20 children remount. The
+  measured cost of one removed message was **21 remounts**; with an ordinal it is **0**. Ordinals
+  would be wrong only if a whole LEADING group could vanish, which needs the history replaced —
+  and that remounts the transcript regardless.
+
+`contain-intrinsic-size` is `auto <rows × 5rem + gaps>` per group. The gaps are the correction:
+with the containment on each row, a skipped row still contributed its own margin to the layout;
+with it on the group, the margins are inside the skipped subtree, so a 20-row group that reserved
+only `100rem` would be 19 gaps short. It assumes the `sm` gap, so below `sm` a cold group reserves
+0.25rem/row short.
+
+**An estimate that wrong would have broken the search jump (req 7), so that path gained a settle
+loop.** Jumping to a match inside a group that has never been on screen renders the group for real,
+and the real height replaces the estimate in the same frame — moving the match out from under the
+scroll that just landed on it, by however wrong 20 rows' worth of estimate was. `useMessageScroll`
+called `scrollIntoView` exactly once and had no correction at all; bottom-pinning never had the
+problem because its ResizeObserver corrects continuously. It now re-centres whenever the height
+changes, stops once the height has held for a few frames, and stands down on a user gesture — the
+same shape as `scheduleScrollToBottom`, and the same reasons. Deciding this by measuring how far
+off the jump landed would have cost a fixture and settled nothing: the loop removes the dependence
+on the estimate being good, which is worth more than knowing how bad it is.
+
+Spacing is declared on the group as well as the container, so a group boundary looks like every
+other gap.
+
+`transcript-row-groups.test.tsx` counts **mounts**, which `transcript-row-memo.test.tsx` cannot:
+a remount renders too, so a render counter reads it as a memo failure. Each guard was shown to
+fail on its own — end-anchored boundaries, a spliced indicator, a panel that counts, first-row
+group keys, and no grouping at all. The mixed-key guard needed its subagent placed *exactly* on a
+boundary: one row off, it passed against the broken implementation.
 
 Numbers, the instrument correction they rest on, and what this does not fix are in
 [`checklist.md`](./checklist.md#fixed-2026-09-01--the-third-ingredient-nobody-had-varied).
@@ -500,6 +571,10 @@ and it is the guard that makes out-of-order application impossible.
 | `src/client/components/DocsViewer.tsx` | Groups through that index, memoized on the doc list |
 | `src/client/index.css` | Infinite = compositor-only + stepped (`@theme` overrides for Tailwind's utilities); decoration made finite |
 | `src/client/index.animation-policy.test.ts` | New — enforces both halves of the rule over every infinite animation |
+| `src/client/components/MessageList/MessageList.tsx` | `content-visibility: auto` on groups of 20 rows, boundaries counted over anchor rows from the front |
+| `src/client/components/MessageList/transcript-row-groups.test.tsx` | New — counts MOUNTS, which the memo guard cannot, so a row that changes group fails the build |
+| `scripts/fixtures/transcript-highlight-probe.jsx` | `?turns=N` — a transcript long enough to measure containment granularity on the real component |
+| `src/client/components/MessageList/hooks/useMessageScroll.ts` | The search jump re-centres until the height settles, so a group-sized estimate cannot strand it |
 | `src/client/components/ServiceList.tsx`, `PreviewServicesDrawer.tsx` | A running service is a steady state and stops animating |
 | `scripts/trace-load-and-scroll.mjs` | New — traces from before navigation, so what `content-visibility: auto` BUYS can be measured |
 | `scripts/fixtures/inject-app-spinner.js` | New — drives a real page with the app's own animation classes, reporting each resolved `animation` as its positive control |

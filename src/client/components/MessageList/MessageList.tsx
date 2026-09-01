@@ -50,17 +50,55 @@ function elementMessageIndex(el: VisualElement): number {
  *
  * A `null` anchor (or one past the end) keeps the old end-of-list placement.
  */
-function withCompactingIndicator(
-  nodes: ReactNode[],
+function compactingIndicatorIndex(
   elements: VisualElement[],
   anchor: number | null,
   indicator: ReactNode,
-): ReactNode[] {
-  if (!indicator) return nodes;
+): number {
+  if (!indicator) return -1;
   const found = anchor === null ? -1 : elements.findIndex((el) => elementMessageIndex(el) >= anchor);
-  const at = found === -1 ? nodes.length : found;
-  return [...nodes.slice(0, at), indicator, ...nodes.slice(at)];
+  return found === -1 ? elements.length : found;
 }
+
+/**
+ * planning#491 — how many rows share one `content-visibility: auto` element.
+ *
+ * Chrome keeps an internal IntersectionObserver for every such element, and its
+ * per-frame cost scales with how many there are. Measured on the REAL component
+ * over 803 messages (`scripts/fixtures/transcript-highlight-probe.*` at
+ * `?turns=400`), two runs each, one-per-row against one-per-20:
+ *
+ *   while an indicator animates   56.2 ms/s   ->  10.0 / 10.2 ms/s
+ *   6 s full-transcript scroll    482/501 ms  ->  339 / 346 ms
+ *   first paint                   no systematic difference
+ *
+ * The animating row is the big one, and it is not what the issue was filed for:
+ * every scheduled frame runs the intersection pass over every element carrying
+ * containment, so this pays back once per frame. (A synthetic fixture predicted
+ * 7-11x on scroll; the real component gives ~30%, because a real scroll is
+ * dominated by rendering rich rows rather than by intersections.)
+ *
+ * 50 measured slightly better again on the synthetic sweep, and 20 is the
+ * conservative pick: a group is the unit that gets skipped, so a smaller one
+ * wastes less layout when only part of it is off screen.
+ */
+const ROWS_PER_GROUP = 20;
+
+/**
+ * Placeholder height per row, for a group that has not rendered yet — the same
+ * `5rem` the per-row `contain-intrinsic-size` used, multiplied by the group's
+ * row count rather than replaced by a group-sized guess. `auto` makes Chrome use
+ * each group's real height once it has rendered once, so this only decides where
+ * the scrollbar sits for a group nobody has reached yet.
+ */
+const ROW_PLACEHOLDER_REM = 5;
+
+/**
+ * `sm:space-y-2`, the gap between rows. A group's own margins are inside the
+ * subtree `content-visibility` skips, so unlike the per-row version the estimate
+ * has to include them or a cold group reserves 19 gaps too few.
+ */
+const ROW_GAP_REM = 0.5;
 
 export function MessageList({
   messages: messagesProp,
@@ -349,6 +387,122 @@ export function MessageList({
       </div>
     ) : null;
 
+  // planning#375 — every row is a memoized `TranscriptRow`. This loop must
+  // therefore hand it only values that stay referentially stable while the row
+  // is unchanged; anything volatile goes through `RowHandlersProvider` instead.
+  // Adding a prop here that is rebuilt each render silently restores the 92 ms
+  // whole-transcript re-render.
+  const rows = visualElements.map((el) => {
+    const anchorIndex = elementMessageIndex(el);
+    const key =
+      el.kind === "task-panel" ? "task-panel"
+      : el.kind === "tool-group" ? `tg-${el.messageIndices[0]}`
+      : el.kind === "subagent" ? el.tool.id
+      : el.kind === "standalone-tool" ? `st-${el.tool.id}`
+      : `m-${el.index}`;
+    const isBubble = el.kind === "message";
+    return {
+      key,
+      // planning#491 — a row that can MOVE within the list must not be allowed
+      // to define a group boundary; see the grouping loop below. The task panel
+      // is the one such row: `buildVisualElements` emits it wherever the todo
+      // list last changed, so it relocates whenever the agent rewrites its todos.
+      movable: el.kind === "task-panel",
+      node: (
+        <TranscriptRow
+          key={key}
+          el={el}
+          anchor={messages[anchorIndex]}
+          matchesByMessage={matchesByMessage}
+          currentMatch={currentMatch}
+          currentMatchRef={currentMatchRef}
+          isLoading={isLoading}
+          voicePlaybackEnabled={voicePlaybackEnabled}
+          turnProse={isBubble ? turnProseByLastIndex.get(el.index) : undefined}
+          activeSessionId={activeSessionId}
+          hasRewindControls={hasRewindControls}
+          forkDefaultName={forkDefaultName}
+          rewindPreviews={rewindPreviews}
+          showGapBefore={isBubble && shouldShowGapBefore(el.index)}
+          gapPreviousRole={isBubble ? previousRoleBefore(el.index) : null}
+        />
+      ),
+    };
+  });
+
+  // planning#491 — the rows go into fixed-size groups, and each GROUP carries the
+  // `content-visibility: auto`.
+  //
+  // The boundaries are fixed multiples of `ROWS_PER_GROUP` counted from the
+  // FRONT, and that is the load-bearing detail. A row that changes group changes
+  // its DOM parent, which React can only do by unmounting and remounting it —
+  // and docs/265 established that remounting transcript rows is the expensive
+  // event this whole folder is about. Counting from the front means an append
+  // only ever grows the last group, and a rewind only ever drops trailing ones,
+  // so no row already placed moves. (Counting from the END would shift every
+  // boundary on every append, which is the version not to write.)
+  //
+  // Boundaries are counted over the ANCHOR rows only — every row except the ones
+  // that can move (the task panel) and the compacting indicator, which is not a
+  // row at all. Both of those ride along in whichever group they currently fall
+  // in, and neither advances the count.
+  //
+  // That is what makes the boundaries hold. Counting positions in the rendered
+  // list instead would let the task panel push every row after it one place
+  // along the moment the agent rewrote its todos, moving a row out of each group
+  // it crosses — and on a long transcript the panel jumps from last turn's
+  // anchor to this one's, so that is a hundred rows remounting, once per turn.
+  // The indicator would do the same, twice, whenever a compaction ran.
+  const indicatorAt = compactingIndicatorIndex(visualElements, compactingAnchor, compactingIndicator);
+  const rowGroups: ReactNode[] = [];
+  let anchorsSeen = 0;
+  let current: { anchors: number; children: ReactNode[] } | null = null;
+  const flushGroup = () => {
+    if (!current) return;
+    const { anchors, children } = current;
+    rowGroups.push(
+      <div
+        // The group's ORDINAL, not its first row's key. Keying by the first row
+        // amplifies a one-row change into a whole-group remount: most row keys
+        // are positional (`m-${index}`), so removing a message mid-transcript
+        // shifts them all, and a group whose first row was a stable-identity row
+        // (a subagent's tool id) next to a positional one changes key — React
+        // then replaces the group element and remounts all 20 children. With an
+        // ordinal the group element survives and React reconciles inside it, so
+        // the same mutation costs at most the rows that genuinely crossed a
+        // boundary. Ordinals would be the wrong choice only if a whole LEADING
+        // group could vanish, which needs the history replaced — and that
+        // remounts the transcript regardless.
+        key={`g-${rowGroups.length}`}
+        className="space-y-3 sm:space-y-2 [content-visibility:auto]"
+        // The rows' own margins are inside the skipped subtree, so the estimate
+        // has to reserve them too — `contain-intrinsic-size` replaces the whole
+        // box, not just the rows in it. `sm:space-y-2` is the gap this assumes;
+        // below `sm` the real gap is 0.25rem/row larger and the group reserves
+        // slightly short, the same direction the per-row 5rem was already wrong
+        // in for any row taller than 5rem.
+        style={{
+          containIntrinsicSize:
+            `auto ${anchors * ROW_PLACEHOLDER_REM + Math.max(anchors - 1, 0) * ROW_GAP_REM}rem`,
+        }}
+      >
+        {children}
+      </div>,
+    );
+    current = null;
+  };
+  rows.forEach((row, i) => {
+    if (!row.movable && anchorsSeen > 0 && anchorsSeen % ROWS_PER_GROUP === 0) flushGroup();
+    const group = (current ??= { anchors: 0, children: [] });
+    if (i === indicatorAt) group.children.push(compactingIndicator);
+    if (!row.movable) {
+      anchorsSeen++;
+      group.anchors++;
+    }
+    group.children.push(row.node);
+  });
+  flushGroup();
+
   return (
     <ShipitPointerSessionProvider value={deferred.sessionId ?? null}>
     <RowHandlersProvider value={rowHandlers}>
@@ -362,50 +516,27 @@ export function MessageList({
         changes when its content grows. `useMessageScroll` uses that to stay
         pinned to the bottom while a message paints; see the hook. The spacing
         and content-visibility utilities move with the messages, so the elements
-        they apply to are unchanged. */}
+        they apply to are unchanged.
+
+        planning#491 — `content-visibility: auto` sits on GROUPS of rows (see
+        `ROWS_PER_GROUP`), not on every row, so the spacing has to be declared in
+        both places: within a group for the rows in it, and here for the gap
+        between one group and the next. Both are the same value, so a group
+        boundary is invisible. */}
     <div
       ref={contentRef}
-      className="space-y-3 sm:space-y-2 [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_5rem]"
+      className="space-y-3 sm:space-y-2"
     >
       {/* planning#12 — floating "Reply" button shown when the user highlights text
           inside a message bubble; quotes the passage into the composer. Scoped
           to this scroll container via the ref so it never fires on the composer
           or other panels. */}
       <ChatQuoteReply containerRef={containerRef} />
-      {withCompactingIndicator(visualElements.map((el) => {
-        // planning#375 — every row is a memoized `TranscriptRow`. This callback
-        // must therefore hand it only values that stay referentially stable
-        // while the row is unchanged; anything volatile goes through
-        // `RowHandlersProvider` instead. Adding a prop here that is rebuilt each
-        // render silently restores the 92 ms whole-transcript re-render.
-        const anchorIndex = elementMessageIndex(el);
-        const key =
-          el.kind === "task-panel" ? "task-panel"
-          : el.kind === "tool-group" ? `tg-${el.messageIndices[0]}`
-          : el.kind === "subagent" ? el.tool.id
-          : el.kind === "standalone-tool" ? `st-${el.tool.id}`
-          : `m-${el.index}`;
-        const isBubble = el.kind === "message";
-        return (
-          <TranscriptRow
-            key={key}
-            el={el}
-            anchor={messages[anchorIndex]}
-            matchesByMessage={matchesByMessage}
-            currentMatch={currentMatch}
-            currentMatchRef={currentMatchRef}
-            isLoading={isLoading}
-            voicePlaybackEnabled={voicePlaybackEnabled}
-            turnProse={isBubble ? turnProseByLastIndex.get(el.index) : undefined}
-            activeSessionId={activeSessionId}
-            hasRewindControls={hasRewindControls}
-            forkDefaultName={forkDefaultName}
-            rewindPreviews={rewindPreviews}
-            showGapBefore={isBubble && shouldShowGapBefore(el.index)}
-            gapPreviousRole={isBubble ? previousRoleBefore(el.index) : null}
-          />
-        );
-      }), visualElements, compactingAnchor, compactingIndicator)}
+      {rowGroups}
+      {/* An indicator anchored past the last row belongs after every group, not
+          inside one — the same end-of-list placement `compactingIndicatorIndex`
+          returns for a null anchor. */}
+      {indicatorAt >= rows.length ? compactingIndicator : null}
 
       {/*
         planning#280 — the durable pending consult card (inline, at the call site) is

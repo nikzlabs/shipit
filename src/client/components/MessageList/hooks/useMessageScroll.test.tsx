@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, cleanup, act } from "@testing-library/react";
 import { useMessageScroll } from "./useMessageScroll.js";
 import type { ChatMessage } from "../types.js";
+import type { SearchMatch } from "../../../hooks/useSearch.js";
 
 // Manual rAF pump: callbacks queue up and we flush them one frame at a time so a
 // test can mutate the container's scrollHeight between frames — simulating a tall
@@ -59,6 +60,23 @@ function Harness({ messages }: { messages: ChatMessage[] }) {
   return (
     <div ref={containerRef} data-testid="scroller">
       <div ref={contentRef} data-testid="content" />
+    </div>
+  );
+}
+
+/**
+ * Same shape, but with a search match wired to a real element — the surface
+ * planning#491 changed. `content-visibility: auto` is on GROUPS of 20 rows now,
+ * so the group holding a match may have had only an ESTIMATED height until the
+ * jump revealed it, and the real height lands in the same frame.
+ */
+function MatchHarness({ match }: { match: SearchMatch | undefined }) {
+  const { containerRef, contentRef, currentMatchRef } = useMessageScroll([], false, match);
+  return (
+    <div ref={containerRef} data-testid="scroller">
+      <div ref={contentRef} data-testid="content">
+        <span ref={currentMatchRef} data-testid="match" />
+      </div>
     </div>
   );
 }
@@ -516,5 +534,73 @@ describe("useMessageScroll", () => {
     flushFrame();
 
     expect(scrollTop).toBe(0);
+  });
+});
+
+describe("useMessageScroll — search jump settles (planning#491)", () => {
+  function setup(): { calls: { block?: string; behavior?: string }[]; setHeight: (h: number) => void; view: ReturnType<typeof render> } {
+    const calls: { block?: string; behavior?: string }[] = [];
+    Element.prototype.scrollIntoView = function (arg?: boolean | ScrollIntoViewOptions) {
+      calls.push(typeof arg === "object" && arg !== null ? arg : {});
+    };
+    let height = 1000;
+    const view = render(<MatchHarness match={undefined} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+    Object.defineProperty(div, "scrollTop", { configurable: true, get: () => 0, set: () => {} });
+    return { calls, setHeight: (h: number) => { height = h; }, view };
+  }
+
+  it("re-centres the match while the transcript's height is still changing", () => {
+    const { calls, setHeight, view } = setup();
+
+    act(() => { view.rerender(<MatchHarness match={{ messageIndex: 3, start: 0, length: 4 }} />); });
+    // The first jump is the smooth one the user sees.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].behavior).toBe("smooth");
+
+    // The group holding the match resolves from its estimate to its real height
+    // over the next few frames. Each change must re-centre, or the match ends up
+    // wherever the estimate happened to put it.
+    for (const h of [4000, 7000, 7000, 7000, 7000]) {
+      setHeight(h);
+      flushFrame();
+    }
+
+    expect(calls.length).toBeGreaterThan(1);
+    // Instant, not smooth: a second smooth scroll would restart the easing and
+    // the match would drift for as long as groups keep resolving.
+    expect(calls.slice(1).every((c) => c.behavior === undefined)).toBe(true);
+    expect(calls.every((c) => c.block === "center")).toBe(true);
+  });
+
+  it("stops once the height has held still, rather than scrolling forever", () => {
+    const { calls, setHeight, view } = setup();
+    act(() => { view.rerender(<MatchHarness match={{ messageIndex: 3, start: 0, length: 4 }} />); });
+
+    setHeight(4000);
+    for (let i = 0; i < 10; i++) flushFrame();
+    const settled = calls.length;
+
+    for (let i = 0; i < 10; i++) flushFrame();
+    expect(calls.length).toBe(settled);
+  });
+
+  it("stands down the moment the user takes hold of the scroll", () => {
+    // The whole point of re-centring is to land ON the match. Fighting a user
+    // who has started scrolling away from it would be the same bug the
+    // bottom-pin path already has `userIsDriving` for.
+    const { calls, setHeight, view } = setup();
+    act(() => { view.rerender(<MatchHarness match={{ messageIndex: 3, start: 0, length: 4 }} />); });
+    const afterJump = calls.length;
+
+    act(() => {
+      view.getByTestId("scroller").dispatchEvent(new Event("wheel", { bubbles: true }));
+    });
+    setHeight(9000);
+    for (let i = 0; i < 5; i++) flushFrame();
+
+    expect(calls.length).toBe(afterJump);
   });
 });

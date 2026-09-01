@@ -125,9 +125,18 @@ hljs.highlight = (...args) => {
 const BIG = Array.from({ length: 400 }, (_, i) => `  const value_${i} = compute(${i}) + offset;`).join("\n");
 const REPORT = `## Findings\n\nProse long enough that the report overflows its clamp.\n\n${"- a finding line\n".repeat(30)}\n\n\`\`\`\n${BIG}\n\`\`\`\n\nEnd of report.`;
 
+/**
+ * `?turns=N` sets how many question/answer pairs the transcript holds (default
+ * 40, i.e. the 83-message fixture the docs/265 eliminations were run against).
+ * planning#491 needs a long one: the cost of `content-visibility: auto` scales
+ * with how many elements carry it, so a scroll measurement at 80 rows cannot
+ * separate one-per-row from one-per-group.
+ */
+const TURNS = Number(new URLSearchParams(location.search).get("turns") ?? 40);
+
 function buildTranscript() {
   const out = [];
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < TURNS; i++) {
     out.push({ role: "user", text: `Question number ${i} — please look into the thing.` });
     out.push({
       role: "assistant",

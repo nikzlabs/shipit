@@ -1,5 +1,11 @@
 # 265 — Transcript render cost: checklist
 
+- [x] `content-visibility: auto` on groups of 20 rows rather than every row, with boundaries counted
+      over anchor rows from the front and groups keyed by ordinal, so no UNCHANGED row changes DOM
+      parent — the task panel does move, deliberately (req 13, planning#491)
+- [x] The search jump re-centres until the transcript's height settles (req 7). A group-sized
+      `contain-intrinsic-size` estimate resolves to the real height in the frame the jump reveals
+      it, so a single `scrollIntoView` lands beside the match rather than on it
 - [x] An infinite animation animates only `transform`/`opacity` and steps at ~10 Hz, so an
       indicator stops dragging the main-thread rendering lifecycle through every vsync (req 13)
 - [x] Decorative illustration (the rocket scene, the preview-setup art) is finite instead, so an
@@ -565,14 +571,23 @@ out and paint every off-screen row" is right about load and wrong about scroll.
 Neither number decides anything now, because the idle cost it was being traded against is gone
 once the animation stops scheduling frames. It stays as it is.
 
-**The scroll figure is a separate open finding, tracked as planning#491 — and the answer there
-is not "remove it".** Applying `content-visibility: auto` to *groups* of rows rather than to each
-row beats both current options on both axes: same first paint as today, and a 6 s
-full-transcript scroll of **619 / 565 ms at 20 rows per group** and **409 / 445 ms at 50**,
-against 4,578 / 4,529 ms per-row and 901 / 819 ms with no `content-visibility` at all.
-Intersection work falls 44–148x. Not done here because the grouping has to stay stable across
-renders or it remounts every row inside a group, which is the failure mode the rest of this
-folder is about.
+**The scroll figure led to planning#491, now fixed — and the answer was not "remove it".**
+`content-visibility: auto` moved onto *groups* of 20 rows. See `plan.md` section 2d for the
+design; the numbers are below, and they correct the ones this section was filed with.
+
+**Correction: the synthetic fixture overstated the scroll win by about 4x.** It predicted 7–11x
+(619 / 565 ms at 20 rows per group against 4,578 / 4,529 per-row, at n=2,000). Re-measured on the
+**real** `MessageList` at 803 messages, two runs each, a 6 s full-transcript scroll costs
+**339 / 346 ms against 482 / 501 ms** — about 30%. The fixture's rows were trivial, so
+intersections dominated its scroll cost; a real scroll is dominated by rendering rich rows, and
+only the intersection component moves. That component itself does fall as predicted:
+**3.7 / 3.7 ms against 98 / 101 ms, ~26x.**
+
+The large win is elsewhere and was not what the issue was filed for: with **one indicator
+animating** — the steady state section 2c is about — the real component costs **10.0 / 10.2 ms/s
+against 56.2**, because every scheduled frame runs the intersection pass over every element
+carrying containment. So 2c cut the frames ~6x and this cuts the cost of each remaining frame
+~5x.
 
 #### The fix, and the rule it turned into
 
