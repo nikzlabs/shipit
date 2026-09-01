@@ -17,6 +17,11 @@ the main thread was blocked for 4.35 s of a 17.6 s recording, in bursts of 1.2 s
 the existing behaviours that must survive the fix; the user named the first three of them
 when approving the work.
 
+Requirement 13 comes from a **second** report, on 2026-09-01: *"ShipIt burns ~25% of a CPU
+core on a session where nothing is happening."* It is the same finding this folder's
+`checklist.md` had already recorded and deliberately left unfixed, now reproduced a third
+time and complained about by a user.
+
 ## Requirements
 
 1. While the agent is streaming a turn, the chat UI must stay responsive. The user must be
@@ -54,6 +59,10 @@ when approving the work.
 
 12. The file tree must not be re-sent as part of the chat-history response when it has not
     changed. It is 325 KB of this repository's payload and is unrelated to the transcript.
+
+13. A session where nothing is happening must not keep the processor busy. With no turn
+    running, no typing and no network traffic, the page must cost close to nothing — however
+    long the conversation is, and whatever the page is showing.
 
 ## Open questions
 

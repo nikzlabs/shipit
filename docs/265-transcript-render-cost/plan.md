@@ -385,6 +385,53 @@ the GC reading above, that is the expected result rather than a missing explanat
 `JSEventListeners` counts registrations, not calls, so the production figure is not subject to the
 call-counting error either. What remains unidentified is the subtree whose mount registers ~620.
 
+### 2c. Always-on animation steps on a 10 Hz grid (req 13)
+
+A page holding a live `IntersectionObserver` runs the whole main-thread rendering lifecycle on
+every frame the browser *schedules*, and a running animation schedules one per vsync. ShipIt
+always holds such observers — Chrome makes one internally per `content-visibility: auto`
+transcript row, `@formkit/auto-animate` makes more, and so does every inline Present card — so a
+single ever-running indicator cost an **idle** session ~118 ms of main thread per second. That
+is the reported "25% of a core on a session where nothing is happening".
+
+`checklist.md` had this recorded and left unfixed, because it read the choice as being between
+the two observer sources and both are load-bearing. **The animation is a third ingredient and
+the cheap one**: with it stopped, 2,000 `content-visibility` rows plus a live observer cost
+0.1 ms/s — the same as removing both observer sources, from moving one thing instead of two.
+
+Two changes, and they compose.
+
+**Steady states stop animating.** `ServiceList` and `PreviewServicesDrawer` drew a *running*
+service with `animate-ping`. A service that is up is not in-flight work, and that ping ran for
+as long as the service did — which is how a session with nothing happening had something
+animating. `starting` keeps its spinner. An audit of the other infinite animations found no
+second case of the same mistake.
+
+**Everything still animating steps at 10 Hz.** `steps(N)` wakes the main thread only when the
+value changes, N times per iteration rather than 60 times a second, and the frame rate is
+measured to scale exactly with N. `--animate-spin`, `--animate-ping` and `--animate-pulse` are
+re-declared in an `@theme` block; `.tool-spinner`, the rocket scene and the preview-art
+illustrations take `steps(duration ÷ 0.1s)`.
+
+Two measured constraints make this a rule enforced by a test rather than a convention:
+
+- **The cost is the union over running animations.** One un-stepped animation puts the whole
+  page back at display rate, cancelling the saving from every other one.
+- **Step boundaries run from each animation's own start time**, so a delay off the grid gives
+  that element its own tick train and the costs add — two `steps(10)` animations mounted 37 ms
+  apart cost 15 frames/s, not 10.
+
+`index.animation-policy.test.ts` checks both over every `animation:` shorthand and every
+`animation-delay` in `index.css`.
+
+Not changed: `content-visibility: auto`. Its benefit is now measured rather than assumed — it
+**halves first contentful paint** on a 2,000-row transcript (123 ms against 227 ms) — so the
+trade the old decision rule was about no longer has to be made. The same measurement found it
+makes a full-transcript scroll 3.5x *more* expensive, which is a separate open finding.
+
+Numbers, and what this does not fix, are in
+[`checklist.md`](./checklist.md#fixed-2026-09-01--the-third-ingredient-nobody-had-varied).
+
 ### 3. Revalidate instead of re-download (reqs 10, 11)
 
 `GET /api/sessions/:id/history` gains an **ETag that is the hash of the response body**, and
@@ -442,6 +489,11 @@ and it is the guard that makes out-of-order application impossible.
 | `src/client/components/message-markdown.tsx` | `CodeBlock` highlights through that cache |
 | `src/client/utils/doc-paths.ts` | `DocIndex` — two linear passes replace the per-doc list scans behind the Docs-tab freeze |
 | `src/client/components/DocsViewer.tsx` | Groups through that index, memoized on the doc list |
+| `src/client/index.css` | The 10 Hz rule: `@theme` overrides for Tailwind's always-on utilities, `steps()` on every other infinite animation |
+| `src/client/index.animation-policy.test.ts` | New — enforces the rule over every infinite animation and every delay |
+| `src/client/components/ServiceList.tsx`, `PreviewServicesDrawer.tsx` | A running service is a steady state and stops animating |
+| `scripts/trace-load-and-scroll.mjs` | New — traces from before navigation, so what `content-visibility: auto` BUYS can be measured |
+| `scripts/fixtures/inject-app-spinner.js` | New — drives a real page with the app's own animation classes, reporting each resolved `animation` as its positive control |
 
 ## Verification
 

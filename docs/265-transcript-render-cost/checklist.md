@@ -1,5 +1,12 @@
 # 265 — Transcript render cost: checklist
 
+- [x] Always-on animation steps on a shared 10 Hz grid, so an indicator stops dragging the
+      main-thread rendering lifecycle through every vsync (req 13)
+- [x] The `running` service dot stops animating — a steady state is not in-flight work, and it
+      was what made a session with nothing happening animate at all (req 13)
+- [x] Guard test over every infinite animation and every `animation-delay` in `index.css`
+      (`index.animation-policy.test.ts`) — the saving is the union, so one un-stepped animation
+      cancels it
 - [x] Cancel a superseded `/history` load instead of parsing and discarding it (req 8)
 - [x] Stable element identity from `buildVisualElements` (design 1a)
 - [x] Ref-backed handler context so upstream callbacks stop invalidating rows (design 1b)
@@ -502,7 +509,127 @@ isolation of the observers alone. It slightly exceeding the `today` row is consi
    so much larger than anything reproduced here, and they are fixable independently — the first is
    understood today, the second is not.
 
+### FIXED (2026-09-01) — the third ingredient nobody had varied
+
+The section below decided "no code change", and every round of this investigation treated the
+pairing as a choice between two removable things: `content-visibility: auto` and
+`@formkit/auto-animate`. Both are load-bearing, so the answer kept coming out "neither".
+
+**The animation is the third ingredient, and it is the cheap one.** Measured on
+`idle-frame-cost.html` at `n=2000` with a live JS observer, two runs per cell:
+
+| n=2000, io=1 | main-thread frames/s | main-thread busy |
+|---|---|---|
+| animation + `content-visibility` rows | 44.7 | 118.6 / 119.9 / 154.1 ms/s |
+| animation, `content-visibility` removed | 44.7 / 42.4 | 95.6 / 100.4 / 121.9 ms/s |
+| animation, JS observer removed | 44.7 | 128.3 ms/s |
+| animation, **both** observer sources removed | **0** | 1.5 ms/s |
+| **no animation**, both observer sources present | **0** | **0.1 ms/s** |
+
+The last two rows cost the same. So removing the animation is not a *worse* fix than removing
+both observers — it is the **same** fix, reached by moving one ingredient instead of two, and
+the one ingredient it moves has no unmeasured benefit behind it.
+
+#### `content-visibility: auto` now has its numbers, and it stays
+
+The experiment the section below specifies was run (`scripts/trace-load-and-scroll.mjs`, which
+traces from *before* navigation — the variant that section says is needed). `n=2000`, no
+animation, two runs per condition:
+
+| | first contentful paint | load-phase busy | 6 s top-to-bottom scroll |
+|---|---|---|---|
+| `content-visibility: auto` | **123 / 124 ms** | 127 / 117 ms | 3,415 / 3,777 ms |
+| removed | 227 / 256 ms | 220 / 227 ms | **1,026 / 1,000 ms** |
+
+Two results, and the second was not expected. It **halves first paint** on a long transcript,
+which is the benefit it was put there for and which nobody had measured. And it makes a
+full-transcript scroll **3.5x more expensive**, not cheaper — about a third of that scroll cost
+(1,026–1,170 ms) is `computeIntersections`. The doc's premise that it exists "so a long
+transcript does not lay out and paint every off-screen row" is right about load and wrong about
+scroll.
+
+Neither number decides anything now, because the idle cost it was being traded against is gone
+once the animation stops scheduling frames. It stays as it is. **The scroll figure is a
+separate open finding**, not something this change addresses.
+
+#### The fix: always-on animation steps on a 10 Hz grid
+
+`steps(N)` wakes the main thread only when the animated value changes. Sweeping N at 300 rows,
+with a live observer and `content-visibility` rows both present throughout:
+
+| `steps(N)` | 2 | 4 | 8 | 16 | 30 | linear |
+|---|---|---|---|---|---|---|
+| main-thread frames/s | 1.6 | 3.0 | 6.0 | 11.9 | 22.4 | 44.7 |
+| main-thread busy | 2.1 | 3.6 | 6.7 | 12.1 | 20.1 | 41.7 ms/s |
+
+Exactly linear in N (the trace window runs ~1.33x longer than the 8 s asked for, so the true
+rate is N per second). Two constraints came out of the same fixture and both shape the
+implementation:
+
+- **The cost is the UNION over running animations.** One linear animation beside a `steps(8)`
+  one puts the page back at 44.7 frames/s. So this has to hold for *every* infinite animation,
+  which is why `src/client/index.animation-policy.test.ts` checks all of them rather than
+  documenting the rule.
+- **Step boundaries run from each animation's own start time.** Two `steps(10)` animations
+  mounted 37 ms apart cost **15** frames/s, not 10 — their tick trains do not coincide. Hence
+  the shared grid, and hence every `animation-delay` being a whole multiple of it (one was
+  `0.25s` and is now `0.2s`).
+
+So `--animate-spin`, `--animate-ping` and `--animate-pulse` are re-declared in an `@theme`
+block, and `.tool-spinner`, the rocket-scene animations and the preview-art animations get a
+step count of `duration ÷ 0.1s`.
+
+#### An idle session was animating, and the section below says it should not have been
+
+The section below states the cost "is paid only while something animates, i.e. while a tool
+runs". That is wrong, and it is why an idle session could cost 25% of a core. `ServiceList` and
+`PreviewServicesDrawer` drew the **running** service dot with `animate-ping` — a service that is
+up is a *steady state*, and that ping runs for as long as the service does. It is now a static
+dot; `starting` keeps its spinner, because that one is genuinely in flight.
+
+Auditing the rest of the infinite animations for the same mistake found no second case: every
+other one (CI pending, cloning, agent-running, recording, the skeleton pulses) marks work that
+really is in flight. Several of those can still run for many minutes, which is what the 10 Hz
+grid is for.
+
+#### Before and after
+
+Real UI, dogfood session, 60 Hz, indicators injected with the app's own classes
+(`scripts/fixtures/inject-app-spinner.js`, which reports each element's resolved `animation` as
+its positive control — a run reading `linear` is measuring the wrong build):
+
+| | before | after |
+|---|---|---|
+| one indicator animating | 59.9 fps / 41.8 ms/s | **17.7 fps / 15.3 ms/s** |
+| three indicators, staggered | 59.8 fps / 38.1 ms/s | **32.6 fps / 23.6 ms/s** |
+| nothing animating (control) | — | 3.5 fps / 4.4 ms/s |
+
+And on the long transcript the report is about — `idle-frame-cost.html?spin=1&io=1&cv=1&n=2000`:
+**165.4 → 34.5 ms/s**, frames **44.7 → 7.4**.
+
+The two changes compose in the order that matters for the report: an idle session with a running
+service used to sit on the "one indicator animating" row and now sits on the control row.
+
+Verified in the real app rather than inferred: every animation resolves to its stepped form, and
+the spinner shows **3 distinct transforms in 300 ms** — 10 Hz, not 60.
+
+#### What this does not do
+
+- It does not make an animating page free. Three staggered indicators still cost 32.6 frames/s;
+  six would saturate. The union rule is a real ceiling.
+- It does not touch correction 2's open question — what makes a production frame cost 0.65 ms.
+  It removes ~5/6 of the frames, so it pays that unknown back at the frame rate, which is the
+  reason the two problems were worth separating.
+- The `cc` category was **again** absent from the 2026-09-01 production trace (0 events with
+  category exactly `cc`), so `visible_layers` is still unread. One new datum for correction 2:
+  `Layerize` costs **0.180 ms/call** there, against 0.650 and 0.559 in the two earlier traces.
+  Correction 2 is about what makes that number large, and it now varies threefold across
+  production recordings — so whatever drives it is not a fixed property of the app.
+
 ### Decision: no code change, and what would justify one
+
+*(Superseded by the section above, which fixes it. Kept because it is the record of what was
+measured before, and its decision rule is the one that was followed.)*
 
 Not fixed here, deliberately. The cost is real: **~28 ms/s of main thread** on this 21-row
 session while any tool runs (36.8 today against 9.1 with both sources removed), and it grows with
