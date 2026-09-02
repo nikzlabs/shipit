@@ -1,6 +1,15 @@
 import { useState, useRef, useCallback } from "react";
 
-/** Maximum number of retained iframes across all sessions and ports. */
+/**
+ * Maximum number of retained iframes across all sessions and ports — counted in
+ * `(session, port)` pairs, so a multi-service stack spends several.
+ *
+ * Reassessed after each slot started costing its own renderer process
+ * (docs/009-preview-system, "Is `MAX_IFRAME_SLOTS = 20` still right?"); 20 was
+ * kept. Read that before changing it — the short version is that the number is
+ * not the lever it looks like, and releasing slots whose preview is no longer
+ * running would beat lowering it.
+ */
 export const MAX_IFRAME_SLOTS = 20;
 
 export interface IframeSlot {
