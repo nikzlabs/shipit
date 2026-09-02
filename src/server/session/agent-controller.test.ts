@@ -460,3 +460,179 @@ describe("AgentController — the primary's lifecycle does not end a spawn (docs
     expect(spawn.json()).toMatchObject({ status: "cancelled" });
   });
 });
+
+/**
+ * docs/242 — the docs/235 liveness axis, published on `/agent/status`.
+ *
+ * The orchestrator tracks the same two facts on the runner, but that state dies
+ * with the orchestrator process. The boot sweep (`restart-turn-reattach.ts`)
+ * destroys a stale idle container without recreating it, so these fields are the
+ * only thing standing between it and a container holding live background work.
+ */
+describe("AgentController — /agent/status publishes worker-side liveness", () => {
+  let app: FastifyInstance;
+  let agents: FakeAgent[];
+  let workspace: string;
+
+  async function status(): Promise<Record<string, unknown>> {
+    const res = await app.inject({ method: "GET", url: "/agent/status" });
+    expect(res.statusCode).toBe(200);
+    return res.json() as Record<string, unknown>;
+  }
+
+  /** Start a turn and hand back the agent occupying the slot. */
+  async function startTurn(): Promise<FakeAgent> {
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "hi", cwd: workspace } },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    return agents.at(-1)!;
+  }
+
+  beforeEach(async () => {
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ac-live-"));
+    agents = [];
+    resetNodeRuntimeForTests();
+    app = Fastify({ logger: false });
+    new AgentController({
+      agentFactory: () => {
+        const a = new FakeAgent();
+        agents.push(a);
+        return a as unknown as AgentProcess;
+      },
+      workspaceDir: workspace,
+      broadcast: () => {},
+      permissionBroker: new PermissionBroker({ broadcast: () => {} }),
+      mcpConfig: new McpConfigController({ broadcast: () => {} }),
+      latestSseSeq: () => 0,
+    }).registerRoutes(app);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    resetNodeRuntimeForTests();
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it("reports nothing live on a fresh controller", async () => {
+    expect(await status()).toMatchObject({
+      running: false,
+      turnActive: false,
+      backgroundTaskCount: 0,
+      selfWakeActive: false,
+    });
+  });
+
+  it("keeps the background-task count across the end of the turn that started it", async () => {
+    // This is the whole point of the level signal: a turn routinely ENDS with
+    // tasks still running, and that state must not read as idle.
+    const agent = await startTurn();
+    agent.emit("event", { type: "agent_background_tasks", tasks: [{ id: "t1" }, { id: "t2" }] });
+    expect(await status()).toMatchObject({ turnActive: true, backgroundTaskCount: 2 });
+
+    agent.emit("event", { type: "agent_result" });
+    expect(await status()).toMatchObject({ turnActive: false, backgroundTaskCount: 2 });
+
+    agent.emit("event", { type: "agent_background_tasks", tasks: [] });
+    expect(await status()).toMatchObject({ backgroundTaskCount: 0 });
+  });
+
+  it("reports a self-woken turn, and clears it on the turn's result", async () => {
+    const agent = await startTurn();
+    agent.emit("event", { type: "agent_result" });
+    expect(await status()).toMatchObject({ turnActive: false, selfWakeActive: false });
+
+    // The CLI wakes itself when a background task finishes. No `/agent/start`
+    // and no `/agent/message`, so `turnActive` stays false — this flag is the
+    // only report that the worker is busy.
+    agent.emit("event", { type: "agent_self_wake", taskId: "t1", status: "completed" });
+    expect(await status()).toMatchObject({ turnActive: false, selfWakeActive: true });
+
+    agent.emit("event", { type: "agent_result" });
+    expect(await status()).toMatchObject({ selfWakeActive: false });
+  });
+
+  it("clears the background-task count when the agent process dies", async () => {
+    // A dead CLI never sends the drained list, so a surviving count would make
+    // the container permanently unreclaimable.
+    const agent = await startTurn();
+    agent.emit("event", { type: "agent_background_tasks", tasks: [{ id: "t1" }] });
+    agent.emit("event", { type: "agent_self_wake", taskId: "t1" });
+    expect(await status()).toMatchObject({ backgroundTaskCount: 1, selfWakeActive: true });
+
+    agent.emit("done", 0);
+    await new Promise((r) => setImmediate(r));
+    expect(await status()).toMatchObject({
+      running: false,
+      turnActive: false,
+      backgroundTaskCount: 0,
+      selfWakeActive: false,
+    });
+  });
+
+  it("clears the background-task count when the agent is KILLED, not just when it exits", async () => {
+    // `/agent/kill` nulls the slot synchronously, so the late `done` handler's
+    // identity guard is already false and its cleanup never runs. Without the
+    // kill route clearing the count, the container reads busy forever — the
+    // opposite failure, and a permanent one (review finding).
+    const agent = await startTurn();
+    agent.emit("event", { type: "agent_background_tasks", tasks: [{ id: "t1" }] });
+
+    const res = await app.inject({ method: "POST", url: "/agent/kill", payload: {} });
+    expect(res.statusCode).toBe(200);
+    expect(await status()).toMatchObject({ running: false, backgroundTaskCount: 0 });
+
+    // The killed process's `done` arrives later and must change nothing.
+    agent.emit("done", 143);
+    await new Promise((r) => setImmediate(r));
+    expect(await status()).toMatchObject({ backgroundTaskCount: 0 });
+  });
+
+  it("reports terminal and install liveness from the controllers that own them", async () => {
+    const live = { terminalActive: true, installRunning: true };
+    const app2 = Fastify({ logger: false });
+    new AgentController({
+      agentFactory: () => new FakeAgent() as unknown as AgentProcess,
+      workspaceDir: workspace,
+      broadcast: () => {},
+      permissionBroker: new PermissionBroker({ broadcast: () => {} }),
+      mcpConfig: new McpConfigController({ broadcast: () => {} }),
+      latestSseSeq: () => 0,
+      otherWorkerLiveness: () => live,
+    }).registerRoutes(app2);
+    await app2.ready();
+    try {
+      const res = await app2.inject({ method: "GET", url: "/agent/status" });
+      expect(res.json()).toMatchObject({ terminalActive: true, installRunning: true });
+      // Read per request, not captured once: the boot sweep's confirming probe
+      // has to see the container's state now, not at wiring time.
+      live.terminalActive = false;
+      live.installRunning = false;
+      const after = await app2.inject({ method: "GET", url: "/agent/status" });
+      expect(after.json()).toMatchObject({ terminalActive: false, installRunning: false });
+    } finally {
+      await app2.close();
+    }
+  });
+
+  it("reports no terminal or install work when nothing supplies the getter", async () => {
+    // Older wiring (and every test double) omits it; that must read as "no such
+    // work", which is the answer those constructions gave before the field.
+    expect(await status()).toMatchObject({ terminalActive: false, installRunning: false });
+  });
+
+  it("ignores liveness events from a process that no longer holds the slot", async () => {
+    const retired = await startTurn();
+    retired.emit("done", 0);
+    await new Promise((r) => setImmediate(r));
+    const current = await startTurn();
+    current.emit("event", { type: "agent_background_tasks", tasks: [{ id: "live" }] });
+
+    retired.emit("event", { type: "agent_background_tasks", tasks: [{ id: "a" }, { id: "b" }] });
+    retired.emit("event", { type: "agent_self_wake", taskId: "a" });
+    expect(await status()).toMatchObject({ backgroundTaskCount: 1, selfWakeActive: false });
+  });
+});

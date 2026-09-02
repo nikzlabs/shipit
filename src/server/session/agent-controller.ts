@@ -57,6 +57,22 @@ export interface AgentControllerDeps {
    * existing constructions without the getter keep working.
    */
   oldestSseSeq?: () => number;
+  /**
+   * docs/242 — live work in the container that this controller does not own: a
+   * running PTY (`TerminalController`) and an `agent.install` in flight
+   * (`InstallController`).
+   *
+   * Reported through `/agent/status` rather than through their own endpoints
+   * because the consumer is a *reclaim* decision, and a decision made from two
+   * probes taken at different instants is a decision about a state the
+   * container was never in. The orchestrator's boot sweep destroys a stale idle
+   * container outright, and without this it reads a session whose terminal is
+   * running a test suite as idle (review finding).
+   *
+   * Optional: constructions that predate it (tests, older wiring) report
+   * neither, which reads as "no such work" — the same answer they gave before.
+   */
+  otherWorkerLiveness?: () => { terminalActive: boolean; installRunning: boolean };
 }
 
 export class AgentController {
@@ -92,6 +108,20 @@ export class AgentController {
    */
   private turnActive = false;
   private turnStartSseSeq = 0;
+
+  /**
+   * docs/242 — the docs/235 liveness axis, worker-side, so a *restarted*
+   * orchestrator can see it. `backgroundTaskCount` is the level signal (the last
+   * `agent_background_tasks` list length) and is process-scoped: a turn may end
+   * with tasks still outstanding, which is exactly the state that must not read
+   * as idle. `selfWakeActive` is the edge signal and is turn-scoped, so
+   * {@link endTurn} clears it.
+   *
+   * Both are only ever emitted by a backend that has them (Claude today), so a
+   * backend that never self-wakes simply reports 0/false.
+   */
+  private backgroundTaskCount = 0;
+  private selfWakeActive = false;
 
   // docs/144 — in-flight sub-agent spawns, keyed by orchestrator-supplied
   // spawnId. These run OUTSIDE the single-occupant `this.agent` slot as plain
@@ -243,9 +273,7 @@ export class AgentController {
         return reply.code(404).send({ error: "No agent running" });
       }
       this.agent.kill();
-      this.agent = null;
-      this.residentSpawn = null;
-      this.endTurn();
+      this.vacateSlot();
       return { killed: true };
     });
 
@@ -431,6 +459,10 @@ export class AgentController {
       oldestSseSeq: this.deps.oldestSseSeq?.() ?? 0,
       turnActive: this.turnActive,
       turnStartSseSeq: this.turnStartSseSeq,
+      backgroundTaskCount: this.backgroundTaskCount,
+      selfWakeActive: this.selfWakeActive,
+      terminalActive: this.deps.otherWorkerLiveness?.().terminalActive ?? false,
+      installRunning: this.deps.otherWorkerLiveness?.().installRunning ?? false,
       ...(this.residentSpawn?.runToken !== undefined ? { runToken: this.residentSpawn.runToken } : {}),
       ...(this.turnDeliveryId !== undefined ? { deliveryId: this.turnDeliveryId } : {}),
       ...(this.agent ? { agentId: this.agent.agentId } : {}),
@@ -451,9 +483,37 @@ export class AgentController {
     this.turnStartSseSeq = this.deps.latestSseSeq();
   }
 
+  /**
+   * The single-occupant slot is now empty: the resident process is dead or has
+   * been killed.
+   *
+   * One method rather than the four open-coded copies it replaces, because the
+   * background-task count is the first piece of slot state whose omission
+   * FAILS CLOSED. `/agent/kill` nulls `this.agent` synchronously, so the late
+   * `done` handler's `this.agent === agent` identity guard is already false by
+   * the time it runs and its cleanup never executes — a kill after
+   * `agent_background_tasks` therefore left a count of 1 on a slot with no
+   * process, and the boot sweep reads that as "busy forever" and never reclaims
+   * the container (review finding).
+   */
+  private vacateSlot(): void {
+    this.agent = null;
+    this.residentSpawn = null;
+    this.endTurn();
+    // docs/242 — the tasks belonged to that process, and a dead CLI will never
+    // send the drained list. Turn-scoped state is `endTurn`'s; this is the
+    // process-scoped half.
+    this.backgroundTaskCount = 0;
+  }
+
   /** docs/240 — the turn ended (result, process exit, or kill). */
   private endTurn(): void {
     this.turnActive = false;
+    // docs/242 — the self-wake flag belongs to the turn it started. The
+    // background-task COUNT deliberately survives: a turn routinely ends with
+    // tasks still running, and that is the state the boot sweep must not read
+    // as idle. It is cleared where the process dies instead.
+    this.selfWakeActive = false;
     // planning#266 — the delivery belongs to the turn that just ended; a later
     // `/agent/status` must not report it as still live.
     this.turnDeliveryId = undefined;
@@ -464,9 +524,7 @@ export class AgentController {
     this.cancelAllSpawns();
     if (this.agent) {
       this.agent.kill();
-      this.agent = null;
-      this.residentSpawn = null;
-      this.endTurn();
+      this.vacateSlot();
     }
   }
 
@@ -525,11 +583,16 @@ export class AgentController {
       // orchestrator strips the token back off before handing the event to the
       // proxy, so `AgentEvent` consumers never see it.
       this.deps.broadcast({ type: "agent_event", data: { ...forWire, runToken } });
+      if (this.agent !== agent) return;
       // docs/240 — `agent_result` is the canonical turn-ended signal (the same
       // one the orchestrator keys its post-turn flow off). A resident streaming
       // process stays in the slot afterwards, so `running` alone can't tell an
       // in-flight turn from an idle-resident one — this can.
-      if (event.type === "agent_result" && this.agent === agent) this.endTurn();
+      if (event.type === "agent_result") this.endTurn();
+      // docs/242 — mirror the docs/235 liveness the orchestrator tracks on the
+      // runner, so it survives an orchestrator restart (see WorkerAgentStatus).
+      else if (event.type === "agent_background_tasks") this.backgroundTaskCount = event.tasks.length;
+      else if (event.type === "agent_self_wake") this.selfWakeActive = true;
     });
 
     // Capture `agent` in the closure so the done/error handlers compare against
@@ -550,21 +613,13 @@ export class AgentController {
       // imposes no deadline on the user's decision).
       this.deps.permissionBroker.clearPending();
       this.deps.broadcast({ type: "agent_done", data: { exitCode, runToken } });
-      if (this.agent === agent) {
-        this.agent = null;
-        this.residentSpawn = null;
-        this.endTurn();
-      }
+      if (this.agent === agent) this.vacateSlot();
     });
 
     agent.on("error", (err: Error) => {
       this.deps.permissionBroker.clearPending();
       this.deps.broadcast({ type: "agent_error", data: { message: err.message, runToken } });
-      if (this.agent === agent) {
-        this.agent = null;
-        this.residentSpawn = null;
-        this.endTurn();
-      }
+      if (this.agent === agent) this.vacateSlot();
     });
 
     agent.on("auth_required", () => {

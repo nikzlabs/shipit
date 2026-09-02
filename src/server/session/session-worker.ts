@@ -198,6 +198,12 @@ export class SessionWorker extends EventEmitter {
       mcpConfig: this.mcpConfig,
       latestSseSeq: () => this.sse.latestSeq,
       oldestSseSeq: () => this.sse.oldestSeq,
+      // docs/242 — read lazily: both controllers are constructed below, and the
+      // getter only runs when `/agent/status` is served.
+      otherWorkerLiveness: () => ({
+        terminalActive: this.terminalController.hasActiveTerminal(),
+        installRunning: this.installController.installRunning,
+      }),
     });
     this.terminalController = new TerminalController({
       createTerminal: deps.createTerminal ?? (() => new TerminalProcess()),

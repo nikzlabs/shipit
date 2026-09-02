@@ -51,9 +51,22 @@ fi
 # `cleanupOrphanContainers()` / `cleanupOrphanComposeResources()` reap anything
 # that no longer maps to an active session. The `docker rm -f` sweep that used
 # to live here was the single thing forcing operators to wait for all sessions
-# to finish before updating. Old worker containers keep their old image until
-# they idle out (lazy rotation); the wire contract stays additive-only, guarded
-# by src/server/shared/types/worker-wire-contract.test.ts.
+# to finish before updating.
+#
+# What happens to the OLD worker containers (docs/242): the boot sweep reclaims
+# every stale one that is genuinely idle — no live turn, no self-woken turn, no
+# outstanding background task, no running terminal, no install in flight, no
+# viewer, no always-on reservation — by destroying its agent container and NOT
+# recreating it, so the update actually gives that memory back. A worker that is
+# busy survives on its old image until it is next reclaimed, so the wire contract
+# stays additive-only, guarded by
+# src/server/shared/types/worker-wire-contract.test.ts.
+#
+# Compose stacks are NOT the sweep's business: the outgoing orchestrator's clean
+# shutdown already `compose down`s each one, and one that survives a crash is
+# unroutable (the proxy resolves service ports through an in-memory map the
+# restart emptied) and is force-removed by the next attach's
+# `killStaleContainers()` anyway.
 
 # NO `docker network prune -f` here. It used to sit at this line to reclaim
 # per-session address space, arguing it was safe because prune only removes

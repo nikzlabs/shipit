@@ -1499,4 +1499,43 @@ export interface WorkerAgentStatus {
   agentId?: AgentId;
   /** The spawn was started in live-steering (streaming) mode. */
   streaming?: boolean;
+  /**
+   * docs/242 — outstanding background tasks on the resident process, from the
+   * last {@link AgentBackgroundTasksEvent} (the docs/235 *level* signal). 0 when
+   * drained or when no process is resident.
+   *
+   * The orchestrator holds the same fact on the runner
+   * (`runner.backgroundTaskCount`), but that state is in-memory and dies with the
+   * process — so a restarted orchestrator's boot sweep has no way to see pending
+   * work unless the WORKER reports it. Without this field the sweep reads a
+   * session waiting on a backgrounded review as idle and destroys the container
+   * the task is running in.
+   */
+  backgroundTaskCount?: number;
+  /**
+   * docs/242 — a turn the CLI started *on its own* is in flight (the docs/235
+   * *edge* signal, from {@link AgentSelfWakeEvent}). Set when the backend
+   * self-wakes; cleared by the same `agent_result` / process exit that clears
+   * {@link turnActive}.
+   *
+   * Deliberately NOT folded into `turnActive`: that field means "the
+   * orchestrator started a turn and can replay it from `turnStartSseSeq`", and
+   * the adoption path keys its cursor off that pairing. This one only says the
+   * worker is busy — enough for a reclaim decision, and it claims nothing about
+   * replayability.
+   */
+  selfWakeActive?: boolean;
+  /**
+   * docs/242 — a PTY is running in the container (`TerminalController`).
+   *
+   * Reported because the container is the only place this fact lives: the
+   * terminal survives an orchestrator restart and is reattached when the
+   * session is next opened, so a `docker stop` decided without it kills a shell
+   * the user left running a build in. It says a shell EXISTS, not that it is
+   * doing anything — see the boot sweep for what that costs and why it is still
+   * the right side to err on.
+   */
+  terminalActive?: boolean;
+  /** docs/242 — an `agent.install` is in flight (`InstallController`). */
+  installRunning?: boolean;
 }

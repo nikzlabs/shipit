@@ -73,6 +73,16 @@ export class InstallController {
    */
   private _lastInstallResult: { ok: boolean; command?: string; message?: string } | null = null;
 
+  /**
+   * docs/242 — is an install in flight? Published on `/agent/status` alongside
+   * the agent's own liveness, so the orchestrator's boot sweep does not destroy
+   * a container part-way through `agent.install`. Same fact `/install/status`
+   * reports; this is the in-process reader.
+   */
+  get installRunning(): boolean {
+    return this._installRunning;
+  }
+
   // docs/088 — MCP npm install state. Per-package mutex coalesces concurrent
   // install requests for the same package; `/tmp/mcp-installed.json` records
   // completed installs so a worker restart within the same container doesn't
