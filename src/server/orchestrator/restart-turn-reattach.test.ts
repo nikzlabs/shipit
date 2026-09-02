@@ -24,12 +24,24 @@ import type { SessionRunnerRegistry, SessionRunnerInterface } from "./session-ru
 import type { SessionManager } from "./sessions.js";
 import type { WorkerAgentStatus } from "../shared/types.js";
 
-/** A stand-in worker that answers `/agent/status` with a canned payload. */
-async function startFakeWorker(status: Partial<WorkerAgentStatus>): Promise<{ url: string; close: () => Promise<void> }> {
+/**
+ * A stand-in worker that answers `/agent/status` with a canned payload.
+ *
+ * `laterStatus` answers the SECOND probe onward, which is what makes the
+ * reclaim's confirming probe testable: the sweep must act on what the worker
+ * says at destroy time, not on the snapshot it opened with.
+ */
+async function startFakeWorker(
+  status: Partial<WorkerAgentStatus>,
+  laterStatus?: Partial<WorkerAgentStatus>,
+): Promise<{ url: string; close: () => Promise<void>; probes: () => number }> {
+  let probes = 0;
   const server = http.createServer((req, res) => {
     if (req.url?.startsWith("/agent/status")) {
+      probes++;
+      const body = probes > 1 && laterStatus ? laterStatus : status;
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ running: false, latestSseSeq: 0, ...status }));
+      res.end(JSON.stringify({ running: false, latestSseSeq: 0, ...body }));
       return;
     }
     res.writeHead(404).end();
@@ -39,6 +51,7 @@ async function startFakeWorker(status: Partial<WorkerAgentStatus>): Promise<{ ur
   return {
     url: `http://127.0.0.1:${port}`,
     close: () => new Promise<void>((resolve) => { server.close(() => resolve()); }),
+    probes: () => probes,
   };
 }
 
@@ -140,6 +153,8 @@ function makeHarness(
     deps: {
       containerManager, runnerRegistry, sessionManager, defaultAgentId: "claude",
       orchestratorBuildId: "current-build",
+      // No real wall-clock in unit tests; the confirming probe still happens.
+      confirmDelayMs: 0,
     },
     created,
     resumed,
@@ -155,8 +170,11 @@ describe("reattachInFlightTurns", () => {
   beforeEach(() => { workers.length = 0; });
   afterEach(async () => { for (const w of workers) await w.close(); });
 
-  async function worker(status: Partial<WorkerAgentStatus>): Promise<string> {
-    const w = await startFakeWorker(status);
+  async function worker(
+    status: Partial<WorkerAgentStatus>,
+    laterStatus?: Partial<WorkerAgentStatus>,
+  ): Promise<string> {
+    const w = await startFakeWorker(status, laterStatus);
     workers.push(w);
     return w.url;
   }
@@ -224,6 +242,60 @@ describe("reattachInFlightTurns", () => {
     const h = makeHarness([{ sessionId: "s1", workerUrl: url, workerBuildId: "old-build" }]);
 
     expect(await reattachInFlightTurns(h.deps)).toBe(0);
+    expect(h.destroyed).toEqual([]);
+  });
+
+  it("leaves a stale worker alone while a terminal or an install is live", async () => {
+    // Neither belongs to the agent controller, and both survive the restart to
+    // be picked up when the session is opened — so destroying the container
+    // kills a shell the user left a build running in, or a half-done install.
+    const term = await worker({ running: true, turnActive: false, terminalActive: true });
+    const inst = await worker({ running: false, turnActive: false, installRunning: true });
+    const h = makeHarness([
+      { sessionId: "terminal", workerUrl: term, workerBuildId: "old-build" },
+      { sessionId: "installing", workerUrl: inst, workerBuildId: "old-build" },
+    ]);
+
+    expect(await reattachInFlightTurns(h.deps)).toBe(0);
+    expect(h.destroyed).toEqual([]);
+  });
+
+  it("re-probes before destroying, and keeps a worker that woke in between", async () => {
+    // docs/235's wire trace drains the task list 1 ms before the self-wake, so
+    // a single probe can catch a worker that is about to start a turn looking
+    // completely idle. Whatever it reports at destroy time is what counts.
+    const woke = await worker(
+      { running: true, turnActive: false },
+      { running: true, turnActive: false, selfWakeActive: true },
+    );
+    const started = await worker(
+      { running: true, turnActive: false },
+      { running: true, turnActive: true },
+    );
+    const h = makeHarness([
+      { sessionId: "self-woke", workerUrl: woke, workerBuildId: "old-build" },
+      { sessionId: "turn-started", workerUrl: started, workerBuildId: "old-build" },
+    ]);
+
+    // Neither is adopted — this sweep already declined to adopt them on the
+    // first probe — but neither is destroyed either.
+    expect(await reattachInFlightTurns(h.deps)).toBe(0);
+    expect(h.destroyed).toEqual([]);
+  });
+
+  it("keeps a worker whose confirming probe fails", async () => {
+    const w = await startFakeWorker({ running: true, turnActive: false });
+    const h = makeHarness([{ sessionId: "s1", workerUrl: w.url, workerBuildId: "old-build" }]);
+    // Close the worker as soon as it answers the first probe: the confirming
+    // probe then hits a dead socket, which is not a report of idleness.
+    const sweep = reattachInFlightTurns({
+      ...h.deps,
+      confirmDelayMs: 50,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    await w.close();
+
+    expect(await sweep).toBe(0);
     expect(h.destroyed).toEqual([]);
   });
 

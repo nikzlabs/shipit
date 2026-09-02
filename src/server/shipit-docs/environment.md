@@ -234,7 +234,7 @@ this "shutting down" or "pausing," but it is a full teardown — `docker stop` +
 thawed; it is deleted. When the user sends the next message, a **brand-new**
 container is created and re-mounted onto the same host clone at `/workspace`.
 
-**Idle time alone never causes this.** There are exactly two triggers.
+**Three things cause it, and the fastest one is not a timer.**
 
 **Memory pressure**, the steady-state one: ShipIt reclaims when it is over its
 **memory budget** (Settings → Advanced). With none set, the default is the whole
@@ -250,8 +250,14 @@ container that started it.
 old image that is genuinely idle at that moment is destroyed and *not* replaced —
 regardless of how much memory is free. A fresh one starts when the session is
 next opened. "Genuinely idle" excludes a live turn, a turn the agent woke itself
-for, an outstanding background task, an attached viewer, and a session with
-**Keep preview running** enabled; the Compose stack survives either way.
+for, an outstanding background task, a running terminal, an `agent.install` in
+flight, an attached viewer, and a session with **Keep preview running** enabled.
+
+**Idle age**, on a much longer clock: a session untouched for **24 hours** drops
+a disk tier, which disposes its runner and destroys its container (and by two
+days to two weeks, depending on whether its work merged, reclaims the checkout
+itself). This one *is* time-driven — the "no fixed grace period" below is about
+the memory path, not this ladder.
 
 The user can explicitly enable **Keep preview running** for a session from its
 overflow menu. While enabled, ShipIt reserves that session's container and its
@@ -279,11 +285,12 @@ no durability guarantee and belong in `docker-compose.yml`.
   file at the repo root — does not. Nothing warns you first, so put scratch that
   must survive in `/persist` and declare build output you depend on
   ([shipit-yaml.md](shipit-yaml.md) → Dependency directories).
-- **There is no fixed grace period.** A session is reclaimed only when ShipIt
-  is over its memory budget, and the longest-idle one goes first — so a timer
-  may well outlive the turn that started it, and may equally be killed minutes
-  later if the machine fills up. **Do not rely on either** — the cushion is
-  incidental, not a guarantee.
+- **There is no grace period you can count on.** On the memory path a session
+  is reclaimed only when ShipIt is over its budget, longest-idle first — so a
+  timer may well outlive the turn that started it, and may equally be killed
+  minutes later if the machine fills up. A ShipIt update can take it at any
+  moment, and 24 hours idle takes it regardless. **Do not rely on any of it** —
+  the cushion is incidental, not a guarantee.
 
 **If something needs to keep running or run on every (re)start, declare it —
 don't start it at runtime:**

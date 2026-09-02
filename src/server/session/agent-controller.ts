@@ -57,6 +57,22 @@ export interface AgentControllerDeps {
    * existing constructions without the getter keep working.
    */
   oldestSseSeq?: () => number;
+  /**
+   * docs/242 — live work in the container that this controller does not own: a
+   * running PTY (`TerminalController`) and an `agent.install` in flight
+   * (`InstallController`).
+   *
+   * Reported through `/agent/status` rather than through their own endpoints
+   * because the consumer is a *reclaim* decision, and a decision made from two
+   * probes taken at different instants is a decision about a state the
+   * container was never in. The orchestrator's boot sweep destroys a stale idle
+   * container outright, and without this it reads a session whose terminal is
+   * running a test suite as idle (review finding).
+   *
+   * Optional: constructions that predate it (tests, older wiring) report
+   * neither, which reads as "no such work" — the same answer they gave before.
+   */
+  otherWorkerLiveness?: () => { terminalActive: boolean; installRunning: boolean };
 }
 
 export class AgentController {
@@ -257,9 +273,7 @@ export class AgentController {
         return reply.code(404).send({ error: "No agent running" });
       }
       this.agent.kill();
-      this.agent = null;
-      this.residentSpawn = null;
-      this.endTurn();
+      this.vacateSlot();
       return { killed: true };
     });
 
@@ -447,6 +461,8 @@ export class AgentController {
       turnStartSseSeq: this.turnStartSseSeq,
       backgroundTaskCount: this.backgroundTaskCount,
       selfWakeActive: this.selfWakeActive,
+      terminalActive: this.deps.otherWorkerLiveness?.().terminalActive ?? false,
+      installRunning: this.deps.otherWorkerLiveness?.().installRunning ?? false,
       ...(this.residentSpawn?.runToken !== undefined ? { runToken: this.residentSpawn.runToken } : {}),
       ...(this.turnDeliveryId !== undefined ? { deliveryId: this.turnDeliveryId } : {}),
       ...(this.agent ? { agentId: this.agent.agentId } : {}),
@@ -467,6 +483,29 @@ export class AgentController {
     this.turnStartSseSeq = this.deps.latestSseSeq();
   }
 
+  /**
+   * The single-occupant slot is now empty: the resident process is dead or has
+   * been killed.
+   *
+   * One method rather than the four open-coded copies it replaces, because the
+   * background-task count is the first piece of slot state whose omission
+   * FAILS CLOSED. `/agent/kill` nulls `this.agent` synchronously, so the late
+   * `done` handler's `this.agent === agent` identity guard is already false by
+   * the time it runs and its cleanup never executes — a kill after
+   * `agent_background_tasks` therefore left a count of 1 on a slot with no
+   * process, and the boot sweep reads that as "busy forever" and never reclaims
+   * the container (review finding).
+   */
+  private vacateSlot(): void {
+    this.agent = null;
+    this.residentSpawn = null;
+    this.endTurn();
+    // docs/242 — the tasks belonged to that process, and a dead CLI will never
+    // send the drained list. Turn-scoped state is `endTurn`'s; this is the
+    // process-scoped half.
+    this.backgroundTaskCount = 0;
+  }
+
   /** docs/240 — the turn ended (result, process exit, or kill). */
   private endTurn(): void {
     this.turnActive = false;
@@ -485,10 +524,7 @@ export class AgentController {
     this.cancelAllSpawns();
     if (this.agent) {
       this.agent.kill();
-      this.agent = null;
-      this.residentSpawn = null;
-      this.endTurn();
-      this.backgroundTaskCount = 0; // see the `done` handler
+      this.vacateSlot();
     }
   }
 
@@ -577,27 +613,13 @@ export class AgentController {
       // imposes no deadline on the user's decision).
       this.deps.permissionBroker.clearPending();
       this.deps.broadcast({ type: "agent_done", data: { exitCode, runToken } });
-      if (this.agent === agent) {
-        this.agent = null;
-        this.residentSpawn = null;
-        this.endTurn();
-        // docs/242 — the tasks belonged to this process, and a dead CLI will
-        // never send the drained list. Leaving the count set would make the
-        // container permanently unreclaimable (the same reason docs/235 clears
-        // `agentBusy` on process death).
-        this.backgroundTaskCount = 0;
-      }
+      if (this.agent === agent) this.vacateSlot();
     });
 
     agent.on("error", (err: Error) => {
       this.deps.permissionBroker.clearPending();
       this.deps.broadcast({ type: "agent_error", data: { message: err.message, runToken } });
-      if (this.agent === agent) {
-        this.agent = null;
-        this.residentSpawn = null;
-        this.endTurn();
-        this.backgroundTaskCount = 0; // see the `done` handler
-      }
+      if (this.agent === agent) this.vacateSlot();
     });
 
     agent.on("auth_required", () => {

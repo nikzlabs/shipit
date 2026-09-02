@@ -30,8 +30,8 @@
  *    current image the moment the user opens the session, and
  *    `container_started` then re-sends `session_container_freshness` as
  *    `current`, so the banner never appears.
- *  - **It does not touch the session's Compose stack** — see
- *    {@link reattachInFlightTurns} for why.
+ *  - **It does not touch the session's Compose stack.** That is the shutdown
+ *    path's job, and it has already done it — see {@link reattachInFlightTurns}.
  *
  * It is NOT the steady-state reclaim path. `idle-enforcer.ts` owns that, driven
  * by the docs/284 memory budget; this one fires once per boot and is driven by
@@ -46,6 +46,7 @@ import type { AgentId, WorkerAgentStatus } from "../shared/types.js";
 import { workerGet } from "./worker-http.js";
 import { getErrorMessage } from "./validation.js";
 import { getContainerFreshness } from "./container-freshness.js";
+import { sleep } from "./disk-utils.js";
 
 export interface ReattachDeps {
   containerManager: SessionContainerManager | null;
@@ -53,6 +54,12 @@ export interface ReattachDeps {
   sessionManager: SessionManager;
   defaultAgentId: AgentId;
   orchestratorBuildId?: string;
+  /**
+   * Delay before the reclaim's confirming probe. Defaults to
+   * {@link RECLAIM_CONFIRM_DELAY_MS}; unit tests pass 0 so they never pay real
+   * wall-clock.
+   */
+  confirmDelayMs?: number;
 }
 
 /**
@@ -96,36 +103,70 @@ function staleIdleHoldReason(status: WorkerAgentStatus): string | null {
   if (status.selfWakeActive === true) return "a self-woken turn is in flight";
   const tasks = status.backgroundTaskCount ?? 0;
   if (tasks > 0) return `${tasks} background task(s) still outstanding`;
+  // Live work in the container that the agent controller does not own. Both
+  // survive the restart and are picked up again when the session is opened, so
+  // destroying the container is a real loss rather than a tidy-up.
+  if (status.installRunning === true) return "agent.install is still running";
+  // Deliberately "a shell exists", not "a shell is doing something" — nothing
+  // reports the latter. Erring toward keeping costs the memory of a session
+  // where someone opened a terminal and left it; erring the other way kills the
+  // build they left running in it. The over-hold is also bounded: a stale
+  // container with an idle shell is still an ordinary idle-enforcer candidate
+  // once ShipIt is over its memory budget, because `agentBusy` does not count
+  // terminals.
+  if (status.terminalActive === true) return "a terminal session is running in the container";
   return null;
 }
+
+/**
+ * Re-probe delay before the destroy, and why a single probe is not enough.
+ *
+ * docs/235's wire trace has the CLI drain its background-task list at 14503 ms
+ * and self-wake at 14504 ms — so for **one millisecond** a worker that is about
+ * to start a turn reports no tasks and no self-wake. A probe landing in that gap
+ * reads idle, and the reclaim would then kill the turn as it starts. The gap is
+ * a property of the CLI's event ordering, not of our timing, so it cannot be
+ * argued away.
+ *
+ * A second probe closes it: `selfWakeActive` stays set for the whole turn, so
+ * anything that woke in the window is reporting it by the time this elapses.
+ * Long enough to clear a 1 ms ordering gap by three orders of magnitude, short
+ * enough that a boot sweep over dozens of containers (all probed in parallel)
+ * pays it once.
+ */
+const RECLAIM_CONFIRM_DELAY_MS = 1000;
 
 /**
  * Reattach every rediscovered container that still has a turn in flight, and
  * reclaim the stale idle ones. Returns the number of turns adopted. Never
  * throws — a failure on one session must not block boot or affect the others.
  *
- * **Why the Compose stack survives the reclaim.** The staleness this sweep acts
- * on belongs to ShipIt's own worker image; a project's Compose services run the
- * user's images and an update does not make them old. Keeping them is also the
- * only safe option: the full teardown (`containerManager.destroy`) removes the
- * session's `shipit-parent-session` volumes along with its containers, so a
- * boot-time memory sweep that used it would delete a session's database on every
- * deploy. That leaves docs/284 tier 1's split — drop the agent container, keep
- * the preview — which is the same trade this sweep wants, and it means a session
- * the user opens right after an update still has its preview.
+ * **Why the Compose stack is not this sweep's business.** It reads as the
+ * obvious other half of the memory, and it is already owned elsewhere: a clean
+ * update takes every stack down on the way OUT (`shutdown-manager.ts` →
+ * `disposeAll` → each runner's `disposed` handler → `compose down`, plus
+ * docs/284's sweep for the stacks with no runner left), so by the time this
+ * sweep runs there is usually no stack to reclaim. A stack that survives —
+ * i.e. the orchestrator crashed — is unroutable regardless, because
+ * `preview-proxy.ts` resolves a service port through the in-memory
+ * `serviceManagers` map that died with the process, and the first attach that
+ * rebuilds that map opens `ServiceManager.start()` with `killStaleContainers()`,
+ * which force-removes every `shipit-parent-session` container before
+ * `compose up`. So such a stack serves nobody and does not survive being
+ * opened; it is not a preview being preserved.
  *
- * Known limit, carried deliberately: a stack orphaned here is not a docs/284
- * **tier 2** candidate, because tier 2 only considers stacks *tier 1* orphaned
- * (`tier1At`). So a preview left running by this sweep holds its memory until
- * the user next opens the session, which makes it tier-1 eligible again. That is
- * still a large net win — agent containers were 25.3 GiB of the 30.5 GiB
- * measured in the incident, previews 5.0 GiB — and closing it means teaching the
- * enforcer about a second source of orphans, which is its own change.
+ * The narrow residual is a crashed orchestrator's surviving stack, which holds
+ * its memory until its session is next opened. Taking it here would need a
+ * teardown primitive this module does not have (`containerManager.destroy` is
+ * the wrong one — it also reaps the volumes the session created through the
+ * Docker API proxy), for the smaller share of the memory: the incident measured
+ * 25.3 GiB in agent containers against 5.0 GiB in previews.
  */
 export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number> {
   const {
     containerManager, runnerRegistry, sessionManager, defaultAgentId,
     orchestratorBuildId = process.env.SHIPIT_BUILD_ID,
+    confirmDelayMs = RECLAIM_CONFIRM_DELAY_MS,
   } = deps;
   if (!containerManager) return 0;
 
@@ -169,11 +210,45 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
           return false;
         }
         try {
+          // Confirm before destroying — see RECLAIM_CONFIRM_DELAY_MS. A worker
+          // that failed the second probe, or reported work on it, is kept: the
+          // reclaim is optional and the next boot will get another chance.
+          await sleep(confirmDelayMs);
+          let confirm: WorkerAgentStatus;
+          try {
+            confirm = await workerGet(
+              c.workerUrl, "/agent/status", { timeoutMs: PROBE_TIMEOUT_MS },
+            ) as WorkerAgentStatus;
+          } catch (err) {
+            console.log(
+              `[worker-reclaim] Keeping stale container for ${c.sessionId}`
+              + ` — its confirming probe failed: ${getErrorMessage(err)}`,
+            );
+            return false;
+          }
+          if (confirm.turnActive === true) {
+            // It woke between the two probes. Leave it: this sweep has already
+            // decided not to adopt it, and a turn is never something to destroy.
+            console.log(
+              `[worker-reclaim] Keeping stale container for ${c.sessionId}`
+              + ` — a turn started between the two probes`,
+            );
+            return false;
+          }
+          const confirmedHold = staleIdleHoldReason(confirm);
+          if (confirmedHold) {
+            console.log(
+              `[worker-reclaim] Keeping stale container for ${c.sessionId} — ${confirmedHold}`
+              + ` (reported on the confirming probe)`,
+            );
+            return false;
+          }
           // A bootstrap subsystem may have materialized a runner already (a
-          // delivery redispatch, an early viewer). planning#298's ordering
-          // applies: ask the runner to dispose FIRST and treat a refusal as
-          // "leave this container alone", so the runner-level guards and this
-          // sweep can never disagree about whether the session is reclaimable.
+          // delivery redispatch, an early viewer) — re-read it AFTER the delay
+          // above, not before. planning#298's ordering applies: ask the runner
+          // to dispose FIRST and treat a refusal as "leave this container
+          // alone", so the runner-level guards and this sweep can never
+          // disagree about whether the session is reclaimable.
           const existingRunner = runnerRegistry.get(c.sessionId);
           if (existingRunner) {
             if (existingRunner.agentBusy || existingRunner.viewerCount > 0) return false;
@@ -193,10 +268,14 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
             }
           }
           // `destroyAgentContainer`, never `destroy`: the latter is the full
-          // session teardown and sweeps every `shipit-parent-session` child —
-          // including the session's Compose **volumes**, i.e. a project's
-          // database. A memory sweep must never delete user data, so the stack
-          // is preserved and stays serving. Reasoning in full:
+          // session teardown, which also reaps every volume the SESSION created
+          // through the Docker API proxy — data an agent made inside the
+          // container, which a memory sweep must not delete. The Compose stack
+          // is not this sweep's to take either: the shutdown path already
+          // `compose down`s every stack on a clean update, and one that survives
+          // a crash is unroutable anyway (`preview-proxy.ts` resolves a service
+          // port through the in-memory `serviceManagers` map, which the restart
+          // emptied). Reasoning in full:
           // docs/242-stale-session-container-indicator/plan.md.
           await containerManager.destroyAgentContainer(c.sessionId);
           console.log(

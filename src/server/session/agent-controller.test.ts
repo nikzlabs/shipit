@@ -573,6 +573,57 @@ describe("AgentController — /agent/status publishes worker-side liveness", () 
     });
   });
 
+  it("clears the background-task count when the agent is KILLED, not just when it exits", async () => {
+    // `/agent/kill` nulls the slot synchronously, so the late `done` handler's
+    // identity guard is already false and its cleanup never runs. Without the
+    // kill route clearing the count, the container reads busy forever — the
+    // opposite failure, and a permanent one (review finding).
+    const agent = await startTurn();
+    agent.emit("event", { type: "agent_background_tasks", tasks: [{ id: "t1" }] });
+
+    const res = await app.inject({ method: "POST", url: "/agent/kill", payload: {} });
+    expect(res.statusCode).toBe(200);
+    expect(await status()).toMatchObject({ running: false, backgroundTaskCount: 0 });
+
+    // The killed process's `done` arrives later and must change nothing.
+    agent.emit("done", 143);
+    await new Promise((r) => setImmediate(r));
+    expect(await status()).toMatchObject({ backgroundTaskCount: 0 });
+  });
+
+  it("reports terminal and install liveness from the controllers that own them", async () => {
+    const live = { terminalActive: true, installRunning: true };
+    const app2 = Fastify({ logger: false });
+    new AgentController({
+      agentFactory: () => new FakeAgent() as unknown as AgentProcess,
+      workspaceDir: workspace,
+      broadcast: () => {},
+      permissionBroker: new PermissionBroker({ broadcast: () => {} }),
+      mcpConfig: new McpConfigController({ broadcast: () => {} }),
+      latestSseSeq: () => 0,
+      otherWorkerLiveness: () => live,
+    }).registerRoutes(app2);
+    await app2.ready();
+    try {
+      const res = await app2.inject({ method: "GET", url: "/agent/status" });
+      expect(res.json()).toMatchObject({ terminalActive: true, installRunning: true });
+      // Read per request, not captured once: the boot sweep's confirming probe
+      // has to see the container's state now, not at wiring time.
+      live.terminalActive = false;
+      live.installRunning = false;
+      const after = await app2.inject({ method: "GET", url: "/agent/status" });
+      expect(after.json()).toMatchObject({ terminalActive: false, installRunning: false });
+    } finally {
+      await app2.close();
+    }
+  });
+
+  it("reports no terminal or install work when nothing supplies the getter", async () => {
+    // Older wiring (and every test double) omits it; that must read as "no such
+    // work", which is the answer those constructions gave before the field.
+    expect(await status()).toMatchObject({ terminalActive: false, installRunning: false });
+  });
+
   it("ignores liveness events from a process that no longer holds the slot", async () => {
     const retired = await startTurn();
     retired.emit("done", 0);

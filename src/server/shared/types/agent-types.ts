@@ -1525,4 +1525,17 @@ export interface WorkerAgentStatus {
    * replayability.
    */
   selfWakeActive?: boolean;
+  /**
+   * docs/242 — a PTY is running in the container (`TerminalController`).
+   *
+   * Reported because the container is the only place this fact lives: the
+   * terminal survives an orchestrator restart and is reattached when the
+   * session is next opened, so a `docker stop` decided without it kills a shell
+   * the user left running a build in. It says a shell EXISTS, not that it is
+   * doing anything — see the boot sweep for what that costs and why it is still
+   * the right side to err on.
+   */
+  terminalActive?: boolean;
+  /** docs/242 — an `agent.install` is in flight (`InstallController`). */
+  installRunning?: boolean;
 }

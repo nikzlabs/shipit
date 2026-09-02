@@ -288,19 +288,39 @@ Two rules do the work, and both replaced an earlier version that read `running`:
   omits says nothing, so `turnActive` must be `=== false` — "unknown" keeps a
   legacy worker's turn alive.
 
-`GET /agent/status` therefore also publishes the docs/235 liveness axis, which
-the orchestrator otherwise holds only in memory (`runner.agentBusy`) and loses on
-restart: `backgroundTaskCount` (process-scoped, deliberately survives
-`agent_result` — a turn routinely ends with tasks still running) and
-`selfWakeActive` (turn-scoped; a self-woken turn never sets `turnActive`, so
-without this the sweep would kill it mid-flight).
+`GET /agent/status` therefore also publishes what the container knows and the
+orchestrator cannot re-derive after a restart — the docs/235 axis it otherwise
+holds only in memory as `runner.agentBusy`, plus the two controllers the agent
+controller does not own:
 
-Never reclaimed: a live or self-woken turn, outstanding background tasks, a
-`current`/`unknown` build, a standby, an archived session, a docs/241
-reservation, a failed probe, and a session whose runner is busy, has a viewer, or
-declines disposal (planning#298 ordering — a refused dispose is never followed by
-a destroy). The Compose stack always survives: `destroyAgentContainer()`, never
-`destroy()`, whose child sweep would delete the session's volumes.
+| Field | Scope | Why |
+|---|---|---|
+| `backgroundTaskCount` | process | A turn routinely *ends* with tasks still running, so it survives `agent_result`. Cleared by one `vacateSlot()`, because `/agent/kill` nulls the slot before the late `done` handler runs — a stale count fails CLOSED and holds the container forever. |
+| `selfWakeActive` | turn | A self-woken turn never sets `turnActive`. |
+| `terminalActive` | container | A PTY survives the restart and is reattached on the next open. Says a shell EXISTS, not that it is busy — nothing reports that. |
+| `installRunning` | container | `agent.install` mid-flight. |
+
+The reclaim also **re-probes** before destroying (~1 s). docs/235's wire trace
+drains the task list 1 ms before the self-wake, so a single probe can catch a
+worker that is about to start a turn looking idle.
+
+Never reclaimed: a live or self-woken turn, outstanding background tasks, a live
+terminal or install, a `current`/`unknown` build, a standby, an archived session,
+a docs/241 reservation, a probe that failed (either one), and a session whose
+runner is busy, has a viewer, or declines disposal (planning#298 ordering — a
+refused dispose is never followed by a destroy).
+
+**The Compose stack is not the sweep's to take, and not a preview it preserves.**
+A clean update already `compose down`s every stack on the way out
+(`shutdown-manager.ts` → `disposeAll` → each `disposed` handler); one that
+survives a crash is unroutable, because `preview-proxy.ts` resolves a service
+port through the in-memory `serviceManagers` map the restart emptied, and the
+next attach's `ServiceManager.start()` opens with `killStaleContainers()` — a
+force-remove of every `shipit-parent-session` container — before `compose up`.
+That last mechanism, not the button, is why a stale session's preview appears to
+restart when you open it. `destroyAgentContainer()` rather than `destroy()` for a
+different reason: `destroy()` reaps every volume the SESSION created through the
+Docker API proxy.
 
 This is NOT the steady-state path below — it fires once per boot, on staleness,
 with no memory-budget input.
