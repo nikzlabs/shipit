@@ -268,6 +268,43 @@ The slot must be filled before the stream opens, which is why
 `restart-turn-reattach.ts` runs the same path at boot for containers reporting a
 live turn, so the flow completes even in sessions nobody opens.
 
+### Reclaiming Stale Idle Containers on Update (docs/242)
+
+The same boot sweep has a second job: an update must actually give back the
+memory of the workers it left on the old image. For each rediscovered container
+it either **adopts** a live turn (above) or, when the worker is `stale` and
+reports itself idle, **destroys the agent container and stops there** — no
+recreate, because nobody is attached at boot and the lazy attach path
+cold-starts a fresh container on the current image at the next open (which is
+also what clears the stale-container banner).
+
+Two rules do the work, and both replaced an earlier version that read `running`:
+
+- **Idle means `turnActive === false`**, never `running === false`. `running`
+  stays true for a resident CLI idling between turns, i.e. the steady state, so
+  the old test refused the normal case: on 2026-09-02 it rotated 4 of 35 stale
+  containers and left 31 holding 25.3 GiB.
+- **Every clause is a positive report from the worker.** A field an older image
+  omits says nothing, so `turnActive` must be `=== false` — "unknown" keeps a
+  legacy worker's turn alive.
+
+`GET /agent/status` therefore also publishes the docs/235 liveness axis, which
+the orchestrator otherwise holds only in memory (`runner.agentBusy`) and loses on
+restart: `backgroundTaskCount` (process-scoped, deliberately survives
+`agent_result` — a turn routinely ends with tasks still running) and
+`selfWakeActive` (turn-scoped; a self-woken turn never sets `turnActive`, so
+without this the sweep would kill it mid-flight).
+
+Never reclaimed: a live or self-woken turn, outstanding background tasks, a
+`current`/`unknown` build, a standby, an archived session, a docs/241
+reservation, a failed probe, and a session whose runner is busy, has a viewer, or
+declines disposal (planning#298 ordering — a refused dispose is never followed by
+a destroy). The Compose stack always survives: `destroyAgentContainer()`, never
+`destroy()`, whose child sweep would delete the session's volumes.
+
+This is NOT the steady-state path below — it fires once per boot, on staleness,
+with no memory-budget input.
+
 ### Container Persistence Across Runner Disposal
 
 **`runner.dispose()` never destroys the Docker container.** Where a container does go away — idle cleanup, archive, Rescue — it is a *separate, explicit* `containerManager.destroy(sessionId)` call by that caller, sitting next to the dispose. Read the two as independent: a runner is an in-memory object, a container is a process on the host, and their lifetimes are deliberately not tied.
@@ -369,7 +406,7 @@ app.addHook("onClose"):
      -> stop the health monitor + drop listeners. Containers are NOT touched.
 ```
 
-**Session containers survive orchestrator shutdown, and so do their in-flight turns.** This is what makes updates zero-downtime (docs/113): `deploy.sh` replaces only the orchestrator, and the next boot re-adopts the survivors via `rediscoverContainers()` and `reattachInFlightTurns()` (docs/240). Orphan cleanup at startup reaps whatever no longer maps to an active session.
+**Session containers survive orchestrator shutdown, and so do their in-flight turns.** This is what makes updates zero-downtime (docs/113): `deploy.sh` replaces only the orchestrator, and the next boot re-adopts the survivors via `rediscoverContainers()` and `reattachInFlightTurns()` (docs/240). Orphan cleanup at startup reaps whatever no longer maps to an active session. What survives is *work*, not the container: the same sweep reclaims a stale worker that is idle (docs/242, above).
 
 **Standby containers are the one exception, and for the same reason.** docs/113 protects work in flight; a standby holds none — nobody has claimed it — while it does carry the previous deploy's worker image, pre-install and overlay base. So boot kills every standby (`reapStandbyContainers()`) and the warm pool rebuilds itself on the new image.
 
@@ -390,7 +427,8 @@ The session's **Compose stack** is the exception: it is still `compose down`-ed 
 
 **`agent.memory` / `agent.cpu` / `agent.pids` in `shipit.yaml` are removed keys** (docs/229). They are warned-and-ignored by `shipit-config.ts`, not honored — a repo that still sets them is getting host-derived sizing regardless.
 | Concurrent runners | 10 | `SessionRunnerRegistry` |
-| Container reclaim | Only when over the memory budget (docs/284) | `idle-enforcer.ts` |
+| Container reclaim (steady state) | Only when over the memory budget (docs/284) | `idle-enforcer.ts` |
+| Container reclaim (on update) | Every stale idle worker, once per boot, regardless of the budget (docs/242) | `restart-turn-reattach.ts` |
 | Unused runner idle | 10 sec | `ContainerSessionRunner` |
 | Container stop timeout | 5 s | `session-container.ts` |
 | Health check interval | 500 ms | `session-container.ts` |

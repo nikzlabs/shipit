@@ -93,6 +93,20 @@ export class AgentController {
   private turnActive = false;
   private turnStartSseSeq = 0;
 
+  /**
+   * docs/242 — the docs/235 liveness axis, worker-side, so a *restarted*
+   * orchestrator can see it. `backgroundTaskCount` is the level signal (the last
+   * `agent_background_tasks` list length) and is process-scoped: a turn may end
+   * with tasks still outstanding, which is exactly the state that must not read
+   * as idle. `selfWakeActive` is the edge signal and is turn-scoped, so
+   * {@link endTurn} clears it.
+   *
+   * Both are only ever emitted by a backend that has them (Claude today), so a
+   * backend that never self-wakes simply reports 0/false.
+   */
+  private backgroundTaskCount = 0;
+  private selfWakeActive = false;
+
   // docs/144 — in-flight sub-agent spawns, keyed by orchestrator-supplied
   // spawnId. These run OUTSIDE the single-occupant `this.agent` slot as plain
   // subprocesses and never broadcast to SSE; their output is returned
@@ -431,6 +445,8 @@ export class AgentController {
       oldestSseSeq: this.deps.oldestSseSeq?.() ?? 0,
       turnActive: this.turnActive,
       turnStartSseSeq: this.turnStartSseSeq,
+      backgroundTaskCount: this.backgroundTaskCount,
+      selfWakeActive: this.selfWakeActive,
       ...(this.residentSpawn?.runToken !== undefined ? { runToken: this.residentSpawn.runToken } : {}),
       ...(this.turnDeliveryId !== undefined ? { deliveryId: this.turnDeliveryId } : {}),
       ...(this.agent ? { agentId: this.agent.agentId } : {}),
@@ -454,6 +470,11 @@ export class AgentController {
   /** docs/240 — the turn ended (result, process exit, or kill). */
   private endTurn(): void {
     this.turnActive = false;
+    // docs/242 — the self-wake flag belongs to the turn it started. The
+    // background-task COUNT deliberately survives: a turn routinely ends with
+    // tasks still running, and that is the state the boot sweep must not read
+    // as idle. It is cleared where the process dies instead.
+    this.selfWakeActive = false;
     // planning#266 — the delivery belongs to the turn that just ended; a later
     // `/agent/status` must not report it as still live.
     this.turnDeliveryId = undefined;
@@ -467,6 +488,7 @@ export class AgentController {
       this.agent = null;
       this.residentSpawn = null;
       this.endTurn();
+      this.backgroundTaskCount = 0; // see the `done` handler
     }
   }
 
@@ -525,11 +547,16 @@ export class AgentController {
       // orchestrator strips the token back off before handing the event to the
       // proxy, so `AgentEvent` consumers never see it.
       this.deps.broadcast({ type: "agent_event", data: { ...forWire, runToken } });
+      if (this.agent !== agent) return;
       // docs/240 — `agent_result` is the canonical turn-ended signal (the same
       // one the orchestrator keys its post-turn flow off). A resident streaming
       // process stays in the slot afterwards, so `running` alone can't tell an
       // in-flight turn from an idle-resident one — this can.
-      if (event.type === "agent_result" && this.agent === agent) this.endTurn();
+      if (event.type === "agent_result") this.endTurn();
+      // docs/242 — mirror the docs/235 liveness the orchestrator tracks on the
+      // runner, so it survives an orchestrator restart (see WorkerAgentStatus).
+      else if (event.type === "agent_background_tasks") this.backgroundTaskCount = event.tasks.length;
+      else if (event.type === "agent_self_wake") this.selfWakeActive = true;
     });
 
     // Capture `agent` in the closure so the done/error handlers compare against
@@ -554,6 +581,11 @@ export class AgentController {
         this.agent = null;
         this.residentSpawn = null;
         this.endTurn();
+        // docs/242 — the tasks belonged to this process, and a dead CLI will
+        // never send the drained list. Leaving the count set would make the
+        // container permanently unreclaimable (the same reason docs/235 clears
+        // `agentBusy` on process death).
+        this.backgroundTaskCount = 0;
       }
     });
 
@@ -564,6 +596,7 @@ export class AgentController {
         this.agent = null;
         this.residentSpawn = null;
         this.endTurn();
+        this.backgroundTaskCount = 0; // see the `done` handler
       }
     });
 

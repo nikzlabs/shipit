@@ -234,7 +234,9 @@ this "shutting down" or "pausing," but it is a full teardown — `docker stop` +
 thawed; it is deleted. When the user sends the next message, a **brand-new**
 container is created and re-mounted onto the same host clone at `/workspace`.
 
-**Idle time alone never causes this.** ShipIt reclaims only when it is over its
+**Idle time alone never causes this.** There are exactly two triggers.
+
+**Memory pressure**, the steady-state one: ShipIt reclaims when it is over its
 **memory budget** (Settings → Advanced). With none set, the default is the whole
 machine on a server deployment and half of it on a local install, where the user
 is working on the same machine. It takes the longest-idle session first. Two tiers, in
@@ -243,6 +245,13 @@ keep running — an idle session's preview stays up and reachable — and only i
 that did not free enough does the **preview stack** stop too. So a session you
 left an hour ago may still have both, and a preview may outlive the agent
 container that started it.
+
+**A ShipIt update**: when ShipIt itself is updated, every container left on the
+old image that is genuinely idle at that moment is destroyed and *not* replaced —
+regardless of how much memory is free. A fresh one starts when the session is
+next opened. "Genuinely idle" excludes a live turn, a turn the agent woke itself
+for, an outstanding background task, an attached viewer, and a session with
+**Keep preview running** enabled; the Compose stack survives either way.
 
 The user can explicitly enable **Keep preview running** for a session from its
 overflow menu. While enabled, ShipIt reserves that session's container and its

@@ -1,19 +1,21 @@
 ---
+issue: planning#498
 title: Stale session-container indication
-description: Detect workers left on an older ShipIt build after an update and show an inline suggestion to restart them.
+description: Detect workers left on an older ShipIt build after an update, reclaim the idle ones so the update frees their memory, and show an inline restart suggestion for the rest.
 ---
 
 # Stale session-container indication
 
 ## Status
 
-Implemented (2026-07-31), automatic idle rotation added 2026-08-02.
+Implemented (2026-07-31), automatic idle rotation added 2026-08-02, replaced by
+idle **reclaim** 2026-09-02 (reqs 7, 8).
 
 Worker image build IDs are retained on fresh and adopted container records,
 classified centrally, and delivered as a transient session-scoped WebSocket
-message. On orchestrator startup, a stale container whose agent process reports
-stopped is now recreated automatically from the current image. A live turn is
-still re-adopted and is never interrupted.
+message. On orchestrator startup, every stale container that is genuinely idle is
+destroyed and *not* recreated; a live turn is still re-adopted and is never
+interrupted. See [Idle reclaim on update](#idle-reclaim-on-update).
 
 ## Requirement provenance
 
@@ -67,11 +69,121 @@ primary indication.
 
 ### Running-turn safety
 
-Restarting the agent container kills its current CLI process. The boot sweep
+Reclaiming the agent container kills its current CLI process. The boot sweep
 therefore checks the worker's authoritative agent status: a live turn is
-re-adopted unchanged, while only a stale worker reporting `running: false` is
-rotated automatically. The manual action remains disabled during a turn as a
-fallback for states that cannot be classified automatically.
+re-adopted unchanged and never touched. The manual action remains disabled during
+a turn as a fallback for states that cannot be classified automatically.
+
+**`running: false` was the wrong test, and it is gone (2026-09-02).** The rule
+this section originally described rotated only a stale worker reporting
+`running: false`. `WorkerAgentStatus.running` means "a backend process occupies
+the single agent slot" and stays true for a resident CLI **idle between turns** —
+which, under live steering, is the steady state of every healthy Claude worker.
+So the guard refused the normal case: on the production update of 2026-09-02, 35
+containers were rediscovered, all 35 logged build skew, every `/agent/status`
+probe answered, and **4** were rotated — the four whose CLI had fully exited. The
+other 31 held 25.3 GiB and kept their banner. The test is now `turnActive`, the
+field that means a turn is genuinely mid-flight.
+
+### Idle reclaim on update
+
+Req 7 asks for the memory back, which makes the two halves of the old rotation
+both wrong:
+
+**1. Idle is `turnActive === false`, not `running === false`.** With the
+correction above, an idle-resident CLI is a reclaim candidate. Every clause of
+the predicate (`isStaleIdleReclaimCandidate`, `restart-turn-reattach.ts`) reads a
+**positive** report from the worker rather than an absence, because an image that
+predates a field says nothing about it: `turnActive === false` (a legacy
+pre-docs/240 worker omits it, and "unknown" has to stay conservative or a turn on
+such an image dies mid-flight), plus the two docs/235 liveness fields below.
+
+**2. Destroy, and stop there.** The old branch destroyed the agent container and
+immediately called `runnerRegistry.getOrCreate`, spending the RAM straight back
+on a session nobody was looking at — which is why the four rotations freed
+nothing either. No viewer is attached at boot, so there is nothing to keep warm:
+the lazy attach path (`activateSession` → `materializeRunner` → `getOrCreate`)
+cold-starts a fresh container on the current image when the user next opens the
+session, and the `container_started` listener re-sends
+`session_container_freshness` as `current` — which is req 8, the banner never
+appears.
+
+#### Worker-side liveness, and why the wire needed two new fields
+
+docs/235 established that `running` is not the busy signal: a session can be live
+without an orchestrator-started turn, either because a background task is
+outstanding (the *level* signal) or because the CLI woke **itself** when one
+finished (the *edge* signal — and a self-woken turn never sets `turnActive`).
+The orchestrator holds both facts on the runner as `agentBusy`, and that state is
+in-memory and **dies with the orchestrator process**. A boot sweep is on the
+other side of exactly that death, so it could not see either: it would have
+destroyed the container running a backgrounded review, or a self-woken turn
+mid-flight — the failure docs/235 exists to prevent.
+
+So `WorkerAgentStatus` gains two optional fields, published by
+`AgentController`: `backgroundTaskCount` (process-scoped — a turn routinely *ends*
+with tasks still running, so it deliberately survives `agent_result` and is
+cleared where the process dies) and `selfWakeActive` (turn-scoped, cleared by the
+same `agent_result` that clears `turnActive`). Both are additive, so
+`worker-wire-contract.test.ts` stays green.
+
+They are `?? 0` / `!== true` on absence, unlike `turnActive`, and that asymmetry
+is deliberate: every container running at the moment this shipped predates the
+fields, so treating their absence as "unknown" would mean nothing is ever
+reclaimable and the fix would never fire. Absence degrades to the blindness the
+sweep already had, for one deploy per container.
+
+#### What is never reclaimed
+
+A live turn (adopted, docs/240), a self-woken turn, a worker with outstanding
+background tasks, a `current` or `unknown` build, a standby/warm-pool container,
+an archived session or one with no `workspaceDir`, a session holding a docs/241
+always-on preview reservation (`holdsActiveReservation`), a worker whose
+`/agent/status` probe failed (silence is not a report of idleness), and a session
+whose runner is busy, has a viewer, or **declines** disposal — planning#298's
+ordering applies here too, so a refused dispose is never followed by a destroy.
+
+An orchestrator-side **queue** and a **post-turn hold** need no check: both live
+in process memory that the restart already destroyed, so at boot there is nothing
+to see and nothing to lose. Uncommitted edits are safe for a different reason —
+the workspace is a host bind mount and outlives any container.
+
+An **in-flight `/agent/spawn` consult** is deliberately not a hold either, and
+that is docs/249's finding rather than an omission: the worker keeps no durable
+record of a sub-agent run and returns its output inline over an in-memory
+promise, so a restart already stranded it — `consult-card-reconcile.ts` runs at
+the same boot and marks every such card `cancelled`. The subprocess that survives
+is writing into a socket whose other end is gone, so reclaiming its container
+ends work that was already unrecoverable rather than losing recoverable work.
+This is the one place where the sweep and the steady-state enforcer legitimately
+differ: `agentBusy` protects a live consult mid-session, because there the
+caller is still there to receive it.
+
+#### The Compose stack survives
+
+The staleness being acted on belongs to ShipIt's own worker image; a project's
+Compose services run the user's images and an update does not make them old.
+Keeping them is also the only safe option available: the full teardown
+(`containerManager.destroy`) sweeps every `shipit-parent-session` child
+**including volumes**, so a boot-time memory sweep built on it would delete a
+session's database on every deploy. What is left is docs/284 tier 1's split —
+drop the agent container, keep the preview — which is the trade this sweep wants
+anyway, and it means a session opened right after an update still has its
+preview.
+
+Known limit, carried deliberately: a stack orphaned this way is not a docs/284
+**tier 2** candidate, since tier 2 only considers stacks *tier 1* orphaned
+(`tier1At`). Such a preview holds its memory until the user next opens the
+session, which makes it tier-1 eligible again. Still a large net win — the
+incident measured 25.3 GiB in agent containers against 5.0 GiB in previews — and
+closing it means teaching the enforcer about a second source of orphans, which is
+its own change (see [Out of scope](#out-of-scope)).
+
+This sweep is **not** the steady-state reclaim path. `idle-enforcer.ts` owns
+that, driven by the docs/284 memory budget; this one fires once per boot and is
+driven by worker staleness alone. It never fired in the incident because the host
+was at 32 % of budget while the evict line is 85 % — the two answer different
+questions and stay separate.
 
 ### Restart lifecycle
 
@@ -193,7 +305,10 @@ ShipIt update
   -> old session container survives
   -> new orchestrator rediscovers container
   -> boot sweep probes agent status
-  -> stopped agent + stale worker: recreate container automatically
+  -> idle + stale worker: destroy the agent container, do NOT recreate
+       (memory freed; Compose stack keeps serving)
+  -> next open: fresh container on the current image, no banner
+  -> active turn / self-wake / pending background task: leave it alone
   -> active turn: re-adopt without interruption
   -> Docker label supplies workerBuildId
   -> compare with orchestrator buildId
@@ -211,8 +326,11 @@ ShipIt update
 |---|---|
 | Worker and orchestrator IDs match | No warning. |
 | Either ID is missing | No stale warning; diagnostics/logs show unknown. |
-| Update occurs during an active turn | Turn survives and is re-adopted; automatic rotation does not run. |
-| Stale container is running but its agent is stopped | Boot sweep recreates the agent container from the current image automatically. |
+| Update occurs during an active turn | Turn survives and is re-adopted; the reclaim does not run for it. |
+| Stale container is idle — agent stopped, or its CLI resident between turns | Boot sweep destroys the agent container and does not recreate it. The next open cold-starts on the current image. |
+| Stale idle container with outstanding background tasks, or a self-woken turn in flight | Left alone (`backgroundTaskCount` / `selfWakeActive`). Reclaimed on a later boot, once the work has drained. |
+| Stale idle container whose `/agent/status` probe fails | Left alone. A worker that cannot answer has not reported itself idle. |
+| Stale idle session with **Keep preview running** | Left alone — the docs/241 reservation wins over reclaim, as it does in the idle enforcer. |
 | Restart request fails | Existing container remains classified stale; warning stays visible and the existing error surface explains the failure. |
 | New container starts from an unexpectedly old/custom image | Recomputed IDs still differ, so the warning remains. |
 | Session has no running container | No warning. Its next activation creates from the current image. |
@@ -231,8 +349,17 @@ beside chat.
 ### Restart every surviving worker after an update
 
 Rejected. It would undo the benefit of zero-downtime updates and could kill
-active turns. Automatic rotation is limited to workers whose agent endpoint
-authoritatively reports no resident process; live turns remain untouched.
+active turns. The reclaim is limited to workers whose agent endpoint
+authoritatively reports no live work; live turns remain untouched.
+
+### Reclaim the Compose stack too, for the last 5 GiB
+
+Rejected here. The tempting call — `containerManager.destroy()` — also deletes
+the session's Compose **volumes**, i.e. a project's database, which a memory
+sweep must never do. Doing it safely means the docs/284 `services.stop` hook,
+i.e. giving a boot sweep a second reclaim tier and killing the preview of every
+session on every deploy, for a fifth of the memory. See
+[Idle reclaim on update](#idle-reclaim-on-update).
 
 ### Compare semantic release versions
 
@@ -282,12 +409,18 @@ themes, at desktop width, and in the mobile chat layout.
 | UI | new `src/client/components/StaleContainerBanner.tsx`, chat-column composition in `src/client/App.tsx` |
 | Existing restart flow | `src/server/orchestrator/services/recovery.ts`, `src/server/orchestrator/api-routes-container.ts`, `src/client/components/SessionHealthStrip/RecoveryActions.tsx` |
 | Tests | `container-freshness.test.ts`, `container-discovery.test.ts`, `integration_tests/connection.test.ts`, `StaleContainerBanner.test.tsx`, `dispatch-session-scope.test.ts` |
-| Related designs | `docs/113-zero-downtime-updates`, `docs/112-container-recovery`, `docs/127-restart-agent`, `docs/240-turn-survives-orchestrator-restart` |
+| Idle reclaim on update | `src/server/orchestrator/restart-turn-reattach.ts` (`isStaleIdleReclaimCandidate` + the reclaim branch), `restart-turn-reattach.test.ts` |
+| Worker-side liveness on the wire | `src/server/session/agent-controller.ts` (`backgroundTaskCount`, `selfWakeActive`), `src/server/shared/types/agent-types.ts` (`WorkerAgentStatus`), `agent-controller.test.ts` |
+| Related designs | `docs/113-zero-downtime-updates`, `docs/112-container-recovery`, `docs/127-restart-agent`, `docs/240-turn-survives-orchestrator-restart`, `docs/235-agent-self-wake-liveness`, `docs/284-idle-preview-survives-agent-stop` |
 
 ## Out of scope
 
 - Blocking chat on a stale-but-compatible worker.
-- Restarting the user's Compose service containers.
+- Restarting or stopping the user's Compose service containers.
+- Making a stack the boot sweep orphaned reclaimable by docs/284 tier 2. Tier 2
+  keys on `tier1At`, the enforcer's own record of what *it* orphaned; a second
+  source needs the enforcer to learn about it, and the enforcer's steady-state
+  model is deliberately untouched here.
 - A fleet-wide admin page or bulk restart action.
 - A sidebar badge in the first version.
 - Runtime worker protocol negotiation; docs/113 defers that until the first
