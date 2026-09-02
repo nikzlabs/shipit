@@ -145,3 +145,30 @@ opens a chore PR that forward-ports the released version onto `main`.
 - [x] Tests: `release-prepare.test.ts` — OPEN still forwarded, merged/closed/absent-reason refused,
   one per-reason remedy assertion; all refusal guards verified red with the guard deleted
 - [x] Docs: `shipit-docs/release.md` dead-PR guard bullet, plan.md above
+- [x] Wrong-base guard: `prepareFinalRelease` requires `pr.baseBranch === releaseBranch`. An OPEN
+  `release/<version>` PR into one maintenance branch was reused by a run targeting another
+  (`findPullRequest` resolves by head branch, no base filter), pairing that PR with the requested
+  branch in both the shim line and the lifecycle poller — merging published through the wrong branch
+- [x] Checked TWICE: a preflight via the new exported `findBranchPullRequest` before `createBranchFrom`,
+  because `agentCreatePr` force-pushes before it decides — inspecting only its result already voided the
+  open PR's diff/checks/reviews for a run about to be refused; plus the authoritative check on the
+  returned value, since the PR can be retargeted in between. The message says which fired
+- [x] Branch names rendered into the suggested command go through `safeRefForCommand` (mirrors
+  `safeBaseRef` in `agent-shim/gh.ts`) — a ref may legally contain `;`, `$`, `(`, `)` and quotes
+- [x] Remedy text corrected: "close it and re-run" does NOT work (a closed PR still resolves, so it
+  lands on the dead-PR guard); the working remedies are `--release-branch <that base>`, a different
+  version, or retargeting on GitHub
+- [x] `onWorkspaceRewritten` moved into a `finally` in the prepare route, GATED on a new `onTreeRewrite`
+  callback that `prepareRelease` fires at each `checkout -B`. `prepareRelease` rewrites the tree before
+  most of its failure paths (content-free guard, no-op-bump 500, force-push, `agentCreatePr` errors,
+  both release-PR guards), so notifying only on success left the container on a stale `shipit.yaml` /
+  compose file / `node_modules` — but notifying unconditionally is not free either: it can queue a
+  Compose `reconcile()` (clearing the service map, poller and log followers) and open the install gate,
+  tearing down install-gated preview services
+- [x] Tests: `release-prepare.test.ts` preflight refusal (nothing destructive ran) + post-preflight
+  refusal + injection-safe command + two acceptance guards against over-rejection;
+  `integration_tests/release-prepare-rewrite-notify.test.ts` drives the real route to a post-rewrite
+  failure and asserts the notification, AND to a pre-rewrite failure asserting silence. Every guard
+  verified red without its fix
+- [x] Docs: `shipit-docs/release.md` wrong-base guard bullet, plan.md above. Corrected plan.md's earlier
+  wrong claim that over-notifying is safe because the helper is idempotent

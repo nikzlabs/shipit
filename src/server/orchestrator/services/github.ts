@@ -118,6 +118,36 @@ async function findBranchPr(
   };
 }
 
+/**
+ * The pull request {@link agentCreatePr} would resolve for `head`, without
+ * creating, pushing, or mutating anything.
+ *
+ * Exists so a caller can refuse BEFORE a destructive step. `agentCreatePr`
+ * force-pushes the head branch and then decides what to do, so a caller that
+ * only inspects its RESULT has already replaced an existing PR's payload —
+ * invalidating that PR's diff, checks and reviews — by the time it can object.
+ * The release flow uses this to reject a `release/<version>` branch whose open
+ * PR targets a different maintenance branch while the push is still avoidable
+ * (`release-prepare.ts`).
+ *
+ * Returns `null` when the branch has never had a PR, or when the remote can't
+ * be resolved — a preflight that cannot see the remote must not block the
+ * operation, since the authoritative check still runs on the result.
+ */
+export async function findBranchPullRequest(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  head: string,
+  remoteUrl?: string,
+): Promise<{ number: number; base: string; state: "open" | "closed"; merged: boolean } | null> {
+  if (!githubAuthManager.authenticated) return null;
+  const resolved = await resolveGitHubRemote(git, remoteUrl);
+  if ("error" in resolved) return null;
+  const pr = await findBranchPr(githubAuthManager, resolved.owner, resolved.repo, head);
+  if (!pr) return null;
+  return { number: pr.number, base: pr.base, state: pr.state, merged: pr.merged };
+}
+
 // Re-export CI-fix logic for backwards compatibility
 export {
   fetchCIFailureLogs,

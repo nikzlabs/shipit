@@ -36,7 +36,7 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { ReleaseBumpType } from "../../shared/types/release-types.js";
 import type { ReleaseProposeInput } from "../release-status-poller.js";
 import { ServiceError } from "./types.js";
-import { agentCreatePr } from "./github.js";
+import { agentCreatePr, findBranchPullRequest } from "./github.js";
 import {
   computeNextVersion,
   detectAllVersionSources,
@@ -288,6 +288,16 @@ export interface PrepareReleaseArgs extends PlanReleaseArgs {
   /** Drop the session's pending debounced auto-push once this flow's own push lands. */
   cancelAutoPush?: (sessionId: string) => void;
   chatHistory?: ChatHistoryManager;
+  /**
+   * Called the moment this flow first rewrites the session's WORKTREE (the
+   * `checkout -B` onto the release branch), success or failure. The caller owes
+   * a live container an `onWorkspaceRewritten` after that, and most of the ways
+   * `prepare` fails happen on the far side of it — so "did it return?" is the
+   * wrong question to answer that with, and "always notify" is not a free
+   * substitute (a spurious call can queue a Compose reconcile and open the
+   * install gate). Never fires on the prerelease path, which only tags.
+   */
+  onTreeRewrite?: () => void;
 }
 
 export type PrepareReleaseResult =
@@ -423,6 +433,20 @@ async function prepareFinalRelease(
   const headBranch = `release/${version}`;
   const remoteBranches = await git.listRemoteBranches();
 
+  // PREFLIGHT the existing PR's base, before anything destructive. ShipIt
+  // resolves a PR by head branch alone, so an open `release/<version>` PR into
+  // one maintenance branch would otherwise be adopted by a run targeting
+  // another. Checking only `agentCreatePr`'s RESULT is too late: by then the
+  // head branch has been reset and force-pushed, which replaces that PR's
+  // payload and voids its diff, checks and reviews — for a run we are about to
+  // refuse anyway. A typo'd `--release-branch` must not cost the open PR its
+  // review state. The authoritative check still runs on the result below, since
+  // the PR can be retargeted between these two moments.
+  const existing = await findBranchPullRequest(git, githubAuth, headBranch, args.remoteUrl);
+  if (existing?.state === "open" && existing.base !== releaseBranch) {
+    throw new ServiceError(409, wrongBasePrMessage(headBranch, releaseBranch, existing.number, existing.base, false));
+  }
+
   // Resolve the start point: origin/<release-branch>. When the branch is absent,
   // bootstrap it (first release) off the default base — but only on explicit opt-in.
   let startPoint = `origin/${releaseBranch}`;
@@ -440,8 +464,10 @@ async function prepareFinalRelease(
     const detected = await git.getDefaultBranch();
     const base = remoteBranches.includes(detected) ? detected : null;
     if (!base) throw new ServiceError(400, "Could not resolve the repository's default branch to bootstrap from.");
-    // Create the maintenance branch on the remote off the base tip.
+    // Create the maintenance branch on the remote off the base tip. A
+    // `checkout -B` like the one below, so the worktree moves here too.
     await git.createBranchFrom(releaseBranch, `origin/${base}`);
+    args.onTreeRewrite?.();
     await git.push("origin", releaseBranch);
     startPoint = `origin/${releaseBranch}`;
   }
@@ -462,7 +488,10 @@ async function prepareFinalRelease(
   }
 
   // Build the deterministic head branch off the release branch (create or reset).
+  // From here the session's worktree is rewritten, so the caller has to be told
+  // even if everything after this point fails.
   await git.createBranchFrom(headBranch, startPoint);
+  args.onTreeRewrite?.();
 
   // Apply the payload.
   if (args.pick?.length) {
@@ -575,6 +604,17 @@ async function prepareFinalRelease(
     throw new ServiceError(409, deadReleasePrMessage(headBranch, releaseBranch, pr));
   }
 
+  // …and it must target the branch THIS run is releasing into. The preflight
+  // above catches the ordinary case before any damage; this is the
+  // authoritative one, and it is not redundant — the PR can be retargeted
+  // between the two, and only a check on the value we are about to RETURN can
+  // guarantee `releaseBranch` and `prNumber` describe the same pull request.
+  // The create path can't trip it: `base: releaseBranch` is what `agentCreatePr`
+  // opens against, so it echoes the same value back.
+  if (pr.baseBranch !== releaseBranch) {
+    throw new ServiceError(409, wrongBasePrMessage(headBranch, releaseBranch, pr.number, pr.baseBranch, true));
+  }
+
   return {
     kind: "pr-opened",
     version,
@@ -587,6 +627,57 @@ async function prepareFinalRelease(
     prUrl: pr.url,
     alreadyExisted: pr.alreadyExisted,
   };
+}
+
+/**
+ * A branch name we are about to render INTO a command the user is told to run.
+ *
+ * Git refs may legally contain `;`, `$`, `(`, `)`, `&` and quotes, and these
+ * names come from the GitHub API, so pasting one straight through would be an
+ * injection into that copied command. Anything outside the ordinary ref
+ * alphabet degrades to a placeholder — the user then supplies the branch
+ * themselves rather than running something we composed. Mirrors `safeBaseRef`
+ * in `agent-shim/gh.ts`, which solves the same problem for the PR-create notice.
+ */
+function safeRefForCommand(value: string): string {
+  return /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) ? value : "<branch>";
+}
+
+/**
+ * The 409 for a `release/<version>` branch whose open pull request targets a
+ * different maintenance branch than this run asked for.
+ *
+ * `pushed` distinguishes the preflight (nothing done yet) from the
+ * post-`agentCreatePr` check (the head branch was force-pushed, so the pull
+ * request's payload has already been replaced). Saying which happened is the
+ * difference between "try again" and "your open pull request's checks are now
+ * stale" — the user cannot see that from the outside.
+ *
+ * The remedies are the two that actually work. "Close it and re-run" is
+ * deliberately NOT offered: `findBranchPr` falls back to a closed pull request,
+ * so a closed one lands on the dead-PR guard instead. Retargeting on GitHub
+ * does work but is not something ShipIt's `gh` shim can do, so it is named last
+ * as an escape hatch rather than led with.
+ */
+function wrongBasePrMessage(
+  headBranch: string,
+  releaseBranch: string,
+  prNumber: number,
+  prBase: string,
+  pushed: boolean,
+): string {
+  const stale = pushed
+    ? ` Note the version bump was already pushed to "${headBranch}", so #${prNumber} now carries it and its previous checks are stale.`
+    : "";
+  return (
+    `The branch "${headBranch}" already has an open pull request (#${prNumber}) into "${prBase}", but ` +
+    `this release targets "${releaseBranch}". Merging it would publish through the wrong maintenance ` +
+    `branch. ShipIt matches an existing pull request by branch name alone and won't retarget one for ` +
+    `you — re-run with --release-branch ${safeRefForCommand(prBase)} to continue that pull request, or ` +
+    `release a different version, which starts from a fresh branch. (Retargeting #${prNumber} to ` +
+    `"${releaseBranch}" on GitHub also works; closing it does not — a closed pull request still ` +
+    `blocks the branch.)${stale}`
+  );
 }
 
 /**

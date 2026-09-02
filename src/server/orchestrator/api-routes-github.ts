@@ -464,26 +464,6 @@ export async function registerGitHubRoutes(
         const { gitDir, remoteUrl } = resolvePrTarget(session, dir, request.body ?? {});
         const git = createGitManager(gitDir);
         const rel = readReleaseConfig(gitDir);
-        const result = await prepareRelease(git, deps.githubAuthManager, {
-          dir: gitDir,
-          bump: request.body?.bump,
-          prerelease: request.body?.prerelease,
-          pick: request.body?.pick,
-          from: request.body?.from,
-          releaseBranch: request.body?.releaseBranch ?? rel.branch ?? "stable",
-          mechanism: rel.mechanism,
-          bootstrap: request.body?.bootstrap,
-          allowEmpty: request.body?.allowEmpty,
-          confirm: request.body?.confirm,
-          versionSourcePath: request.body?.versionSourcePath ?? rel.versionSourcePath,
-          notes: request.body?.notes,
-          remoteUrl,
-          sessionId: request.params.id,
-          runnerRegistry: deps.runnerRegistry,
-          ...(deps.cancelAutoPush ? { cancelAutoPush: deps.cancelAutoPush } : {}),
-          chatHistory: deps.chatHistoryManager,
-        });
-
         // nikzlabs/shipit#2429 — `prepare` re-materializes the worktree from the
         // orchestrator (a `checkout -B` onto the release branch, plus the
         // cherry-picks or the `--from` merge-override), so it can leave the live
@@ -491,8 +471,52 @@ export async function registerGitHubRoutes(
         // on the target being the session's OWN clone: `resolvePrTarget` sends a
         // `--repo`/`--cwd` release at a different one, whose dependencies are
         // not this session's to reinstall.
-        if (gitDir === dir) {
-          onWorkspaceRewritten(deps.runnerRegistry.get(request.params.id), "release-prepare");
+        //
+        // In a `finally`, because `prepareRelease` REWRITES THE TREE BEFORE most
+        // of the ways it can fail: the content-free guard, the no-op-bump 500,
+        // the force-push, `agentCreatePr`'s own errors and the two release-PR
+        // guards all throw after `createBranchFrom` has already checked out the
+        // release branch and applied the payload. Notifying only on success left
+        // exactly those failures — the routinely-hit ones — with the container
+        // still on its pre-prepare `shipit.yaml`, compose file and node_modules,
+        // which is the condition `workspace-rewrite.ts` exists to prevent.
+        //
+        // Gated on `treeRewritten` rather than fired unconditionally, because
+        // the notification is NOT free: `reevaluateWorkspaceConfig` can rerun
+        // service setup or queue a Compose reconcile (which clears the service
+        // map, poller and log followers), and `notifyWorkspaceRewritten` opens
+        // the install gate, tearing down install-gated preview services before
+        // the content-key marker is checked. Firing that after an auth failure,
+        // a dirty tree or a prerelease tag — none of which touch the worktree —
+        // would disrupt a live session for no reason. `prepareRelease` reports
+        // the one moment that matters, so this asks it instead of guessing.
+        let treeRewritten = false;
+        let result;
+        try {
+          result = await prepareRelease(git, deps.githubAuthManager, {
+            onTreeRewrite: () => { treeRewritten = true; },
+            dir: gitDir,
+            bump: request.body?.bump,
+            prerelease: request.body?.prerelease,
+            pick: request.body?.pick,
+            from: request.body?.from,
+            releaseBranch: request.body?.releaseBranch ?? rel.branch ?? "stable",
+            mechanism: rel.mechanism,
+            bootstrap: request.body?.bootstrap,
+            allowEmpty: request.body?.allowEmpty,
+            confirm: request.body?.confirm,
+            versionSourcePath: request.body?.versionSourcePath ?? rel.versionSourcePath,
+            notes: request.body?.notes,
+            remoteUrl,
+            sessionId: request.params.id,
+            runnerRegistry: deps.runnerRegistry,
+            ...(deps.cancelAutoPush ? { cancelAutoPush: deps.cancelAutoPush } : {}),
+            chatHistory: deps.chatHistoryManager,
+          });
+        } finally {
+          if (gitDir === dir && treeRewritten) {
+            onWorkspaceRewritten(deps.runnerRegistry.get(request.params.id), "release-prepare");
+          }
         }
 
         // Drive the release poller directly off the result (server-side, no
