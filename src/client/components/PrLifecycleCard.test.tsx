@@ -9,6 +9,7 @@ import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useCommentStore } from "../stores/comment-store.js";
 import { useIssuesStore } from "../stores/issues-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 import type { PrMergeableState, PrReviewDecision, SessionInfo } from "../../server/shared/types.js";
 import type { NotableFileChange } from "../../server/shared/types/github-types.js";
 import { saveChangedDocsExpanded } from "../utils/local-storage.js";
@@ -711,6 +712,68 @@ describe("PrLifecycleCard", () => {
     fireEvent.click(screen.getByLabelText("Pull request actions"));
     expect(screen.queryByText("Auto-fix")).toBeNull();
     expect(screen.queryByText("Auto-merge")).toBeNull();
+  });
+
+  // docs/146 — the auto-resolve failure banner. `lastError` carries raw git
+  // stderr on the error paths, so the banner must stay a fixed size and be
+  // closable; without both, a long error grows the card until it hides the
+  // conversation and there is no way out of it.
+  describe("auto-resolve failure banner", () => {
+    const exhausted = (lastError: string): PrCardState => ({
+      ...openPrCard,
+      autoResolve: { status: "exhausted", attemptCount: 3, maxAttempts: 3, lastError },
+    });
+
+    beforeEach(() => {
+      useSettingsStore.setState({ autoResolveConflicts: true });
+    });
+
+    afterEach(() => {
+      useSettingsStore.setState({ autoResolveConflicts: false });
+    });
+
+    it("caps the error message height and scrolls the overflow", () => {
+      setCard("s1", exhausted("error: could not apply abc1234\n".repeat(200)));
+
+      render(<PrLifecycleCard sessionId="s1" />);
+
+      const box = screen.getByTestId("auto-resolve-last-error");
+      expect(box.className).toContain("max-h-20");
+      expect(box.className).toContain("overflow-y-auto");
+    });
+
+    it("closes on dismiss and stays closed while the failure is the same", () => {
+      setCard("s1", exhausted("timeout"));
+
+      render(<PrLifecycleCard sessionId="s1" />);
+      expect(screen.getByTestId("auto-resolve-last-error")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId("auto-resolve-dismiss"));
+      expect(screen.queryByTestId("auto-resolve-last-error")).toBeNull();
+
+      // A repeat snapshot of the SAME exhausted state must not re-open it.
+      act(() => setCard("s1", exhausted("timeout")));
+      expect(screen.queryByTestId("auto-resolve-last-error")).toBeNull();
+    });
+
+    it("re-opens for a later failure, because the status leaves exhausted first", () => {
+      setCard("s1", exhausted("timeout"));
+
+      render(<PrLifecycleCard sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("auto-resolve-dismiss"));
+      expect(screen.queryByTestId("auto-resolve-last-error")).toBeNull();
+
+      // Retry / user activity resets the manager to idle...
+      act(() =>
+        setCard("s1", {
+          ...openPrCard,
+          autoResolve: { status: "idle", attemptCount: 0, maxAttempts: 3 },
+        }),
+      );
+      // ...and the next exhaustion is visible again.
+      act(() => setCard("s1", exhausted("timeout")));
+      expect(screen.getByTestId("auto-resolve-last-error")).toBeInTheDocument();
+    });
   });
 
   it("shows the no-CI-checks warning line only when auto-merge is armed AND checks.state is none (docs/175)", () => {
