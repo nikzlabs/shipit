@@ -1053,6 +1053,57 @@ describe("gh pr list", () => {
     expect(out.calls).toEqual([]);
   });
 
+  /**
+   * `-L/--limit` was parsed and then never forwarded, so `--limit 100` exited 0
+   * having returned the default 30 — a number the caller did not ask for, with
+   * nothing to say so.
+   */
+  it("forwards --limit to the broker", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "list", "--limit", "5"],
+      { "GET /agent-ops/pr/list": { status: 200, body: { prs: [] } } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toContain("limit=5");
+  });
+
+  it("forwards the -L spelling too", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "list", "-L", "7"],
+      { "GET /agent-ops/pr/list": { status: 200, body: { prs: [] } } },
+    );
+    expect(out.calls[0].path).toContain("limit=7");
+  });
+
+  it.each([
+    ["non-numeric", "abc"],
+    ["zero", "0"],
+    ["negative", "-5"],
+    ["fractional", "2.5"],
+    ["above the maximum", "101"],
+  ])("refuses a %s --limit before the network call", async (_label, value) => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "list", "--limit", value],
+      { "GET /agent-ops/pr/list": { status: 200, body: { prs: [] } } },
+    );
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain("--limit must be a whole number between 1 and 100");
+    expect(out.calls).toEqual([]);
+  });
+
+  it("sends no limit at all when the flag is absent", async () => {
+    // Absent must keep meaning "the server's default", not limit=undefined.
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "list"],
+      { "GET /agent-ops/pr/list": { status: 200, body: { prs: [] } } },
+    );
+    expect(out.calls[0].path).not.toContain("limit");
+  });
+
   it("forwards --state merged rather than rejecting it", async () => {
     const { run } = makeRunner();
     const out = await run(
@@ -1233,6 +1284,65 @@ describe("repo-aware brokering (docs/211)", () => {
     expect(out.calls[0].body).toMatchObject({ cwd: "/workspace/clone-x", repo: "octocat/hello" });
   });
 
+  /**
+   * A `--repo` that parsed to nothing used to reach the orchestrator as "no
+   * --repo given" and fall back to the session's own repository, so
+   * `gh pr list --repo octocat` returned the CURRENT repo's PRs with exit 0.
+   * Every verb that takes --repo goes through the two target builders, so all
+   * of them must refuse it.
+   */
+  describe("an explicit --repo that means nothing", () => {
+    it.each([
+      ["pr list (query target)", ["pr", "list", "--repo", "octocat"]],
+      ["pr view (query target)", ["pr", "view", "3", "--repo", "octocat"]],
+      ["pr create (body target)", ["pr", "create", "-t", "T", "-b", "B", "--repo", "octocat"]],
+      ["pr close (body target)", ["pr", "close", "11", "--repo", "octocat"]],
+      ["run list (query target)", ["run", "list", "--repo", "octocat"]],
+      ["the -R alias", ["pr", "list", "-R", "octocat"]],
+    ])("refuses it on %s, before any network call", async (_label, argv) => {
+      const { run } = makeRunner();
+      const out = await run(argv, {});
+      expect(out.exitCode).toBe(2);
+      expect(out.stderr).toContain('Invalid --repo "octocat"');
+      expect(out.stderr).toContain("OWNER/NAME");
+      expect(out.calls).toEqual([]);
+    });
+
+    it("still accepts every spelling that was already valid", async () => {
+      for (const repo of ["octocat/hello", "github.com/octocat/hello", "https://github.com/octocat/hello.git"]) {
+        const { run } = makeRunner();
+        const out = await run(
+          ["pr", "list", "--repo", repo],
+          { "GET /agent-ops/pr/list": { status: 200, body: { prs: [] } } },
+        );
+        expect(out.exitCode).toBe(0);
+        expect(out.calls[0].path).toContain("repo=");
+      }
+    });
+
+    it("refuses an empty --repo — the unset-shell-variable case", async () => {
+      // `gh pr close 11 --repo "$REPO"` with $REPO unset. Reading that as "no
+      // --repo given" would close PR 11 in whichever repo the session is bound
+      // to, which is the most damaging shape this whole fix removes.
+      const { run } = makeRunner();
+      const out = await run(["pr", "close", "11", "--repo", ""], {});
+      expect(out.exitCode).toBe(2);
+      expect(out.stderr).toContain("Invalid --repo");
+      expect(out.calls).toEqual([]);
+    });
+
+    it("leaves the no---repo path alone", async () => {
+      // Absent is not malformed: it still means "the cwd's / session's repo".
+      const { run } = makeRunner();
+      const out = await run(
+        ["pr", "list"],
+        { "GET /agent-ops/pr/list": { status: 200, body: { prs: [] } } },
+      );
+      expect(out.exitCode).toBe(0);
+      expect(out.calls[0].path).not.toContain("repo=");
+    });
+  });
+
   it("repo-aware status fallback when no PR number is given carries cwd/repo", async () => {
     const { run } = makeRunner();
     const out = await run(
@@ -1272,6 +1382,16 @@ describe("gh run list", () => {
     );
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toContain("completed\tsuccess\tDeploy\tCI\tmain\tworkflow_dispatch\t42");
+  });
+
+  it("refuses an invalid --limit before the network call", async () => {
+    // `run list` did forward the flag, but never checked it — the route then
+    // dropped a non-numeric value and ran with the default.
+    const { run } = makeRunner();
+    const out = await run(["run", "list", "-L", "0"], {});
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain("--limit must be a whole number between 1 and 100");
+    expect(out.calls).toEqual([]);
   });
 
   it("forwards --workflow/--branch/--status/--limit and cwd as query params", async () => {
@@ -1498,6 +1618,30 @@ describe("gh workflow list", () => {
     );
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toContain("CI\tactive\t1");
+  });
+
+  it("applies -L to the rows, instead of parsing it and ignoring it", async () => {
+    // The orchestrator takes no limit here, so this one is applied client-side.
+    // That is still an answer of the size the caller asked for.
+    const { run } = makeRunner();
+    const out = await run(
+      ["workflow", "list", "-L", "1"],
+      {
+        "GET /agent-ops/workflow/list": {
+          status: 200,
+          body: { workflows: [{ id: 1, name: "CI", state: "active" }, { id: 2, name: "Release", state: "active" }] },
+        },
+      },
+    );
+    expect(out.stdout).toContain("CI");
+    expect(out.stdout).not.toContain("Release");
+  });
+
+  it("refuses an invalid -L", async () => {
+    const { run } = makeRunner();
+    const out = await run(["workflow", "list", "-L", "abc"], {});
+    expect(out.exitCode).toBe(2);
+    expect(out.calls).toEqual([]);
   });
 });
 
