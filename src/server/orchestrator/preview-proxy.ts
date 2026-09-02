@@ -75,7 +75,23 @@ export function parsePreviewSubdomain(
  * four-same-site-origin repro (docs/009-preview-system, "Renderer isolation"):
  * without it, 4 origins occupy 1 renderer and 4 `webglcontextlost` events fire;
  * with it, 4 origins occupy 4 renderers and none fire. Cost is ~11 MiB PSS per
- * origin.
+ * origin. It is a request, not a promise: a browser may decline a dedicated
+ * process under memory pressure, and a browser without origin-keyed process
+ * isolation ignores it entirely.
+ *
+ * **Whatever the upstream said is replaced.** How ShipIt allocates renderer
+ * processes across sessions is the platform's decision, not a previewed app's:
+ * one `Origin-Agent-Cluster: ?0` from an arbitrary dev server would put every
+ * open session back in one renderer, and the resulting blank canvas would show
+ * up in a *different* session from the app that caused it. Deliberately not a
+ * respect-the-upstream merge — that reading was considered and rejected,
+ * because the case for it (a security-headers middleware defaulting to `?0`)
+ * turns out not to exist: Helmet and Hono's `secure-headers` both default to
+ * `?1`. What the override does cost is legacy `document.domain` relaxation
+ * (already off by default in current Chrome) and same-site *cross-origin*
+ * transfer of `SharedArrayBuffer` / `WebAssembly.Module` between two different
+ * preview origins. Frames on the SAME origin are unaffected, which is every
+ * ordinary preview.
  *
  * Three things about this that are easy to get wrong:
  *
@@ -84,7 +100,9 @@ export function parsePreviewSubdomain(
  *    an origin serves and then held for the whole browsing-context group. A
  *    preview opened before its dev server is listening is answered by
  *    {@link buildConnectingPage} first, so a header only on the real page would
- *    miss the commonest boot of all.
+ *    miss the commonest boot of all — measured: four origins whose connecting
+ *    page was unmarked stayed co-located even after reloading into a marked
+ *    page.
  *  - **`window.originAgentCluster` does not test it.** Chrome makes documents
  *    origin-keyed *logically* by default, so that property reads `true` with or
  *    without the header; only the header adds process isolation. Count renderer
@@ -93,19 +111,22 @@ export function parsePreviewSubdomain(
  *    qualify, so production and local development get isolation. The Tailscale
  *    sslip override (docs/216) serves previews over plain http, where the
  *    header is ignored and behaviour is exactly what it is today.
- *
- * An upstream that sets the header itself is left alone — an app asking for a
- * particular agent-cluster keying knows something we don't.
  */
 const ORIGIN_AGENT_CLUSTER = "origin-agent-cluster";
 
 export function withOriginIsolation(
   headers: http.OutgoingHttpHeaders,
 ): http.OutgoingHttpHeaders {
-  const out = { ...headers };
-  if (!Object.keys(out).some((k) => k.toLowerCase() === ORIGIN_AGENT_CLUSTER)) {
-    out[ORIGIN_AGENT_CLUSTER] = "?1";
+  const out: http.OutgoingHttpHeaders = {};
+  // Drop every case variant the upstream may have sent before writing ours.
+  // Keeping one and adding another emits the field twice, and a duplicate or
+  // list-valued `Origin-Agent-Cluster` is a structured-header parse failure —
+  // which browsers treat as *no* request for isolation at all, i.e. the exact
+  // outcome this function exists to prevent.
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() !== ORIGIN_AGENT_CLUSTER) out[k] = v;
   }
+  out[ORIGIN_AGENT_CLUSTER] = "?1";
   return out;
 }
 

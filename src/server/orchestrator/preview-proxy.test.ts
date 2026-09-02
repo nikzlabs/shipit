@@ -85,17 +85,32 @@ describe("withOriginIsolation", () => {
     expect(upstream).toEqual({ "content-type": "text/css" });
   });
 
-  it("recognizes an upstream value whatever its case", () => {
-    // Ours are written in the mixed case the literal call sites use; node
+  it("replaces an upstream opt-out, whatever case it was written in", () => {
+    // Renderer allocation across sessions is the platform's decision. One `?0`
+    // from an arbitrary dev server would put every open session back in a
+    // single renderer, and the blank canvas would then appear in a *different*
+    // session from the app that caused it.
+    //
+    // Ours is written in the mixed case the literal call sites use; node
     // lowercases the ones it parses off an upstream response. A case-sensitive
-    // check would emit the header twice, which is a parse failure, not a
-    // preference.
+    // replace would leave the upstream field in place beside ours.
     expect(withOriginIsolation({ "Origin-Agent-Cluster": "?0" })).toEqual({
-      "Origin-Agent-Cluster": "?0",
+      "origin-agent-cluster": "?1",
     });
     expect(withOriginIsolation({ "origin-agent-cluster": "?0" })).toEqual({
-      "origin-agent-cluster": "?0",
+      "origin-agent-cluster": "?1",
     });
+  });
+
+  it("leaves exactly one field for a value that arrived duplicated or malformed", () => {
+    // Node represents a repeated header as an array. Emitting two fields — or
+    // passing a list value through — is a structured-header parse failure, and
+    // a browser reads that as no request for isolation at all: precisely the
+    // outcome this exists to prevent.
+    const out = withOriginIsolation({ "origin-agent-cluster": ["?0", "?1"], "Content-Type": "text/html" });
+
+    expect(out).toEqual({ "origin-agent-cluster": "?1", "Content-Type": "text/html" });
+    expect(Object.keys(out).filter((k) => k.toLowerCase() === "origin-agent-cluster")).toHaveLength(1);
   });
 });
 

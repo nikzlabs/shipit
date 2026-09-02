@@ -223,20 +223,26 @@ ShipIt patches dev-server WebSocket URLs so HMR works through the reverse
 proxy. No configuration needed — Vite, Next.js, and other frameworks work
 out of the box.
 
-## Renderer isolation — don't send `Origin-Agent-Cluster: ?0`
+## Renderer isolation — `Origin-Agent-Cluster` is ShipIt's to set
 
-Every preview response carries **`Origin-Agent-Cluster: ?1`**. Preview origins
-are all subdomains of one domain, and browsers group same-site documents into a
-single renderer process — so without this header every open session's preview
-shares one main thread and one budget of 16 WebGL contexts, and the oldest
-contexts get force-lost. A user with a 3D or canvas app sees a blank canvas,
-caused by sessions they aren't even looking at.
+Every preview response carries **`Origin-Agent-Cluster: ?1`**, replacing
+whatever your app sent. Preview origins are all subdomains of one domain, and
+browsers group same-site documents into a single renderer process — so without
+this header every open session's preview shares one main thread and one budget
+of 16 WebGL contexts, and the oldest contexts get force-lost. A user with a 3D
+or canvas app sees a blank canvas, caused by sessions they aren't even looking
+at. Because the damage lands in a *different* session from the app that caused
+it, this is not a per-app choice.
 
-ShipIt only sets the header when your app hasn't set one itself. So if your dev
-server sends a security-headers middleware default of `Origin-Agent-Cluster: ?0`
-(some do), it wins — and it puts your preview back in the shared renderer.
-Unless you specifically need same-site frames in one agent cluster, leave the
-header to ShipIt.
+Two consequences for your app, both narrow: `document.domain` relaxation does
+not work (it is off by default in current browsers anyway), and a
+`SharedArrayBuffer` or `WebAssembly.Module` cannot be passed between two
+*different* preview origins. Frames on the same origin are unaffected.
+
+One thing you can still break: if a **service worker** answers a navigation
+from cache without reaching ShipIt's proxy, that response carries no header,
+and the first document an origin serves is what fixes its process keying. A
+cache-first preview can therefore opt itself out by accident.
 
 ## Restart triggers
 

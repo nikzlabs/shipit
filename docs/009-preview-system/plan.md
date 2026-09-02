@@ -204,9 +204,25 @@ ShipIt's own UI share a single renderer process. That has two consequences:
 response (`withOriginIsolation`). It requests an origin-keyed agent cluster,
 which Chrome implements as origin-level *process* isolation — each preview
 origin gets its own renderer, its own main thread, and its own 16-context
-budget. The subdomain scheme is untouched (`docs/175-preview-subdomain-only`),
-and no iframe lifecycle changes: background slots stay mounted exactly as
-before.
+budget. It is a request rather than a promise: a browser may decline a
+dedicated process under memory pressure, and one without origin-keyed process
+isolation ignores it. The subdomain scheme is untouched
+(`docs/175-preview-subdomain-only`), and no iframe lifecycle changes:
+background slots stay mounted exactly as before.
+
+**Whatever the upstream sent is replaced**, and every case variant is dropped
+first so the field can't be emitted twice (a duplicate or list value is a
+structured-header parse failure, which reads as *no* isolation request at all).
+Respecting an app's own `Origin-Agent-Cluster` was considered and rejected: one
+`?0` from an arbitrary dev server re-collapses every open session into one
+renderer, and the resulting blank canvas appears in a *different* session from
+the app that caused it, so this cannot be a per-app choice. The case for
+respecting it — a security-headers middleware defaulting to `?0` — turns out
+not to exist; Helmet and Hono's `secure-headers` both default to `?1`. The
+override costs legacy `document.domain` relaxation (already off by default in
+current Chrome) and same-site *cross-origin* `SharedArrayBuffer` /
+`WebAssembly.Module` transfer between two different preview origins. Same-origin
+frames are unaffected, which is every ordinary preview.
 
 Three details that are easy to get wrong, all recorded in the
 `withOriginIsolation` docstring:
@@ -243,9 +259,33 @@ PSS, not RSS, so pages shared between processes are not counted once each.
 | With `Origin-Agent-Cluster: ?1` | 4 (one each) | **0** | 5 of 5 |
 
 Both numbers that define the bug move, and the instrument demonstrably produces
-a positive as well as a negative (`docs/265`). Cost of splitting, at 8 live
-previews: **+90 MiB PSS total, ≈11 MiB per preview origin** — which is why
-`MAX_IFRAME_SLOTS` was left at 20 rather than lowered to bound process count.
+a positive as well as a negative (`docs/265`).
+
+Cost of splitting, measured separately with **zero** WebGL contexts so it is
+process overhead alone and not the memory of contexts that are no longer
+force-lost, with PIDs scoped to the launched browser by its throwaway
+`--user-data-dir`, three runs per arm (spread ≤1 MiB): 8 previews go from
+**157 MiB to 246 MiB summed PSS — ≈11 MiB per preview origin**. That does not
+by itself settle `MAX_IFRAME_SLOTS`, which stays at 20 here because lowering it
+does not address this bug (the production trace had four live origins, far
+under the cap) and would reintroduce the preview-reset regression the pool
+docstring exists to prevent. Whether 20 is the right ceiling now that each slot
+can cost a process is a separate question, and an open one.
+
+### Limits
+
+- **An already-open tab is not repaired.** An origin's agent-cluster key is
+  fixed for the life of its browsing-context group, so a session whose preview
+  origin was site-keyed before this shipped stays that way. A fresh tab picks up
+  the new keying; a reload within the same group may not.
+- **A service worker can answer a navigation without reaching the proxy.** A
+  cache-first preview serving its own first document from cache commits that
+  document with no header, and opts its origin out. Recorded in
+  `src/server/shipit-docs/preview.md` so the agent building such an app knows.
+- Neither is worth engineering around here: both are narrow, both self-correct
+  on a fresh browsing context, and the alternative is an origin-versioning
+  scheme that changes preview URLs — which `docs/175-preview-subdomain-only`
+  rules out.
 
 ## Key files
 

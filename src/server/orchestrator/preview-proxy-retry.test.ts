@@ -230,9 +230,23 @@ describe("preview proxy — renderer isolation", () => {
     expect(res.headers["origin-agent-cluster"]).toBe("?1");
   });
 
-  it("leaves an app that states its own agent-cluster keying alone", async () => {
-    // Nothing an agent builds sets this by accident; one that does knows
-    // something about its own frames that we don't.
+  it("marks the unreachable-asset response too", async () => {
+    // Not a document itself, but it is served on the preview origin and it
+    // costs nothing to keep every path on the same contract.
+    const port = await reservePort();
+    const base = await startProxy({ connectRetryMs: 0 });
+
+    const res = await previewRequest(base, port, { accept: "text/css" });
+
+    expect(res.status).toBe(502);
+    expect(res.headers["origin-agent-cluster"]).toBe("?1");
+  });
+
+  it("overrides an app that opts itself out of origin keying", async () => {
+    // How ShipIt spreads sessions across renderer processes is the platform's
+    // decision. A previewed app answering `?0` would re-collapse every open
+    // session into one renderer, and the user would see the damage in a
+    // different session from the one that caused it.
     const port = await reservePort();
     const base = await startProxy();
     await startUpstream(port, "<html><head></head><body>up</body></html>", "text/html", {
@@ -241,7 +255,7 @@ describe("preview proxy — renderer isolation", () => {
 
     const res = await previewRequest(base, port);
 
-    expect(res.headers["origin-agent-cluster"]).toBe("?0");
+    expect(res.headers["origin-agent-cluster"]).toBe("?1");
   });
 });
 
