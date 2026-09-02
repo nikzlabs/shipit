@@ -97,8 +97,15 @@ which requirement 5 excludes by name.
 |---|---|
 | `agentCreatePr()` returns `alreadyExisted: false` | write the number |
 | `POST /api/sessions/:id/pr` opens a PR | write the number |
+| `POST /api/sessions/:id/pr/quick` opens a PR | write the number |
 | `pr-lifecycle.ts` → `quickCreatePr()` opens a PR | write the number |
 | any of those returns a **pre-existing** PR | leave unchanged — it may be a person's |
+
+`quickCreatePr()` cannot tell those last two apart today: it returns the **same
+shape** for a pull request it found (`services/github.ts:656`) and one it opened
+(`:721`). It gains an `alreadyExisted` discriminator, as `agentCreatePr()`
+already has, and both of its callers pass the result through. Without that the
+implementation must either record nothing or claim a person's pull request.
 | docs/202 re-arm clears `pr_status` | clear it too |
 | explicit reset (`pr-rearm.ts`) | clear it |
 | unarchive's "old PR no longer applies" clearing | clear it |
@@ -116,6 +123,7 @@ repo-bound only:
       · cancelAutoPush(sessionId) only when the push landed
 both kinds:
  3. one live read of the pull request                          (req 7, 8, 16, 17)
+      · repo-bound: the PR head SHA must equal local HEAD              (req 14)
  4. merge with expected sha = the head SHA that read returned        (req 16)
  5. awaitMergeHandling(sessionId) before reporting success       (req 10, 11)
 ```
@@ -143,34 +151,62 @@ Round 2 showed that cannot carry the guarantee:
   mean teaching `prStatusEqual()` about it, or the poller's update gate swallows
   a head change with otherwise identical status.
 
-So the merge does its own read, assembled from parts that already exist —
-`buildPrStatusQuery()` focused on the one number, `parsePrNode()`,
-`extractCurrentHeadOid()`, `extractHeadSha()` (`pr-status-parser.ts`). One
-GraphQL round trip returns checks, `reviewDecision`, draft state and both SHAs
-for the pull request the caller named. Nothing is cached, nothing is
-branch-keyed, and `PrStatusSummary` is untouched.
+So the merge does its own read: **a small query written for this decision**, not
+the poller's. Round 3 showed reuse does not fit — `buildPrStatusQuery()` always
+emits the bulk `pullRequests` connection with the number as an extra alias that
+only `extractFocusedPrNodes()` can retrieve, `PR_LIGHT_FIELDS` has no `isDraft`,
+and `parsePrNode()` fixes `prState` to `"open"`. Coercing `PrStatusSummary` into
+an irreversible decision costs more than the fields are worth.
+
+The merge query asks for exactly what the gate needs, by number:
+
+```
+pullRequest(number: $n) {
+  number state isDraft mergeable reviewDecision headRefOid
+  commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts … } } } }
+}
+```
+
+One round trip, one PR, both SHAs — `headRefOid` (the ref tip) and the rollup's
+`commit.oid` (what the checks describe). Nothing is cached, nothing is
+branch-keyed, and `PrStatusSummary`, `prStatusEqual()` and the poller are all
+untouched.
 
 The gate then reads:
 
 | Condition | Result |
 |---|---|
 | the read failed, or the node is missing | refuse — never "no checks" |
-| `extractHeadSha() !== extractCurrentHeadOid()` | refuse: the checks describe an older commit (req 16) |
-| draft / closed | refuse (req 7) |
+| rollup `commit.oid !== headRefOid` | refuse: the checks describe an older commit (req 16) |
+| repo-bound and `headRefOid !== local HEAD` | refuse: GitHub does not have this session's work (req 14) |
+| `state !== "OPEN"`, or `isDraft` | refuse (req 7) |
 | a required check failing | refuse (req 7) |
 | checks pending | refuse, naming `--auto` (req 17) |
-| **zero** checks, head commit younger than the grace | refuse: "waiting for CI checks to start" |
-| **zero** checks, head commit older than the grace | proceed — the repository has no CI |
+| **zero** checks, and `CiGraceTracker.shouldForcePending()` | refuse: "waiting for CI checks to start" |
+| **zero** checks past that grace | proceed — the repository has no CI |
 | `reviewDecision` review_required / changes_requested | refuse (req 8) |
 
-The zero-check split is what `getCheckStatus()` cannot express: it maps both "no
-checks configured" *and* a swallowed API failure to `"none"`, and
-`agentMergePullRequest()` treats `"none"` as permission to merge. That is a
-fail-open defect for **sandbox** merges today, and requirement 7 says the
-guardrails apply to every agent merge — so this read replaces `getCheckStatus()`
-on both paths, not just the new one. The grace window needs the head commit's
-`committedDate` added to the existing query; the deadline reuses the poller's own
-grace constant (docs/230).
+Two rows deserve their reason.
+
+**The zero-check split** is what `getCheckStatus()` cannot express: it maps both
+"no checks configured" *and* a swallowed API failure to `"none"`, and
+`agentMergePullRequest()` treats `"none"` as permission to merge — a fail-open
+defect for **sandbox** merges today. Requirement 7 says the guardrails apply to
+every agent merge, so this read replaces `getCheckStatus()` on both paths.
+The grace is `CiGraceTracker.shouldForcePending()`, which already exists and
+already answers exactly this question: it is keyed by session **and head SHA**,
+starts when a head is first seen with no checks, resets on a new push, and also
+consults the repo's parsed workflows and whether any check was ever observed
+there. An earlier revision proposed deriving the window from the head commit's
+`committedDate`; round 3 rejected it correctly — commit time is not
+check-registration time, and an old commit reused as a new head would bypass it.
+
+**The local-HEAD row** is the half `guardMergeSync()` cannot cover. That guard
+compares local HEAD with the remote-*tracking* ref and, by design, **proceeds
+whenever it cannot tell** (no tracking ref, HEAD elsewhere, unreachable remote) —
+right for the merge button, wrong for an irreversible act. Comparing the live
+`headRefOid` with the local HEAD this call just committed is the direct
+statement of requirement 14, and it fails closed.
 
 ### Merge at a SHA (req 16)
 
@@ -207,12 +243,19 @@ distinguishable in the message, which nothing branches on.
 
 ### `--auto` in a repo-bound session (req 17)
 
-It arms **ShipIt-managed** auto-merge, as the PR card's route does when a runner
-is live (`preferManaged`) — the agent's own runner is always live mid-turn, and
-GitHub-native auto-merge would land the pull request during a later turn with no
-idea one was running. The transcript notice says the agent *armed* merge-when-green;
-the eventual merge is ShipIt's own and the managed loop already records it, so
-requirement 9's attribution is unaffected — it governs merges the agent performs.
+It arms **GitHub-native** auto-merge only. An earlier revision reused the PR
+card's managed arming; round 3 showed that reintroduces both defects this design
+removed — `AutoMergeState` stores neither PR number nor SHA, the managed loop
+selects its pull request through the poller's branch-keyed map, and it merges
+`summary.prNumber` with no expected SHA. That breaks requirements 5 and 16 by the
+back door.
+
+Native arming has neither problem: it is bound to the pull request by number,
+server-side at GitHub, and GitHub merges it only when its own required checks
+pass. If native arming is unavailable — no branch protection, or "Allow
+auto-merge" off (docs/077) — the command **refuses with GitHub's reason** rather
+than falling back to managed. The agent then waits for green and calls again,
+which is what requirement 17 already tells it to do.
 
 ## 4. After the merge (req 9, 10, 11)
 
@@ -259,6 +302,11 @@ repo-scoped agent permission exists.
 | 2 | `mergedAt` is not settled at return | `awaitMergeHandling()` before success |
 | 2 | `--auto` undecided for repo-bound | managed auto-merge, as the card does |
 | 2 | three-value verdict taxonomy | one `pushed` boolean |
+| 3 | the poller's query/parser does not fit (no `isDraft`, bulk shape, fixed state) | a small merge-only query instead of reuse |
+| 3 | `committedDate` is not a check-registration clock | reuse `CiGraceTracker`, delete the heuristic |
+| 3 | `quickCreatePr()` cannot tell "found" from "opened" | give it `alreadyExisted`; add the `/pr/quick` writer |
+| 3 | `guardMergeSync()` proceeds when it cannot tell | compare the live PR head with local HEAD, fail closed |
+| 3 | managed `--auto` is session-bound and SHA-less | native arming only; refuse with GitHub's reason |
 
 ## Key files
 
@@ -268,8 +316,8 @@ repo-scoped agent permission exists.
 | `src/server/orchestrator/repo-store.ts` | grant read/write, `canonicalRepoKey`-matched |
 | `src/server/orchestrator/api-routes-session-repos.ts` | grant on the existing `PATCH /api/repos/:url` |
 | `src/server/orchestrator/pr-target.ts` | `mergeDisposition()`; `--repo` refused, `cwd` ignored |
-| `src/server/orchestrator/pr-status-parser.ts` | `committedDate` on the head commit |
-| `src/server/orchestrator/services/github.ts` | flush outcome; the live-read gate; both merge paths |
+| `src/server/orchestrator/services/github.ts` | flush outcome; the merge-gate query + gate; both merge paths; `quickCreatePr()` gains `alreadyExisted` |
+| `src/server/orchestrator/ci-grace-tracker.ts` | reached from the merge gate (no change to its logic) |
 | `src/server/orchestrator/services/branch-sync.ts` | `pushed` on the hold verdict |
 | `src/server/orchestrator/github-auth-prs.ts` | expected `sha` on the REST merge |
 | `src/server/orchestrator/services/pr-lifecycle.ts`, `pr-rearm.ts`, `sessions.ts` | `prNumber` writers and clearers |

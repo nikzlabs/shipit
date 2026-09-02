@@ -22,7 +22,8 @@ Revision 2 (2026-09-02), after two review rounds.
 ## `prNumber` lifecycle
 
 - [ ] Written by `agentCreatePr()` only on `alreadyExisted: false`
-- [ ] Written by `POST /api/sessions/:id/pr` and by `pr-lifecycle.ts`
+- [ ] `quickCreatePr()` gains an `alreadyExisted` discriminator
+- [ ] Written by `POST /api/sessions/:id/pr`, `/pr/quick`, and `pr-lifecycle.ts`
 - [ ] Never written for a pre-existing pull request
 - [ ] Cleared by the docs/202 re-arm, by `pr-rearm.ts`, and by unarchive's clearing
 - [ ] Never backfilled from `pr_status`
@@ -35,13 +36,15 @@ Revision 2 (2026-09-02), after two review rounds.
 - [ ] Steps 1–2 run for repo-bound sessions only, never for a sandbox
 - [ ] `guardMergeSync()` verdict carries `pushed: boolean` (no taxonomy)
 - [ ] `cancelAutoPush(sessionId)` only when the push landed
-- [ ] One live read per attempt: `buildPrStatusQuery()` + `parsePrNode()`
-- [ ] `committedDate` added to the head commit in that query
-- [ ] Gate table implemented in full, including rollup-SHA mismatch and both
-      zero-check cases; a failed read refuses
+- [ ] One live read per attempt: a merge-only GraphQL query by PR number
+      (`state`, `isDraft`, `mergeable`, `reviewDecision`, `headRefOid`, rollup + its `oid`)
+- [ ] Zero-check grace comes from `CiGraceTracker.shouldForcePending()`
+- [ ] Gate table implemented in full: failed read, rollup-SHA mismatch,
+      local-HEAD mismatch, draft/closed, failing, pending, both zero-check cases
 - [ ] The live read replaces `getCheckStatus()` on the **sandbox** path too
 - [ ] Merge sends the expected `sha`
-- [ ] `--auto` on a repo-bound session arms ShipIt-managed auto-merge
+- [ ] `--auto` arms GitHub-**native** auto-merge only; unavailable ⇒ refuse with
+      GitHub's reason, never a managed fallback
 
 ## After the merge
 

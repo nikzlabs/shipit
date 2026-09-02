@@ -57,8 +57,11 @@ Two consequences, both normal:
 
 - **The push restarts CI, so the first call usually refuses with checks pending.**
   That is not a failure and not a reason to stop or to ask the user. Either wait
-  for green and call it again, or call `gh pr merge --auto`, which arms
-  merge-when-green and lets your turn end. The command never waits by itself.
+  for green and call it again, or call `gh pr merge --auto`, which arms GitHub's
+  own merge-when-green and lets your turn end. The command never waits by itself.
+  If the repository cannot do that — no branch protection, or "Allow auto-merge"
+  turned off — `--auto` refuses and reports GitHub's reason; wait for green and
+  merge normally instead.
 - **In the first seconds after the push, GitHub may not have registered the new
   checks at all.** Both forms then refuse with *"Waiting for CI checks to
   start"*, because an empty check set means "not yet", not "nothing gates this
