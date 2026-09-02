@@ -498,8 +498,17 @@ export type ListPullRequestsResult =
   | { ok: true; prs: ListedPullRequest[] }
   | { ok: false; error: string };
 
-/** How many rows `listPullRequests` returns, matching real `gh`'s default limit. */
+/** How many rows `listPullRequests` returns by default, matching real `gh`. */
 const PR_LIST_PAGE = 30;
+
+/** Upper bound on `-L/--limit`, the largest page either API will serve. */
+const PR_LIST_MAX = 100;
+
+/** Clamp a caller-supplied limit; absent means the default page. */
+function pageSize(limit: number | undefined): number {
+  if (limit === undefined) return PR_LIST_PAGE;
+  return Math.min(Math.max(Math.trunc(limit), 1), PR_LIST_MAX);
+}
 
 /**
  * `merged` asked over GraphQL, which has the state natively.
@@ -532,16 +541,22 @@ const MERGED_PRS_QUERY = `query($owner: String!, $repo: String!, $first: Int!) {
  * A failed read reports the failure (see `ListPullRequestsResult`) rather than
  * an empty list — no status is "there are none" here, unlike the 404 that
  * genuinely means it for a single-PR read.
+ *
+ * `limit` is `-L/--limit`. It reaches the API as the page size rather than
+ * trimming the response, so asking for more than the default actually fetches
+ * more; the shim rejects an out-of-range value before it gets here, and the
+ * clamp is the belt to that braces.
  */
 export async function listPullRequests(
   token: string,
   owner: string,
   repo: string,
   state: PrListState = "open",
+  limit?: number,
 ): Promise<ListPullRequestsResult> {
-  if (state === "merged") return listMergedPullRequests(token, owner, repo);
+  if (state === "merged") return listMergedPullRequests(token, owner, repo, limit);
   const res = await fetchGitHub(
-    `https://api.github.com/repos/${owner}/${repo}/pulls?state=${state}&sort=updated&direction=desc&per_page=${PR_LIST_PAGE}`,
+    `https://api.github.com/repos/${owner}/${repo}/pulls?state=${state}&sort=updated&direction=desc&per_page=${pageSize(limit)}`,
     token,
   );
   if (!res.ok) return { ok: false, error: await parseGitHubError(res) };
@@ -574,8 +589,11 @@ async function listMergedPullRequests(
   token: string,
   owner: string,
   repo: string,
+  limit?: number,
 ): Promise<ListPullRequestsResult> {
-  const res = await fetchGitHubGraphQL(token, MERGED_PRS_QUERY, { owner, repo, first: PR_LIST_PAGE });
+  const res = await fetchGitHubGraphQL(token, MERGED_PRS_QUERY, {
+    owner, repo, first: pageSize(limit),
+  });
   if (!res.ok) return { ok: false, error: await parseGitHubError(res) };
   const data = (await res.json()) as {
     errors?: { message: string }[];

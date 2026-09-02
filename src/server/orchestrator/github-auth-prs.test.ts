@@ -328,6 +328,45 @@ describe("listPullRequests", () => {
   });
 
   /**
+   * `-L/--limit` reaches the API as the page size rather than trimming the
+   * response, so asking for more than the default actually fetches more — the
+   * shim used to parse the flag and drop it, capping every answer at 30.
+   */
+  describe("limit", () => {
+    it("becomes the REST page size", async () => {
+      const { urls } = mockFetchRecording([]);
+      await listPullRequests("tok", "o", "r", "open", 7);
+      expect(urls[0]).toContain("per_page=7");
+    });
+
+    it("becomes GraphQL's `first` on the merged path", async () => {
+      const { bodies } = mockFetchRecording(graphqlNodes([]));
+      await listPullRequests("tok", "o", "r", "merged", 7);
+      expect(bodies[0]).toContain('"first":7');
+    });
+
+    it("falls back to 30 when absent, on both paths", async () => {
+      const rest = mockFetchRecording([]);
+      await listPullRequests("tok", "o", "r", "open");
+      expect(rest.urls[0]).toContain("per_page=30");
+      const gql = mockFetchRecording(graphqlNodes([]));
+      await listPullRequests("tok", "o", "r", "merged");
+      expect(gql.bodies[0]).toContain('"first":30');
+    });
+
+    it("clamps an out-of-range value rather than sending it to GitHub", async () => {
+      // The shim refuses these first; this is the belt to that braces, so a
+      // future caller cannot ask GitHub for per_page=0 or per_page=5000.
+      const low = mockFetchRecording([]);
+      await listPullRequests("tok", "o", "r", "open", 0);
+      expect(low.urls[0]).toContain("per_page=1");
+      const high = mockFetchRecording([]);
+      await listPullRequests("tok", "o", "r", "open", 5000);
+      expect(high.urls[0]).toContain("per_page=100");
+    });
+  });
+
+  /**
    * A read that failed and a repository with no pull requests must never look
    * alike. `if (!res.ok) return []` made every one of these render as `gh pr
    * list`'s "No pull requests found." — so an ops investigation could conclude

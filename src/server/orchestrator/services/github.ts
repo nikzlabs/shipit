@@ -1453,12 +1453,14 @@ export async function viewPullRequest(
 export async function listPullRequests(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
-  options: { state?: PrListState; remoteUrl?: string } = {},
+  options: { state?: PrListState; limit?: number; remoteUrl?: string } = {},
 ): Promise<ListedPullRequest[]> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
   const remote = await resolveGitHubRemote(git, options.remoteUrl);
   if ("error" in remote) throw new ServiceError(400, remote.error);
-  const read = await githubAuthManager.listPullRequests(remote.owner, remote.repo, options.state ?? "open");
+  const read = await githubAuthManager.listPullRequests(
+    remote.owner, remote.repo, options.state ?? "open", options.limit,
+  );
   if (!read.ok) throw new ServiceError(502, `Failed to list pull requests: ${read.error}`);
   return read.prs;
 }

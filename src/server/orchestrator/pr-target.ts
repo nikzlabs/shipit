@@ -28,7 +28,13 @@
 
 import path from "node:path";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
+import { isValidRepoFlag, repoFlagToUrl, REPO_FLAG_FORMS } from "../shared/github-repo-flag.js";
+import { ServiceError } from "./services/types.js";
 import type { SessionInfo } from "../shared/types.js";
+
+// Re-exported so existing importers (and `pr-target.test.ts`) keep resolving
+// this from `./pr-target.js` after the move into shared.
+export { repoFlagToUrl };
 
 /** Optional per-request overrides forwarded by the `gh` shim. */
 export interface PrTargetOverride {
@@ -78,22 +84,6 @@ export function resolveCloneDir(sessionDir: string, cwd: string | undefined): st
 }
 
 /**
- * Normalize an explicit `--repo` value into a canonical github.com clone URL.
- * Accepts `owner/name`, `github.com/owner/name`, or an `https://github.com/...`
- * URL. Returns undefined when absent or unparseable (the caller then falls back
- * to the session/cwd default, and the github service surfaces a clear error if
- * no origin can be resolved at all).
- */
-export function repoFlagToUrl(repo: string | undefined): string | undefined {
-  if (!repo || typeof repo !== "string") return undefined;
-  const trimmed = repo.trim();
-  if (!trimmed) return undefined;
-  const match = /^(?:https?:\/\/)?(?:github\.com\/)?([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(trimmed);
-  if (!match) return undefined;
-  return `https://github.com/${match[1]}/${match[2]}.git`;
-}
-
-/**
  * Resolve the clone dir + remote a PR operation should act on.
  *
  * Precedence:
@@ -105,12 +95,25 @@ export function repoFlagToUrl(repo: string | undefined): string | undefined {
  *      `--local` clone's origin is a bare-cache path we must not read.
  *   3. Otherwise (sandbox / no session remote) → the cwd's clone, reading its
  *      own git origin (remoteUrl undefined).
+ *
+ * A `--repo` that was **supplied but unparseable** raises rather than falling
+ * through to (2)/(3). It used to normalize to `undefined`, which is
+ * indistinguishable from "no `--repo` given" — so `gh pr list --repo octocat`
+ * (a typo: no owner) silently listed the *session's own* repository's PRs and
+ * exited 0. Absent still means absent; only a supplied value that means nothing
+ * is refused.
  */
 export function resolvePrTarget(
   session: Pick<SessionInfo, "remoteUrl">,
   sessionDir: string,
   override: PrTargetOverride = {},
 ): PrTarget {
+  if (!isValidRepoFlag(override.repo)) {
+    throw new ServiceError(
+      400,
+      `Invalid --repo "${override.repo}". Expected ${REPO_FLAG_FORMS}.`,
+    );
+  }
   const repoUrl = repoFlagToUrl(override.repo);
   if (repoUrl) {
     return { gitDir: resolveCloneDir(sessionDir, override.cwd), remoteUrl: repoUrl };

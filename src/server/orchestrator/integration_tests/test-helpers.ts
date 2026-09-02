@@ -313,12 +313,12 @@ export class StubGitHubAuthManager extends EventEmitter {
    * route used to coerce every unrecognised value to "open", so a fake that
    * dropped the argument could not fail on the wrong state being listed.
    */
-  listPullRequestsCalls: { owner: string; repo: string; state: string }[] = [];
+  listPullRequestsCalls: { owner: string; repo: string; state: string; limit: number | undefined }[] = [];
   private _listPrFailure: string | null = null;
   /** Make the next reads fail, so a test can tell a failed read from an empty repo. */
   setListPrFailure(error: string | null): void { this._listPrFailure = error; }
-  async listPullRequests(owner: string, repo: string, state = "open") {
-    this.listPullRequestsCalls.push({ owner, repo, state });
+  async listPullRequests(owner: string, repo: string, state = "open", limit?: number) {
+    this.listPullRequestsCalls.push({ owner, repo, state, limit });
     if (this._listPrFailure) return { ok: false as const, error: this._listPrFailure };
     return { ok: true as const, prs: [] };
   }

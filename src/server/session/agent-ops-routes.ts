@@ -157,12 +157,20 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/pr/list?state=open — list PRs for the session's repo
-  app.get<{ Querystring: { state?: string; cwd?: string; repo?: string } }>(
+  // GET /agent-ops/pr/list?state=open&limit=30 — list PRs for the session's repo
+  //
+  // Every parameter the shim can send must be named here. This relay is the
+  // middle hop of shim → worker → orchestrator, so a parameter it forgets is
+  // dropped silently with both ends' own tests still green — which is exactly
+  // how `limit` stayed capped at 30 after both ends had been taught to handle it.
+  app.get<{ Querystring: { state?: string; limit?: string; cwd?: string; repo?: string } }>(
     "/agent-ops/pr/list",
     async (request, reply) => {
-      const qs = prTargetQs(request.query, request.query.state ? { state: request.query.state } : {});
-      return relay("GET", `/pr/list${qs}`, undefined, reply);
+      const { state, limit } = request.query;
+      const extra: Record<string, string> = {};
+      if (state) extra.state = state;
+      if (limit) extra.limit = limit;
+      return relay("GET", `/pr/list${prTargetQs(request.query, extra)}`, undefined, reply);
     },
   );
 

@@ -756,9 +756,10 @@ export class GitHubAuthManager extends EventEmitter {
     owner: string,
     repo: string,
     state: PrListState = "open",
+    limit?: number,
   ): Promise<ListPullRequestsResult> {
     if (!this._token) return { ok: false, error: "Not authenticated with GitHub" };
-    return listPullRequestsImpl(this._token, owner, repo, state);
+    return listPullRequestsImpl(this._token, owner, repo, state, limit);
   }
 
   /**

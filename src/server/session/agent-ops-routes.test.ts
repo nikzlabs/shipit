@@ -190,6 +190,26 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].path).toContain("/pr/list?state=closed");
   });
 
+  /**
+   * This relay is the middle hop of shim → worker → orchestrator. A parameter
+   * it forgets is dropped in silence, with the shim's own test and the
+   * orchestrator's own test both still green — which is how `limit` stayed
+   * capped at 30 after both ends had already been taught to handle it.
+   */
+  it("GET /agent-ops/pr/list forwards ?limit= as well as ?state=", async () => {
+    client.setResponse("GET", "/pr/list", { ok: true, status: 200, body: { prs: [] } });
+    await app.inject({ method: "GET", url: "/agent-ops/pr/list?state=merged&limit=7" });
+    expect(client.calls[0].path).toContain("state=merged");
+    expect(client.calls[0].path).toContain("limit=7");
+  });
+
+  it("GET /agent-ops/pr/list sends neither when neither was given", async () => {
+    client.setResponse("GET", "/pr/list", { ok: true, status: 200, body: { prs: [] } });
+    await app.inject({ method: "GET", url: "/agent-ops/pr/list" });
+    expect(client.calls[0].path).not.toContain("state=");
+    expect(client.calls[0].path).not.toContain("limit=");
+  });
+
   it("POST /agent-ops/pr/:number/comment forwards body", async () => {
     client.setResponse("POST", "/pr/9/comment", {
       ok: true, status: 200, body: { number: 9, commentUrl: "c" },

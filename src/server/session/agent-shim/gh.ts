@@ -40,6 +40,7 @@
  * For documentation: see /shipit-docs/github.md inside the container.
  */
 
+import { isValidRepoFlag, REPO_FLAG_FORMS } from "../../shared/github-repo-flag.js";
 import { wrapUntrustedContent } from "../../shared/untrusted-input.js";
 import {
   applyJq,
@@ -65,6 +66,10 @@ export { parseFlags, type ShimIO };
 
 const SHIM_NAME = "gh (ShipIt)";
 
+/** Bounds for `-L/--limit`, matching the largest page either GitHub API serves. */
+const LIMIT_MIN = 1;
+const LIMIT_MAX = 100;
+
 const REJECTED_HELP = `${SHIM_NAME} only supports a subset of pull-request operations.
 See /shipit-docs/github.md for the full list.`;
 
@@ -74,7 +79,7 @@ Supported subcommands:
   gh pr create   [-t TITLE] [-b BODY|--body-file FILE] [-B BASE] [-d|--draft] [--fill] [-l|--label LABEL]
   gh pr edit     [<number>] [-t TITLE] [-b BODY|--body-file FILE] [--add-label LABEL] [--remove-label LABEL]
   gh pr view     [<number>] [-c|--comments] [--json FIELDS] [-q|--jq EXPR]
-  gh pr list     [--state open|closed|merged|all] [--json FIELDS] [-q|--jq EXPR]
+  gh pr list     [--state open|closed|merged|all] [-L|--limit N] [--json FIELDS] [-q|--jq EXPR]
   gh pr status
   gh pr comment  [<number>] (-b BODY|--body-file FILE)
   gh pr ready    [<number>]
@@ -89,7 +94,11 @@ Supported subcommands:
   gh workflow view <workflow> [--json FIELDS] [-q|--jq EXPR]
 
 Operations target the repo of the current working directory's clone. Pass
---repo OWNER/NAME to target a specific repo explicitly.
+--repo OWNER/NAME to target a specific repo explicitly; a --repo that is not
+${REPO_FLAG_FORMS} is refused rather than falling back to the current repo.
+
+-L/--limit takes a whole number from ${LIMIT_MIN} to ${LIMIT_MAX} (default 30 for
+pr list, 20 for run list); anything else is refused.
 
 -q/--jq requires --json and supports simple paths only (${JQ_SUPPORTED_FORMS});
 anything else exits 3 with a message naming the expression.
@@ -129,11 +138,28 @@ interface RunDeps {
 }
 
 /**
+ * Refuse a `--repo` that is not one of the accepted spellings, before any
+ * network call.
+ *
+ * A supplied-but-unparseable value used to normalize to "nothing supplied" at
+ * the orchestrator and fall back to the session's own repository — so
+ * `gh pr list --repo octocat` (a typo: no owner) listed the CURRENT repo's PRs
+ * and exited 0. Every verb that takes `--repo` routes through the two target
+ * builders below, so checking here covers all of them at once.
+ */
+function requireValidRepo(deps: RunDeps, repo: string | undefined): void {
+  if (!isValidRepoFlag(repo)) {
+    fail(deps.io, `Invalid --repo "${repo}". Expected ${REPO_FLAG_FORMS}.`);
+  }
+}
+
+/**
  * Build the `cwd`/`repo` fields a POST/PATCH PR op forwards in its body so the
  * orchestrator can resolve the repo-aware target (docs/211). Only populated
  * fields are included.
  */
 function targetBody(deps: RunDeps, repo: string | undefined): Record<string, string> {
+  requireValidRepo(deps, repo);
   const out: Record<string, string> = {};
   if (deps.cwd) out.cwd = deps.cwd;
   if (repo) out.repo = repo;
@@ -150,6 +176,7 @@ function targetQuery(
   repo: string | undefined,
   extra: Record<string, string | undefined> = {},
 ): string {
+  requireValidRepo(deps, repo);
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(extra)) {
     if (value) params.set(key, value);
@@ -158,6 +185,26 @@ function targetQuery(
   if (repo) params.set("repo", repo);
   const qs = params.toString();
   return qs ? `?${qs}` : "";
+}
+
+/**
+ * Validate `-L/--limit` before the network call, like the `--json` field names.
+ *
+ * `gh pr list` parsed the flag and then never forwarded it, so `--limit 100`
+ * exited 0 having quietly returned the default 30 — the caller was handed a
+ * number they did not ask for and no way to tell. Returns the value to forward,
+ * so a handler cannot accept the flag without also passing it on.
+ */
+function parseLimit(raw: string | undefined, deps: RunDeps, command: string): string | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (!/^\d+$/.test(raw.trim()) || !Number.isInteger(n) || n < LIMIT_MIN || n > LIMIT_MAX) {
+    fail(
+      deps.io,
+      `${command}: --limit must be a whole number between ${LIMIT_MIN} and ${LIMIT_MAX}, got "${raw}"`,
+    );
+  }
+  return String(n);
 }
 
 /**
@@ -726,7 +773,10 @@ async function handlePrList(args: string[], deps: RunDeps): Promise<void> {
     );
   }
 
-  const qs = targetQuery(deps, parsed.values.repo, { state });
+  const qs = targetQuery(deps, parsed.values.repo, {
+    state,
+    limit: parseLimit(parsed.values.limit, deps, "gh pr list"),
+  });
   const res = await deps.call("GET", `/agent-ops/pr/list${qs}`, undefined, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to list PRs"), 1);
@@ -962,7 +1012,7 @@ async function handleRunList(args: string[], deps: RunDeps): Promise<void> {
     workflow: parsed.values.workflow,
     branch: parsed.values.branch,
     status: parsed.values.status,
-    limit: parsed.values.limit,
+    limit: parseLimit(parsed.values.limit, deps, "gh run list"),
   });
   const res = await deps.call("GET", `/agent-ops/run/list${qs}`, undefined, deps.env);
   if (res.status < 200 || res.status >= 300) {
@@ -1126,8 +1176,9 @@ async function handleWorkflowList(args: string[], deps: RunDeps): Promise<void> 
     values: {
       "--json": "json",
       "--repo": "repo", "-R": "repo",
-      // Accepted for real-gh compatibility but not forwarded (the orchestrator
-      // returns the repo's workflows up to a fixed cap).
+      // The orchestrator returns the repo's workflows up to a fixed cap and
+      // takes no limit, so this one is applied to the rows we got back. That
+      // still beats the old behaviour of parsing the flag and ignoring it.
       "-L": "limit", "--limit": "limit",
       ...JQ_FLAGS,
     },
@@ -1140,11 +1191,13 @@ async function handleWorkflowList(args: string[], deps: RunDeps): Promise<void> 
   const fields = parsed.values.json !== undefined
     ? jsonFields(parsed.values.json, deps, "gh workflow list", WORKFLOW_JSON_FIELDS)
     : undefined;
+  const limit = parseLimit(parsed.values.limit, deps, "gh workflow list");
   const res = await deps.call("GET", `/agent-ops/workflow/list${targetQuery(deps, parsed.values.repo)}`, undefined, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to list workflows"), 1);
   }
-  const workflows = (res.body.workflows as Record<string, unknown>[] | undefined) ?? [];
+  const all = (res.body.workflows as Record<string, unknown>[] | undefined) ?? [];
+  const workflows = limit !== undefined ? all.slice(0, Number(limit)) : all;
   if (fields !== undefined) {
     emitJson(deps, "gh workflow list", workflows.map((w) => filterJson(w, fields)), parsed.values.jq);
     return;

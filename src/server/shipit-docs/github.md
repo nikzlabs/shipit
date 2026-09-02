@@ -146,7 +146,7 @@ The shim:
 | `gh pr create [-t TITLE] [-b BODY\|--body-file FILE] [-B BASE] [-d/--draft] [--fill] [-l/--label LABEL]` | Push current branch and open a PR. Use `--body-file -` with a quoted heredoc for markdown bodies. With `--fill`, an empty body is filled from recent commits. `--label` is repeatable / comma-separated and best-effort. |
 | `gh pr edit [<n>] [-t TITLE] [-b BODY\|--body-file FILE] [--add-label LABEL] [--remove-label LABEL]` | Update title/body and/or add/remove labels. `<n>` defaults to the current branch's PR. `--add-label`/`--remove-label` are repeatable / comma-separated, may be given alone (no title/body needed), and are best-effort. `--label`/`-l` is an additive alias for `--add-label`. |
 | `gh pr view [<n>] [-c/--comments] [--json FIELDS] [-q/--jq EXPR]` | Read a PR. With `--json title,body,state,…` returns just those fields; `-q` extracts from them (see "Extracting one value" below). `--comments` prints the PR's review feedback — see "Reading review feedback" below. |
-| `gh pr list [--state open\|closed\|merged\|all] [--json …] [-q/--jq EXPR]` | List PRs in the session's repo, most recently updated first (30 rows). `--state` defaults to `open`; any other value is refused by name rather than silently listing the open ones. `--state merged` returns closed PRs that actually merged, each carrying a non-null `mergedAt`. A read that **failed** (no access, rate limit, a GitHub 5xx) exits non-zero with GitHub's own message — `No pull requests found.` means the repository really has none. |
+| `gh pr list [--state open\|closed\|merged\|all] [-L/--limit N] [--json …] [-q/--jq EXPR]` | List PRs in the session's repo, most recently updated first (30 rows by default; `-L/--limit` takes 1–100). `--state` defaults to `open`; any other value is refused by name rather than silently listing the open ones. `--state merged` returns closed PRs that actually merged, each carrying a non-null `mergedAt`. A read that **failed** (no access, rate limit, a GitHub 5xx) exits non-zero with GitHub's own message — `No pull requests found.` means the repository really has none. |
 | `gh pr status` | Print the current branch's PR (or "No PR"). |
 | `gh pr comment [<n>] (-b BODY\|--body-file FILE)` | Leave an issue-style comment on a PR. |
 | `gh pr ready [<n>]` | Mark a draft PR as ready for review. |
@@ -157,6 +157,14 @@ The shim:
 Every PR subcommand also accepts `--repo OWNER/NAME` (alias `-R`) to target a
 specific repo — useful in a Sandbox session where you've cloned more than one.
 Without it, the op targets the repo of the directory you ran `gh` in.
+
+`--repo` accepts `OWNER/NAME`, `github.com/OWNER/NAME`, or a full
+`https://github.com/OWNER/NAME` URL. Anything else is **refused**: a value that
+parses to nothing is not treated as "no `--repo` given", so a typo like
+`--repo octocat` (no owner) cannot quietly answer about the repo you're
+standing in. An **empty** `--repo` is refused for the same reason — write
+`--repo "$REPO"` and `$REPO` will be empty if unset, which would otherwise
+target the current repo silently.
 
 ### Reading review feedback on a PR
 
@@ -275,10 +283,10 @@ can fetch CI results inline. Beyond those reads there is exactly one write:
 
 | Subcommand | Notes |
 |---|---|
-| `gh run list [-w WORKFLOW] [-b BRANCH] [-s STATUS] [-L LIMIT] [--json FIELDS] [-q/--jq EXPR]` | List workflow runs, most-recent first. `-w` filters by workflow name/filename/id; `-s` by status (e.g. `completed`, `success`, `failure`, `in_progress`). Plain output is tab-separated: status, conclusion, title, workflow, branch, event, id. |
+| `gh run list [-w WORKFLOW] [-b BRANCH] [-s STATUS] [-L LIMIT] [--json FIELDS] [-q/--jq EXPR]` | List workflow runs, most-recent first. `-w` filters by workflow name/filename/id; `-s` by status (e.g. `completed`, `success`, `failure`, `in_progress`). Plain output is tab-separated: status, conclusion, title, workflow, branch, event, id. `-L/--limit` takes 1–100 (default 20). |
 | `gh run view [<run-id>] [--log] [--log-failed] [--json FIELDS] [-q/--jq EXPR]` | View one run with its jobs. With no `<run-id>`, resolves the **latest run for the current branch** (falling back to the latest run overall). `--log` appends the run's job logs (tail-capped); `--log-failed` only failed jobs' logs. |
 | `gh run rerun [<run-id>] [--failed]` | Re-run an existing run. With no `<run-id>`, the **latest run for the current branch**. `--failed` re-runs only the failed jobs (and their dependents) instead of the whole run. Limited to runs on **your branch, at your current commit, triggered by a push or pull request** — see below. |
-| `gh workflow list [--json FIELDS] [-q/--jq EXPR]` | List the repo's workflow definitions (name, state, id). |
+| `gh workflow list [-L/--limit N] [--json FIELDS] [-q/--jq EXPR]` | List the repo's workflow definitions (name, state, id). `-L/--limit` takes 1–100 and trims the returned rows. |
 | `gh workflow view <workflow> [--json FIELDS] [-q/--jq EXPR]` | View one workflow (by name, filename, or id) and its recent runs. Use `cat .github/workflows/<file>` to read the YAML — `--yaml` is not supported. |
 
 These also accept `--repo OWNER/NAME` (alias `-R`). The `--json FIELDS` filter

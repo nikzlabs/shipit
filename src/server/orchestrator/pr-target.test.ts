@@ -82,6 +82,68 @@ describe("repoFlagToUrl", () => {
   });
 });
 
+/**
+ * A supplied-but-unparseable `--repo` used to normalize to `undefined`, which
+ * `resolvePrTarget` could not tell apart from "no `--repo` given" — so it fell
+ * back to the session's own repository and `gh pr list --repo octocat` returned
+ * the CURRENT repo's PRs with exit 0.
+ */
+describe("resolvePrTarget — an explicit --repo that means nothing", () => {
+  const session = { remoteUrl: "https://github.com/o/r.git" };
+
+  it.each([
+    ["a bare owner with no name", "octocat"],
+    ["a name with too many segments", "github.com/a/b/c"],
+    ["an embedded space", "octocat/hel lo"],
+  ])("refuses %s rather than falling back to the session repo", (_label, repo) => {
+    expect(() => resolvePrTarget(session, SESSION_DIR, { repo })).toThrow(/Invalid --repo/);
+  });
+
+  it("names the accepted spellings in the message", () => {
+    expect(() => resolvePrTarget(session, SESSION_DIR, { repo: "octocat" }))
+      .toThrow(/OWNER\/NAME/);
+  });
+
+  it("raises a 400, not a 500 — it is the caller's input that is wrong", () => {
+    try {
+      resolvePrTarget(session, SESSION_DIR, { repo: "octocat" });
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect((err as { statusCode?: number }).statusCode).toBe(400);
+    }
+  });
+
+  it("still falls back to the session repo when --repo is absent", () => {
+    // Absent is the caller saying nothing, not the caller saying something
+    // wrong — the fallback this fix narrows must survive intact.
+    expect(resolvePrTarget(session, SESSION_DIR, { repo: undefined })).toEqual({
+      gitDir: SESSION_DIR,
+      remoteUrl: "https://github.com/o/r.git",
+    });
+  });
+
+  it.each([
+    ["an empty string", ""],
+    ["whitespace", "   "],
+  ])("refuses %s — supplied-and-empty is not absent", (_label, repo) => {
+    // `gh pr close 11 --repo "$REPO"` with an unset variable arrives here as an
+    // empty string. Reading that as "no --repo given" is how it would close PR
+    // 11 in whichever repository the session happens to be bound to.
+    expect(() => resolvePrTarget(session, SESSION_DIR, { repo })).toThrow(/Invalid --repo/);
+  });
+
+  it.each([
+    ["a number", 5],
+    ["an array", ["o", "r"]],
+    ["an object", { owner: "o" }],
+  ])("refuses %s from a JSON body", (_label, repo) => {
+    // The routes' Fastify generics are type annotations, not validation, so a
+    // non-string can reach this function at runtime.
+    expect(() => resolvePrTarget(session, SESSION_DIR, { repo } as unknown as { repo?: string }))
+      .toThrow(/Invalid --repo/);
+  });
+});
+
 describe("resolvePrTarget", () => {
   it("repo-bound session with no override is UNCHANGED (session root + remote)", () => {
     const session = { remoteUrl: "https://github.com/o/r.git" };
