@@ -265,12 +265,52 @@ Cost of splitting, measured separately with **zero** WebGL contexts so it is
 process overhead alone and not the memory of contexts that are no longer
 force-lost, with PIDs scoped to the launched browser by its throwaway
 `--user-data-dir`, three runs per arm (spread ≤1 MiB): 8 previews go from
-**157 MiB to 246 MiB summed PSS — ≈11 MiB per preview origin**. That does not
-by itself settle `MAX_IFRAME_SLOTS`, which stays at 20 here because lowering it
-does not address this bug (the production trace had four live origins, far
-under the cap) and would reintroduce the preview-reset regression the pool
-docstring exists to prevent. Whether 20 is the right ceiling now that each slot
-can cost a process is a separate question, and an open one.
+**157 MiB to 246 MiB summed PSS — ≈11 MiB per preview origin**.
+
+### Is `MAX_IFRAME_SLOTS = 20` still right?
+
+Asked because each retained slot can now cost a renderer process, where before
+it cost a document in a process that already existed. **Assessed, and the answer
+is yes — 20 stays.** Note the cap counts `(session, port)` pairs, not sessions,
+so a three-service stack consumes three slots and the ceiling is more reachable
+than "20 sessions" suggests.
+
+1. **The cap was never implicated.** The production trace that motivated the
+   isolation work had four live origins against a cap of 20. Lowering it would
+   not have prevented a single `webglcontextlost` event in that trace.
+2. **The one mechanism that could make 20 actively dangerous does not bite.**
+   If a browser refused dedicated processes past its own renderer limit, a large
+   pool would silently undo the isolation. Measured 4 → 20 origins: Chrome grants
+   every one its own renderer, linearly, no reuse. And the instrument is not
+   blind to reuse — forcing `--renderer-process-limit=3` with 8 origins does
+   produce sharing (7 processes, not 8), so a zero here is a real zero. Even at
+   that absurd limit, `webglcontextlost` stayed **0**: the degradation is
+   graceful, not a cliff.
+3. **The saving is small and only in the worst case.** A completely full pool
+   costs ~230 MiB of renderer overhead above baseline (slope 11.4 MiB/origin
+   over the 4 → 20 sweep). Halving the cap saves ~115 MiB *only* when the pool
+   is full, and nothing at all in the ordinary case where it never fills.
+4. **The cost of lowering it is certain, not conditional.** Eviction is a
+   preview reset — scroll position, SPA route, form state, and the HMR
+   connection — paid every time the user cycles through more `(session, port)`
+   pairs than the cap. That is the regression the pool docstring exists to
+   prevent, traded for memory the user is not short of.
+
+**The finding worth acting on is a different one.** `dropSlot` has exactly two
+callers — LRU eviction and the planning#394 service-takeover case — so nothing
+releases a slot when a *background* session's preview stops or its container is
+reclaimed. Those slots hold a renderer process for a document that is already
+doomed: `PreviewFrame` reloads a retained slot when the service it was waiting
+on comes back (planning#478), precisely so the user does not return to a stale
+page. So for a reclaimed session, retention is **provably worthless** — the
+document is thrown away on return regardless.
+
+Releasing on liveness would be strictly better than lowering the cap, because it
+evicts by *whether retention can still pay off* rather than by recency, and so
+never destroys a preview that could have been restored intact. It is not free:
+the client has no cross-session preview-liveness signal today — `services` and
+`status` in the preview store are the **active** session's only — so it needs
+new server→client plumbing. Tracked as planning#496 rather than folded in here.
 
 ### Limits
 
