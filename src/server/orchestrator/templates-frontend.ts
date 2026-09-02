@@ -115,7 +115,7 @@ compose: docker-compose.yml
   dev:
     image: node:24-slim
     working_dir: /app
-    command: sh -c "npm install && npm run dev"
+    command: npm run dev
     ports:
       - "5173:5173"
     volumes:
@@ -242,7 +242,7 @@ compose: docker-compose.yml
   dev:
     image: node:24-slim
     working_dir: /app
-    command: sh -c "npm install && npm run dev"
+    command: npm run dev
     ports:
       - "5173:5173"
     volumes:
@@ -364,7 +364,7 @@ compose: docker-compose.yml
   dev:
     image: node:24-slim
     working_dir: /app
-    command: sh -c "npm install && npm run dev"
+    command: npm run dev
     ports:
       - "5173:5173"
     volumes:
@@ -479,7 +479,7 @@ compose: docker-compose.yml
   dev:
     image: node:24-slim
     working_dir: /app
-    command: sh -c "npm install && npm run dev"
+    command: npm run dev
     ports:
       - "5173:5173"
     volumes:
@@ -593,7 +593,7 @@ compose: docker-compose.yml
   dev:
     image: node:24-slim
     working_dir: /app
-    command: sh -c "npm install && npm run dev"
+    command: npm run dev
     ports:
       - "5173:5173"
     volumes:

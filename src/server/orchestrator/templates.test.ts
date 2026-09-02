@@ -258,6 +258,51 @@ describe("Python templates (docs/168)", () => {
   });
 });
 
+// A Node template's compose service and the agent container bind-mount the same
+// workspace, so an `npm install` in the service `command` is a second writer of
+// node_modules and package-lock.json. Those two files are exactly what
+// depInputsForCommand("npm install") watches, so every service-side install
+// re-triggers the agent's dependency reinstall, which tears the gated service
+// down and restarts it — a permanent ~30s restart loop. src/server/shipit-docs/
+// compose.md, "Where to put `npm install`", prescribes the single-writer shape
+// asserted here. Discovered rather than listed, so a new Node template inherits
+// the check.
+describe("Node templates keep dependency installs single-writer", () => {
+  const nodeServiceTemplates = listTemplates()
+    .map((t) => getTemplate(t.id)!)
+    .filter((t) => t.files["package.json"] && t.files["docker-compose.yml"]);
+
+  it("covers every Node template that ships a compose service", () => {
+    expect(nodeServiceTemplates.map((t) => t.id).sort()).toEqual([
+      "astro",
+      "express-ts",
+      "fastify-ts",
+      "hono-ts",
+      "nextjs",
+      "react-tailwind-vite-ts",
+      "react-vite-ts",
+      "svelte-vite-ts",
+      "vanilla-vite",
+      "vue-vite-ts",
+    ]);
+  });
+
+  for (const t of nodeServiceTemplates) {
+    it(`${t.id}: installs from agent.install only, never the compose command`, () => {
+      const compose = t.files["docker-compose.yml"]!;
+      const commandLines = compose.split("\n").filter((l) => l.trim().startsWith("command:"));
+      expect(commandLines.length).toBeGreaterThan(0);
+      for (const line of commandLines) {
+        expect(line).not.toMatch(/\b(npm (install|ci)|yarn(\s|$)|pnpm install|bun install)\b/);
+      }
+      // The agent is the sole writer, and the install gate (default `true` for a
+      // service with ports) holds the service until that install finishes.
+      expect(t.files["shipit.yaml"]).toContain("- npm install");
+      expect(compose).not.toContain("x-shipit-depends-on-install: false");
+    });
+  }
+});
+
 describe("generatePackageLock", () => {
   let tmpDir: string;
 
