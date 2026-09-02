@@ -23,6 +23,7 @@ import {
   parseTimeBound,
   isOpsSafeLine,
   OPS_SAFE_TEMPLATES,
+  WITHHELD_SHAPES,
   DEFAULT_LOG_LINES,
   MAX_LOG_LINES,
   type LogStoreReader,
@@ -109,8 +110,11 @@ describe("the content boundary (the one that matters)", () => {
 
       expect(JSON.stringify(result)).not.toContain("WORKSPACE-SECRET-MARKER");
       expect(result.entries.map((e) => e.text)).toEqual([SAFE_LINE]);
-      // Withheld, never silently dropped.
-      expect(result.withheldUnclassified).toBe(1);
+      // Withheld, never silently dropped — and named by ShipIt's own label for
+      // the producer, which is the whole of what the breakdown may say about it.
+      expect(result.withheldTotal).toBe(1);
+      expect(result.withheldByShape).toEqual([{ shape: "compose: stack error", count: 1 }]);
+      expect(result.withheldUnclassified).toBe(0);
     } finally {
       close();
     }
@@ -133,9 +137,22 @@ describe("the content boundary (the one that matters)", () => {
 
       const result = queryHostSessionLogs(sessionManager, store, SUBJECT);
       expect(result.entries).toEqual([]);
-      expect(result.withheldUnclassified).toBe(5);
+      expect(result.withheldTotal).toBe(5);
+      // Every one of them is a shape ShipIt can name, so the operator learns
+      // which producers those five were — and still not one byte of any line.
+      expect(result.withheldByShape.map((s) => s.shape).sort()).toEqual([
+        "agent: process error",
+        "auto-push: other",
+        "compose: service exited",
+        "container: exit detail",
+        "session: workspace not restored",
+      ]);
+      expect(result.withheldUnclassified).toBe(0);
       expect(JSON.stringify(result)).not.toContain("REDACT-ME");
       expect(JSON.stringify(result)).not.toContain("u:pw@");
+      // The service name in `[compose] api-1 exited …` is the PROJECT's, and the
+      // label must not carry it.
+      expect(JSON.stringify(result.withheldByShape)).not.toContain("api-1");
     } finally {
       close();
     }
@@ -173,6 +190,40 @@ describe("the content boundary (the one that matters)", () => {
     }
   });
 
+  it("keeps every withheld-shape pattern a ShipIt-authored prefix", () => {
+    // These read the withheld text, so they get the same anchoring discipline as
+    // the ops-safe table minus the end anchor (the rest of the line is the free
+    // text nobody may read). A wildcard here would collapse the breakdown into
+    // one label for everything, which is worse than no breakdown at all.
+    for (const { shape, pattern } of WITHHELD_SHAPES) {
+      expect(pattern.source.startsWith("^"), `${shape} must be anchored at the start`).toBe(true);
+      expect(pattern.source, `${shape} must not use a free-text wildcard`).not.toMatch(/\.\*|\.\+|\[\\s\\S\]/);
+    }
+  });
+
+  it("counts a withheld line ShipIt cannot name as unclassified, and says nothing else about it", () => {
+    const { sessionManager, close } = createSessionManager();
+    try {
+      sessionManager.track(SUBJECT, "Subject session");
+      // A producer nobody has classified — the drift case. It must show up as
+      // volume with no name attached, never absorbed into a neighbour's label.
+      const store = fakeStore([
+        entry("2026-08-15T10:00:00.000Z", "server", "Some future producer said UNNAMED-MARKER"),
+        entry("2026-08-15T10:01:00.000Z", "server", "[compose] Stack error: bad value"),
+        entry("2026-08-15T10:02:00.000Z", "server", "[compose] Stack error: another bad value"),
+      ]);
+
+      const result = queryHostSessionLogs(sessionManager, store, SUBJECT);
+      expect(result.withheldTotal).toBe(3);
+      expect(result.withheldUnclassified).toBe(1);
+      // Largest first — the ordering that makes "one chatty producer" readable.
+      expect(result.withheldByShape).toEqual([{ shape: "compose: stack error", count: 2 }]);
+      expect(JSON.stringify(result)).not.toContain("UNNAMED-MARKER");
+    } finally {
+      close();
+    }
+  });
+
   it("isOpsSafeLine rejects a template with anything appended", () => {
     expect(isOpsSafeLine(SAFE_LINE)).toBe(true);
     expect(isOpsSafeLine(`${SAFE_LINE} extra text`)).toBe(false);
@@ -196,6 +247,65 @@ describe("the content boundary (the one that matters)", () => {
       + " this session, 1 commit(s) only on the remote branch; the two histories share no common"
       + " commit. A force-push would discard 1 commit(s) from the remote.",
     )).toBe(true);
+  });
+
+  it("passes a SUCCESSFUL auto-push — the line whose absence made silence unreadable", () => {
+    // Before this, every auto-push template was a failure path, so a window
+    // with no push line meant "pushed fine" OR "nothing to push" OR "failed
+    // with no template" OR "aged out of the ring". An operator asking whether
+    // the last five turns produced commits could not tell those apart.
+    expect(isOpsSafeLine("Auto-push completed in 412ms: 3 commit(s) pushed.")).toBe(true);
+    expect(isOpsSafeLine("Auto-push completed in 0ms: 1 commit(s) pushed.")).toBe(true);
+    // The distinction that carries most of the value: a turn that committed
+    // nothing is not a push that failed.
+    expect(isOpsSafeLine(
+      "Auto-push completed in 88ms: nothing new to push — the remote branch was already up to date.",
+    )).toBe(true);
+    expect(isOpsSafeLine(
+      "Auto-push completed in 88ms: pushed, but the commit count could not be measured.",
+    )).toBe(true);
+    // Both skips, which mean the commit is still local.
+    expect(isOpsSafeLine(
+      "Not pushed: this session's workspace has no `origin` remote. The commit stays in local history.",
+    )).toBe(true);
+    expect(isOpsSafeLine(
+      "Not pushed: the workspace has no current branch (detached HEAD). The commit stays in local history.",
+    )).toBe(true);
+  });
+
+  it("passes the authored half of a split failure and withholds git's own half", () => {
+    // The producer split (`auto-push-scheduler.ts`): ShipIt's classification on
+    // one line, git's words on the next. The first is what an ops session needs
+    // — WHICH kind of failure — and the second is what it must never see.
+    expect(isOpsSafeLine(
+      "Auto-push failed (lfs). The commit stays in this session's local history.",
+    )).toBe(true);
+    expect(isOpsSafeLine(
+      "Auto-push failed (unknown). The commit stays in this session's local history.",
+    )).toBe(true);
+    expect(isOpsSafeLine("Git said: fatal: unable to access 'https://u:pw@github.com/o/r.git/'")).toBe(false);
+    // A class that is not a bounded slug cannot smuggle text through the pattern.
+    expect(isOpsSafeLine(
+      "Auto-push failed (remote said 'secret path /workspace/x'). The commit stays in this session's local history.",
+    )).toBe(false);
+  });
+
+  it("passes the deferral and stuck-CLI lines, whose variable parts are all counts", () => {
+    expect(isOpsSafeLine(
+      "Push deferred — this session's branch is being rewritten (a rebase is in flight), so a push "
+      + "now cannot land. Retrying in 30s (attempt 2 of 30).",
+    )).toBe(true);
+    expect(isOpsSafeLine(
+      "A history rewrite has been in flight for 30 deferred pushes — no longer holding this push back.",
+    )).toBe(true);
+    expect(isOpsSafeLine(
+      "Warning: No output from Claude CLI after 30 seconds. The process may be stuck.",
+    )).toBe(true);
+    expect(isOpsSafeLine(
+      "Warning: no output from the Grok CLI for 60 seconds. It may be retrying an upstream error;"
+      + " interrupting the turn is safe.",
+    )).toBe(true);
+    expect(isOpsSafeLine("Live steering write failed: stdin is not writable. Message dropped.")).toBe(true);
   });
 
   it("withholds the unmeasured shape, whose reason clause can carry git's own text", () => {

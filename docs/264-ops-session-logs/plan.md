@@ -102,6 +102,79 @@ for the session's Logs panel. That is the same answer the boundary already gives
 for the conversation, and the docs say so rather than implying the command shows
 everything.
 
+## What the ops read says about a push (reqs 10, 12)
+
+The first version of the table held four auto-push patterns and **all four were
+failure paths**. That is an asymmetry that defeats the purpose: with no line for
+a push that worked, silence across a window meant "pushed fine" *or* "nothing to
+push" *or* "failed in a way with no template" *or* "the line aged out of the
+bounded channel". The operator's question — did the last five turns produce and
+push commits? — is exactly the one that asymmetry cannot answer.
+
+`auto-push-scheduler.ts` now reports a landed push on the same three surfaces as
+every failure: `Auto-push completed in Nms: N commit(s) pushed.`, or
+`… nothing new to push — the remote branch was already up to date.`, or
+`… pushed, but the commit count could not be measured.` The distinction between
+the first two carries most of the value — a run of "nothing new" says the turns
+committed nothing, which is a different diagnosis from a run of rejections.
+
+The count is read from `@{upstream}` **before** the push (a landed push
+fast-forwards the local tracking ref, so afterwards the answer is always 0),
+through `GitManager.aheadBehind`, which returns null rather than throwing. Null
+is reported as unmeasured, never as `0 commit(s)` — a first push announcing zero
+is the misreport class this scheduler has a whole docstring about. It is the
+LOCAL view of the remote, deliberately: an exact count would need a fetch in
+front of every push, and what the line is for is what ShipIt believed it was
+publishing.
+
+The line is admissible on the table's own terms — every variable part is a
+ShipIt-controlled number, and the branch, the remote and git's summary are not
+in it at all.
+
+**One producer was split, as req 12 prescribes.** A push failure used to read
+`Auto-push failed (${failure}): ${errMsg}` — an authored classification welded
+to git's own stderr, so the whole line was withheld and an ops session could not
+even learn *which kind* of failure happened. It is now two lines:
+`Auto-push failed (<class>). The commit stays in this session's local history.`
+(templated, crosses the boundary) followed by `Git said: <errMsg>` (withheld).
+The session's own Logs panel is unchanged in substance — the reader there still
+gets the diagnosis and the detail, one under the other. The same split made the
+GH008/LFS line fully authored, so that one is now templated too.
+
+## The withheld count is broken down (req 11)
+
+`withheld: 384` reads the same whether it is one chatty producer or the single
+line an operator needed, drifted off its template. So a withheld line is also
+matched against `WITHHELD_SHAPES` and counted under that entry's label:
+`withheldTotal`, `withheldByShape` (largest first), and `withheldUnclassified`
+as the residue.
+
+**This is the one place the design departs from the letter of the incident
+packet, which asked for a classification "derived from ShipIt-side
+classification, never from the line text".** A durable entry carries only a
+timestamp, a source and a text — there is nothing else to read — so a
+classifier that never reads the text can only ever return "unclassified", which
+is the state we already had. What ships instead reads the text and constrains
+what may come *out* of it:
+
+- every `shape` is a **constant in ShipIt's own table**, never a captured group;
+- every pattern is the ShipIt-authored **prefix** of a producer's format string,
+  anchored at the start, stopping where interpolation begins, and (meta-tested)
+  free of `.*`/`.+` — so a match reports "a line of this producer's shape was
+  here" and nothing about the line;
+- a shape ShipIt cannot name is counted as `withheldUnclassified` and nothing
+  further is said about it.
+
+So the emitted breakdown is ShipIt's labels and integers. The residual
+difference from a text-blind classifier is that the *partition* of the count is
+now visible — the same class of information as the total already was. If that is
+judged too much, the revert is one function: make `classifyWithheldLine` return
+null and every withheld line becomes unclassified again.
+
+`withheldUnclassified` is deliberately the number to watch, and is narrower than
+before: a new or drifted producer lands there rather than being absorbed into a
+neighbour's label, which is what makes the count a signal rather than a total.
+
 ## Decisions worth recording
 
 **Read the durable store, never a runner (req 7).** The service takes a
@@ -200,3 +273,6 @@ packet scoped it out. This is the read capability only.
   regression test for the defect described above; do not delete it.
 - `src/server/orchestrator/log-store.ts` — `MAX_RETAINED_CHANNEL_BYTES` and the
   `maxBytes` parameter on `snapshotEntries`.
+- `src/server/orchestrator/services/auto-push-scheduler.ts` — the producer this
+  surface exists for: the success/no-op report (reqs 10, 12) and the split
+  failure report whose authored half is templated.

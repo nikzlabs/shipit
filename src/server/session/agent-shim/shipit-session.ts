@@ -444,7 +444,9 @@ export async function handleSessionFind(args: string[], deps: RunDeps): Promise<
  * NOT the session's Logs panel: the server returns only lines whose whole text
  * is one ShipIt itself authored, so agent output, preview errors, install
  * output, and any line quoting workspace or raw error text are withheld. No
- * flag reaches them; withheld lines are reported as a count.
+ * flag reaches them; withheld lines are reported as a count, broken down by the
+ * ShipIt-authored SHAPE of the producer that wrote them — never by anything
+ * taken from the withheld lines themselves.
  *
  * Read from the durable store, so a session whose container is already gone
  * still answers. The orchestrator's 403 is surfaced verbatim — the shim carries
@@ -496,7 +498,13 @@ export async function handleSessionLogs(args: string[], deps: RunDeps): Promise<
   }
 
   const entries = (res.body.entries as Record<string, unknown>[] | undefined) ?? [];
-  const withheld = Number(res.body.withheldUnclassified ?? 0);
+  // `withheldTotal` is every withheld line; `withheldUnclassified` is the
+  // residue ShipIt could not name. Fall back to the older field name so a shim
+  // talking to an orchestrator that predates the breakdown still reports a
+  // total rather than silently printing nothing.
+  const unclassified = Number(res.body.withheldUnclassified ?? 0);
+  const withheld = Number(res.body.withheldTotal ?? unclassified);
+  const byShape = (res.body.withheldByShape as { shape?: unknown; count?: unknown }[] | undefined) ?? [];
   const header = [
     `session:   ${asString(res.body.title) || "(untitled)"} (${asString(res.body.sessionId)})`,
     `container: ${asString(res.body.containerName)}`,
@@ -511,6 +519,16 @@ export async function handleSessionLogs(args: string[], deps: RunDeps): Promise<
       `withheld:  ${withheld} server line(s) not on the ops-safe template list `
         + "(they carry workspace or raw error text). Read them with the operator in the session's UI.",
     );
+    // A bare total is not actionable — 384 reads the same whether it is one
+    // chatty producer or the one line that drifted off its template. The
+    // breakdown is ShipIt's own labels and counts; no part of a withheld line
+    // is in it. `unclassified` is listed last and is the number to watch: it is
+    // where a NEW or drifted producer shows up.
+    const parts = [
+      ...byShape.map((s) => `${asString(s.shape)} ×${Number(s.count ?? 0)}`),
+      ...(unclassified > 0 ? [`unclassified ×${unclassified}`] : []),
+    ];
+    if (parts.length > 0) header.push(`  by shape: ${parts.join(", ")}`);
   }
   if (entries.length === 0) {
     // An empty window and a pruned history look identical in the output but mean

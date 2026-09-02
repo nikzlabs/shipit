@@ -425,12 +425,22 @@ journalctl -D /var/log/journal --since "6 hours ago" --no-pager | grep <session-
   any orchestrator line that quotes workspace content or a raw error message
   (a compose validation error naming a value from the project's own
   \`docker-compose.yml\`, git's stderr, a provider error). No flag reaches them.
-- **Withheld lines are counted, not hidden.** \`withheld: N server line(s) …\`
-  means those lines exist in that window and were not returned. Most never will
-  be. But if N looks high for the incident you are chasing, the answer you need
-  may be in one of them: ask the operator to read the session's Logs panel for
-  that window rather than concluding nothing happened. The same applies if the
-  chat itself is what the question needs.
+- **Withheld lines are counted and shaped, not hidden.** \`withheld: N server
+  line(s) …\` means those lines exist in that window and were not returned, and
+  the \`by shape:\` line under it says which producers they came from — ShipIt's
+  own labels and counts, never any part of the lines. Use it as triage: one
+  label carrying nearly all of N is a chatty producer, while a big
+  \`unclassified ×N\` means a producer nobody has classified (or one whose
+  wording drifted off its template) — that is where a line you need is most
+  likely hiding. Either way the remedy is the same: ask the operator to read the
+  session's Logs panel for that window rather than concluding nothing happened.
+  The same applies if the chat itself is what the question needs.
+- **A push that WORKED says so.** \`Auto-push completed in Nms: N commit(s)
+  pushed.\` — or \`nothing new to push …\` for a turn that committed nothing.
+  That is what makes "did the last five turns push?" answerable: you are reading
+  positive confirmations, not inferring success from an absence of failures. A
+  failure names its class (\`Auto-push failed (<class>). …\`) and puts git's own
+  message on a separate \`Git said:\` line, which is withheld.
 - **Empty window vs pruned logs.** These look the same and mean opposite things,
   so the output states which one you got. A session's logs are removed when it is
   archived, deleted, or fully reset — for those, absence is not evidence.

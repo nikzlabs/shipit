@@ -7,6 +7,11 @@ import {
 } from "./auto-push-scheduler.js";
 import type { GitManager } from "../../shared/git.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
+// The ops-safe table is the CONSUMER of the lines this module writes, so the
+// tests below check the real predicate rather than a copy of the wording: a
+// producer that drifts off its template stops crossing the session boundary,
+// and that is exactly the failure these assertions have to catch.
+import { isOpsSafeLine } from "./host-session-logs.js";
 
 /**
  * The incident this file pins: a post-turn commit landed and its push silently
@@ -156,6 +161,78 @@ describe("auto-push scheduler — the push does not depend on a runner", () => {
       expect.objectContaining({ type: "github_push_result", success: true, branch: "shipit/feature" }),
     );
     expect(deps.notifyAutoPush).toHaveBeenCalledWith("s1");
+  });
+
+  it("says on the log ring that the push LANDED, in counts only (docs/264)", async () => {
+    // The ops read (`services/host-session-logs.ts`) could see four auto-push
+    // FAILURE lines and no success, so silence across a session's window meant
+    // "pushed fine" or "nothing to push" or "failed with no template" or "aged
+    // out of the ring". This line is the positive confirmation that separates
+    // them — and it carries no branch, no remote and no git output, which is
+    // what lets it cross the session boundary at all.
+    const deps = makeDeps();
+    createAutoPushScheduler(deps).schedule(fakeGit({ aheadBehind: vi.fn(async () => ({ ahead: 3, behind: 0 })) }), "s1");
+
+    await fireDebounce();
+
+    const lines = deps.broadcastLog.mock.calls.filter((c) => c[1] === "server").map((c) => c[2] as string);
+    const completed = lines.filter((t) => t.startsWith("Auto-push completed"));
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatch(/^Auto-push completed in \d+ms: 3 commit\(s\) pushed\.$/);
+    expect(completed[0]).not.toContain("shipit/feature");
+    expect(isOpsSafeLine(completed[0])).toBe(true);
+  });
+
+  it("distinguishes a turn that pushed nothing from a push that failed", async () => {
+    // Most of the value of the success line: a run of these says the turns
+    // produced no commits, which is a completely different diagnosis from a run
+    // of rejections — and previously both looked like silence.
+    const deps = makeDeps();
+    createAutoPushScheduler(deps).schedule(fakeGit({ aheadBehind: vi.fn(async () => ({ ahead: 0, behind: 0 })) }), "s1");
+
+    await fireDebounce();
+
+    const line = deps.broadcastLog.mock.calls.map((c) => c[2] as string)
+      .find((t) => t.startsWith("Auto-push completed"));
+    expect(line).toContain("nothing new to push");
+    expect(isOpsSafeLine(line ?? "")).toBe(true);
+  });
+
+  it("reports an unmeasurable count as unmeasured, never as zero commits", async () => {
+    // A branch with no upstream yet — the first push of a session. Claiming
+    // "0 commit(s) pushed" there is the misreport class this module exists for.
+    const deps = makeDeps();
+    createAutoPushScheduler(deps).schedule(fakeGit({ aheadBehind: vi.fn(async () => null) }), "s1");
+
+    await fireDebounce();
+
+    const line = deps.broadcastLog.mock.calls.map((c) => c[2] as string)
+      .find((t) => t.startsWith("Auto-push completed"));
+    expect(line).toContain("the commit count could not be measured");
+    expect(isOpsSafeLine(line ?? "")).toBe(true);
+  });
+
+  it("splits a push failure into ShipIt's class and git's own words", async () => {
+    // The producer split the ops-safe table asks for: the class is authored and
+    // crosses the session boundary; git's text is on its own line and does not.
+    const deps = makeDeps();
+    createAutoPushScheduler(deps).schedule(
+      fakeGit({
+        push: vi.fn(async () => { throw new Error("error: RPC failed while writing /workspace/secret"); }),
+      }),
+      "s1",
+    );
+
+    await fireDebounce();
+
+    const lines = deps.broadcastLog.mock.calls.map((c) => c[2] as string);
+    const opsSafe = lines.filter((t) => isOpsSafeLine(t));
+    // Exactly one line crosses the boundary, and it is the one naming the class.
+    expect(opsSafe).toHaveLength(1);
+    expect(opsSafe[0]).toMatch(/^Auto-push failed \([a-z-]+\)\. /);
+    expect(opsSafe[0]).not.toContain("/workspace/secret");
+    // The detail is still there for the session's OWN Logs panel.
+    expect(lines.some((t) => t.startsWith("Git said: ") && t.includes("/workspace/secret"))).toBe(true);
   });
 
   it("re-arming replaces the pending push rather than stacking a second one", async () => {
