@@ -1051,18 +1051,46 @@ describe("ClaudeOAuthRefresher", () => {
       expect(acct1).not.toContain(acct2Token);
     });
 
-    // Diagnosis only, deliberately: a file this reader believes is empty may be
-    // a partial write or a shape it has not been taught, and the account is
-    // unusable either way. Nothing deletes or repairs it.
-    it("leaves a blanked source on disk and still reports missing_credentials", async () => {
+    /**
+     * planning#495 — a blanked source is not a credential, so a session that
+     * still holds a working token heals the account through the ordinary
+     * harvest instead of the user being made to reconnect.
+     *
+     * This test asserted the opposite until the blank probe existed ("the
+     * harvest cannot publish over a credential-shaped source"), because
+     * `expiresAt: 0` failed the reader's `> 0` test while the file still parsed
+     * as JSON — so the planning#449 guard read it as `unorderable` and refused.
+     * Both token fields are the empty string; there is no bearer to lose, and
+     * this is a COPY over the blank, never the delete the section below still
+     * rules out.
+     */
+    it("harvests a session's live token over a blanked source instead of demanding a reconnect", async () => {
       const now = 1_700_000_000_000;
       const rig = buildRig({ accounts: [makeAccount("acct-1")], initialNow: now });
       rigs.push(rig);
       const accountRoot = path.join(rig.rootDir, "provider-accounts", "claude", "acct-1");
       writeBlankedCredentials(accountRoot);
-      // Even with a live session copy sitting right there, the harvest cannot
-      // publish over a credential-shaped source (the planning#449 guard).
       writeSessionToken(rig.rootDir, "sess-a", { expiresAt: now + 8 * 60 * 60 * 1000, accountId: "acct-1" });
+
+      const [result] = await rig.refresher.refreshNow("acct-1");
+
+      expect(result!.outcome).toBe("harvested_session");
+      const healed = JSON.parse(
+        fs.readFileSync(path.join(accountRoot, ".claude", ".credentials.json"), "utf8"),
+      ) as { claudeAiOauth: { accessToken: string; expiresAt: number } };
+      expect(healed.claudeAiOauth.expiresAt).toBe(now + 8 * 60 * 60 * 1000);
+      expect(healed.claudeAiOauth.accessToken).not.toBe("");
+    });
+
+    // Diagnosis only, deliberately: nothing DELETES a blanked source. With no
+    // session token to harvest there is nothing to overwrite it with either, so
+    // the file stays put and the account waits for a reconnect.
+    it("leaves a blanked source on disk when no session holds a token to heal it", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({ accounts: [makeAccount("acct-1")], initialNow: now });
+      rigs.push(rig);
+      const accountRoot = path.join(rig.rootDir, "provider-accounts", "claude", "acct-1");
+      writeBlankedCredentials(accountRoot);
 
       const [result] = await rig.refresher.refreshNow("acct-1");
 

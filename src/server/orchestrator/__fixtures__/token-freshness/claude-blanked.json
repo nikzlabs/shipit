@@ -1,0 +1,9 @@
+{
+  "claudeAiOauth": {
+    "accessToken": "",
+    "refreshToken": "",
+    "expiresAt": 0,
+    "scopes": [],
+    "subscriptionType": "max"
+  }
+}

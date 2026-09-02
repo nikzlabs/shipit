@@ -152,6 +152,16 @@ function atomicCopyFile(src: string, dst: string): void {
  * a null on a file that is nonetheless a credential reads as `unorderable` and
  * stops the guards from overwriting it, because that is what a reader which has
  * stopped matching its CLI looks like (planning#449).
+ *
+ * The ISO-8601 branch is DEFENSIVE, not observed: every captured Claude
+ * credential writes `expiresAt` as epoch ms (see the fixture's provenance in
+ * `token-freshness-guard.test.ts`). It is here because a numbers-only reader
+ * meeting a string expiry is the one shape variant that has already cost this
+ * codebase an incident — grok's `expires_at` is an ISO-8601 string, and its
+ * first reader returned null on every real file. Four lines buy immunity to a
+ * repeat. There is deliberately no JWT-`exp` branch of the kind
+ * {@link readCodexTokenFreshness} needs: Claude's access token is an opaque
+ * `sk-ant-oat…` bearer, not a JWT, so there is no claim to read.
  */
 function readClaudeTokenExpiry(file: string): number | null {
   try {
@@ -161,11 +171,66 @@ function readClaudeTokenExpiry(file: string): number | null {
     if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
       return raw < 10_000_000_000 ? raw * 1000 : raw; // seconds → ms heuristic
     }
+    if (typeof raw === "string" && raw.trim() !== "") {
+      const parsed = Date.parse(raw);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
   } catch {
     // missing / invalid JSON
   }
   return null;
 }
+
+/**
+ * Has the Claude CLI BLANKED this credential — rewritten it with its OAuth
+ * tokens emptied (`{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0,…}}`)?
+ *
+ * That is what the CLI writes when asked to refresh with a grant the OAuth
+ * server has already spent, which is the ordinary consequence of a sibling
+ * session rotating the shared account token first (docs/153). The file still
+ * parses as a credential and still carries the `claudeAiOauth` key — it just
+ * holds no bearer at all.
+ *
+ * It matters here because the two facts {@link TokenFreshnessReading} separates
+ * are "the reader broke" and "there is nothing to protect", and a blanked file
+ * is emphatically the second: `expiresAt: 0` fails the reader's `> 0` test, so
+ * without this probe a blanked session copy reads as `unorderable` and the
+ * sync-in refuses, forever, to hand that session the account's live token. The
+ * session is then wedged with an empty credential and no way back — observed in
+ * production 2026-09-02, as a `refused-copy` and a `stranded-rotation` line two
+ * seconds apart on one session whose CLI had 401'd two minutes earlier.
+ *
+ * Emptiness is judged on the TOKENS, never on `expiresAt` alone: a file with a
+ * live `accessToken` and an expiry this reader cannot parse is the planning#449
+ * state and must stay `unorderable`. Only a credential with no access token AND
+ * no refresh token is declared to hold nothing.
+ *
+ * Shared with `agents/claude/oauth-refresher.ts`, which names the same shape in
+ * its `missing_credentials` diagnosis. One predicate, two consumers — a second
+ * hand-rolled copy is how a reader and a probe come to disagree about the same
+ * file.
+ */
+export function isBlankedClaudeCredential(parsed: Record<string, unknown>): boolean {
+  const oauth = parsed.claudeAiOauth;
+  if (!oauth || typeof oauth !== "object" || Array.isArray(oauth)) return false;
+  const isEmpty = (value: unknown): boolean => value === undefined || value === null || value === "";
+  const o = oauth as Record<string, unknown>;
+  return isEmpty(o.accessToken ?? o.access_token) && isEmpty(o.refreshToken ?? o.refresh_token);
+}
+
+/**
+ * Per-agent probe for "this file is the harness's own logged-out marker, not a
+ * credential" — the one thing {@link holdsProtectableCredential}'s otherwise
+ * generic test cannot see, because such a file is structurally indistinguishable
+ * from a live one.
+ *
+ * Only Claude has an entry, because only Claude's blanked shape is documented
+ * from a real file. A harness with no entry keeps the generic behaviour, which
+ * is what every harness had before this existed.
+ */
+const AGENT_BLANK_CREDENTIAL: Partial<Record<AgentId, (parsed: Record<string, unknown>) => boolean>> = {
+  claude: isBlankedClaudeCredential,
+};
 
 /**
  * "Freshness" (epoch ms) of a Codex `auth.json` — a strictly larger value means
@@ -232,9 +297,10 @@ export const TOKEN_FRESHNESS: Partial<Record<AgentId, (file: string) => number |
  * The tri-state exists because `null` collapsed two facts that call for
  * opposite actions (planning#449):
  *
- *   - **`absent`** — nothing here to protect. The file is missing, empty, or
- *     not a JSON object at all, so overwriting it destroys no credential and
- *     the sync-in copy proceeds exactly as it always has.
+ *   - **`absent`** — nothing here to protect. The file is missing, empty, not a
+ *     JSON object at all, or the harness's own LOGGED-OUT marker
+ *     ({@link AGENT_BLANK_CREDENTIAL}) — so overwriting it destroys no
+ *     credential and the sync-in copy proceeds exactly as it always has.
  *   - **`unorderable`** — the file IS a structurally valid credential and the
  *     reader could not find a freshness signal in it. That is what a renamed
  *     field, a changed encoding, or a new layout looks like: grok's live
@@ -262,36 +328,48 @@ export type TokenFreshnessReading =
  * Is there a credential here that overwriting would destroy?
  *
  * Deliberately generic and shallow: every file in {@link AGENT_TOKEN_FILES} is
- * JSON today, so "parses as a non-empty JSON object" is the whole test. It
- * answers the only question the guards ask — "could a CLI have written this?"
- * — without a second per-agent parser, which is how two readers of one format
- * come to disagree about which copy is newer. A future harness whose
- * credential is not JSON needs its own probe here; until it has one, its file
- * reads as `absent` and stays overwritable, which is what every file was
+ * JSON today, so "parses as a non-empty JSON object" is very nearly the whole
+ * test. It answers the only question the guards ask — "could a CLI have written
+ * this?" — without a second per-agent parser deciding which copy is newer,
+ * which is how two readers of one format come to disagree. A future harness
+ * whose credential is not JSON needs its own probe here; until it has one, its
+ * file reads as `absent` and stays overwritable, which is what every file was
  * before this existed.
+ *
+ * The one per-agent exception is {@link AGENT_BLANK_CREDENTIAL}, and it does not
+ * reopen that hazard: it answers "is there a bearer in here", never "which copy
+ * is newer", so it cannot disagree with a freshness reader about an ordering.
+ * It exists because a harness's own LOGGED-OUT file parses exactly like a live
+ * one, so the generic test says "credential" about a file that holds nothing —
+ * and a session protected from being overwritten by a token it does not have is
+ * a session that never authenticates again.
  */
-function looksLikeStructuredCredential(file: string): boolean {
+function holdsProtectableCredential(agentId: AgentId, file: string): boolean {
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
-    // An array is excluded deliberately: `Object.keys(["x"]).length` is 1, so a
-    // JSON array would otherwise read as a credential on its indices alone.
-    // No agent writes one, and none of the readers would understand it.
-    return !!parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      && Object.keys(parsed).length > 0;
+    parsed = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
   } catch {
     return false; // missing, unreadable, or not JSON — nothing to preserve
   }
+  // An array is excluded deliberately: `Object.keys(["x"]).length` is 1, so a
+  // JSON array would otherwise read as a credential on its indices alone.
+  // No agent writes one, and none of the readers would understand it.
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  const record = parsed as Record<string, unknown>;
+  if (Object.keys(record).length === 0) return false;
+  return !(AGENT_BLANK_CREDENTIAL[agentId]?.(record) ?? false);
 }
 
 /** Read one token file through its agent's reader and classify the answer. */
 function classifyTokenFreshness(
+  agentId: AgentId,
   read: (file: string) => number | null,
   file: string,
 ): TokenFreshnessReading {
   if (!fs.existsSync(file)) return { kind: "absent" };
   const at = read(file);
   if (at !== null) return { kind: "ordered", at };
-  return looksLikeStructuredCredential(file) ? { kind: "unorderable" } : { kind: "absent" };
+  return holdsProtectableCredential(agentId, file) ? { kind: "unorderable" } : { kind: "absent" };
 }
 
 /**
@@ -525,7 +603,7 @@ function syncAgentTokenInFromRoot(
     // copy it licensed destroys a token the CLI had just rotated. See
     // {@link TokenFreshnessReading}: `absent` still copies, `unorderable` does
     // not.
-    const dstReading = classifyTokenFreshness(freshness, dst);
+    const dstReading = classifyTokenFreshness(agentId, freshness, dst);
     if (dstReading.kind === "unorderable") {
       logUnorderableToken(
         "refused-copy",
@@ -535,7 +613,7 @@ function syncAgentTokenInFromRoot(
       continue;
     }
     if (dstReading.kind === "ordered") {
-      const srcReading = classifyTokenFreshness(freshness, src);
+      const srcReading = classifyTokenFreshness(agentId, freshness, src);
       if (srcReading.kind === "unorderable") {
         // The mirror signal: the SOURCE is the file we cannot order. Nothing is
         // at risk (we skip, as a null source expiry always did), but a rotation
@@ -1606,10 +1684,10 @@ export function sessionTokenIsAheadOfSource(
   const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
   for (const rel of files) {
     const sessionFile = path.join(sessionDir, rel);
-    const sessionReading = classifyTokenFreshness(freshness, sessionFile);
+    const sessionReading = classifyTokenFreshness(agentId, freshness, sessionFile);
     if (sessionReading.kind !== "ordered") continue; // can't prove it's newer
     const sourceFile = path.join(sourceRoot, rel);
-    const sourceReading = classifyTokenFreshness(freshness, sourceFile);
+    const sourceReading = classifyTokenFreshness(agentId, freshness, sourceFile);
     // An unorderable source is one the sync-back refuses to overwrite
     // (planning#449), so promising a write here would send the publisher into a
     // call that can only decline.
@@ -1828,7 +1906,7 @@ function syncAgentTokenBackToRoot(
   const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
   for (const rel of files) {
     const sessionFile = path.join(sessionDir, rel);
-    const sessionReading = classifyTokenFreshness(freshness, sessionFile);
+    const sessionReading = classifyTokenFreshness(agentId, freshness, sessionFile);
     // Missing / empty / not-a-credential: nothing to publish, exactly as a null
     // expiry always meant here.
     if (sessionReading.kind === "absent") continue;
@@ -1844,7 +1922,7 @@ function syncAgentTokenBackToRoot(
       continue;
     }
     const sourceFile = path.join(sourceRoot, rel);
-    const sourceReading = classifyTokenFreshness(freshness, sourceFile);
+    const sourceReading = classifyTokenFreshness(agentId, freshness, sourceFile);
     if (sourceReading.kind === "unorderable") {
       // Same invariant as the sync-in refusal, in the direction that would
       // damage every session at once: a source credential we cannot order may
@@ -2053,7 +2131,7 @@ export function syncSubAgentSpawnHomeTokenBack(
   for (const rel of files) {
     const spawnFile = path.join(spawnHome, rel);
     if (!rescueAdapterQuarantines(targetRoot, rel, spawnFile)) safeToDelete = false;
-    const spawnReading = classifyTokenFreshness(freshness, spawnFile);
+    const spawnReading = classifyTokenFreshness(agentId, freshness, spawnFile);
     if (spawnReading.kind === "absent") continue;
     const targetFile = path.join(targetRoot, rel);
     if (spawnReading.kind === "unorderable") {
@@ -2065,7 +2143,7 @@ export function syncSubAgentSpawnHomeTokenBack(
       if (!quarantineTokenCopy(targetRoot, rel, spawnFile)) safeToDelete = false;
       continue;
     }
-    const targetReading = classifyTokenFreshness(freshness, targetFile);
+    const targetReading = classifyTokenFreshness(agentId, freshness, targetFile);
     if (targetReading.kind === "unorderable") {
       logUnorderableToken(
         "refused-publish",
@@ -2129,9 +2207,9 @@ export function preserveBorrowedTokensBeforeWipe(
   for (const rel of files) {
     const borrowedFile = path.join(borrowRoot, rel);
     rescueAdapterQuarantines(targetRoot, rel, borrowedFile);
-    const borrowedReading = classifyTokenFreshness(freshness, borrowedFile);
+    const borrowedReading = classifyTokenFreshness(agentId, freshness, borrowedFile);
     if (borrowedReading.kind === "absent") continue;
-    const targetReading = classifyTokenFreshness(freshness, path.join(targetRoot, rel));
+    const targetReading = classifyTokenFreshness(agentId, freshness, path.join(targetRoot, rel));
     const superseded = borrowedReading.kind === "ordered"
       && targetReading.kind === "ordered"
       && borrowedReading.at <= targetReading.at;

@@ -56,6 +56,7 @@ import {
   sessionCredentialsRoot,
 } from "../../session-credentials-scaffold.js";
 import {
+  isBlankedClaudeCredential,
   sessionTokenIsAheadOfSource,
   syncProviderAccountTokenBack,
 } from "../../token-sync-manager.js";
@@ -228,13 +229,18 @@ export function summarizeRefreshFailure(combinedOutput: string): string {
  *   - **`unreadable`** — a file that is neither: truncated, foreign, or a
  *     shape this reader does not know. Never assumed to be empty.
  *
- * Diagnosis only. Nothing acts on the classification — in particular a blanked
- * source is not repaired or deleted here. A file this reader believes is empty
- * may be a partial write or a credential shape it has not been taught, and
- * `expiresAt: 0` is a claim in the file rather than proof about the account; a
- * delete that is wrong destroys a live credential, while the account is already
- * unusable either way. So the log line is the whole feature, and the user
- * reconnects once.
+ * Diagnosis only *here*: a blanked source is never repaired or DELETED on this
+ * path. A delete that is wrong destroys a live credential, `expiresAt: 0` is a
+ * claim in the file rather than proof about the account, and there is no
+ * compare-and-delete — so the log line is the whole feature of this function.
+ *
+ * What did change (planning#495) is elsewhere and is not a delete: the sync
+ * guards classify a blanked file as `absent` rather than `unorderable`
+ * ({@link isBlankedClaudeCredential}), so a live token may be COPIED over one.
+ * That destroys nothing — a blanked file holds neither bearer — and it is what
+ * lets a session wedged with a blanked copy take the account's live token on
+ * its next turn, and a harvest heal a blanked account root from a session that
+ * still holds a working token.
  */
 interface UnusableSource {
   kind: "missing" | "blanked" | "unreadable";
@@ -1157,15 +1163,16 @@ export class ClaudeOAuthRefresher extends EventEmitter {
     } catch {
       return { kind: "missing", detail: `source file missing at ${file}` };
     }
-    let oauth: Record<string, unknown> | undefined;
+    let parsed: Record<string, unknown>;
     try {
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      oauth = parsed.claudeAiOauth as Record<string, unknown> | undefined;
+      parsed = JSON.parse(raw) as Record<string, unknown>;
     } catch {
       return { kind: "unreadable", detail: `source file at ${file} is not parseable JSON` };
     }
-    const isEmpty = (value: unknown): boolean => value === undefined || value === null || value === "";
-    if (oauth && isEmpty(oauth.accessToken) && isEmpty(oauth.refreshToken)) {
+    // Shared with the sync guards rather than re-derived here (planning#495):
+    // they must agree that a blanked file holds nothing, because this names the
+    // state in a log and they act on it.
+    if (isBlankedClaudeCredential(parsed)) {
       return {
         kind: "blanked",
         detail: `the CLI blanked the source at ${file} (empty accessToken/refreshToken, expiresAt=0)`,

@@ -52,6 +52,8 @@ import type { AgentId } from "../shared/types/agent-types.js";
 import {
   AGENT_TOKEN_FILES,
   TOKEN_FRESHNESS,
+  isBlankedClaudeCredential,
+  sessionTokenIsAheadOfSource,
   syncAgentTokenIn,
   syncAgentTokenBack,
 } from "./token-sync-manager.js";
@@ -233,5 +235,168 @@ describe("planning#449 — token freshness readers against real credential files
         warn.mockRestore();
       }
     });
+  });
+});
+
+/**
+ * planning#495 — the BLANKED Claude credential, and the wedge it caused.
+ *
+ * Observed in production 2026-09-02 on one session: a `refused-copy` at
+ * 09:06:11 and a `stranded-rotation` at 09:06:13, both naming the same
+ * `.claude/.credentials.json`, two minutes after that session's CLI 401'd. The
+ * 401 is the ordinary consequence of a sibling rotating the shared account's
+ * single-use refresh token first; what the CLI does next is rewrite its own copy
+ * with the tokens emptied and `expiresAt: 0` — the shape docs/153 already names
+ * `blanked` in the refresher's `missing_credentials` diagnosis.
+ *
+ * `expiresAt: 0` fails the reader's `> 0` test, so the file read as null; it
+ * still parsed as a credential, so it read as `unorderable`; and `unorderable`
+ * refuses the overwrite in BOTH directions by design (planning#449). The session
+ * was therefore pinned to an empty credential that the account's live token was
+ * forbidden to replace — permanently, since every ordinary path back runs
+ * through the sync-in that just refused.
+ *
+ * The fixture is the shape as `describeUnusableSource` documents it, with no
+ * secret to redact: both token fields are empty strings, which is the whole
+ * point of it.
+ */
+describe("planning#495 — a blanked Claude credential holds nothing to protect", () => {
+  let root: string;
+  const sid = "session-blanked-credential";
+  const BLANKED = fs.readFileSync(path.join(FIXTURE_DIR, "claude-blanked.json"), "utf-8");
+  const LIVE = fs.readFileSync(fixturePath("claude"), "utf-8");
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-blanked-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Write one content into the flat source and another into the session copy. */
+  function seedPair(sourceContent: string, sessionContent: string): { src: string[]; dst: string[] } {
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    const rels = AGENT_TOKEN_FILES.claude ?? [];
+    const src: string[] = [];
+    const dst: string[] = [];
+    for (const rel of rels) {
+      const s = path.join(root, rel);
+      fs.mkdirSync(path.dirname(s), { recursive: true });
+      fs.writeFileSync(s, sourceContent);
+      src.push(s);
+      const d = path.join(sessionDir, rel);
+      fs.mkdirSync(path.dirname(d), { recursive: true });
+      fs.writeFileSync(d, sessionContent);
+      dst.push(d);
+    }
+    return { src, dst };
+  }
+
+  function unorderableLines(warn: { mock: { calls: unknown[][] } }): string[] {
+    return warn.mock.calls
+      .map((call) => call.join(" "))
+      .filter((line) => line.includes("token-freshness=unorderable"));
+  }
+
+  it("carries no expiry the reader can order — which is why it wedged", () => {
+    const file = path.join(root, "blanked.json");
+    fs.writeFileSync(file, BLANKED);
+    expect(TOKEN_FRESHNESS.claude!(file)).toBeNull();
+  });
+
+  /**
+   * The incident, inverted: the account's live token now reaches the session on
+   * its very next turn, and no `refused-copy` line is printed. Without the
+   * blank probe this copy is refused and the session never authenticates again.
+   */
+  it("lets the sync-in replace a blanked session copy with the live source token", () => {
+    const { dst } = seedPair(LIVE, BLANKED);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      syncAgentTokenIn(root, sid, "claude");
+      for (const file of dst) expect(fs.readFileSync(file, "utf-8")).toBe(LIVE);
+      expect(unorderableLines(warn)).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * The other half of the same wedge: the turn-end publish no longer reports a
+   * stranded rotation for a file that carries no rotation. It still publishes
+   * nothing — an empty credential must never reach the account root.
+   */
+  it("publishes nothing from a blanked session copy, and says nothing about it", () => {
+    const { src } = seedPair(LIVE, BLANKED);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      syncAgentTokenBack(root, sid, "claude");
+      for (const file of src) expect(fs.readFileSync(file, "utf-8")).toBe(LIVE);
+      expect(unorderableLines(warn)).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * The direction docs/153 left open, now closed: a blanked ACCOUNT root is not
+   * a credential either, so a session still holding a working token heals it
+   * instead of the user being made to reconnect. Non-destructive by
+   * construction — the file being overwritten holds neither bearer.
+   */
+  it("lets a session's live token heal a blanked source, and reports it as ahead", () => {
+    const { src } = seedPair(BLANKED, LIVE);
+    expect(sessionTokenIsAheadOfSource(root, sid, "claude")).toBe(true);
+    syncAgentTokenBack(root, sid, "claude");
+    for (const file of src) expect(fs.readFileSync(file, "utf-8")).toBe(LIVE);
+  });
+
+  /**
+   * The boundary that must NOT move. planning#449 is about a reader that stopped
+   * matching its CLI, and such a file still holds a live bearer — emptiness is
+   * judged on the TOKENS, never on the expiry alone. A credential with a real
+   * access token and an expiry shape this reader cannot parse stays
+   * `unorderable` and stays protected.
+   */
+  it("still refuses a credential that has a live token but an unreadable expiry", () => {
+    const unreadableExpiry = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "sk-ant-oat01-STILL-LIVE gitleaks:allow",
+        refreshToken: "sk-ant-ort01-STILL-LIVE gitleaks:allow",
+        expiresAt: { seconds: 1787238459 },
+      },
+    });
+    const { dst } = seedPair(LIVE, unreadableExpiry);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      syncAgentTokenIn(root, sid, "claude");
+      for (const file of dst) expect(fs.readFileSync(file, "utf-8")).toBe(unreadableExpiry);
+      expect(unorderableLines(warn)[0]).toContain("outcome=refused-copy");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("does not read a non-Claude shape as blanked", () => {
+    expect(isBlankedClaudeCredential({ some_future_shape: { token: "opaque" } })).toBe(false);
+    expect(isBlankedClaudeCredential({ claudeAiOauth: "not-an-object" })).toBe(false);
+  });
+
+  /**
+   * Defensive, not observed: every captured Claude credential writes epoch ms.
+   * The branch exists because a numbers-only reader meeting a string expiry is
+   * the exact shape variant that broke grok's first reader on every real file.
+   */
+  it("orders an ISO-8601 string expiry, the shape variant that broke grok's reader", () => {
+    const file = path.join(root, "iso.json");
+    fs.writeFileSync(file, JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "sk-ant-oat01-ISO gitleaks:allow",
+        refreshToken: "sk-ant-ort01-ISO gitleaks:allow",
+        expiresAt: "2026-09-02T09:06:11.000Z",
+      },
+    }));
+    expect(TOKEN_FRESHNESS.claude!(file)).toBe(Date.parse("2026-09-02T09:06:11.000Z"));
   });
 });
