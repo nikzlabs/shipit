@@ -7,224 +7,275 @@ description: Widen the docs/224 merge gate from a per-sandbox grant to a per-rep
 # Agent merge, granted per repository — design
 
 Implements [requirements.md](./requirements.md). Extends
-`docs/224-sandbox-merge-capability` (the shim, the route, the guardrails) and
-reuses two mechanisms the UI merge route already has:
-`services/branch-sync.ts` (`guardMergeSync`) and `flushPendingTurnCommit()`.
+`docs/224-sandbox-merge-capability` (the shim, the route, the guardrails).
+
+> **Revised 2026-09-02** after an independent review. Seven findings, each
+> verified at the source before it was accepted; the changes are marked
+> **(review)** below and summarised in [What the review changed](#what-the-review-changed).
 
 ## What changes, in one line
 
 `mergeDisposition()` stops asking "is this a sandbox?" and starts asking "may an
-agent merge here?" — and `agentMergePullRequest()` gains the pre-merge flush that
-`agentCreatePr()` has had all along.
+agent merge here?" — and the repo-bound merge path gates on the **same state the
+PR card gates on**, after flushing the turn's work.
 
 ## 1. Storage — the grant (req 1, 2, 3)
 
-A column on the `repos` table, copying the shape of `repos.trusted`
-(docs/178) — the per-repository boolean this feature is a second instance of:
+A column on the `repos` table, copying the shape of `repos.trusted` (docs/178) —
+the per-repository boolean this feature is a second instance of:
 
 ```sql
 ALTER TABLE repos ADD COLUMN allow_agent_merge INTEGER NOT NULL DEFAULT 0
 ```
 
-A new migration entry, appended — never an edit to an existing one. `0` is the
-default, and unlike `trusted` there is **no backfill**: `trusted` backfilled
-existing rows to 1 because the gate arrived after the repositories did, whereas
-here every repository must start with the permission off (req 2).
+A new migration entry, appended. Unlike `trusted` there is **no backfill**:
+`trusted` backfilled existing rows to 1 because the gate arrived after the
+repositories did, whereas here every repository must start off (req 2).
 
 Reads and writes live on `RepoStore` (`orchestrator/repo-store.ts`) beside
-`isTrusted()` / `setTrusted()`, and they must match on `canonicalRepoKey(url)`
-for the same reason those do: rows are keyed by the raw URL a repository was
-first added with, so two spellings of one remote have to share one decision.
-Getting this wrong fails silently — the grant reads as off and the feature does
-nothing.
+`isTrusted()` / `setTrusted()`, matched on `canonicalRepoKey(url)` for the same
+reason those are: rows are keyed by the raw URL a repository was first added
+with, so two spellings of one remote must share one decision.
 
-The value is read server-side only. Nothing writes it into the container, no
-shim command reports it, and no workspace file feeds it (req 3). This is the same
-rule `SessionInfo.kind` and `SessionCapabilities` already state in their
-docstrings: set server-side, never inferred from workspace files, so an agent
-cannot self-elevate.
+**No new endpoint (review).** The flag joins the existing browser-only
+`PATCH /api/repos/:url`, which already takes `hidden` and `colorIndex` and
+broadcasts `repo_list` on change, and it rides the existing `RepoInfo`
+projection out to the client. The value is **server-authoritative and
+container-inaccessible** — the browser must read it to render the toggle; the
+container must never see or set it. That is a property of the route, not of the
+session payload (req 3).
 
 **Rejected: `shipit.yaml`.** The agent can write that file, so a permission
-declared there is a permission the agent can grant itself in one commit — and
-untrusted text in an issue or a pull request can ask it to. The receipt is in
+declared there is one the agent can grant itself in one commit. Receipt in
 requirements.md.
 
 ## 2. The gate (req 4, 5, 6, 12, 13)
 
-`mergeDisposition()` in `src/server/orchestrator/pr-target.ts` today:
-
-```ts
-if (session.kind !== "sandbox") return "not-sandbox";
-return session.capabilities?.dangerousGitHubOps ? "allowed" : "not-granted";
-```
-
-It becomes a three-way decision over the session kind, with the repository grant
-passed in by the route (the helper stays pure):
+`mergeDisposition()` in `orchestrator/pr-target.ts` today returns `not-sandbox`
+for anything that is not a sandbox. It gains one branch, and **keeps
+`not-sandbox` for ops sessions (review)** — requirement 13 says ops behaviour
+does not change, so a renamed disposition would be churn with no behaviour:
 
 | Session | Decision |
 |---|---|
 | `kind === "sandbox"` | as today — `dangerousGitHubOps` decides (req 12) |
-| `kind === "ops"` | `"ops-refused"` — never merges (req 13) |
+| `kind === "ops"` | `not-sandbox`, unchanged wording (req 13) |
 | repo-bound | the repository's `allow_agent_merge` decides (req 4, 6) |
 
-Each refusal keeps its own message, as docs/224 established, so the agent can
-tell "not enabled here" from "wrong kind of session":
+`not-granted-repo` is the one new disposition: *"Agents cannot merge in this
+repository. The user turns this on in Project Settings."* (req 6)
 
-- `not-granted-repo` → "Agents cannot merge in this repository. The user turns on
-  *Allow agents to merge their own pull requests* in Project Settings." (req 6)
-- `ops-refused` → unchanged wording from today's `not-sandbox` message, pointing
-  at the PR lifecycle card.
+### Ownership: a server-derived tuple, not a number (req 5)
 
-### The PR must be the session's own (req 5)
+The first draft compared the requested PR number with the number of the
+current-branch PR. **The review showed that does not bind anything**, and all
+three holes were reproduced in the code:
 
-The gate answers *may this session merge*. A second check answers *may it merge
-this pull request*. In a repo-bound session the route resolves the pull request
-for the session's current branch — the same resolution `mergePullRequest()` uses,
-`git.getCurrentBranch()` → `findPullRequest` — and refuses when the requested
-number differs:
+1. **`--repo` retargets the repository.** `resolvePrTarget()` returns early on a
+   parsed `--repo` (`pr-target.ts:106`), and PR numbers are repository-scoped. So
+   `gh pr merge 42 --repo org/other` passes a check against *this* repo's #42 and
+   merges *another* repo's #42. `cwd` similarly moves the flush and push onto an
+   agent-chosen nested clone.
+2. **The current branch is agent-controlled.** `getCurrentBranch()` reads the
+   writable workspace, and `block-branch-ops.mjs` refuses `checkout -b` but
+   allows a plain `git checkout <existing-branch>`. It also returns `"main"` when
+   HEAD is detached (`status.current ?? "main"`, `shared/git.ts:670`), so the
+   "detached HEAD fails closed" claim in the first draft was simply false.
+3. **A branch lookup carries no provenance.** `findPullRequest()` filters by
+   repository and head branch only, so a pull request a *person* opened from the
+   session's branch reads as the session's own — which requirement 5 excludes by
+   name.
 
-> `gh pr merge` can only merge this session's own pull request (#{own}). PR
-> #{asked} belongs to another branch.
+So ownership is decided from state the agent cannot write:
 
-This also settles the `--repo` / `cwd` overrides that `resolvePrTarget()`
-supports: in a repo-bound session they cannot reach another repository's pull
-request, because the number must match the session's own. Sandbox sessions keep
-the wider behaviour they have today — a sandbox merges an explicit number in a
-repository that need not be its own, which `merge-attribution.ts` already records.
+- **Repository** — `session.remoteUrl`. On a repo-bound session the route
+  **refuses `--repo` and `cwd` outright (review)**; they stay available to
+  sandbox sessions, which merge an explicit number in a repository that need not
+  be their own.
+- **Branch** — `session.branch`, the server-side record. Before any git
+  mutation the route requires `git.currentBranchOrNull() === session.branch`
+  (`currentBranchOrNull`, never `getCurrentBranch`, precisely because of the
+  `"main"` fallback), and refuses otherwise.
+- **Pull request** — the number ShipIt recorded when it opened the pull request
+  for this session, persisted on the session row (`prNumber`, written by
+  `agentCreatePr()` / `quickCreatePr()`). The requested number must equal it.
+  **Absent ⇒ refuse (review)**: without a recorded number there is no way to tell
+  ShipIt's pull request from a person's, and requirement 5 names that case.
+
+Failing closed here is deliberate and is the opposite of `guardMergeSync`, where
+"cannot tell" correctly proceeds: there the fallback is the status quo, here it
+is a merge.
 
 ## 3. The merge sequence (req 14, 15, 16, 17)
 
-This is the substance of the change. `agentMergePullRequest()`
-(`services/github.ts`) runs its steps in a new order, because two of them must
-happen *before* the pull request is read from GitHub.
-
 ```
-1. flushPendingTurnCommit(git, { sessionId, runnerRegistry, chatHistory })   (req 14)
-     · secretBlocked      → 422, no merge                                   (req 15)
-     · unreadableBlocked  → 422, no merge                                   (req 15)
-2. guardMergeSync(git)                                                      (req 14, 17)
-     · "diverged" → hold, refuse, no push
+1. flushPendingTurnCommit(...)                                          (req 14, 15)
+     · any outcome other than "committed" / "nothing to commit" → 422
+2. guardMergeSync(git)                                                  (req 14, 17)
+     · "diverged" → hold, refuse
      · "ahead"    → push, then hold: "merge again once its checks report"
-     · cancelAutoPush(sessionId) — only when the push actually happened
-3. viewPullRequest(...)   ← now, so `pr.head` is the head we just pushed     (req 16)
-4. draft / closed / already-merged short-circuits                     (unchanged)
-5. getCheckStatus(owner, repo, pr.head) → failure refuses, pending refuses    (req 7, 16, 17)
-6. reviewDecision gate                                                       (req 8)
-7. mergePullRequest(...) → logMergePerformed(via: "gh pr merge")
+     · cancelAutoPush(sessionId) only on reason === "pushed"
+3. poller.forceRefreshSession(sessionId), then poller.getStatus(...)    (req 7, 8, 16, 17)
+     · no summary, or checks.total === 0 inside checks.graceUntil → refuse
+     · reviewDecision review_required / changes_requested → refuse
+     · failing → refuse; pending → refuse, naming --auto
+4. merge at the recorded head SHA → logMergePerformed(via: "gh pr merge")
 ```
 
-### Why the order matters
+### The check gate is the poller's, not a second one (review)
 
-- **Steps 1 and 2 before step 3.** Today the function reads the pull request
-  first and passes `pr.head` to `getCheckStatus()`. If a push moved the head
-  after that read, the guardrail would clear the *old* head's green checks and
-  merge commits CI never ran on — a worse fault than the one being fixed. Reading
-  the pull request after the push removes the stale SHA rather than re-fetching
-  around it.
-- **Step 1's two aborts are not optional.** `agentCreatePr()` already refuses
-  with a 422 on both, for the reason stated in its comments: a blocked commit
-  means the work is *not* on the branch, so continuing publishes the previous
-  state while the agent believes its change shipped. A merge makes that
-  irreversible (req 15).
-- **`cancelAutoPush` only after a real push.** The debounced auto-push is
-  session-keyed in `services/auto-push-scheduler.ts`; cancelling one that was
-  never replaced by a synchronous push simply loses it. So `MergeSyncVerdict`
-  grows a discriminator rather than the caller reading the prose:
+docs/224 reads checks directly with `getCheckStatus()` because *"the poller
+doesn't track sandbox PRs"*. That reason does not transfer: in a repo-bound
+session the poller **does** track the session's pull request, and it is the
+source the PR card gates on. Gating the agent path on the same summary is one
+source of truth instead of two, and it removes three defects at once:
 
-  ```ts
-  type MergeSyncVerdict =
-    | { action: "proceed" }
-    | { action: "hold"; reason: "pushed" | "push-failed" | "diverged"; message: string };
-  ```
+- **`"none"` is ambiguous.** `getCheckStatus()` maps an empty result to `"none"`
+  (`github-auth-checks.ts:57`), and `agentMergePullRequest()` treats `"none"` as
+  permission to merge. So the advertised second call — `gh pr merge --auto`,
+  moments after the push — merges immediately if GitHub has not registered the
+  new head's checks yet, because `--auto` is consulted only on `"pending"`. The
+  poller summary carries `checks.graceUntil` (docs/230) for exactly this
+  ambiguity, and the UI route already refuses inside that window with *"Waiting
+  for CI checks to start"*.
+- **A read failure looks like "no checks".** `getCheckStatus()` swallows API
+  errors into the same `"none"`. Through the poller, an unread summary is
+  `undefined` and refuses.
+- **`reviewDecision` had no source (review).** The first draft listed the docs/174
+  gate but named nothing that supplies it: the REST `viewPullRequest()` result
+  has no such field — it is a GraphQL projection. The poller summary already
+  carries it.
 
-  The UI merge route takes the same field and ignores it, so there is one shape.
-  (Its docstring already forbids parsing the message — "so the caller never
-  parses prose" is the same rule one level up.)
+Sandbox sessions keep today's direct `getCheckStatus()` path unchanged.
+
+### Merge at a SHA, not at a branch (review)
+
+`PullRequestDetail.head` is a **branch name** (`pr.head.ref`,
+`github-auth-prs.ts:705`), not a commit. So the first draft's stated reason for
+moving the pull-request read — "then `pr.head` is the head we just pushed" — was
+wrong. The reorder is still right, but for a different reason: `guardMergeSync`
+returns `hold` after it pushes, so that invocation never reaches the check gate
+at all.
+
+The residual hazard is real and unaddressed by ordering: checks are read through
+a mutable ref and `mergePullRequest()` sends no expected SHA
+(`github-auth-prs.ts:167`), so anything that advances the branch between the
+check and the merge gets merged unchecked. The fix is to carry the head **SHA**
+through: read it once, gate the checks on it, and pass it as the REST merge's
+`sha` parameter so GitHub refuses atomically if the head moved (req 16).
+
+### The flush needs a complete outcome (review)
+
+The first draft aborted on `secretBlocked` and `unreadableBlocked` only. Both
+exist, and both are insufficient, because `autoCommit()` has two more ways to not
+commit the turn's work:
+
+- **Unresolved conflicts or a rebase in progress** return `commitHash: null`
+  (`shared/git.ts:502`). `flushPendingTurnCommit()` emits a notice but hands the
+  caller nothing that distinguishes this from a clean tree.
+- **An unreadable path of kind other than `blocked`** produces a *partial*
+  commit — the log line says so explicitly: *"its contents are omitted from this
+  commit. The commit itself still lands."*
+
+Both merge the previous or partial state while the agent believes its work
+shipped, which is exactly what requirement 15 forbids. So `flushPendingTurnCommit()`
+returns a discriminated outcome — `committed` / `nothing-to-commit` /
+`blocked-secret` / `blocked-unreadable` / `blocked-conflict` / `partial-unreadable`
+— and the merge proceeds on the first two only. `agentCreatePr()` gets the same
+treatment, since it has the same two holes today.
 
 ### The refusal after a push (req 17)
 
 `guardMergeSync` already says the right thing — *"Pushed N commits that had not
 reached GitHub yet … merge again once its checks report."* The agent path appends
-one clause: `--auto` arms merge-when-green, which the shim already forwards. The
-command never waits by itself; the receipt for that is in requirements.md.
+one clause: `--auto` arms merge-when-green. The command never waits by itself.
 
-The practical loop is therefore two shim calls when the agent has just done work:
-`gh pr merge --squash` (flush, push, refused as pending) then
-`gh pr merge --squash --auto` (armed). `src/server/shipit-docs/github.md` must
-say this plainly, or agents will read the first refusal as a failure.
+`MergeSyncVerdict` grows a discriminator so the caller never parses the message:
+
+```ts
+| { action: "hold"; reason: "pushed" | "push-failed" | "diverged"; message: string }
+```
+
+The debounced auto-push is cancelled **only** on `reason: "pushed"` — it is
+session-keyed in `services/auto-push-scheduler.ts`, so cancelling one that no
+synchronous push replaced simply strands the commit. The review confirmed this
+rule against the scheduler and recommended keeping the discriminator.
 
 ## 4. After the merge (req 9, 10, 11)
 
 - **The record (req 9).** `emitNoticeInTurn()` from
   `orchestrator/chat-card-persistence.ts` — it routes through `emitChatCard`, so
-  it emits, records in-band and persists in one call, and it decides on
-  `runner.running` whether the row rides the turn. No new card type, no column,
-  no migration. `logMergePerformed()` stays as the ops-log half.
-- **Poller state (req 11).** The route calls
-  `poller.forceVerifySessionPrState(sessionId)` after a successful merge, exactly
-  as the UI route does. Without it the card holds the pre-merge state until the
-  next tick, and the two merge paths visibly differ.
-- **A shippable branch (req 10).** After the merge the branch sits on the merged
-  tip, so the post-turn auto-push is refused by the merged-push guard and the
-  session cannot open its next pull request. `forceVerifySessionPrState` sets the
-  docs/218 reset eligibility; the merge result then tells the agent, in the words
-  docs/239-self-merge-wake already uses: run `shipit branch reset-to-base` before
-  further work. The reset is the agent's own step, so no user action is needed.
+  it emits, records in-band and persists in one call. No new card type, no
+  column, no migration. `logMergePerformed()` stays as the ops-log half.
+- **Poller state (req 11).** `poller.forceVerifySessionPrState(sessionId)` after
+  a successful merge, as the UI route does. The review confirmed this records the
+  terminal snapshot and the merged-head anchor.
+- **A shippable branch (req 10).** The branch then sits on the merged tip, so the
+  post-turn auto-push is refused as stacked on it. The verify above sets the
+  docs/218 reset eligibility, and the merge result tells the agent to run
+  `shipit branch reset-to-base` — docs/239's own wording. That is the agent's
+  step, so no user action is needed.
 
 ## 5. UI (req 1)
 
-One toggle — *Allow agents to merge their own pull requests* — in the per-repo
-**Project Settings** dialog (`src/client/components/ProjectSettings.tsx`), with
-help text naming what it permits: this session's own pull request, with checks
-green and branch protection still enforced by GitHub.
+One toggle — *Allow agents to merge their own pull requests* — with help text
+naming what it permits: this session's own pull request, checks green, branch
+protection still enforced by GitHub.
 
-It goes in a new **Agents** tab. The three existing tabs are Deployments,
-Secrets and Appearance, and the permission is none of those; the Appearance tab's
-own comment sets the precedent for that reasoning ("it gets its own tab rather
-than riding along in Deployments or Secrets because neither is about how the repo
-is displayed"). The alternative — a section at the foot of Deployments — keeps
-the tab count down but files a permission under a heading about hosting.
+It goes in an **"Agent permissions" section inside the existing Project Settings
+surface (review)**, not in a new tab. The first draft added an Agents tab on the
+Appearance tab's precedent; the review's objection stands — one toggle does not
+justify a navigation category that is otherwise empty. It gets its own tab when a
+second repo-scoped agent permission exists.
+
+## What the review changed
+
+| Finding | Change |
+|---|---|
+| `--repo` retargets the repository | Overrides refused on repo-bound merges |
+| Current branch is agent-writable | Ownership from `session.branch` + `session.prNumber`, fail closed |
+| `"none"` checks merge immediately | Gate on the poller summary, honouring `graceUntil` |
+| `pr.head` is a branch name | Carry the head SHA; pass it as the merge's expected `sha` |
+| Flush has four ways to not commit | Discriminated flush outcome; merge on `committed` only |
+| `reviewDecision` had no source | Comes from the poller summary, with the checks |
+| Grant test proves too little | Browser-only route + unchanged container-route snapshot |
+| Extra mechanism | No new endpoint, no `ops-refused`, no new tab |
 
 ## Key files
 
 | File | Change |
 |---|---|
-| `src/server/shared/database.ts` | migration: `repos.allow_agent_merge` |
-| `src/server/orchestrator/repo-store.ts` | `allowsAgentMerge()` / `setAllowAgentMerge()`, keyed by `canonicalRepoKey` |
-| `src/server/orchestrator/pr-target.ts` | `mergeDisposition()` widened |
-| `src/server/orchestrator/services/github.ts` | `agentMergePullRequest()` flush + order |
+| `src/server/shared/database.ts` | migrations: `repos.allow_agent_merge`, `sessions.pr_number` |
+| `src/server/orchestrator/repo-store.ts` | grant read/write, `canonicalRepoKey`-matched |
+| `src/server/orchestrator/api-routes-session-repos.ts` | grant on the existing `PATCH /api/repos/:url` |
+| `src/server/orchestrator/pr-target.ts` | `mergeDisposition()`; refuse overrides on repo-bound merges |
+| `src/server/orchestrator/services/github.ts` | flush outcome; the repo-bound merge path |
 | `src/server/orchestrator/services/branch-sync.ts` | `reason` discriminator on the hold verdict |
-| `src/server/orchestrator/api-routes-github.ts` | gate, own-PR check, poller refresh, notice |
-| `src/server/orchestrator/api-routes-session-repos.ts` | the grant route, shaped like `/api/repos/trust` |
-| `src/client/components/ProjectSettings.tsx` | Agents tab + toggle |
-| `src/server/shipit-docs/github.md` | agent-facing: the grant, the flush, `--auto` |
+| `src/server/orchestrator/github-auth-prs.ts` | expected `sha` on the REST merge |
+| `src/server/orchestrator/api-routes-github.ts` | gate, ownership, poller gating, notice |
+| `src/client/components/ProjectSettings.tsx` | Agent permissions section + toggle |
+| `src/server/shipit-docs/github.md` | agent-facing text ([draft](./agent-docs.md)) |
 
 ## Tests
 
-- `pr-target.test.ts` — every `mergeDisposition` branch: sandbox granted/not, ops,
-  repo-bound granted/not.
-- `services/github-agent-merge.test.ts` — flush ordering (the pull request is read
-  *after* the push), both 422 aborts, `cancelAutoPush` only on `reason: "pushed"`,
-  the pending-checks refusal wording, `--auto` still arming.
+- `pr-target.test.ts` — every disposition branch, and `--repo` / `cwd` refused on
+  a repo-bound merge.
+- `services/github-agent-merge.test.ts` — ownership refusals (foreign number,
+  wrong current branch, no recorded PR), each flush outcome, `cancelAutoPush`
+  only on `reason: "pushed"`, the `graceUntil` refusal, the pending refusal
+  naming `--auto`, the expected-`sha` merge.
 - `services/branch-sync.test.ts` — the `reason` discriminator on each hold.
-- `integration_tests/agent-driven-pr.test.ts` — repo-bound merge allowed with the
-  grant, 403 without it, 403 for another session's pull request, and the persisted
-  notice surviving a history reload.
-- A guard that fails if the grant is ever read from a workspace file: the
-  container-facing session payload must not carry it.
+- `integration_tests/agent-driven-pr.test.ts` — granted / not granted / foreign
+  pull request, and the notice surviving a history reload.
+- The grant's route is browser-only: the container-route snapshot must not gain
+  it, which is what the first draft's session-payload test failed to prove.
+- Each new guard proved red on its own before the fix.
 
 ## Risks
 
-- **The own-PR check depends on branch resolution.** A session on a detached HEAD
-  or a renamed branch resolves no pull request; the check must then refuse rather
-  than fall through to "allowed" (fail closed — the opposite of `guardMergeSync`,
-  where "cannot tell" correctly proceeds, because there the fallback is the
-  status quo and here it is a merge).
-- **A repository is keyed by URL.** Two spellings of one remote are two rows, so
-  the grant must match on `canonicalRepoKey` as `isTrusted()` does. A miss reads
-  as "not granted", which is safe but silent — the feature would simply appear
-  not to work.
-- **The refusal is the common path, by design.** Any turn in which the agent
-  edited a file ends in a push, so the first `gh pr merge` refuses (req 17). If
-  the agent-facing docs do not spell this out, agents will report a failure to
-  the user instead of merging with `--auto`.
+- **The ownership tuple depends on a recorded PR number.** Sessions that predate
+  the column have none and will refuse. That is the correct direction to fail,
+  but it must be a clear message, not a puzzle.
+- **The refusal is the common path, by design.** Any turn with an edit ends in a
+  push, so the first `gh pr merge` refuses. If the agent-facing docs do not say
+  so, agents will report a failure instead of merging with `--auto`.

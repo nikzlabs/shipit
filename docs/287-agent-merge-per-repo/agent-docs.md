@@ -59,6 +59,10 @@ Two consequences, both normal:
   That is not a failure and not a reason to stop or to ask the user. Either wait
   for green and call it again, or call `gh pr merge --auto`, which arms
   merge-when-green and lets your turn end. The command never waits by itself.
+- **In the first seconds after the push, GitHub may not have registered the new
+  checks at all.** Both forms then refuse with *"Waiting for CI checks to
+  start"*, because an empty check set means "not yet", not "nothing gates this
+  pull request". Call again in a few seconds.
 - **If the commit is blocked, the merge is refused outright.** A likely secret in
   the diff, or a path ShipIt could not read, means your work is *not* on the
   branch — merging would ship the previous state while reporting success. Fix
