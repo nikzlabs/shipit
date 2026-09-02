@@ -230,8 +230,15 @@ export interface WireListenersOpts {
   /**
    * docs/179 — async recovery the handler kicks off after teardown when
    * {@link willRecoverAuth} returned true: heal the OAuth token and re-dispatch
-   * the turn once. Resolves true when recovery is handled (re-dispatched), false
-   * when the heal failed — in which case the handler surfaces the sign-in card.
+   * the turn once. Resolves true when recovery is handled, false when the heal
+   * failed — in which case the handler surfaces the sign-in card.
+   *
+   * "handled" is deliberately wider than "re-dispatched". An
+   * ADOPTED turn (self-wake / late live-steer) heals its token and then ends
+   * WITHOUT a re-dispatch, because `input.prompt` belongs to the previous turn
+   * (docs/140). It is still handled: the executor ran the turn's whole terminal
+   * sequence, and a signed-in user must not be shown a sign-in card for a token
+   * that just healed.
    */
   recoverAuth?: () => Promise<boolean>;
   /**

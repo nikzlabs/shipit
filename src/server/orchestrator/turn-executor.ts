@@ -568,10 +568,18 @@ export async function executeAgentTurn(
   // `auth_required` belongs to the emitter (`process.ts`, one raise per turn)
   // and to the listener's own turn latch (`agent-auth-handler.ts`), both of
   // which drop the duplicate before it reaches this gate at all.
+  //
+  // This gate answers ONE question: "can this turn's credential be healed?"
+  // It used to answer two, by returning false for an adopted turn
+  // (docs/140: a re-dispatch would re-run the PREVIOUS turn's prompt). The
+  // listener reads `false` as "no heal is possible, the failure is terminal" and
+  // pops the sign-in card — so a self-wake turn that hit the ordinary
+  // stale-token 401 told a signed-in user to sign in again, while every sibling
+  // session on the same account healed silently in the same window. The
+  // no-re-dispatch rule is real and still enforced; it now lives in
+  // `recoverAuth`, which is the only place that can act on it, and it stops the
+  // RE-RUN rather than the heal.
   const willRecoverAuth = (): boolean => {
-    // docs/140 — same reason as `quotaRetryAllowed`: the re-dispatch would re-run
-    // the previous turn's prompt. See `servingAdoptedTurn`.
-    if (servingAdoptedTurn) return false;
     if (!canRecoverAuth) return false;
     automaticRecoveryInProgress = true;
     return true;
@@ -587,6 +595,40 @@ export async function executeAgentTurn(
     if (messages.length === 0) return;
     deps.listenerDeps.chatHistoryManager.replaceInProgress(sessionId, messages);
     deps.listenerDeps.chatHistoryManager.finalizeInProgress(sessionId);
+  };
+  /**
+   * The terminal teardown for a turn that ends on an auth failure WITHOUT being
+   * re-dispatched. `willRecoverAuth` has already flipped
+   * `automaticRecoveryInProgress`, so the `done` handler stood down and this is
+   * the only thing left to run the turn's terminal work.
+   *
+   * docs/140 — the hand-over wait is load-bearing: without it the steps below
+   * run against a predecessor's latched `drainFired` and settled commit memos,
+   * so an adopted turn that fails auth commits nothing and strands the queue.
+   * (`rearmInFlight` is non-null only while a re-arm is actually running, so the
+   * ordinary heal is unchanged.)
+   *
+   * **Known divergence, extracted as-is and deliberately not changed here.** The
+   * step order is drain → commit → (finished-SSE + idle together), while
+   * CLAUDE.md invariant 1 and the `done` path put the finished-SSE BEFORE the
+   * network flow and the idle signal last, so a slow PR round-trip leaves other
+   * viewers reading the session as running for its duration. That order is what
+   * the failed-heal path has always used and what the quota-retry-rejection
+   * teardown above uses too; fixing it is a change to those recovery-bailout
+   * paths in general, with its own test, not a rider on this one.
+   */
+  const settleTurnWithoutRedispatch = async (): Promise<void> => {
+    if (rearmInFlight) await rearmInFlight;
+    holdPostTurn();
+    try {
+      if (runner) runner.running = false;
+      await postTurnStep("drain", tryDrain);
+      await postTurnStep("commit", runCommitAndPr);
+      await postTurnStep("finished", emitFinishedIfIdle);
+      finishTurn();
+    } finally {
+      releasePostTurn();
+    }
   };
   const recoverAuth = async (): Promise<boolean> => {
     let healed: boolean;
@@ -669,6 +711,12 @@ export async function executeAgentTurn(
       const policy = capturedRoutePolicy();
       if (
         !recoveryRetryUsed
+        // docs/140 — `retryOnNextAccount` re-runs `input.prompt`, which belongs
+        // to the turn this closure was INVOKED for, not to the adopted one.
+        // Previously unreachable here (the adopted gate lived in
+        // `willRecoverAuth`); stated explicitly now that the heal itself is
+        // allowed to run on an adopted turn.
+        && !servingAdoptedTurn
         && capturedCredentialRoute?.providerRouteKind === "account"
         && !!capturedCredentialRoute.providerRouteId
         && policy
@@ -697,26 +745,67 @@ export async function executeAgentTurn(
       }
       // Heal genuinely failed (token revoked / rate-limited / no rotation). The
       // `done` handler stood down for us, so run the same terminal teardown it
-      // would have, then return false so the listener surfaces the sign-in card.
+      // would have (the FOURTH terminal path), then return false so the listener
+      // surfaces the sign-in card. A heal was asked for and refused, which is
+      // what makes an auth failure terminal — and therefore what earns the card.
       //
-      // docs/140 — the FOURTH terminal path, and it needs the same hand-over
-      // wait as `agent_result` / `onError` / `done`: without it the teardown
-      // below runs against a predecessor's latched `drainFired` and settled
-      // commit memos, so an adopted turn that fails auth commits nothing and
-      // strands the queue. (`rearmInFlight` is non-null only while a re-arm is
-      // actually running, so the ordinary heal is unchanged.)
-      if (rearmInFlight) await rearmInFlight;
-      holdPostTurn();
-      try {
-        if (runner) runner.running = false;
-        await postTurnStep("drain", tryDrain);
-        await postTurnStep("commit", runCommitAndPr);
-        await postTurnStep("finished", emitFinishedIfIdle);
-        finishTurn();
-      } finally {
-        releasePostTurn();
-      }
+      // Scoped to turns that reach recovery at all. The listener still surfaces
+      // directly, without asking, for the cases it decides on its own: a metered
+      // key (`stopsOnFailure`), a subscription that is not the harness vendor's
+      // (`vendorOwnedRecovery` false), and a turn with no healer wired or one
+      // recovery already spent (`canRecoverAuth`). Those never had a heal to
+      // attempt; this sentence is about the ones that did.
+      await settleTurnWithoutRedispatch();
       return false;
+    }
+    // Healed, but this turn must not be re-run.
+    //
+    // docs/140: an ADOPTED turn (a self-wake, or a live steer the CLI acked too
+    // late) does not own `input.prompt` — that is the previous turn's, and
+    // re-dispatching it would repeat work the agent already did while still not
+    // retrying what failed. The heal is a different question and was always
+    // answerable here: the 401 comes from a shared, single-use refresh token a
+    // sibling container rotated first, which has nothing to do with whose prompt
+    // is running. So heal quietly, end the turn, and say nothing — no sign-in
+    // card for a user who is signed in, and no `auth_failed` mark on a route
+    // that just healed. The user's next message runs on the fresh token.
+    //
+    // Ask AFTER the hand-over, not before it. `servingAdoptedTurn` is set at the
+    // END of `rearmForCliStartedTurn`, which first awaits the finished turn's
+    // whole post-turn sequence — a commit plus a PR round-trip, i.e. seconds
+    // during which the flag still reads false while the turn actually running is
+    // the CLI's. A 401 in that window would otherwise be judged by a flag
+    // describing the wrong turn and re-dispatch the user's prompt, which is the
+    // duplicated work docs/140 exists to prevent. A non-null `rearmInFlight` IS
+    // the adoption, and it can only be non-null once the invoking turn has had
+    // its own `agent_result` (`beginRearm` requires `streamingPostTurnFired`),
+    // so an ordinary turn's 401 never waits here.
+    if (rearmInFlight) await rearmInFlight;
+    if (servingAdoptedTurn) {
+      console.log(
+        `[turn] auth healed for ${sessionId}; adopted turn ends without re-dispatch (docs/140)`,
+      );
+      // The repush the re-dispatch below does, for the same reason and with
+      // more of it: a healed SOURCE token does not reach this session on its
+      // own. The next turn's ordinary sync-in keys off `expiresAt`
+      // (`srcExp <= dstExp` ⇒ skip), and a single-use refresh token a sibling
+      // container rotated leaves the session holding a DEAD copy with a
+      // future-dated expiry — the exact state this incident is made of. Without
+      // this, "healed" would mean the card is gone and the next user message
+      // 401s all over again on the same dead credentials. Best-effort; a
+      // failure here costs that next turn one recovery, not the session.
+      try {
+        deps.repushSessionAgentToken?.(sessionId, agentId);
+      } catch (err) {
+        console.warn("[turn] adopted-turn 401-recovery token repush failed:", err);
+      }
+      // Preserve whatever the adopted turn streamed before the 401, exactly as
+      // the re-dispatch below does. The quiet path emits no error row, so
+      // nothing else finalizes these rows — left `in_progress`, the next turn's
+      // `replaceInProgress` deletes them (the docs/156 erasure bug).
+      finalizeAttemptOutput();
+      await settleTurnWithoutRedispatch();
+      return true;
     }
     // Healed — re-dispatch this turn once on a fresh agent. The retried turn
     // owns drain/commit/finished, so we must NOT run them here. `isAuthRetry`
@@ -1300,13 +1389,24 @@ export async function executeAgentTurn(
    *    work the agent already did and still doesn't retry what failed. Both
    *    stand down and let the terminal teardown run instead.
    *
-   *    **This half is reasoned from the code, not covered by a test** — unlike
-   *    everything else in this phase. Reaching the failover needs the credential
-   *    selection harness (`integration_tests/quota-exhaustion-retry.test.ts`'s
-   *    `prepareAgentEnv` routes) on a STREAMING dispatched turn, which no
-   *    existing harness sets up; a test written against the executor harness
-   *    alone passes with the guard removed, so it would pin nothing. Said out
-   *    loud rather than left implied.
+   *    **"No re-dispatch" is the whole rule, and it is not "no recovery".**
+   *    Reading it as the latter is what put a sign-in card in front of a
+   *    signed-in user: `willRecoverAuth` used to return false here, the auth
+   *    listener read that as "the failure is terminal", and a self-wake turn
+   *    that hit an ordinary stale-token 401 (a sibling container rotated the
+   *    shared single-use refresh token) surfaced re-auth while every sibling
+   *    session on the same account healed silently. The token heal has nothing
+   *    to do with whose prompt is running, so it runs; only the re-run stands
+   *    down. See `recoverAuth`.
+   *
+   *    The QUOTA half remains reasoned from the code, not covered by a test.
+   *    Reaching the failover needs the credential selection harness
+   *    (`integration_tests/quota-exhaustion-retry.test.ts`'s `prepareAgentEnv`
+   *    routes) on a STREAMING dispatched turn, which no existing harness sets
+   *    up; a test written against the executor harness alone passes with the
+   *    guard removed, so it would pin nothing. Said out loud rather than left
+   *    implied. The AUTH half is now pinned — `turn-self-wake-commit.test.ts`,
+   *    "heals quietly on a self-woken turn".
    *  - **The partial-turn finalize must still fire.** It is gated on
    *    `!receivedResult`, which stays true from the turn that owns this closure
    *    (deliberately — see `rearmForCliStartedTurn`), so an adopted turn that

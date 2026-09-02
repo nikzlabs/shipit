@@ -102,8 +102,9 @@ export function wireAuthRequiredHandler(
     // attempt turn with a token healer wired, and flips the executor's stand-
     // down flag so the `done` teardown defers to the recovery. When true we
     // stay quiet — no sign-in card, no OAuth flow — and let `recoverAuth` heal
-    // the token and re-dispatch the turn. A transient stale-token 401 thus
-    // recovers without the user seeing anything or re-sending.
+    // the token and (unless the turn is an adopted one, docs/140) re-dispatch
+    // the turn. A transient stale-token 401 thus recovers without the user
+    // seeing anything or re-sending.
     const willRecover =
       failurePolicy.stopsOnFailure || !failurePolicy.vendorOwnedRecovery
         ? false

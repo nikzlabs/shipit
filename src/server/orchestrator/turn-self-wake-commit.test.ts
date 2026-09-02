@@ -30,6 +30,7 @@ import { SessionRunner } from "./session-runner.js";
 import type { SystemTurnDeps } from "./session-runner.js";
 import { executeAgentTurn } from "./turn-executor.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
+import { AGENT_NOT_AUTHENTICATED_MESSAGE } from "./ws-handlers/agent-auth-handler.js";
 import type { AgentId } from "../shared/types.js";
 import { GitManager } from "../shared/git.js";
 
@@ -252,7 +253,18 @@ describe("post-turn flow for a self-woken turn", () => {
    * `agent_result` (running the whole post-turn flow), leaving its listeners
    * attached to the resident process. Returns the handles a wake test needs.
    */
-  async function runFirstStreamingTurn(opts?: { onRun?: () => void }) {
+  async function runFirstStreamingTurn(opts?: {
+    onRun?: () => void;
+    /** docs/179 — wired only by the auth tests; absent keeps the legacy flow. */
+    ensureAgentTokenFresh?: SystemTurnDeps["ensureAgentTokenFresh"];
+    /**
+     * docs/260 — the turn's captured credential route and its profile. Wired
+     * only by the auth test that has to reach the account-failover branch:
+     * without a route AND a profile, `capturedRoutePolicy()` answers undefined
+     * and that branch is unreachable whatever the guard says.
+     */
+    extraDeps?: Partial<SystemTurnDeps>;
+  }) {
     const runner = new SessionRunner({
       sessionId: "s1",
       sessionDir: repoDir,
@@ -269,15 +281,23 @@ describe("post-turn flow for a self-woken turn", () => {
     // signal the wake edge has to be ordered against.
     let settledTurns = 0;
     runner.on("idle", () => { settledTurns += 1; });
+    // Everything the viewers would see. The auth tests turn on the ABSENCE of a
+    // card, so they need the whole stream, not one probe.
+    const messages: { type: string; [k: string]: unknown }[] = [];
+    runner.on("message", (m) => messages.push(m as never));
 
+    const sseBroadcast = vi.fn();
+    const listenerDeps = makeListenerDeps(sseBroadcast);
     const deps: SystemTurnDeps = {
       agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
       autoCommit,
       scheduleAutoPush,
       postTurnPrFlow,
       finalizeAgentEnv,
-      listenerDeps: makeListenerDeps(),
+      listenerDeps,
+      ...(opts?.ensureAgentTokenFresh ? { ensureAgentTokenFresh: opts.ensureAgentTokenFresh } : {}),
       buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+      ...(opts?.extraDeps ?? {}),
     };
 
     await executeAgentTurn(runner, deps, agent as never, {
@@ -299,6 +319,7 @@ describe("post-turn flow for a self-woken turn", () => {
 
     return {
       runner, agent, scheduleAutoPush, postTurnPrFlow, finalizeAgentEnv, drainNext, autoCommit,
+      listenerDeps, sseBroadcast, messages,
       settledTurns: () => settledTurns,
     };
   }
@@ -370,6 +391,232 @@ describe("post-turn flow for a self-woken turn", () => {
     await waitFor(() => h.drainNext.mock.calls.length === 2, "wake turn drained");
 
     h.runner.dispose({ force: true });
+  });
+
+  /**
+   * Production, 2026-09-02, session e683868e. A sibling container rotated the
+   * shared Claude refresh token mid-turn; the token is single-use, so every
+   * other container pinned to that account was left holding an invalidated
+   * access token. Two sessions healed silently inside the next 80 seconds
+   * because their turns were ordinary orchestrator-started ones. The third was
+   * serving a SELF-WAKE, and it told the user "This agent is not authenticated.
+   * Open Settings → Agents to sign in" — for a healthy account, about a turn the
+   * user never sent. The next ordinary message healed and the session carried
+   * on, which is what makes the card pure noise.
+   *
+   * Cause: `willRecoverAuth` answered `false` for an adopted turn — correct for
+   * the question docs/140 asks (a re-dispatch would re-run the PREVIOUS turn's
+   * prompt) — and the auth listener read that one `false` as "no heal is
+   * possible, so this failure is terminal". Heal and re-dispatch are two
+   * questions; only the second is closed on an adopted turn.
+   *
+   * docs/140's checklist recorded the adopted-turn no-re-dispatch rule as "not
+   * pinned by a test". These two pin it, on the side of it that has a harness:
+   * the heal runs, the re-run does not.
+   */
+  it("heals a self-woken turn's token quietly instead of demanding a sign-in", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const ensureAgentTokenFresh = vi.fn().mockResolvedValue(true);
+    const h = await runFirstStreamingTurn({
+      onRun: () => fs.writeFileSync(filePath, "turn-1 work\n"),
+      ensureAgentTokenFresh,
+    });
+
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => h.settledTurns() === 1, "turn 1 post-turn flow settled");
+
+    await selfWake(h.agent);
+    expect(h.runner.running).toBe(true);
+
+    // The wake turn does its work, then hits the stale-token 401.
+    fs.writeFileSync(filePath, "self-woken work\n");
+    h.agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Applying the consult's fix" }],
+    });
+    h.agent.emit("auth_required");
+    h.agent.emit("done", 0);
+
+    await waitFor(() => !h.runner.running, "wake turn settled");
+
+    // The symptom, first: nothing reaches the user — no sign-in card, no error
+    // row of any kind.
+    expect(h.messages.filter((m) => m.type === "error")).toEqual([]);
+    // …because the heal was asked for, the half that used to be skipped.
+    expect(ensureAgentTokenFresh).toHaveBeenCalledTimes(1);
+    // The docs/140 rule still holds: one run of the agent, never a re-dispatch
+    // of turn 1's prompt.
+    expect(h.agent.run).toHaveBeenCalledTimes(1);
+
+    // The wake turn still ENDS properly. Its edits are in git under its own
+    // summary rather than stranded in the working tree for a later turn to
+    // sweep up (or reset away).
+    await waitFor(() => gitOut("status", "--porcelain") === "", "wake turn's edits committed");
+    expect(gitOut("show", "HEAD:file.txt")).toBe("self-woken work\n");
+    expect(commitSubjects()[0]).toBe("Applying the consult's fix");
+
+    // Its partial answer survives too. The quiet path writes no error row, so
+    // nothing else finalizes these rows — left `in_progress`, the next turn's
+    // `replaceInProgress` deletes them (the docs/156 erasure bug).
+    const replace = h.listenerDeps.chatHistoryManager.replaceInProgress as ReturnType<typeof vi.fn>;
+    expect(
+      replace.mock.calls.some((c) =>
+        ((c[1] ?? []) as { text?: string }[]).some((r) => r.text === "Applying the consult's fix"),
+      ),
+    ).toBe(true);
+    expect(h.listenerDeps.chatHistoryManager.finalizeInProgress).toHaveBeenCalled();
+
+    h.runner.dispose({ force: true });
+  });
+
+  /**
+   * The other side of the same split, so the fix above cannot be read as "an
+   * adopted turn never surfaces re-auth". A heal that was ASKED FOR and REFUSED
+   * (token revoked, refresher rate-limited) is what makes an auth failure
+   * terminal, and a terminal one still owes the user the sentence that names
+   * what to do — on a self-woken turn as much as on a typed one.
+   *
+   * The turn is given an ACCOUNT-routed credential with a subscription profile
+   * deliberately, and that is what makes this test bite rather than merely pass:
+   * it is the only shape that reaches `recoverAuth`'s account-failover branch,
+   * which re-runs the turn on the next account. Without the `!servingAdoptedTurn`
+   * guard added there, this refused heal re-dispatches the USER's prompt instead
+   * of surfacing anything, and both assertions below fail. A turn with no
+   * captured route never reaches that branch and so could not see the guard at
+   * all.
+   */
+  it("still surfaces the sign-in card on a self-woken turn when the heal is refused", async () => {
+    const ensureAgentTokenFresh = vi.fn().mockResolvedValue(false);
+    const h = await runFirstStreamingTurn({
+      ensureAgentTokenFresh,
+      extraDeps: {
+        prepareAgentEnv: async () => ({ turnRoute: { kind: "account" as const, id: "acct-a" } }),
+        routeProfile: () => ({ billingMode: "sub" as const, serviceId: undefined }),
+      },
+    });
+
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => h.settledTurns() === 1, "turn 1 post-turn flow settled");
+
+    await selfWake(h.agent);
+    expect(h.runner.running).toBe(true);
+
+    h.agent.emit("auth_required");
+    h.agent.emit("done", 0);
+
+    await waitFor(
+      () => h.messages.some((m) => m.type === "error"),
+      "re-auth card surfaced",
+    );
+    expect(ensureAgentTokenFresh).toHaveBeenCalledTimes(1);
+    expect(
+      h.messages.some(
+        (m) => m.type === "error" && m.message === AGENT_NOT_AUTHENTICATED_MESSAGE,
+      ),
+    ).toBe(true);
+    // Still no re-dispatch, and the session does not stay busy.
+    expect(h.agent.run).toHaveBeenCalledTimes(1);
+    await waitFor(() => !h.runner.running, "wake turn settled");
+    expect(h.sseBroadcast).toHaveBeenCalledWith("session_agent_finished", { sessionId: "s1" });
+
+    h.runner.dispose({ force: true });
+  });
+
+  /**
+   * The same 401, one window earlier — and the window is the reason the check is
+   * made where it is. `servingAdoptedTurn` is set at the END of
+   * `rearmForCliStartedTurn`, which first awaits the finished turn's whole
+   * post-turn sequence (a commit plus a PR round-trip: seconds). For that whole
+   * time the flag reads false while the turn actually running belongs to the
+   * CLI, so a heal decided on the flag alone would re-dispatch `input.prompt` —
+   * the USER's previous message, re-run in full, side effects included. That is
+   * the duplicated work docs/140's no-re-dispatch rule exists to prevent, and it
+   * is a worse outcome than the sign-in card this change is about.
+   */
+  it("does not re-dispatch when the 401 lands before the re-arm has settled", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: repoDir,
+      defaultAgentId: "claude" as AgentId,
+    });
+    const agent = makeFakeAgent(() => fs.writeFileSync(filePath, "turn-1 work\n"));
+    const messages: { type: string; [k: string]: unknown }[] = [];
+    runner.on("message", (m) => messages.push(m as never));
+    const ensureAgentTokenFresh = vi.fn().mockResolvedValue(true);
+
+    // Park turn 1's sequence in its PR round-trip, AFTER its own commit — so the
+    // re-arm behind it is pending for the whole of the adopted turn's life.
+    let releasePr: () => void = () => {};
+    let signalPrEntered: () => void = () => {};
+    const parked = new Promise<void>((r) => { releasePr = r; });
+    const prEntered = new Promise<void>((r) => { signalPrEntered = r; });
+    let prCalls = 0;
+    const postTurnPrFlow = vi.fn(async () => {
+      prCalls += 1;
+      if (prCalls === 1) {
+        signalPrEntered();
+        await parked;
+      }
+    });
+
+    const deps: SystemTurnDeps = {
+      agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
+      autoCommit: realAutoCommit,
+      scheduleAutoPush: vi.fn(),
+      postTurnPrFlow,
+      ensureAgentTokenFresh,
+      listenerDeps: makeListenerDeps(),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+
+    await executeAgentTurn(runner, deps, agent as never, {
+      agentId: "claude" as AgentId,
+      sessionId: "s1",
+      prompt: "p",
+      userText: "do the thing",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: null,
+      drainNext: vi.fn(async () => {}),
+      emit: () => {},
+      useStreaming: true,
+      emitErrorOnNoResult: true,
+    });
+    await waitFor(() => agent.run.mock.calls.length === 1, "turn 1 started");
+
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await prEntered;
+
+    // The CLI starts a turn of its own while turn 1's PR round-trip is still
+    // open, so the re-arm is pending and `servingAdoptedTurn` still reads false.
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Reading the consult" }],
+    });
+    await flush();
+    expect(runner.running).toBe(true);
+    fs.writeFileSync(filePath, "adopted work\n");
+
+    // …and dies on the stale token inside that same window.
+    agent.emit("auth_required");
+    agent.emit("done", 0);
+    await flush();
+    releasePr();
+
+    await waitFor(() => !runner.running, "adopted turn settled");
+    // The user's prompt is NOT re-run: one call to `run`, the one turn 1 made.
+    expect(agent.run).toHaveBeenCalledTimes(1);
+    // Healed, and quietly — same as when the flag has already flipped.
+    expect(ensureAgentTokenFresh).toHaveBeenCalledTimes(1);
+    expect(messages.filter((m) => m.type === "error")).toEqual([]);
+    // The adopted turn still ends properly: its edits are in git.
+    await waitFor(() => gitOut("status", "--porcelain") === "", "adopted turn's edits committed");
+    expect(gitOut("show", "HEAD:file.txt")).toBe("adopted work\n");
+
+    runner.dispose({ force: true });
   });
 
   /**
