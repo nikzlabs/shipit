@@ -847,20 +847,45 @@ export class GitManager {
    * `services/pr-rearm.ts#freshenBaseRef`.
    */
   async advancedBeyondMergedBase(baseBranch: string): Promise<boolean> {
+    return (await this.mergedBaseProgress(baseBranch)) === "progressed";
+  }
+
+  /**
+   * {@link advancedBeyondMergedBase} with its answer spelled out: WHICH clause
+   * decided it. The boolean above is this method's `=== "progressed"`, so the
+   * gate itself is unchanged — this only lets a caller explain the refusal.
+   *
+   * - `progressed` — both clauses hold; a new PR can be opened.
+   * - `base-not-contained` — clause 1 failed. The branch may carry real new
+   *     work, but the base has moved on under it. Merging `origin/<base>` in
+   *     fixes this and nothing else does (a rebase rewrites published history;
+   *     see this method's boolean sibling).
+   * - `no-new-work` — clause 1 holds, clause 2 failed: the branch is on the
+   *     current base with an empty diff on top. There is genuinely nothing to
+   *     ship, so telling the caller to merge the base in would be a no-op.
+   * - `base-unknown` — `origin/<base>` isn't in this clone (unfetched, or a
+   *     renamed base). Fail-safe, same as the boolean's `false`.
+   *
+   * Same fetch precondition as the boolean: the caller must have freshened
+   * `origin/<base>`, or clause 1 is trivially satisfied against a stale ref.
+   */
+  async mergedBaseProgress(
+    baseBranch: string,
+  ): Promise<"progressed" | "base-not-contained" | "no-new-work" | "base-unknown"> {
     const baseRef = `origin/${baseBranch}`;
     let baseTip: string;
     try {
       baseTip = (await this.git.revparse(["--verify", baseRef])).trim();
     } catch {
-      return false; // origin/<base> missing — fail safe, stay merged
+      return "base-unknown"; // origin/<base> missing — fail safe, stay merged
     }
-    if (!baseTip) return false;
+    if (!baseTip) return "base-unknown";
 
     const mb = await this.mergeBase(baseRef, "HEAD");
-    if (!mb || mb !== baseTip) return false; // not rebased onto the current base yet
+    if (!mb || mb !== baseTip) return "base-not-contained"; // not on the current base yet
 
     const { files } = await this.diffStatTwoDot(baseRef);
-    return files > 0;
+    return files > 0 ? "progressed" : "no-new-work";
   }
 
   /**

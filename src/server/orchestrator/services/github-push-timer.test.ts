@@ -25,6 +25,10 @@ function fakeGit(overrides: Partial<Record<keyof GitManager, unknown>>): GitMana
     forcePush: vi.fn(async () => {}),
     diffStatVsBranch: vi.fn(async () => ({ insertions: 1, deletions: 0 })),
     advancedBeyondMergedBase: vi.fn(async () => false),
+    // The clause-reporting sibling the boolean is defined in terms of. Stubbed
+    // consistently with it, so a path that reaches for one and not the other
+    // can't quietly read `undefined`.
+    mergedBaseProgress: vi.fn(async () => "base-not-contained" as const),
     ...overrides,
   } as unknown as GitManager;
 }
@@ -124,6 +128,9 @@ describe("agentCreatePr — debounce cancellation is coupled to the synchronous 
     });
 
     expect(res.alreadyExisted).toBe(true);
+    // The open-PR short-circuit is the benign one — the shim must be able to
+    // tell it apart from a dead PR blocking unshipped work.
+    expect(res.alreadyExistedReason).toBe("open");
     expect(git.push).toHaveBeenCalledTimes(1);
     expect(cancelAutoPush).toHaveBeenCalledExactlyOnceWith("s1");
   });

@@ -463,7 +463,21 @@ discards nothing by construction, so the command just does it.
 One shape of refusal is permanent: once this branch's work has shipped under a
 *different* commit — a cherry-pick recovery, or the squash merge you then built
 on — the check's "this branch is exactly what merged" clause can never hold
-again, and without an override the session can never open another pull request.
+again, and without an override the branch can never be *reset* onto the base.
+Note the refusal is a refusal: the command declines to move the branch, it never
+discards the commits on it.
+
+If the branch carries **new, unshipped** work, you do not need the reset at all —
+merge the base into the branch instead and open the next PR on top:
+
+```sh
+git fetch origin && git merge origin/<base>
+```
+
+That makes the base an ancestor of your branch, which is what `gh pr create`'s
+progress check requires; it rewrites no published history, needs no force-push,
+and discards nothing. Use the override below only when the branch has nothing of
+its own to keep.
 
 For that case, and only with the user's say-so, there is a break-glass:
 

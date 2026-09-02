@@ -984,6 +984,27 @@ export async function agentCreatePr(
   insertions: number;
   deletions: number;
   alreadyExisted: boolean;
+  /**
+   * Which of the two short-circuits returned an existing PR. Set only when
+   * `alreadyExisted` — a discriminator, so the caller never parses prose.
+   *
+   * - `open` — an open PR already hosts this branch. Expected; nothing to do.
+   * - `merged-not-progressed` / `closed-not-progressed` — the branch's last PR
+   *   is dead AND the branch does not contain the current base tip, so
+   *   `advancedBeyondMergedBase` refused to open a new one. Any new commits on
+   *   the branch have nowhere to go until the base is merged in. The two read
+   *   identically to the caller before this field existed, which is the bug it
+   *   exists to fix.
+   */
+  alreadyExistedReason?: "open" | "merged-not-progressed" | "closed-not-progressed";
+  /**
+   * Which clause of `advancedBeyondMergedBase` refused, on the merged/closed
+   * short-circuit only. The remedies differ and one of them is a no-op, so the
+   * PR's state alone is not enough to tell the caller what to do:
+   * `base-not-contained` wants the base merged in, `no-new-work` means there is
+   * nothing to ship at all, `base-unknown` means fetch first.
+   */
+  notProgressedBecause?: "base-not-contained" | "no-new-work" | "base-unknown";
   /** Non-fatal warning when one or more labels could not be applied. */
   labelWarning?: string;
 }> {
@@ -1057,7 +1078,10 @@ export async function agentCreatePr(
   if (existingPr) {
     // Build the "return the existing PR" response (used for both the open and
     // the not-progressed-merged short-circuits).
-    const returnExistingPr = async () => {
+    const returnExistingPr = async (
+      alreadyExistedReason: "open" | "merged-not-progressed" | "closed-not-progressed",
+      notProgressedBecause?: "base-not-contained" | "no-new-work" | "base-unknown",
+    ) => {
       const stats = await git.diffStatVsBranch(existingPr.base);
       // Apply any requested labels additively to the existing PR — best-effort.
       const labelWarning = await applyPrLabels(
@@ -1072,6 +1096,8 @@ export async function agentCreatePr(
         insertions: stats.insertions,
         deletions: stats.deletions,
         alreadyExisted: true as const,
+        alreadyExistedReason,
+        ...(notProgressedBecause ? { notProgressedBecause } : {}),
         labelWarning,
       };
     };
@@ -1091,15 +1117,18 @@ export async function agentCreatePr(
       }
       // Synchronous push landed — now safe to drop any pending debounce.
       dropPendingAutoPush();
-      return await returnExistingPr();
+      return await returnExistingPr("open");
     }
 
     // Closed/merged PR. Only re-arm for a NEW PR when the branch has genuinely
     // progressed beyond the merged base (rebased onto the current base + new
     // work). Otherwise keep blocking the duplicate and return its metadata.
-    const progressed = await git.advancedBeyondMergedBase(existingPr.base);
-    if (!progressed) {
-      return await returnExistingPr();
+    const progress = await git.mergedBaseProgress(existingPr.base);
+    if (progress !== "progressed") {
+      return await returnExistingPr(
+        existingPr.merged ? "merged-not-progressed" : "closed-not-progressed",
+        progress,
+      );
     }
     // Progressed: open a NEW PR targeting the prior PR's base. The old remote
     // branch often survives the merge (repos with auto-delete off) pointing at

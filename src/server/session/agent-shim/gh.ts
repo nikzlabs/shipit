@@ -285,6 +285,71 @@ function jsonFields(
   return fields;
 }
 
+/**
+ * The stderr note printed when `gh pr create` returned an EXISTING PR instead
+ * of opening one. Two very different short-circuits land here and the agent
+ * has to tell them apart:
+ *
+ * - `open` — the expected dedup. Nothing is wrong; nothing to do.
+ * - `merged-not-progressed` / `closed-not-progressed` — the branch's last PR is
+ *   dead and the branch does not contain the current base tip, so the new
+ *   commits on it have nowhere to go. The old wording ("Existing PR for this
+ *   branch") read as the first case, and an agent that trusted it believed its
+ *   work had shipped when the URL it got back was a PR merged the day before.
+ *
+ * The escape from the dead-PR case is an ordinary merge of the base into the
+ * branch: it makes the base an ancestor of HEAD (which is all the containment
+ * check wants), rewrites no published history, needs no force-push, and
+ * discards nothing.
+ */
+function existingPrNotice(body: Record<string, unknown>): string {
+  const reason = body.alreadyExistedReason;
+  if (reason !== "merged-not-progressed" && reason !== "closed-not-progressed") {
+    return "Existing open PR for this branch — printing its URL.\n";
+  }
+  const merged = reason === "merged-not-progressed";
+  const state = merged ? "MERGED" : "CLOSED";
+  const num = typeof body.number === "number" ? `#${body.number}` : "for this branch";
+  const base = safeBaseRef(body.baseBranch);
+  const why = merged
+    ? "a merged PR cannot take new commits"
+    : "ShipIt does not reopen a closed PR";
+  const head = `No new PR was opened. The last PR ${num} on this branch is ${state}, and ${why}.\n`;
+
+  // WHY it refused decides what to say next — the remedies are different and
+  // one of them is a no-op. Absent the clause (an older orchestrator), assume
+  // the containment failure: it is the shape that loses work.
+  if (body.notProgressedBecause === "no-new-work") {
+    return `${head}This branch carries no commits beyond \`origin/${base}\`, so there is nothing to `
+      + `open a PR for. If you expected new work here, check that your edits were committed.\n`;
+  }
+  if (body.notProgressedBecause === "base-unknown") {
+    return `${head}ShipIt could not resolve \`origin/${base}\` in this clone, so it could not tell `
+      + `whether this branch has new work. Run \`git fetch origin\` and try again.\n`;
+  }
+  return `${head}ShipIt did not open a replacement because this branch does not contain the current `
+    + `tip of \`origin/${base}\` — the base moved on under you — so any new commits here are NOT `
+    + `shipped and have nowhere to go yet.\n`
+    + `To ship them, merge the base into the branch and re-run \`gh pr create\`:\n`
+    + `    git fetch origin && git merge origin/${base}\n`
+    + `That rewrites no published history, needs no force-push and discards nothing. `
+    + `Do NOT rebase or \`git reset --hard\` onto the base.\n`
+    + `The ${state.toLowerCase()} PR's URL is printed below for reference.\n`;
+}
+
+/**
+ * The base branch is a GitHub-supplied string that this notice renders INTO a
+ * shell command the agent is told to run. Git ref names may legally contain
+ * `;`, `$`, `(`, `)`, `&` and quotes, so pasting one straight through would be
+ * an injection into that copied command. Anything outside the ordinary ref
+ * alphabet degrades to the placeholder — the agent then substitutes its own
+ * base rather than running something we composed for it.
+ */
+function safeBaseRef(value: unknown): string {
+  if (typeof value !== "string" || value === "") return "<base>";
+  return /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) ? value : "<base>";
+}
+
 async function handlePrCreate(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: {
@@ -328,7 +393,7 @@ async function handlePrCreate(args: string[], deps: RunDeps): Promise<void> {
     if (res.body.alreadyExisted) {
       // Match real gh behavior: we still print the URL (the user gets exactly
       // what they expect), but note the dedup on stderr for logs.
-      deps.io.stderr(`Existing PR for this branch — printing its URL.\n`);
+      deps.io.stderr(existingPrNotice(res.body));
     }
     // Labeling is best-effort: a bad label name never blocks the PR. When the
     // orchestrator couldn't apply a label it returns a non-fatal warning here.
