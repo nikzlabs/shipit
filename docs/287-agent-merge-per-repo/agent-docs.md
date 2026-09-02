@@ -44,7 +44,7 @@ code), so it is **gated**, not part of the open allowlist:
   turns on **"Allow merging PRs"** under GitHub access at creation.
 - Ops sessions never merge.
 
-#### It commits and pushes your work first
+#### It commits and pushes your work first (repo-bound sessions)
 
 Your edits are not on the branch when you call it. ShipIt commits after the turn
 ends, so the shim does that work itself, in this order:
@@ -68,11 +68,16 @@ Two consequences, both normal:
   branch — merging would ship the previous state while reporting success. Fix
   what the message names, then merge.
 
+In a **Sandbox** session none of this applies: you own git there, so ShipIt
+commits and pushes nothing for you. Push your own work before you merge.
+
 #### The guardrails
 
 - **Required checks must be green.** These are GitHub's checks on the PR's head
   commit — not anything ShipIt-local. A repo that configures **no checks merges
-  normally**; a *failing* or *still-running* check refuses.
+  normally**; a *failing* or *still-running* check refuses. A check result that
+  describes an **earlier commit** than the PR's head also refuses: what was
+  tested is not what would merge.
 - **Branch protection and required reviews are respected.** If GitHub rejects the
   merge, its reason is surfaced — the shim never forces past it. `--admin` is
   rejected.
