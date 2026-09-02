@@ -2,7 +2,23 @@ import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { parse as parseYaml } from "yaml";
 import { listTemplates, getTemplate, applyTemplate, generatePackageLock, OPS_TEMPLATE_ID } from "./templates.js";
+
+interface ComposeShape {
+  services?: Record<
+    string,
+    {
+      command?: string | string[];
+      ports?: unknown[];
+      "x-shipit-preview"?: string;
+      "x-shipit-depends-on-install"?: boolean;
+    }
+  >;
+}
+interface ShipitYamlShape {
+  agent?: { install?: string[] };
+}
 
 describe("listTemplates", () => {
   it("returns all 17 templates", () => {
@@ -258,19 +274,87 @@ describe("Python templates (docs/168)", () => {
   });
 });
 
+/**
+ * Does this compose `command` install JS dependencies anywhere inside it?
+ *
+ * Deliberately semantic rather than a regex over the source line: a `command:`
+ * may be a string, a block scalar (`>`/`|`), or an argv list, and any of those
+ * may wrap a shell whose script chains several commands. So we flatten the
+ * command to one token stream and look for a package-manager invocation whose
+ * subcommand installs — which catches `npm i`, `pnpm --frozen-lockfile install`
+ * and `yarn` (bare `yarn` installs) as well as the literal `npm install`.
+ */
+function installsJsDeps(command: string | string[] | undefined): boolean {
+  const text = (Array.isArray(command) ? command.join(" ") : (command ?? "")).trim();
+  if (!text) return false;
+  // Split on shell operators so each segment is one invocation.
+  for (const segment of text.split(/(?:&&|\|\||[;|\n])+/)) {
+    const tokens = segment.trim().split(/\s+/).filter(Boolean);
+    // Skip a shell wrapper and its flags so `sh -c "npm install"` is judged on
+    // the inner command; also drop quote characters the shell would consume.
+    const words = tokens
+      .map((t) => t.replace(/^["']|["']$/g, ""))
+      .filter((t) => t && !["sh", "bash", "-c", "-lc", "exec"].includes(t));
+    const tool = words[0];
+    if (!tool) continue;
+    if (!["npm", "pnpm", "bun", "yarn"].includes(tool)) continue;
+    const positionals = words.slice(1).filter((w) => !w.startsWith("-"));
+    // `run`/`exec` consume everything after them as a script name and its args,
+    // so `npm run install-check` is not an install.
+    if (["run", "exec", "start", "test"].includes(positionals[0] ?? "")) continue;
+    // Otherwise fail closed: a value-bearing flag leaves its value as a
+    // positional (`npm --prefix x install`), so scan them all rather than
+    // trusting the first to be the subcommand.
+    if (positionals.some((p) => ["install", "i", "ci", "add"].includes(p))) return true;
+    // Bare `yarn`, with or without flags, installs.
+    if (tool === "yarn" && positionals.length === 0) return true;
+  }
+  return false;
+}
+
 // A Node template's compose service and the agent container bind-mount the same
 // workspace, so an `npm install` in the service `command` is a second writer of
-// node_modules and package-lock.json. Those two files are exactly what
-// depInputsForCommand("npm install") watches, so every service-side install
-// re-triggers the agent's dependency reinstall, which tears the gated service
-// down and restarts it — a permanent ~30s restart loop. src/server/shipit-docs/
-// compose.md, "Where to put `npm install`", prescribes the single-writer shape
-// asserted here. Discovered rather than listed, so a new Node template inherits
-// the check.
+// node_modules — and of package-lock.json, which is one of the two paths
+// (with package.json) that depInputsForCommand("npm install") watches. So every
+// service-side install re-triggers the agent's dependency reinstall, which tears
+// the gated service down and restarts it — a permanent ~30s restart loop.
+// src/server/shipit-docs/compose.md, "Where to put `npm install`", prescribes
+// the single-writer shape asserted here. Templates are discovered rather than
+// listed, so a new Node template inherits the check.
 describe("Node templates keep dependency installs single-writer", () => {
-  const nodeServiceTemplates = listTemplates()
-    .map((t) => getTemplate(t.id)!)
+  // Includes the hidden ops template, so a hidden Node template can't evade the
+  // sweep the way it would evade listTemplates().
+  const nodeServiceTemplates = [...listTemplates().map((t) => t.id), OPS_TEMPLATE_ID]
+    .map((id) => getTemplate(id)!)
     .filter((t) => t.files["package.json"] && t.files["docker-compose.yml"]);
+
+  // The detector is what the per-template assertions below are worth, so pin the
+  // forms it must catch. Every "installs" case reproduces the defect this suite
+  // exists to prevent; the regex this replaced missed all but the first two.
+  it.each([
+    ['sh -c "npm install && npm run dev"', true],
+    ["npm ci", true],
+    ["npm i", true],
+    ["npm --prefix x install", true],
+    ["yarn", true],
+    ["yarn --frozen-lockfile", true],
+    ["pnpm i", true],
+    ["pnpm --frozen-lockfile install", true],
+    ["bun install", true],
+    // A block scalar arrives from the YAML parser as a multi-line string.
+    ["npm install &&\nnpm run dev\n", true],
+    // Argv list form.
+    [["sh", "-c", "npm install && npm run dev"], true],
+    ["npm run dev", false],
+    [["npm", "run", "dev"], false],
+    // `npm run install-check` is a script name, not the install subcommand.
+    ["npm run install-check", false],
+    ["node server.js", false],
+    ["", false],
+    [undefined, false],
+  ])("detects whether %j installs JS deps", (command, expected) => {
+    expect(installsJsDeps(command)).toBe(expected);
+  });
 
   it("covers every Node template that ships a compose service", () => {
     expect(nodeServiceTemplates.map((t) => t.id).sort()).toEqual([
@@ -289,16 +373,26 @@ describe("Node templates keep dependency installs single-writer", () => {
 
   for (const t of nodeServiceTemplates) {
     it(`${t.id}: installs from agent.install only, never the compose command`, () => {
-      const compose = t.files["docker-compose.yml"]!;
-      const commandLines = compose.split("\n").filter((l) => l.trim().startsWith("command:"));
-      expect(commandLines.length).toBeGreaterThan(0);
-      for (const line of commandLines) {
-        expect(line).not.toMatch(/\b(npm (install|ci)|yarn(\s|$)|pnpm install|bun install)\b/);
+      const services = (parseYaml(t.files["docker-compose.yml"]!) as ComposeShape).services ?? {};
+      expect(Object.keys(services).length).toBeGreaterThan(0);
+
+      for (const [name, svc] of Object.entries(services)) {
+        expect({ [name]: installsJsDeps(svc.command) }).toEqual({ [name]: false });
+
+        // The gate that makes the service-side install unnecessary: a service
+        // with ports defaults to `auto` preview, and an `auto` service defaults
+        // to gated (compose-generator.ts). Assert the RESOLVED values, so
+        // flipping either default off is a failure — `x-shipit-preview: manual`
+        // would silently ungate without naming the gate key at all.
+        const preview = svc["x-shipit-preview"] ?? (svc.ports?.length ? "auto" : "manual");
+        expect({ [name]: preview }).toEqual({ [name]: "auto" });
+        expect({ [name]: svc["x-shipit-depends-on-install"] ?? true }).toEqual({ [name]: true });
       }
-      // The agent is the sole writer, and the install gate (default `true` for a
-      // service with ports) holds the service until that install finishes.
-      expect(t.files["shipit.yaml"]).toContain("- npm install");
-      expect(compose).not.toContain("x-shipit-depends-on-install: false");
+
+      // The agent is the sole writer. Assert the parsed install list, not a
+      // substring — a `- npm install` inside a comment or another key is not it.
+      const shipitYaml = parseYaml(t.files["shipit.yaml"]!) as ShipitYamlShape;
+      expect(shipitYaml.agent?.install).toContain("npm install");
     });
   }
 });

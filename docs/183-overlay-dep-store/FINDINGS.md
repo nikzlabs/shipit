@@ -740,9 +740,11 @@ Also attributable from this run, no code change:
   against deployed `bd205652`, on all five sessions of one repo (69–84 reinstall triggers
   each over the retained log, against 1–4 for every other session on the host). The cycle:
   the dev service's `npm install` rewrites `package-lock.json` in the shared bind mount →
-  those are exactly the paths `depInputsForCommand("npm install")` watches
-  (`shared/deps-hash.ts`) → `maybeReinstallForDepChange()` arms the 30 s
-  `DEP_REINSTALL_COOLDOWN_MS` trailing timer → `reinstallForDepChange()` calls
+  that is one of the two paths `depInputsForCommand("npm install")` watches (with
+  `package.json`, `shared/deps-hash.ts`) → `maybeReinstallForDepChange()` fires. It is
+  leading-edge, so the first change while idle reinstalls at once; every later one lands
+  inside the reinstall or its cooldown and takes the trailing-timer branch, which is the
+  steady state the observed 30.000 s period (no drift) reflects → `reinstallForDepChange()` calls
   `setInstallRunning(true)`, which tears the gated service down (SIGTERM, 10 s grace,
   SIGKILL, exit 137) → the content-keyed marker skips the install in milliseconds, the gate
   reopens, the service runs `npm install` again. Cost: ~11 s of preview downtime out of
