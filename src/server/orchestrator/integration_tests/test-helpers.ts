@@ -314,9 +314,13 @@ export class StubGitHubAuthManager extends EventEmitter {
    * dropped the argument could not fail on the wrong state being listed.
    */
   listPullRequestsCalls: { owner: string; repo: string; state: string }[] = [];
+  private _listPrFailure: string | null = null;
+  /** Make the next reads fail, so a test can tell a failed read from an empty repo. */
+  setListPrFailure(error: string | null): void { this._listPrFailure = error; }
   async listPullRequests(owner: string, repo: string, state = "open") {
     this.listPullRequestsCalls.push({ owner, repo, state });
-    return [];
+    if (this._listPrFailure) return { ok: false as const, error: this._listPrFailure };
+    return { ok: true as const, prs: [] };
   }
   async setToken(token: string) {
     if (!token.trim()) {

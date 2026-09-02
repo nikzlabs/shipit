@@ -1045,4 +1045,35 @@ describe("GET /pr/list state handling", () => {
       expect(githubAuth.listPullRequestsCalls).toEqual([]);
     },
   );
+
+  it(
+    "answers non-2xx when the GitHub read failed, rather than 200 with no PRs",
+    { timeout: 15_000 },
+    async () => {
+      // The whole route used to answer 200 with `{ prs: [] }` for a 403 or a
+      // 5xx, so `gh pr list` printed "No pull requests found." and a caller
+      // read an unreadable repository as an empty one.
+      await githubAuth.setToken("test-token");
+      githubAuth.setListPrFailure("Resource not accessible by integration");
+      const { sessionId } = await setupPrimedSession();
+      const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/pr/list` });
+      expect(res.statusCode).toBe(502);
+      expect(res.json().error).toContain("Resource not accessible by integration");
+      expect(res.json().prs).toBeUndefined();
+    },
+  );
+
+  it(
+    "still answers 200 with an empty list for a repo that genuinely has none",
+    { timeout: 15_000 },
+    async () => {
+      // The other half: absence must keep its own answer, or the fix would
+      // just swap one indistinguishable pair for another.
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/pr/list` });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ prs: [] });
+    },
+  );
 });
