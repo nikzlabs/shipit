@@ -293,6 +293,72 @@ and block.
 | `stop-pr-check.test.ts` "rebase is in progress" | `rebase-merge` marker present → exit 0. |
 | `stop-pr-check.test.ts` "merge is in progress" | `MERGE_HEAD` present → exit 0. |
 
+## Update — a dead PR only silences the hook while the branch hasn't progressed
+
+The "Deliberate tradeoff" above — *once a branch's PR has merged/closed, neither
+the hook nor `agentCreatePr` will open a second PR* — stopped being true of
+`agentCreatePr` in **docs/202**: a merged/closed PR now blocks creation only
+while the branch has NOT moved past it, and once the branch sits on the current
+base tip with new work on top, `gh pr create` opens a replacement. The `gh`
+shim gained the matching wording in `existingPrNotice`
+(`session/agent-shim/gh.ts`) so a reprinted URL can no longer be misread as a
+fresh PR.
+
+The Stop hook was left on the older any-state rule, and that turned into a
+silent hole: a branch whose OLD PR had merged suppressed the backstop
+*completely*. An agent that never ran `gh pr create` finished the turn with its
+work unshipped and nothing said so — the exact failure the hook exists to
+catch, made invisible by the guard that was added to stop it over-firing.
+
+### Fix
+
+`stop-pr-check.sh` now asks for `--json state,merged,baseRefName` instead of
+`--json url`, and splits the answer:
+
+- **OPEN** → exit 0. The work shipped.
+- **MERGED / CLOSED** → run the same gate the orchestrator runs
+  (`GitManager.mergedBaseProgress`, docs/202), in shell against the PR's own
+  base: the branch must **contain** the current `origin/<base>` tip AND have a
+  non-empty two-dot diff on top. Only `progressed` blocks; `base-not-contained`,
+  `no-new-work` and `base-unknown` all exit 0.
+
+`state` is GitHub's REST spelling, so a merged PR reads as `closed` — the
+`merged` boolean is what tells a merge from an abandon, and it only selects the
+wording of the block message.
+
+The hook **fetches** `origin/<base>` (`timeout 20`) before the containment
+check: that is the documented precondition of `mergedBaseProgress`, and against
+a stale ref clause 1 is trivially satisfied, so an un-rebased branch would read
+as "progressed" and the hook would nag about work that merged yesterday. A
+fetch that fails or times out therefore **exits 0** rather than deciding from
+the ref it already had — an unrefreshable ref is one more thing the hook does
+not know, and every other unknown here fails open. (Review finding: the first
+draft swallowed the failure and continued, which recreated the very
+duplicate-PR nag this file guards against.)
+
+### The judgement call
+
+Firing only on `progressed` is deliberate, and narrower than "a dead PR is
+never proof". `progressed` is exactly the state in which `gh pr create`
+succeeds, so the hook never demands an action that cannot work — the same
+posture as the transient-state guard above. The two states it stays quiet in
+are the ones that would nag: a branch still sitting at the merged tip before
+ShipIt resets it (indistinguishable, locally, from real new work whose base
+moved on) and a branch with an empty diff. Both are refused by the shim, so
+blocking would only produce a reprinted URL and a wasted turn.
+
+### Tests
+
+| Test | What it covers |
+|---|---|
+| `stop-pr-check.test.ts` "branch has progressed past its merged PR" | The hole: merged PR + branch on the base tip with new work → exit 2. |
+| `stop-pr-check.test.ts` "last PR was abandoned" | `state: closed, merged: false` → blocks, wording says *closed*, not *merged*. |
+| `stop-pr-check.test.ts` "base has moved on under the branch" | `base-not-contained` → exit 0; the new base tip exists only on the remote, so it also guards the fetch. |
+| `stop-pr-check.test.ts` "base cannot be resolved in this clone" | Unresolvable PR base → exit 0 rather than silently substituting the local base. |
+| `stop-pr-check.test.ts` "base ref exists but cannot be freshened" | A FAILED fetch → exit 0, not a decision from the stale ref that is left behind. |
+| `stop-pr-check.test.ts` "no new work over the PR's own base" | `no-new-work` → exit 0. Reachable because the early three-dot gate uses the repo's default base while the progress check uses the PR's. |
+| `stop-pr-check.test.ts` "an open PR already exists" | Unchanged: OPEN still exits 0 with no fetch and no gate. |
+
 ## Future extensions
 
 - **Per-session opt-out** — currently auto-PR is global. If we add a

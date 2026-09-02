@@ -16,7 +16,10 @@
  *   on the default branch             → exit 0
  *   no commits ahead of base          → exit 0
  *   empty net diff vs base            → exit 0 (revert / merged-then-rebased)
- *   PR exists in any state (gh exit 0)→ exit 0 (open OR merged/closed)
+ *   an OPEN PR exists                 → exit 0 (the work shipped)
+ *   a MERGED/CLOSED PR exists, and
+ *     the branch has NOT progressed   → exit 0 (`gh pr create` would refuse)
+ *     the branch HAS progressed       → exit 2 (the new commits are unshipped)
  *   gh fails with auth/config error   → exit 0 (fail open)
  *   commits + diff + "No PR found"    → exit 2 with stderr telling agent to act
  */
@@ -141,6 +144,42 @@ function makeRepo(opts: {
   return { work, root };
 }
 
+/**
+ * Land a commit on the *remote's* main while leaving this clone's
+ * `origin/main` pointing where it was — the "another session merged while you
+ * worked" shape. Only a `git fetch` reveals the new tip, so a hook that skips
+ * the fetch reads a stale ref and mis-answers the containment check.
+ */
+function advanceRemoteBase(work: string): void {
+  const stale = execFileSync("git", ["rev-parse", "origin/main"], {
+    cwd: work,
+    encoding: "utf8",
+  }).trim();
+  const branch = execFileSync("git", ["symbolic-ref", "--short", "HEAD"], {
+    cwd: work,
+    encoding: "utf8",
+  }).trim();
+  execFileSync("git", ["checkout", "-b", "tmp-advance", stale], { cwd: work });
+  writeFileSync(path.join(work, "other-session.txt"), "other\n");
+  execFileSync("git", ["add", "."], { cwd: work });
+  execFileSync("git", ["commit", "-m", "another session's work"], { cwd: work });
+  execFileSync("git", ["push", "origin", "HEAD:main"], { cwd: work });
+  execFileSync("git", ["checkout", branch], { cwd: work });
+  execFileSync("git", ["branch", "-D", "tmp-advance"], { cwd: work });
+  // The push moved the remote-tracking ref; put it back so the clone is stale.
+  execFileSync("git", ["update-ref", "refs/remotes/origin/main", stale], { cwd: work });
+}
+
+/** A `gh pr view --json state,merged,baseRefName` stub for a PR in some state. */
+function ghPrView(pr: { state: string; merged?: boolean; baseRefName?: string }): string {
+  const body = JSON.stringify({
+    state: pr.state,
+    merged: pr.merged ?? false,
+    baseRefName: pr.baseRefName ?? "main",
+  });
+  return `echo '${body}'; exit 0`;
+}
+
 describe("stop-pr-check.sh", () => {
   // Track temp roots created during a test so afterEach can rm them. Use the
   // root path itself, not a parent — rm'ing the parent would wipe /tmp.
@@ -200,12 +239,9 @@ describe("stop-pr-check.sh", () => {
     expect(r.status).toBe(0);
   });
 
-  it("exits 0 when a PR already exists (gh exits 0)", () => {
+  it("exits 0 when an open PR already exists", () => {
     const cwd = trackRepo(makeRepo({ commitsAheadOfBase: 2 }));
-    const r = runHook({
-      cwd,
-      ghScript: 'echo \'{"url":"https://example/pr/1"}\'; exit 0',
-    });
+    const r = runHook({ cwd, ghScript: ghPrView({ state: "open" }) });
     expect(r.status).toBe(0);
     expect(r.stderr).toBe("");
   });
@@ -237,14 +273,97 @@ describe("stop-pr-check.sh", () => {
     expect(r.stderr).toBe("");
   });
 
-  it("exits 0 when a merged PR already exists for the branch (no duplicate prompt)", () => {
-    // `gh pr view` now resolves the branch's PR in any state, so a merged PR
-    // succeeds (exit 0). The hook must treat that as "PR exists" and not
-    // re-prompt — this is the duplicate-PR regression guard.
+  // --- a merged/closed PR: proof of shipping only while the branch hasn't
+  // moved past it. GitHub's REST spelling makes a merged PR read as `closed`,
+  // so `merged` is what tells a merge from an abandon.
+
+  it("blocks (exit 2) when the branch has progressed past its merged PR", () => {
+    // The branch sits on the current base tip with new commits on top — the
+    // exact state in which `gh pr create` opens a REPLACEMENT PR. The merged
+    // PR is from an earlier turn and shipped none of this, so staying quiet
+    // would leave the work unshipped with nothing saying so.
     const cwd = trackRepo(makeRepo({ commitsAheadOfBase: 2 }));
     const r = runHook({
       cwd,
-      ghScript: 'echo \'{"url":"https://example/pr/7","state":"MERGED"}\'; exit 0',
+      ghScript: ghPrView({ state: "closed", merged: true }),
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("merged");
+    expect(r.stderr).toContain("NOT shipped");
+    expect(r.stderr).toContain("gh pr create");
+  });
+
+  it("blocks (exit 2) naming CLOSED when the branch's last PR was abandoned", () => {
+    // `state: closed, merged: false` — the PR was closed, not merged. ShipIt
+    // does not reopen one, so the wording must not claim a merge.
+    const cwd = trackRepo(makeRepo({ commitsAheadOfBase: 2 }));
+    const r = runHook({
+      cwd,
+      ghScript: ghPrView({ state: "closed", merged: false }),
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("closed");
+    expect(r.stderr).not.toContain("merged");
+  });
+
+  it("exits 0 when a merged PR exists and the base has moved on under the branch", () => {
+    // `base-not-contained`: another session merged while this one worked, so
+    // the branch no longer contains the base tip. `gh pr create` refuses this
+    // shape, so blocking would demand an action that cannot succeed.
+    //
+    // Doubles as the fetch guard: the new base tip is only on the remote, so a
+    // hook that skips `git fetch` reads the stale ref, finds merge-base ==
+    // (stale) base tip, and wrongly blocks.
+    const cwd = trackRepo(makeRepo({ commitsAheadOfBase: 2 }));
+    advanceRemoteBase(cwd);
+    const r = runHook({
+      cwd,
+      ghScript: ghPrView({ state: "closed", merged: true }),
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe("");
+  });
+
+  it("exits 0 when the merged PR's base cannot be resolved in this clone", () => {
+    // The PR targeted a branch this clone has no ref for and the fetch cannot
+    // produce one. We can't tell whether the branch progressed, so fail open
+    // rather than substitute the local base and answer a different question.
+    const cwd = trackRepo(makeRepo({ commitsAheadOfBase: 2 }));
+    const r = runHook({
+      cwd,
+      ghScript: ghPrView({ state: "closed", merged: true, baseRefName: "no-such-base" }),
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe("");
+  });
+
+  it("exits 0 when the base ref exists but cannot be freshened", () => {
+    // The reviewer's case, and the sharpest one: a fetch that FAILS leaves a
+    // stale `origin/main` behind — and against a stale ref the containment
+    // clause is trivially satisfied, so an already-shipped branch reads as
+    // "progressed". Deciding from a ref we know we could not refresh is how
+    // this hook would nag about work that merged yesterday.
+    const cwd = trackRepo(makeRepo({ commitsAheadOfBase: 2 }));
+    execFileSync("git", ["remote", "set-url", "origin", path.join(cwd, "gone.git")], { cwd });
+    const r = runHook({
+      cwd,
+      ghScript: ghPrView({ state: "closed", merged: true }),
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe("");
+  });
+
+  it("exits 0 when the branch has no new work over the PR's own base", () => {
+    // `no-new-work`, reachable because the two gates use different bases: the
+    // early three-dot gate compares against the repo's default base, while the
+    // progress check compares against the PR's. A branch sitting exactly on
+    // `stable` differs from `main` (so it clears the early gate) yet has an
+    // empty diff over `stable` — nothing to open a PR for.
+    const cwd = trackRepo(makeRepo({ commitsAheadOfBase: 1 }));
+    execFileSync("git", ["push", "origin", "HEAD:stable"], { cwd });
+    const r = runHook({
+      cwd,
+      ghScript: ghPrView({ state: "closed", merged: true, baseRefName: "stable" }),
     });
     expect(r.status).toBe(0);
     expect(r.stderr).toBe("");
