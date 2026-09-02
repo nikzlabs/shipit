@@ -4,7 +4,9 @@ import { useUiStore } from "../../../stores/ui-store.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useCiDisplay } from "../../../hooks/useCiDisplay.js";
 import { useIsMobile } from "../../../hooks/useMediaQuery.js";
-import { WarningIcon } from "@phosphor-icons/react";
+import { useState } from "react";
+import { WarningIcon, XIcon } from "@phosphor-icons/react";
+import { ICON_SIZE } from "../../../design-tokens.js";
 import { PrStateBadge } from "../PrStateBadge.js";
 import { PrMergeActions, PrStatusActions } from "../PrStatusActions.js";
 import { BranchLabel, Spinner } from "../shared.js";
@@ -139,13 +141,37 @@ export function OpenPhase({
  * disabled the feature mid-loop doesn't see a stale banner. The server-side
  * `attachAutomationState` omits the block when disabled, but belt-and-
  * suspenders this on the client.
+ *
+ * `lastError` is unbounded: most values are short labels ("timeout",
+ * "force_push_failed"), but the error paths carry `getErrorMessage(err)` from a
+ * failed git command, which can be a screenful of stderr. The banner therefore
+ * caps the message at a few lines and scrolls the rest, and carries a dismiss
+ * button — otherwise a long error pushes the whole conversation out of view
+ * with no way to close it.
  */
 function AutoResolveFailureBanner({ sessionId, card }: { sessionId: string; card: PrCardState }) {
   const enabled = useSettingsStore((s) => s.autoResolveConflicts);
   const setToast = useUiStore((s) => s.setToast);
+  // The failure on show, or null when there is none. Both re-arm conditions read
+  // off this one value.
+  const lastError =
+    card.autoResolve?.status === "exhausted" ? (card.autoResolve.lastError ?? "unknown error") : null;
+  // Dismissal hides ONE failure, not the feature, so it is keyed on the failure
+  // it dismissed. That re-arms the banner on BOTH transitions that mean "this is
+  // a different failure": the status leaving "exhausted" (lastError → null), and
+  // a fresh exhaustion carrying a different error. Keying on the status alone
+  // would miss `exhausted A → exhausted B` — which a viewer that reconnected
+  // across the intervening reset genuinely sees, since it never rendered the
+  // non-exhausted snapshots in between.
+  //
+  // The re-arm is a render-phase adjustment rather than an effect: it is derived
+  // from the state this render already has, and it self-terminates (once
+  // cleared, the condition is false).
+  const [dismissedError, setDismissedError] = useState<string | null>(null);
+  if (dismissedError !== null && dismissedError !== lastError) setDismissedError(null);
   if (!enabled) return null;
-  if (card.autoResolve?.status !== "exhausted") return null;
-  const lastError = card.autoResolve.lastError ?? "unknown error";
+  if (lastError === null) return null;
+  if (dismissedError === lastError) return null;
 
   const handleRetry = async () => {
     try {
@@ -166,17 +192,40 @@ function AutoResolveFailureBanner({ sessionId, card }: { sessionId: string; card
   };
 
   return (
-    <div className="mt-1 flex items-center gap-2 pl-5 text-xs">
-      <span className="text-(--color-text-tertiary)">
+    <div className="mt-1 flex items-start gap-2 pl-5 text-xs">
+      {/* `max-h-20` + `overflow-y-auto` bound the height at ~5 lines; a short
+          error still renders as the single line it always was. `min-w-0` lets
+          the box shrink inside the flex row so long tokens wrap instead of
+          widening the card. `tabIndex` puts the clipped text in the tab order,
+          which is what makes a keyboard-only user able to scroll it. */}
+      <div
+        className="min-w-0 flex-1 max-h-20 overflow-y-auto whitespace-pre-wrap wrap-break-word text-(--color-text-tertiary)"
+        tabIndex={0}
+        role="group"
+        aria-label="Auto-resolve failure detail"
+        data-testid="auto-resolve-last-error"
+      >
         Auto-resolve couldn&rsquo;t finish. Last error: {lastError}.
-      </span>
+      </div>
       <button
         type="button"
         onClick={() => void handleRetry()}
-        className="text-(--color-text-primary) hover:underline cursor-pointer"
+        className="shrink-0 text-(--color-text-primary) hover:underline cursor-pointer"
         data-testid="auto-resolve-retry"
       >
         Retry
+      </button>
+      {/* `-my-1 p-1` widens the hit target to a comfortable tap size without
+          adding a row of height to the banner. */}
+      <button
+        type="button"
+        onClick={() => setDismissedError(lastError)}
+        aria-label="Dismiss auto-resolve failure"
+        title="Dismiss"
+        className="shrink-0 -my-1 p-1 text-(--color-text-tertiary) hover:text-(--color-text-primary) cursor-pointer"
+        data-testid="auto-resolve-dismiss"
+      >
+        <XIcon size={ICON_SIZE.SM} />
       </button>
     </div>
   );
