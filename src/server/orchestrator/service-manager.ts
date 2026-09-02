@@ -767,6 +767,20 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private _installFailed = false;
 
   /**
+   * planning#2503 — is the gate currently latched by a FAILED install?
+   *
+   * Read by a caller deciding whether it may skip the `setInstallRunning`
+   * bracket for an install that will not run. `_installFailed` is cleared only
+   * by a false→true transition, and `checkInstallGateLiveness` deliberately
+   * refuses to recover a gate it can see failed — so "no install ran, therefore
+   * no transition" would strand latched services in `error` for the rest of the
+   * session. Whoever skips the bracket has to ask first.
+   */
+  get installGateFailed(): boolean {
+    return this._installFailed;
+  }
+
+  /**
    * Names of `dependsOnInstall` services currently held by the gate (either
    * waiting for install to finish, or latched to `error` after install
    * failed). The poller skips these so its `docker compose ps` diff can't
@@ -1248,8 +1262,13 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
    * @param opts.failed Set when the completing install failed (`true → false`).
    *   Gated services latch to `error` instead of starting.
    */
-  setInstallRunning(running: boolean, opts: { failed?: boolean } = {}): void {
-    if (this._installRunning === running) return;
+  /**
+   * @returns whether this call actually moved the gate. A same-value call is
+   *   ignored, so `false` means some OTHER caller owns the open bracket — the
+   *   distinction a caller needs before it decides to close one (planning#2503).
+   */
+  setInstallRunning(running: boolean, opts: { failed?: boolean } = {}): boolean {
+    if (this._installRunning === running) return false;
     const wasRunning = this._installRunning;
     this._installRunning = running;
 
@@ -1259,7 +1278,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       // dependency tree once install completes.
       this._installFailed = false;
       this.holdGatedServicesForReinstall();
-      return;
+      return true;
     }
 
     if (wasRunning && !running) {
@@ -1269,6 +1288,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       // during the install window. Excludes gated services (handled above).
       this.flushPostInstallRetries();
     }
+    return true;
   }
 
   /**

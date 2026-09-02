@@ -399,12 +399,23 @@ describe("Integration: install gate — resolution without SSE install_done (doc
     // it but the gate bracket, and a real one needs Docker.
     const gate: { running: boolean; failed?: boolean }[] = [];
     const priv = runner as unknown as {
-      _serviceManager: { setInstallRunning(running: boolean, opts?: { failed?: boolean }): void };
+      _serviceManager: {
+        installGateFailed: boolean;
+        setInstallRunning(running: boolean, opts?: { failed?: boolean }): boolean;
+      };
       reinstallForDepChange(): Promise<void>;
     };
+    // Models the real transition contract (planning#2503): a same-value call is
+    // ignored and reports `false`, which is how the caller knows whether it owns
+    // the open bracket.
+    let open = false;
     priv._serviceManager = {
+      installGateFailed: false,
       setInstallRunning: (running, opts) => {
+        if (open === running) return false;
+        open = running;
         gate.push({ running, ...(opts?.failed !== undefined ? { failed: opts.failed } : {}) });
+        return true;
       },
     };
     runner.setDepReinstallInputs(["npm install"], ["package-lock.json"]);
