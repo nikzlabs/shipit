@@ -239,6 +239,80 @@ describe("SessionHealthStrip", () => {
     });
   });
 
+  describe("layout: a long error must not squeeze the log view", () => {
+    // Reported by an operator: "I can't read the logs due to the UI bug, the
+    // error box makes the right panel not visible." The strip is the first
+    // child of TerminalPanel's `flex flex-col h-full` column and its siblings
+    // are `flex-1 min-h-0`, so an unbounded strip takes its content height and
+    // the log view collapses toward zero.
+    //
+    // jsdom does no layout, so height can't be measured here. The guarantee is
+    // asserted as the CSS contract that produces it, plus the structural rule
+    // that every variable-height region lives INSIDE the scrolling area and the
+    // status/actions row lives outside it.
+    const longError = Array.from(
+      { length: 40 },
+      (_, i) => `Error response from daemon: failed to create container (attempt ${i})`,
+    ).join("\n");
+
+    /**
+     * The error renders as one pre-wrapped leaf div. Match on the exact
+     * textContent of a childless element — `findByText(longError)` normalizes
+     * newlines away and would also match every ancestor.
+     */
+    const errorLeaf = (_: string, el: Element | null) =>
+      !!el && el.children.length === 0 && el.textContent === longError;
+
+    it("caps the strip and scrolls a long container-creation error inside it", async () => {
+      defaultPolls({
+        ...healthMissing,
+        lastCreateError: longError,
+        lastCreateErrorAt: Date.now(),
+      });
+
+      render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
+
+      const errorNode = await screen.findByText(errorLeaf);
+
+      const strip = screen.getByTestId("session-health-strip");
+      expect(strip.className).toMatch(/\bmax-h-/);
+
+      const overflow = screen.getByTestId("session-health-strip-overflow");
+      expect(overflow.className).toMatch(/\boverflow-y-auto\b/);
+      // `min-h-0` is what lets the scroll region actually shrink inside the
+      // capped column instead of forcing it open.
+      expect(overflow.className).toMatch(/\bmin-h-0\b/);
+
+      // The error scrolls inside the strip rather than growing it.
+      expect(overflow.contains(errorNode)).toBe(true);
+    });
+
+    it("keeps the status row and recovery actions outside the scrolling region", async () => {
+      defaultPolls({
+        ...healthMissing,
+        lastCreateError: longError,
+        lastCreateErrorAt: Date.now(),
+      });
+
+      render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
+      await screen.findByText(errorLeaf);
+
+      const overflow = screen.getByTestId("session-health-strip-overflow");
+      const restart = screen.getByRole("button", { name: /Restart agent/i });
+      expect(overflow.contains(restart)).toBe(false);
+    });
+
+    it("scrolls the expanded details rows too", async () => {
+      defaultPolls(healthRunning);
+
+      render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
+      fireEvent.click(screen.getByRole("button", { name: /details/i }));
+
+      const overflow = screen.getByTestId("session-health-strip-overflow");
+      expect(overflow.contains(screen.getByText("container id"))).toBe(true);
+    });
+  });
+
   describe("button click sets rescueState with startedAt", () => {
     it("sets rescueState with startedAt when Restart agent is clicked", async () => {
       // First call: GET /container/health → missing

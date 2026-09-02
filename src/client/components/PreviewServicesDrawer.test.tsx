@@ -114,6 +114,24 @@ describe("PreviewServicesDrawer", () => {
     expect(props.onSendToAgent).toHaveBeenCalledWith("web", "error", "");
   });
 
+  it("bounds the crash banner so a long Compose error can't squeeze out the log", () => {
+    // Same failure the SessionHealthStrip had: the banner is `shrink-0` above a
+    // log that fills the rest of the column, so an unbounded banner pins its
+    // full content height and the log collapses. jsdom does no layout, so the
+    // guarantee is asserted as the CSS contract that produces it.
+    const props = baseProps();
+    const longError = Array.from({ length: 30 }, (_, i) => `compose stderr line ${i}`).join("\n");
+    const services = [svc({ name: "web", status: "error", error: longError })];
+    render(<PreviewServicesDrawer services={services} {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
+
+    // The banner is the nearest div ancestor of its "Ask the agent to fix" link.
+    const banner = screen.getByRole("button", { name: /Ask the agent to fix/ }).closest("div");
+    expect(banner).not.toBeNull();
+    expect(banner!.className).toMatch(/\bmax-h-/);
+    expect(banner!.className).toMatch(/\boverflow-y-auto\b/);
+  });
+
   it("a stale selection from multi-service does not trap the lone service in drill-in", () => {
     const props = baseProps();
     const two = [svc({ name: "web", port: 3000 }), svc({ name: "db", status: "stopped" })];

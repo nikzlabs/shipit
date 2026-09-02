@@ -166,8 +166,24 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
   const canKillAgent = !!health?.workerReachable && health.agentRunning === true;
 
   return (
-    <div className="flex flex-col bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs">
-      <div className="flex items-center justify-between gap-3 px-3 py-1.5">
+    /*
+     * The strip is the first child of TerminalPanel's `flex flex-col h-full`
+     * column, and its siblings (the log view, the shell) are `flex-1 min-h-0`
+     * — i.e. `flex: 1 1 0%`, so they only ever get the space the strip leaves
+     * over. With no bound here the strip's base size is its CONTENT height, so
+     * one long error (a multi-line `lastCreateError`, stacked notices, or the
+     * expanded details rows) pushed the log view toward zero and the operator
+     * could no longer read the logs the error was telling them to look at.
+     *
+     * So: cap the whole strip at 40% of the panel and scroll the region BELOW
+     * the summary row. Bounding the strip rather than any one message means a
+     * future banner can't reintroduce the bug; scrolling the lower region
+     * rather than the whole strip keeps the status line and the recovery
+     * buttons pinned and readable. `max-h-[40%]` resolves against the panel
+     * because TerminalPanel's height is definite.
+     */
+    <div className="flex flex-col max-h-[40%] bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs" data-testid="session-health-strip">
+      <div className="flex items-center justify-between gap-3 px-3 py-1.5 shrink-0">
         <HealthSummary
           health={health}
           isRestarting={isRestarting}
@@ -187,15 +203,17 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
           onOpenDiagnostics={() => setDiagnosticsOpen(true)}
         />
       </div>
-      <DiagnosticsPanel
-        sessionId={sessionId}
-        health={health}
-        diagnosticsOpen={diagnosticsOpen}
-        onDiagnosticsOpenChange={setDiagnosticsOpen}
-      />
-      {showDetails && (
-        <HealthDetails sessionId={sessionId} health={health} error={error} />
-      )}
+      <div className="min-h-0 overflow-y-auto" data-testid="session-health-strip-overflow">
+        <DiagnosticsPanel
+          sessionId={sessionId}
+          health={health}
+          diagnosticsOpen={diagnosticsOpen}
+          onDiagnosticsOpenChange={setDiagnosticsOpen}
+        />
+        {showDetails && (
+          <HealthDetails sessionId={sessionId} health={health} error={error} />
+        )}
+      </div>
     </div>
   );
 }

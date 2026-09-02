@@ -200,9 +200,14 @@ function FocusServiceCard({
           </div>
         </div>
 
-        {/* A crashed service summarizes its error + a one-click fix above the log. */}
+        {/* A crashed service summarizes its error + a one-click fix above the log.
+            Bounded height + its own scroll: `svc.error` is raw Compose stderr and
+            can run to many lines, and `shrink-0` above a log that fills the rest
+            of the column would then pin the banner and squeeze the log to nothing
+            — the same failure the SessionHealthStrip had. Same pattern as
+            ComposeErrorBanner's `max-h-48 overflow-auto`. */}
         {isError && (
-          <div className="flex items-start gap-2 px-4 py-2 shrink-0 bg-(--color-error-subtle) border-b border-(--color-error)/25 text-xs text-(--color-error)">
+          <div className="flex items-start gap-2 px-4 py-2 shrink-0 max-h-24 overflow-y-auto bg-(--color-error-subtle) border-b border-(--color-error)/25 text-xs text-(--color-error)">
             <WarningCircleIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0 mt-px" />
             <span className="min-w-0">
               {svc.error || "Service crashed."}{" "}
