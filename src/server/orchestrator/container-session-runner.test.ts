@@ -485,6 +485,153 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
 });
 
 /**
+ * planning#2503 — closing the install gate is a `docker compose stop`: SIGTERM,
+ * 10s grace, SIGKILL. Paying it for an install the marker gate then skips in
+ * milliseconds cost the preview an ~11s outage for nothing — and for a repo
+ * whose service `command:` re-runs its own package manager over the same bind
+ * mount, forever: the service's `npm install` rewrites the lockfile, the
+ * watcher fires, the 30s cooldown paces it, and five production sessions were
+ * observed looping at exactly 30.000s with no drift.
+ *
+ * So the bracket is applied only when the install will really run, decided by
+ * the worker's own marker gate rather than a second hash comparison here.
+ */
+describe("ContainerSessionRunner — the reinstall bracket skips a no-op install", () => {
+  /**
+   * A worker that answers the probe with `probeSkipped` and `/install` with
+   * `installResponse`, recording every path it served.
+   */
+  async function withWorker(
+    probeSkipped: boolean | "error",
+    installResponse: Record<string, unknown>,
+    body: (url: string, paths: string[]) => Promise<void>,
+  ): Promise<void> {
+    const paths: string[] = [];
+    const server = http.createServer((req, res) => {
+      paths.push(req.url ?? "");
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/install/probe") {
+        if (probeSkipped === "error") {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: "boom" }));
+          return;
+        }
+        res.end(JSON.stringify({ skipped: probeSkipped }));
+        return;
+      }
+      res.end(JSON.stringify(req.url === "/install" ? installResponse : { running: true }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    try {
+      await body(`http://127.0.0.1:${addr.port}`, paths);
+    } finally {
+      server.close();
+    }
+  }
+
+  /** Records the gate transitions without wiring a whole ServiceManager. */
+  function attachGateRecorder(runner: ContainerSessionRunner): { running: boolean; failed?: boolean }[] {
+    const calls: { running: boolean; failed?: boolean }[] = [];
+    (runner as unknown as { _serviceManager: unknown })._serviceManager = {
+      composeFilePath: "docker-compose.yml",
+      setInstallRunning: (running: boolean, opts: { failed?: boolean } = {}) =>
+        calls.push({ running, ...opts }),
+    };
+    return calls;
+  }
+
+  it("does not touch the gate when the marker gate says the install is a no-op", async () => {
+    await withWorker(true, { skipped: true }, async (url, paths) => {
+      const runner = makeRunner();
+      runner.setWorkerUrl(url);
+      const gate = attachGateRecorder(runner);
+      runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+
+      await (runner as unknown as { reinstallForDepChange(): Promise<void> }).reinstallForDepChange();
+
+      // The whole point: no hold, so no teardown, so no ~11s outage.
+      expect(gate).toEqual([]);
+      // The install still ran — its skip branch is what clears a recorded
+      // DependencyGap and reports `install_status: skipped`.
+      expect(paths).toContain("/install");
+    });
+  });
+
+  it("brackets normally when the install will really run", async () => {
+    await withWorker(false, { started: true }, async (url) => {
+      const runner = makeRunner();
+      runner.setWorkerUrl(url);
+      const gate = attachGateRecorder(runner);
+      runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+
+      const done = (runner as unknown as { reinstallForDepChange(): Promise<void> }).reinstallForDepChange();
+      await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
+      priv(runner).signalInstallComplete(true);
+      await done;
+
+      expect(gate).toEqual([{ running: true }, { running: false, failed: false }]);
+    });
+  });
+
+  it("fails closed — an unreachable or older worker still gets the old bracket", async () => {
+    // A probe that 500s (an older worker has no such route at all) must not be
+    // read as "nothing to do": skipping the teardown for an install that then
+    // really runs leaves the gated services on the old dependency tree.
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await withWorker("error", { started: true }, async (url) => {
+      const runner = makeRunner();
+      runner.setWorkerUrl(url);
+      const gate = attachGateRecorder(runner);
+      runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+
+      const done = (runner as unknown as { reinstallForDepChange(): Promise<void> }).reinstallForDepChange();
+      await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
+      priv(runner).signalInstallComplete(false);
+      await done;
+
+      expect(gate).toEqual([{ running: true }, { running: false, failed: true }]);
+    });
+  });
+
+  it("brackets after the fact when the probe and the install disagree", async () => {
+    // A dependency input rewritten in the millisecond between the probe and the
+    // POST: the install we chose not to bracket really ran, so the gated
+    // services are still on the old tree and have to be relaunched.
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await withWorker(true, { started: true }, async (url) => {
+      const runner = makeRunner();
+      runner.setWorkerUrl(url);
+      const gate = attachGateRecorder(runner);
+      runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+
+      const done = (runner as unknown as { reinstallForDepChange(): Promise<void> }).reinstallForDepChange();
+      await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
+      priv(runner).signalInstallComplete(true);
+      await done;
+
+      expect(gate).toEqual([{ running: true }, { running: false, failed: false }]);
+    });
+  });
+
+  it("does not probe at all when the session has no compose stack", async () => {
+    // The bracket is already inert without a ServiceManager, so the probe would
+    // buy nothing and only delay the install by a round trip.
+    await withWorker(true, { skipped: true }, async (url, paths) => {
+      const runner = makeRunner();
+      runner.setWorkerUrl(url);
+      runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+
+      await (runner as unknown as { reinstallForDepChange(): Promise<void> }).reinstallForDepChange();
+
+      expect(paths).not.toContain("/install/probe");
+      expect(paths).toContain("/install");
+    });
+  });
+});
+
+/**
  * planning#280 — an in-flight sub-agent spawn must not vanish with its container.
  *
  * The incident: a backgrounded Codex consult was running when the user hit

@@ -57,11 +57,66 @@ So we trigger on any dep-input change and let the marker decide skip-vs-run.
 
 ### Throttle
 
-A 30s cooldown (`DEP_REINSTALL_COOLDOWN_MS`) throttles reinstalls so a git
-operation's burst of file writes, or the reinstall's own lockfile rewrite, can't
-spin an install loop. Leading-edge: fire at once when idle; a change arriving
-while a reinstall is in flight or within the window sets a pending flag and arms
-a single trailing timer, so the final lockfile state is always installed.
+A 30s cooldown (`DEP_REINSTALL_COOLDOWN_MS`) paces reinstalls, so a git
+operation's burst of file writes coalesces into one pass. Leading-edge: fire at
+once when idle; a change arriving while a reinstall is in flight or within the
+window sets a pending flag and arms a single trailing timer, so the final
+lockfile state is always installed.
+
+**The cooldown does not break an install loop, and this doc used to claim it
+did.** A burst is finite, so pacing ends it; a *self-sustaining writer* is not,
+and pacing it only sets its period. The production case (planning#2503) is a
+compose service whose own `command:` re-runs its package manager over the same
+bind mount the watcher watches — `sh -c "npm install && npm run dev"`. Its
+`npm install` rewrites `package-lock.json`, the watcher reports a dep-input
+change, the cooldown fires 30s later, the service is torn down, the install
+skips, the service restarts and runs `npm install` again. Five sessions were
+observed cycling at exactly 30.000s with no drift, for 84 cycles on the worst
+one. The undrifting period is the evidence: a throttle that was breaking the
+loop would show it decaying, not keeping time.
+
+What makes such a repository harmless is the fix below — a no-op reinstall costs
+nothing — not the cooldown.
+
+### The bracket is applied only when the install will really run (planning#2503)
+
+`setInstallRunning(true)` is a `docker compose stop`: SIGTERM, a 10s grace
+period, then SIGKILL (docs/239). The bracket used to close *before* anything
+knew whether the install would do any work, so a reinstall whose marker still
+matched paid a full ~11s teardown of every `dependsOnInstall` service and then
+skipped the install in milliseconds. Under the self-sustaining writer above that
+was the entire cost of the loop — the preview died every 30s and the install
+never once ran.
+
+So `reinstallForDepChange` asks first, via `POST /install/probe` on the worker —
+the marker gate's own decision (`InstallController.evaluateMarkerGate`, shared
+verbatim with `POST /install`), reported without being acted on: it removes no
+stale marker and starts nothing. Only a probe that says the install will run
+brackets it.
+
+Four properties keep the change contained:
+
+- **The answer comes from the worker, never from a second comparison here.** It
+  is the same reasoning as *It does not diff the changed paths* above: a
+  re-implementation has to get renames, `./` prefixes and a failed `git diff`
+  right to avoid falling back into the silence it exists to remove.
+- **It fails closed.** An unreachable, wedged or older worker (no such route)
+  answers "not a no-op", so the bracket happens exactly as it did before. Being
+  wrong that way costs the old behaviour; being wrong the other way leaves gated
+  services on a stale tree.
+- **The install still runs on the no-op path.** Its skip branch is what clears a
+  recorded `DependencyGap` — a matching content-keyed marker is positive
+  evidence — and what reports `install_status: skipped`. Only the service
+  bracket is conditional.
+- **A probe and an install that disagree are reconciled.** A dep input rewritten
+  in the millisecond between them means an unbracketed install really ran, so the
+  hold→release pair is applied afterwards: the same teardown-and-relaunch the
+  bracket would have produced, just later. `runInstall` reports `skipped` for
+  exactly this comparison.
+
+Failure semantics are unchanged: a reinstall that runs and fails still latches
+gated services to `error` and still records the `DependencyGap`
+(nikzlabs/shipit#2429).
 
 ## The watcher is not the only trigger (nikzlabs/shipit#2429)
 
@@ -243,8 +298,13 @@ step belongs in the service `command:` instead.
   renders it under *Parsed shipit.yaml*.
 - `src/server/orchestrator/container-session-runner.ts` — `setDepReinstallInputs`,
   `isDepInputChange`, `maybeReinstallForDepChange` (throttle), `reinstallForDepChange`
-  (the bracket); the `file_changes` handler calls into them; dispose clears the timer.
+  (the bracket), `wouldInstallSkip` (the planning#2503 probe); the `file_changes`
+  handler calls into them; dispose clears the timer.
   `notifyWorkspaceRewritten` is the #2429 entry point for an orchestrator-side rewrite.
+- `src/server/session/install-controller.ts` — `evaluateMarkerGate`, the one
+  implementation of "would this install be skipped", and the read-only
+  `POST /install/probe` that reports it. `src/server/orchestrator/worker-http.ts`
+  — `workerInstallProbe`.
 - `src/server/orchestrator/workspace-rewrite.ts` — `onWorkspaceRewritten`, the shared
   "the orchestrator rewrote this tree" call (config re-read + dependency re-check),
   passing the caller label through so a report can name the rewrite.

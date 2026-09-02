@@ -232,6 +232,24 @@ export async function workerInstall(
 }
 
 /**
+ * Ask the worker what {@link workerInstall} WOULD decide, without deciding it:
+ * `{ skipped: true }` when the content-keyed marker still matches this
+ * checkout, `{ skipped: false }` when the install would really run.
+ *
+ * Read-only on the worker — no marker is removed and nothing is started — so
+ * the caller can probe before committing to anything the answer would make
+ * pointless. Its one caller is the mid-session reinstall bracket, which must
+ * not tear gated services down for a no-op (planning#2503).
+ */
+export async function workerInstallProbe(
+  baseUrl: string,
+  commands: string[],
+  opts?: WorkerHttpOpts,
+): Promise<unknown> {
+  return workerPost(baseUrl, "/install/probe", { commands }, opts);
+}
+
+/**
  * POST /agent/message on the session worker — inject a user message for live
  * steering (docs/140). Delegates to agent.sendUserMessage() inside the worker.
  */
