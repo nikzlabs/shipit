@@ -148,7 +148,14 @@ export function DiagnosticsPanel({
         </div>
       )}
       {/* Server-side creation error always renders inline (no toggle) — it's
-          the most actionable signal when the container is missing. */}
+          the most actionable signal when the container is missing.
+          `lastCreateError` is unbounded: it carries `getErrorMessage(err)`
+          straight from a failed Docker create, which can be a screenful of
+          runtime stderr. The strip sits in the SAME flex column as the log
+          view (TerminalPanel) as a `flex: 0 1 auto` child, so an unbounded
+          error box takes its content height first and the `flex-1 min-h-0`
+          log view gets whatever is left — measured at 316px of a 420px panel,
+          leaving the log with no visible rows at all. Hence the cap below. */}
       {createError && (
         <div className="px-3 py-1.5 border-t border-(--color-border-secondary) bg-(--color-bg-tertiary)">
           <div className="text-(--color-error) font-medium mb-0.5">
@@ -159,7 +166,17 @@ export function DiagnosticsPanel({
               </span>
             )}
           </div>
-          <div className="text-(--color-text-secondary) font-mono whitespace-pre-wrap break-all">
+          {/* `max-h-20` + `overflow-y-auto` bound the box at ~5 lines; a short
+              error renders exactly as it always did. `tabIndex` puts the
+              clipped text in the tab order, which is what makes a
+              keyboard-only user able to scroll it. */}
+          <div
+            className="max-h-20 overflow-y-auto text-(--color-text-secondary) font-mono whitespace-pre-wrap break-all"
+            tabIndex={0}
+            role="group"
+            aria-label="Container creation error detail"
+            data-testid="container-create-error"
+          >
             {createError}
           </div>
         </div>
