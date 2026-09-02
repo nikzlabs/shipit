@@ -22,6 +22,12 @@
 # progress renderer to plain lines. That is a bad trade where a human is already
 # watching and can just re-run. The unattended updater has no human and a
 # rollback on the line, so it takes the trade.
+#
+# Do NOT add an EXIT trap here to clean up the capture file: deploy.sh already
+# installs one (prune_build_artifacts), and bash keeps a single EXIT trap — a
+# second one silently replaces it, so the failed build's dangling images and
+# BuildKit cache would stop being reclaimed (issue #1050). The capture file is
+# removed on every return path instead.
 
 # Retry `docker compose build …` on a transient registry failure.
 # Usage: shipit_docker_build_with_retry docker compose -f FILE build ARGS...
@@ -32,14 +38,20 @@ shipit_docker_build_with_retry() {
   local attempt=1
   local status=0
   local log
+  # A non-numeric override would make the `[ "$attempt" -ge "$attempts" ]` below
+  # fail INSIDE an `if` — which does not abort — i.e. retry forever. Fall back to
+  # the defaults rather than trust the environment.
+  case "$attempts" in '' | *[!0-9]*) attempts=3 ;; esac
+  case "$delay" in '' | *[!0-9]*) delay=5 ;; esac
+  [ "$attempts" -ge 1 ] || attempts=1
   log="$(mktemp "${TMPDIR:-/tmp}/shipit-build.XXXXXX")"
 
   while :; do
-    status=0
     # `2>&1 | tee` keeps the build streaming to the operator while capturing it
-    # for classification. Under `pipefail` (deploy.sh sets it) the pipeline
-    # carries docker's status, not tee's.
-    "$@" 2>&1 | tee "$log" || status=$?
+    # for classification. Read PIPESTATUS, not the pipeline status: under
+    # `pipefail` bash reports the RIGHTMOST failure, so a `tee` that also failed
+    # (a full /tmp) would replace docker's exit status with tee's.
+    if "$@" 2>&1 | tee "$log"; then status=0; else status="${PIPESTATUS[0]}"; fi
     if [ "$status" -eq 0 ]; then
       rm -f "$log"
       return 0
@@ -61,22 +73,38 @@ shipit_docker_build_with_retry() {
 # (dockerd resolver journal + BuildKit output) plus the usual registry 5xx set.
 shipit_build_failure_is_transient() {
   # A full disk is emphatically NOT transient: retrying burns minutes and the
-  # operator needs the message. deploy.sh's EXIT trap prunes either way.
+  # operator needs the message. Checked FIRST so it wins over any transient-
+  # looking line in the same log — a disk that fills mid-build produces both.
+  # deploy.sh's EXIT trap prunes either way.
   if grep -qiE 'no space left on device|disk quota exceeded' "$1"; then
     return 1
   fi
-  grep -qiE \
-    'TLS handshake timeout|i/o timeout|dial tcp|connection reset by peer|connection refused|failed to do request|net/http: request canceled|unexpected status: 5[0-9][0-9]|status code 5[0-9][0-9]|50[0-9] (Internal Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out)|failed to resolve source metadata|failed to solve:.*: not found' \
-    "$1"
+  if grep -qiE \
+    'TLS handshake timeout|i/o timeout|dial tcp|connection reset by peer|failed to do request|net/http: request canceled|unexpected status.*: 5[0-9][0-9]|unexpected HTTP status: 5[0-9][0-9]' \
+    "$1"; then
+    return 0
+  fi
+  # The ambiguous incident shape: reference RESOLUTION that ends in `not found`.
+  # BOTH halves are required, and neither is safe alone. `failed to solve: … not
+  # found` on its own is what a missing COPY source produces — deterministic, and
+  # retrying it costs minutes on every broken deploy. `failed to resolve source
+  # metadata` on its own also covers deterministic auth/policy refusals, which
+  # will not fix themselves either.
+  grep -qi 'failed to resolve source metadata' "$1" && grep -qi 'not found' "$1"
 }
 
 # On a final failure that looks like a reference-resolution error, say the one
 # thing the 2026-09-02 investigation was missing: `not found` here usually is
 # not a deleted digest, and this is how to settle it.
 shipit_build_failure_note() {
-  grep -qiE 'failed to resolve source metadata|failed to solve:.*: not found' "$1" || return 0
+  grep -qi 'failed to resolve source metadata' "$1" || return 0
   local ref
-  ref="$(grep -oE '[^[:space:]]+@sha256:[0-9a-f]{64}' "$1" | head -n1)"
+  # `|| true` is load-bearing: deploy.sh runs under `set -euo pipefail`, so a
+  # grep that matches nothing makes this assignment fail and aborts the script
+  # right here — losing docker's exit status, leaking the log, and swallowing
+  # the very note this function exists to print. That is precisely the no-digest
+  # case the fallback below is for.
+  ref="$(grep -oE '[^[:space:]]+@sha256:[0-9a-f]{64}' "$1" | head -n1 || true)"
   [ -n "$ref" ] || ref="<image-ref>"
   {
     echo ""
