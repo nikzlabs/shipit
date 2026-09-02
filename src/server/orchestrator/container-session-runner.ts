@@ -2000,10 +2000,20 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         timeoutMs: INSTALL_POST_TIMEOUT_MS,
       }) as { skipped?: boolean; started?: boolean; ok?: boolean };
       this._installPostIssued = true;
-      // Reported before anything else acts on the answer, and inside the `try`
-      // so a throwing listener lands on the same failure path as a transport
-      // error rather than escaping as an unhandled rejection.
-      opts.onWorkerDecision?.(result.skipped ? "skipped" : "started");
+      // Reported before anything else acts on the answer, and CONTAINED: the
+      // listener reaches the ServiceManager, which emits `service_status` to
+      // every viewer while it iterates. A throw there must not be classified by
+      // the catch below as an install failure — that would resolve the shared
+      // completion `false` while the worker's install is still running, telling
+      // every joiner the tree is broken when nothing about it is known yet.
+      try {
+        opts.onWorkerDecision?.(result.skipped ? "skipped" : "started");
+      } catch (err) {
+        console.error(
+          `[install:${this.sessionId}] install-decision listener threw:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
       if (result.skipped) {
         // The worker's content-keyed marker matched, which IS the dependency
         // check — the installed tree provably matches this checkout, so any gap
@@ -2345,11 +2355,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     const rewrite = this._lastRewriteLabel;
     this._lastRewriteLabel = undefined;
 
+    // `opened` is OWNERSHIP of the gate, not "we asked for it": `setInstallRunning`
+    // ignores a same-value call, so a request that lands while another caller
+    // already holds the gate changes nothing and must not make us close theirs.
+    // That is why it reports whether it transitioned.
     let opened = false;
     const openGate = (): void => {
-      if (opened) return;
-      opened = true;
-      mgr?.setInstallRunning(true);
+      if (opened || !mgr) return;
+      opened = mgr.setInstallRunning(true);
     };
     // Read BEFORE anything can open the gate, which clears the latch it reports.
     const wasLatchedFailed = mgr?.installGateFailed ?? false;
@@ -2364,23 +2377,36 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     } catch {
       res = { ok: false };
     } finally {
-      // Fail closed. Two states still need the bracket even though the worker
-      // never reported an install starting:
-      //
-      //  • The install FAILED, or never reached the worker at all. The bracket
-      //    is what latches `dependsOnInstall` services to `error`, and dropping
-      //    that would leave a broken tree looking healthy (nikzlabs/shipit#2429).
-      //  • The gate was ALREADY latched from an earlier failure. `_installFailed`
-      //    is cleared only by a false→true transition, and the docs/286 watchdog
-      //    deliberately refuses to recover a gate it can see failed — so a marker
-      //    skip that made no transition would strand those services in `error`
-      //    for the rest of the session. The skip is exactly the evidence that
-      //    they should come back: the installed tree provably matches the
-      //    checkout.
-      if (!res.ok || wasLatchedFailed) openGate();
-      // Never close a gate this call did not open: that would start services the
-      // user had stopped, or latch them over an install that never ran.
-      if (opened) mgr?.setInstallRunning(false, { failed: !res.ok });
+      try {
+        // Fail closed. Two states still need the bracket even though the worker
+        // never reported an install starting.
+        //
+        // ONE — the install FAILED, or never reached the worker at all. The
+        // bracket is what latches `dependsOnInstall` services to `error`, and
+        // dropping it would leave a broken tree looking healthy (#2429).
+        //
+        // TWO — the gate was ALREADY latched from an earlier failure.
+        // `_installFailed` is cleared only by a false→true transition, and the
+        // docs/286 watchdog deliberately refuses to recover a gate it can see
+        // failed, so a skip that made no transition would strand those services
+        // in `error` for the rest of the session. Repairing it takes POSITIVE
+        // EVIDENCE though, on the same rule #2429 applies to
+        // `clearDependencyGap`: never an `unverified` completion, which is
+        // synthesized from having observed nothing and means "we cannot tell".
+        const provenGood = res.ok && !res.unverified;
+        if (!res.ok || (wasLatchedFailed && provenGood)) openGate();
+        // Never close a gate this call does not own: that would start services
+        // the user had stopped, or latch them over an install that never ran.
+        if (opened) mgr?.setInstallRunning(false, { failed: !res.ok });
+      } catch (err) {
+        // The close reaches the ServiceManager and every viewer transport.
+        // Losing the `DependencyGap` below to a failure there would restore
+        // exactly the silence #2429 removed.
+        console.error(
+          `[container-runner:${this.sessionId}] reinstall gate transition failed:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
     }
     // nikzlabs/shipit#2429 — a failed re-install leaves the tree and its dependencies
     // out of step just as surely as never running one. The gate latches

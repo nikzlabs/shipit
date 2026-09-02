@@ -123,8 +123,37 @@ Three properties keep the change contained:
   "no install ran, therefore no transition" would strand those services in
   `error` for the rest of the session, with nothing left that could release them.
   `reinstallForDepChange` reads `ServiceManager.installGateFailed` before
-  anything can clear it, and brackets a skipped install when it is set. The skip
-  is exactly the evidence the services should come back.
+  anything can clear it, and brackets a skipped install when it is set.
+
+  The repair takes **positive evidence**, on the same rule #2429 applies to
+  `clearDependencyGap`: a marker skip, or an install that ran and succeeded —
+  never an `unverified` completion. Those are synthesized from having observed
+  nothing (a dispose, a reconnect resync that found no last result) and resolve
+  `ok: true` by default; restarting gated services on one would be a repair
+  justified by a value that means *we cannot tell*.
+
+- **Opening the gate is ownership, not a request.** `setInstallRunning` ignores
+  a same-value call, so it reports whether it actually transitioned. A repair
+  that lands while a `setupServiceManager` install already holds the gate
+  changes nothing and must not make the reinstall close someone else's bracket
+  mid-install.
+
+#### Two limits this deliberately does not close
+
+- **A `POST /install` whose response is lost.** The worker spawns the first
+  command before it replies, so an accepted install whose response never arrives
+  runs unbracketed until the POST times out. Before this change the gate was
+  held for that window. Closing it properly needs a two-phase
+  accept-then-start handshake between orchestrator and worker, which is a larger
+  change than this bug warrants; the state still converges, because the timeout
+  returns `ok: false` and the failure bracket then latches the services. Named
+  here so the next reader finds a decision rather than an oversight.
+- **An `unverified` completion closes an OPEN bracket as successful.** Where
+  this call owns the bracket and the completion is synthesized,
+  `failed: !res.ok` reads `ok: true` and starts the gated services. That is
+  pre-existing behaviour, identical before and after this change, and is left
+  alone deliberately: latching those services to `error` instead would put them
+  somewhere the watchdog will not recover them from, on equally weak evidence.
 
 ## The watcher is not the only trigger (nikzlabs/shipit#2429)
 

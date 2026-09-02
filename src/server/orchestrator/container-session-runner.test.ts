@@ -539,22 +539,27 @@ describe("ContainerSessionRunner — the reinstall bracket skips a no-op install
   /**
    * A stand-in for `ServiceManager`'s install gate that models the REAL
    * transition rules (`service-manager.ts` `setInstallRunning`): a same-value
-   * call is a no-op, opening clears the failure latch, closing sets it. A
-   * recorder that just appended every call could not fail on a bracket that
-   * closes a gate it never opened, which is half of what these tests check.
+   * call is ignored and reports `false`, opening clears the failure latch,
+   * closing sets it. A recorder that just appended every call could not fail on
+   * a bracket that closes a gate another caller owns, which is half of what
+   * these tests check.
+   *
+   * `alreadyOpen` stands in for that other caller — a `setupServiceManager`
+   * install holding the gate while a dependency-change reinstall joins it.
    */
   function attachGate(
     runner: ContainerSessionRunner,
-    opts: { latchedFailed?: boolean } = {},
-  ): { calls: { running: boolean; failed?: boolean }[]; failed: () => boolean } {
+    opts: { latchedFailed?: boolean; alreadyOpen?: boolean; throwOnOpen?: boolean } = {},
+  ): { calls: { running: boolean; failed?: boolean }[]; failed: () => boolean; open: () => boolean } {
     const calls: { running: boolean; failed?: boolean }[] = [];
-    let running = false;
+    let running = opts.alreadyOpen ?? false;
     let failed = opts.latchedFailed ?? false;
     (runner as unknown as { _serviceManager: unknown })._serviceManager = {
       composeFilePath: "docker-compose.yml",
       get installGateFailed() { return failed; },
-      setInstallRunning(next: boolean, o: { failed?: boolean } = {}) {
-        if (running === next) return;
+      setInstallRunning(next: boolean, o: { failed?: boolean } = {}): boolean {
+        if (running === next) return false;
+        if (next && opts.throwOnOpen) throw new Error("a service_status listener threw");
         running = next;
         if (next) {
           failed = false;
@@ -563,9 +568,10 @@ describe("ContainerSessionRunner — the reinstall bracket skips a no-op install
           failed = o.failed ?? false;
           calls.push({ running: false, failed });
         }
+        return true;
       },
     };
-    return { calls, failed: () => failed };
+    return { calls, failed: () => failed, open: () => running };
   }
 
   const reinstall = (runner: ContainerSessionRunner): Promise<void> =>
@@ -672,6 +678,84 @@ describe("ContainerSessionRunner — the reinstall bracket skips a no-op install
       // want of one.
       await expect(reinstall(runner)).resolves.toBeUndefined();
       expect(paths).toContain("/install");
+    });
+  });
+
+  /**
+   * The same rule #2429 applies to `clearDependencyGap`: an `unverified`
+   * completion is synthesized from having observed nothing — a dispose, or a
+   * reconnect resync that found no last result — and resolves `ok: true` by
+   * default. It is not evidence, so it may not repair a failure latch.
+   */
+  it("does not repair a failure latch on a completion that observed nothing", async () => {
+    await withWorker({ started: true }, async (url) => {
+      const runner = makeDepRunner(url);
+      const gate = attachGate(runner, { latchedFailed: true });
+
+      const done = reinstall(runner);
+      await vi.waitFor(() => expect(gate.calls).toEqual([{ running: true }]));
+      // What dispose() and the no-last-result resync do.
+      priv(runner).signalInstallComplete(true, { unverified: true });
+      await done;
+
+      // The install DID start, so this bracket is the install's own and closes
+      // as one. What must not happen is a second, evidence-free repair — and a
+      // `runInstall` that returned unverified before ever reaching the worker
+      // must not open a bracket at all.
+      expect(gate.calls).toEqual([{ running: true }, { running: false, failed: false }]);
+    });
+  });
+
+  it("does not open a bracket at all for an unverified completion over a latched gate", async () => {
+    // The disposed-runner branch: `runInstall` returns `{ ok: true, unverified:
+    // true }` without the worker ever being asked. Restarting gated services on
+    // that would be a repair justified by nothing.
+    const runner = makeRunner();
+    const gate = attachGate(runner, { latchedFailed: true });
+    runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+    (runner as unknown as { _disposed: boolean })._disposed = true;
+
+    await reinstall(runner);
+
+    expect(gate.calls).toEqual([]);
+    expect(gate.failed()).toBe(true);
+  });
+
+  it("does not close a gate another caller owns", async () => {
+    // A `setupServiceManager` install holds the gate; this reinstall joins it
+    // and its own latch repair finds `setInstallRunning(true)` a no-op. Reading
+    // that as "we opened it" would release someone else's bracket mid-install.
+    await withWorker({ started: true }, async (url) => {
+      const runner = makeDepRunner(url);
+      const gate = attachGate(runner, { latchedFailed: true, alreadyOpen: true });
+
+      const done = reinstall(runner);
+      await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
+      priv(runner).signalInstallComplete(true);
+      await done;
+
+      expect(gate.calls).toEqual([]);
+      expect(gate.open()).toBe(true);
+    });
+  });
+
+  it("keeps the install outcome intact when the gate transition throws", async () => {
+    // `setInstallRunning` emits `service_status` to every viewer while it
+    // iterates. A throwing listener must not be classified as an install
+    // failure: the worker's install is still running and nothing about the tree
+    // is known yet.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await withWorker({ started: true }, async (url) => {
+      const runner = makeDepRunner(url);
+      attachGate(runner, { throwOnOpen: true });
+
+      const done = reinstall(runner);
+      await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
+      // The install is still in flight rather than resolved false by the throw.
+      priv(runner).signalInstallComplete(true);
+      await done;
+
+      expect(runner.dependencyGap).toBeNull();
     });
   });
 

@@ -1262,8 +1262,13 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
    * @param opts.failed Set when the completing install failed (`true → false`).
    *   Gated services latch to `error` instead of starting.
    */
-  setInstallRunning(running: boolean, opts: { failed?: boolean } = {}): void {
-    if (this._installRunning === running) return;
+  /**
+   * @returns whether this call actually moved the gate. A same-value call is
+   *   ignored, so `false` means some OTHER caller owns the open bracket — the
+   *   distinction a caller needs before it decides to close one (planning#2503).
+   */
+  setInstallRunning(running: boolean, opts: { failed?: boolean } = {}): boolean {
+    if (this._installRunning === running) return false;
     const wasRunning = this._installRunning;
     this._installRunning = running;
 
@@ -1273,7 +1278,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       // dependency tree once install completes.
       this._installFailed = false;
       this.holdGatedServicesForReinstall();
-      return;
+      return true;
     }
 
     if (wasRunning && !running) {
@@ -1283,6 +1288,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       // during the install window. Excludes gated services (handled above).
       this.flushPostInstallRetries();
     }
+    return true;
   }
 
   /**
