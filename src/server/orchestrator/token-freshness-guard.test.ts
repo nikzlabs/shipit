@@ -52,8 +52,11 @@ import type { AgentId } from "../shared/types/agent-types.js";
 import {
   AGENT_TOKEN_FILES,
   TOKEN_FRESHNESS,
+  isBlankedClaudeCredential,
+  sessionTokenIsAheadOfSource,
   syncAgentTokenIn,
   syncAgentTokenBack,
+  syncSubAgentSpawnHomeTokenBack,
 } from "./token-sync-manager.js";
 import { perSessionCredentialsDir } from "./session-credentials.js";
 
@@ -233,5 +236,231 @@ describe("planning#449 — token freshness readers against real credential files
         warn.mockRestore();
       }
     });
+  });
+});
+
+/**
+ * planning#495 — the BLANKED Claude credential, and the wedge it caused.
+ *
+ * Observed in production 2026-09-02 on one session: a `refused-copy` at
+ * 09:06:11 and a `stranded-rotation` at 09:06:13, both naming the same
+ * `.claude/.credentials.json`, two minutes after that session's CLI 401'd. The
+ * 401 is the ordinary consequence of a sibling rotating the shared account's
+ * single-use refresh token first; what the CLI does next is rewrite its own copy
+ * with the tokens emptied and `expiresAt: 0` — the shape docs/153 already names
+ * `blanked` in the refresher's `missing_credentials` diagnosis.
+ *
+ * `expiresAt: 0` fails the reader's `> 0` test, so the file read as null; it
+ * still parsed as a credential, so it read as `unorderable`; and `unorderable`
+ * refuses the overwrite in BOTH directions by design (planning#449). The session
+ * was therefore pinned to an empty credential that the account's live token was
+ * forbidden to replace — permanently, since every ordinary path back runs
+ * through the sync-in that just refused.
+ *
+ * The fixture is the shape as `describeUnusableSource` documents it, with no
+ * secret to redact: both token fields are empty strings, which is the whole
+ * point of it.
+ */
+describe("planning#495 — a blanked Claude credential holds nothing to protect", () => {
+  let root: string;
+  const sid = "session-blanked-credential";
+  const BLANKED = fs.readFileSync(path.join(FIXTURE_DIR, "claude-blanked.json"), "utf-8");
+  const LIVE = fs.readFileSync(fixturePath("claude"), "utf-8");
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-blanked-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Write one content into the flat source and another into the session copy. */
+  function seedPair(sourceContent: string, sessionContent: string): { src: string[]; dst: string[] } {
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    const rels = AGENT_TOKEN_FILES.claude ?? [];
+    const src: string[] = [];
+    const dst: string[] = [];
+    for (const rel of rels) {
+      const s = path.join(root, rel);
+      fs.mkdirSync(path.dirname(s), { recursive: true });
+      fs.writeFileSync(s, sourceContent);
+      src.push(s);
+      const d = path.join(sessionDir, rel);
+      fs.mkdirSync(path.dirname(d), { recursive: true });
+      fs.writeFileSync(d, sessionContent);
+      dst.push(d);
+    }
+    return { src, dst };
+  }
+
+  function unorderableLines(warn: { mock: { calls: unknown[][] } }): string[] {
+    return warn.mock.calls
+      .map((call) => call.join(" "))
+      .filter((line) => line.includes("token-freshness=unorderable"));
+  }
+
+  it("carries no expiry the reader can order — which is why it wedged", () => {
+    const file = path.join(root, "blanked.json");
+    fs.writeFileSync(file, BLANKED);
+    expect(TOKEN_FRESHNESS.claude!(file)).toBeNull();
+  });
+
+  /**
+   * The incident, inverted: the account's live token now reaches the session on
+   * its very next turn, and no `refused-copy` line is printed. Without the
+   * blank probe this copy is refused and the session never authenticates again.
+   */
+  it("lets the sync-in replace a blanked session copy with the live source token", () => {
+    const { dst } = seedPair(LIVE, BLANKED);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      syncAgentTokenIn(root, sid, "claude");
+      for (const file of dst) expect(fs.readFileSync(file, "utf-8")).toBe(LIVE);
+      expect(unorderableLines(warn)).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * The other half of the same wedge: the turn-end publish no longer reports a
+   * stranded rotation for a file that carries no rotation. It still publishes
+   * nothing — an empty credential must never reach the account root.
+   */
+  it("publishes nothing from a blanked session copy, and says nothing about it", () => {
+    const { src } = seedPair(LIVE, BLANKED);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      syncAgentTokenBack(root, sid, "claude");
+      for (const file of src) expect(fs.readFileSync(file, "utf-8")).toBe(LIVE);
+      expect(unorderableLines(warn)).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * The scope line, and the half of this that must NOT move. docs/153 weighed
+   * repairing a blanked ACCOUNT root so a session's rotation could be harvested
+   * over it, and rejected it: there is no compare-and-swap, so a repair losing a
+   * race with a completing sign-in destroys a live credential. The probe is
+   * therefore applied to a session's `replica` and never to a `source` — a
+   * blanked account root stays `unorderable`, the harvest still declines, and
+   * that human decision is left where it was.
+   */
+  it("does not treat a blanked SOURCE as overwritable", () => {
+    const { src } = seedPair(BLANKED, LIVE);
+    expect(sessionTokenIsAheadOfSource(root, sid, "claude")).toBe(false);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      syncAgentTokenBack(root, sid, "claude");
+      for (const file of src) expect(fs.readFileSync(file, "utf-8")).toBe(BLANKED);
+      expect(unorderableLines(warn)[0]).toContain("outcome=refused-publish");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * The boundary that must NOT move. planning#449 is about a reader that stopped
+   * matching its CLI, and such a file still holds a live bearer — emptiness is
+   * judged on the TOKENS, never on the expiry alone. A credential with a real
+   * access token and an expiry shape this reader cannot parse stays
+   * `unorderable` and stays protected.
+   */
+  it("still refuses a credential that has a live token but an unreadable expiry", () => {
+    const unreadableExpiry = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "sk-ant-oat01-STILL-LIVE gitleaks:allow",
+        refreshToken: "sk-ant-ort01-STILL-LIVE gitleaks:allow",
+        expiresAt: { seconds: 1787238459 },
+      },
+    });
+    const { dst } = seedPair(LIVE, unreadableExpiry);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      syncAgentTokenIn(root, sid, "claude");
+      for (const file of dst) expect(fs.readFileSync(file, "utf-8")).toBe(unreadableExpiry);
+      expect(unorderableLines(warn)[0]).toContain("outcome=refused-copy");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("does not read a non-Claude shape as blanked", () => {
+    expect(isBlankedClaudeCredential({ some_future_shape: { token: "opaque" } })).toBe(false);
+    expect(isBlankedClaudeCredential({ claudeAiOauth: "not-an-object" })).toBe(false);
+  });
+
+  /**
+   * The predicate's callers hand it whatever `JSON.parse` returned, and
+   * `JSON.parse("null")` is a valid parse. In the refresher it is called OUTSIDE
+   * the parse `try`, so a throw there is an unhandled error on a scheduled tick
+   * — the account never reaches its `missing_credentials` state and the
+   * schedule does not re-arm.
+   */
+  it("survives every non-object JSON its callers can hand it", () => {
+    for (const value of [null, undefined, 42, "string", true, [], [{ claudeAiOauth: {} }]]) {
+      expect(isBlankedClaudeCredential(value)).toBe(false);
+    }
+  });
+
+  /**
+   * Claude's schema has varied across CLI versions: `extractAccessToken`
+   * (`agents/claude/auth-manager.ts`) probes both aliases at the top level as
+   * well as inside `claudeAiOauth`, taking the first non-empty hit. Any
+   * non-empty token in any of those places is a bearer this probe must not
+   * declare missing — a wrongly-declared blank licenses an overwrite, and on
+   * the spawn-home and borrow cleanup paths it skips the quarantine before the
+   * caller deletes the only copy.
+   *
+   * The `""`-beside-a-live-alias case is the one an `a ?? b` gets wrong: the
+   * empty string is not nullish, so it short-circuits to the empty side.
+   */
+  it.each([
+    ["a live top-level access token", { accessToken: "sk-ant-oat01-LIVE gitleaks:allow" }],
+    ["a live top-level snake_case alias", { access_token: "sk-ant-oat01-LIVE gitleaks:allow" }],
+    ["a live top-level refresh token", { refreshToken: "sk-ant-ort01-LIVE gitleaks:allow" }],
+  ])("is not fooled by %s beside a blanked oauth block", (_label, extra) => {
+    expect(isBlankedClaudeCredential({
+      ...extra,
+      claudeAiOauth: { accessToken: "", refreshToken: "", expiresAt: 0 },
+    })).toBe(false);
+  });
+
+  it("is not fooled by an empty alias sitting beside a live one", () => {
+    expect(isBlankedClaudeCredential({
+      claudeAiOauth: {
+        accessToken: "",
+        access_token: "sk-ant-oat01-LIVE gitleaks:allow",
+        refreshToken: "",
+        expiresAt: 0,
+      },
+    })).toBe(false);
+  });
+
+  /**
+   * The cleanup paths are where a wrong `absent` costs a rotation outright:
+   * `syncSubAgentSpawnHomeTokenBack` returns "safe to delete" and the caller
+   * removes the only copy. A genuinely blanked spawn home is safe to drop —
+   * there is nothing in it — but it must be for the right reason, so this pins
+   * that the return is true and no quarantine artifact was written.
+   */
+  it("declares a blanked spawn home safe to delete without quarantining an empty file", () => {
+    const spawnHome = path.join(root, "spawn-home");
+    for (const rel of AGENT_TOKEN_FILES.claude ?? []) {
+      const file = path.join(spawnHome, rel);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, BLANKED);
+      const target = path.join(root, rel);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, LIVE);
+    }
+    expect(syncSubAgentSpawnHomeTokenBack(root, sid, spawnHome, "claude")).toBe(true);
+    for (const rel of AGENT_TOKEN_FILES.claude ?? []) {
+      expect(fs.readFileSync(path.join(root, rel), "utf-8")).toBe(LIVE);
+    }
+    expect(fs.existsSync(path.join(root, ".shipit-stranded-tokens"))).toBe(false);
   });
 });
