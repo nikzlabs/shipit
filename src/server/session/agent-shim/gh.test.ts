@@ -464,6 +464,32 @@ describe("gh pr create", () => {
     expect(out.exitCode).toBe(0);
   });
 
+  it("says the base ref could not be refreshed when the fetch failed", async () => {
+    // ShipIt declined to decide rather than risk a duplicate PR. The agent must
+    // not read that as "nothing to ship".
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "create", "-t", "T", "-b", "B"],
+      {
+        "POST /agent-ops/pr/create": {
+          status: 200,
+          body: {
+            url: "https://github.com/x/y/pull/9",
+            number: 9,
+            baseBranch: "main",
+            alreadyExisted: true,
+            alreadyExistedReason: "merged-not-progressed",
+            notProgressedBecause: "fetch-failed",
+          },
+        },
+      },
+    );
+    expect(out.stderr).toContain("could not refresh");
+    expect(out.stderr).toContain("git fetch origin");
+    expect(out.stderr).not.toContain("nothing to open a PR for");
+    expect(out.exitCode).toBe(0);
+  });
+
   it("never renders shell metacharacters from a hostile base branch name", async () => {
     // `baseBranch` comes from GitHub and lands inside a command the agent is
     // told to run. Git allows `;` and `$()` in ref names.

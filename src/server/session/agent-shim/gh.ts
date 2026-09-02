@@ -335,6 +335,11 @@ function existingPrNotice(body: Record<string, unknown>): string {
     return `${head}ShipIt could not resolve \`origin/${base}\` in this clone, so it could not tell `
       + `whether this branch has new work. Run \`git fetch origin\` and try again.\n`;
   }
+  if (body.notProgressedBecause === "fetch-failed") {
+    return `${head}ShipIt could not refresh \`origin/${base}\`, so it declined to decide off a `
+      + `possibly-stale ref rather than risk opening a duplicate PR of work that already shipped. `
+      + `Run \`git fetch origin\` yourself to see the real error, then try again.\n`;
+  }
   return `${head}ShipIt did not open a replacement because this branch does not contain the current `
     + `tip of \`origin/${base}\` — the base moved on under you — so any new commits here are NOT `
     + `shipped and have nowhere to go yet.\n`

@@ -83,6 +83,13 @@ beforeEach(async () => {
           if (prop === "push") return async () => {};
           if (prop === "forcePush") return async () => {};
           if (prop === "listRemoteBranches") return async () => ["main"];
+          // `agentCreatePr` freshens `origin/<base>` before the progress gate
+          // (see `services/freshen-base-ref.ts`). There is no real remote here
+          // and the tests below set `refs/remotes/origin/main` by hand, so a
+          // real fetch would fail and the service would correctly fail safe,
+          // masking what these tests are actually about. The precondition
+          // itself is covered in `services/github-pr-create-base-ref.test.ts`.
+          if (prop === "fetch") return async () => {};
           return (target as never)[prop as never];
         },
       });

@@ -23,6 +23,7 @@ import type { GitHubStatus } from "./types.js";
 import { logMergePerformed } from "./merge-attribution.js";
 import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./secret-scan-notice.js";
+import { freshenBaseRef } from "./freshen-base-ref.js";
 import { formatUnreadableWorkspaceNotice } from "./unreadable-workspace-notice.js";
 import { emitNoticePostTurn, persistNoticeUnattached } from "../chat-card-persistence.js";
 import type { GenerateText } from "../non-turn-model.js";
@@ -1002,9 +1003,11 @@ export async function agentCreatePr(
    * short-circuit only. The remedies differ and one of them is a no-op, so the
    * PR's state alone is not enough to tell the caller what to do:
    * `base-not-contained` wants the base merged in, `no-new-work` means there is
-   * nothing to ship at all, `base-unknown` means fetch first.
+   * nothing to ship at all, `base-unknown` means fetch first, and `fetch-failed`
+   * means ShipIt refused to decide at all because it could not refresh
+   * `origin/<base>` — no clause was evaluated.
    */
-  notProgressedBecause?: "base-not-contained" | "no-new-work" | "base-unknown";
+  notProgressedBecause?: "base-not-contained" | "no-new-work" | "base-unknown" | "fetch-failed";
   /** Non-fatal warning when one or more labels could not be applied. */
   labelWarning?: string;
 }> {
@@ -1080,7 +1083,7 @@ export async function agentCreatePr(
     // the not-progressed-merged short-circuits).
     const returnExistingPr = async (
       alreadyExistedReason: "open" | "merged-not-progressed" | "closed-not-progressed",
-      notProgressedBecause?: "base-not-contained" | "no-new-work" | "base-unknown",
+      notProgressedBecause?: "base-not-contained" | "no-new-work" | "base-unknown" | "fetch-failed",
     ) => {
       const stats = await git.diffStatVsBranch(existingPr.base);
       // Apply any requested labels additively to the existing PR — best-effort.
@@ -1121,9 +1124,29 @@ export async function agentCreatePr(
     }
 
     // Closed/merged PR. Only re-arm for a NEW PR when the branch has genuinely
-    // progressed beyond the merged base (rebased onto the current base + new
-    // work). Otherwise keep blocking the duplicate and return its metadata.
-    const progress = await git.mergedBaseProgress(existingPr.base);
+    // progressed beyond the merged base (sits on the current base + new work).
+    // Otherwise keep blocking the duplicate and return its metadata.
+    //
+    // The gate is base-relative and reads `origin/<base>` from THIS clone, which
+    // moves only when this clone fetches — nothing on the merge path does. So
+    // the fetch is a precondition, not an optimisation: against a stale ref the
+    // gate reports `progressed` for a branch carrying nothing but already-merged
+    // work, and this path would open a duplicate PR of shipped code. See
+    // `freshen-base-ref.ts`, which states the inversion, and
+    // `git-rearm-detect.test.ts`, which demonstrates it on a real repo.
+    //
+    // No `unmovedSinceMerge`-style local short-circuit here (unlike `pr-rearm`,
+    // which uses one to keep every resumed turn at zero network cost): this path
+    // runs only when the agent explicitly asked for a PR *and* the branch already
+    // has a dead one, it has just made two GitHub API calls to learn that, and
+    // the shape the short-circuit would catch — HEAD still at the merged tip — is
+    // exactly where a stale ref does the most damage.
+    const baseRefIsFresh = await freshenBaseRef(git, `pr-create ${options.sessionId ?? head}`);
+    const progress = baseRefIsFresh
+      ? await git.mergedBaseProgress(existingPr.base)
+      // Fail-safe: decline to decide rather than decide off a ref we know may be
+      // stale. "Not progressed" is the direction that cannot invent a duplicate.
+      : ("fetch-failed" as const);
     if (progress !== "progressed") {
       return await returnExistingPr(
         existingPr.merged ? "merged-not-progressed" : "closed-not-progressed",
