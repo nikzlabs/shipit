@@ -1875,3 +1875,81 @@ describe("createContainer — cleanup after a newer incarnation took over", () =
     }
   });
 });
+
+/**
+ * planning#496 — `container_destroyed` carries whether the session's PREVIEWS
+ * died with the container, because two very different teardowns share this
+ * event. Getting the distinction wrong in a listener is not a missed
+ * optimization: a browser told "previews gone" drops the session's iframes, so
+ * a false positive on the preserve path destroys exactly the live preview that
+ * path exists to keep serving.
+ */
+describe("destroyContainer — previewsStopped flag on container_destroyed", () => {
+  function fakeDocker(): Docker {
+    const noop = async (): Promise<void> => {};
+    return {
+      getContainer: () => ({ stop: noop, remove: noop }),
+      listContainers: async () => [],
+      listNetworks: async () => [],
+      getNetwork: () => ({ remove: noop }),
+      listVolumes: async () => ({ Volumes: [] }),
+      getVolume: () => ({ remove: noop }),
+    } as unknown as Docker;
+  }
+
+  function setup(): { deps: LifecycleDeps; events: { sessionId: string; previewsStopped: unknown }[] } {
+    const emitter = new EventEmitter();
+    const events: { sessionId: string; previewsStopped: unknown }[] = [];
+    emitter.on("container_destroyed", (sessionId: string, previewsStopped: unknown) => {
+      events.push({ sessionId, previewsStopped });
+    });
+    const sc = {
+      id: "cid-1",
+      sessionId: "sess-x",
+      containerIp: "",
+      workerUrl: "",
+      status: "running",
+      hostWorkspaceDir: "/workspace/sessions/sess-x/workspace",
+      dockerAccess: false,
+    } as unknown as SessionContainer;
+    const deps = {
+      docker: fakeDocker(),
+      containers: new Map([[sc.sessionId, sc]]),
+      standbySessionIds: new Set<string>(),
+      destroyEpochs: new Map<string, number>(),
+      emitter,
+    } as unknown as LifecycleDeps;
+    return { deps, events };
+  }
+
+  it("reports previews stopped for a full teardown, which sweeps the Compose stack", async () => {
+    const { deps, events } = setup();
+
+    await destroyContainer(deps, "sess-x");
+
+    expect(events).toEqual([{ sessionId: "sess-x", previewsStopped: true }]);
+  });
+
+  it("reports previews STILL RUNNING when a replacement teardown will rebuild them", async () => {
+    // Rescue and the create-retry path destroy fully and immediately rebuild,
+    // so the previews come back on the same origins. A viewer told "gone"
+    // discards a background document that could have reconnected — state loss,
+    // not an inevitable reload.
+    const { deps, events } = setup();
+
+    await destroyContainer(deps, "sess-x", { replacementFollows: true });
+
+    expect(events).toEqual([{ sessionId: "sess-x", previewsStopped: false }]);
+  });
+
+  it("reports previews STILL RUNNING when child resources are preserved", async () => {
+    // The agent-restart / image-rotation path and the idle enforcer's tier 1,
+    // which stop the agent container precisely so the user's preview keeps
+    // serving. Announcing these as "previews gone" would drop live iframes.
+    const { deps, events } = setup();
+
+    await destroyContainer(deps, "sess-x", { preserveChildResources: true });
+
+    expect(events).toEqual([{ sessionId: "sess-x", previewsStopped: false }]);
+  });
+});

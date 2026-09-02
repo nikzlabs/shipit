@@ -56,6 +56,7 @@ import {
   sessionCredentialsRoot,
 } from "../../session-credentials-scaffold.js";
 import {
+  isBlankedClaudeCredential,
   sessionTokenIsAheadOfSource,
   syncProviderAccountTokenBack,
 } from "../../token-sync-manager.js";
@@ -229,12 +230,21 @@ export function summarizeRefreshFailure(combinedOutput: string): string {
  *     shape this reader does not know. Never assumed to be empty.
  *
  * Diagnosis only. Nothing acts on the classification — in particular a blanked
- * source is not repaired or deleted here. A file this reader believes is empty
- * may be a partial write or a credential shape it has not been taught, and
- * `expiresAt: 0` is a claim in the file rather than proof about the account; a
- * delete that is wrong destroys a live credential, while the account is already
- * unusable either way. So the log line is the whole feature, and the user
- * reconnects once.
+ * SOURCE is neither repaired nor deleted, here or anywhere. A file this reader
+ * believes is empty may be a partial write or a credential shape it has not
+ * been taught, `expiresAt: 0` is a claim in the file rather than proof about
+ * the account, and there is no compare-and-swap — a repair that loses a race
+ * with a completing sign-in destroys a live credential, while the account is
+ * already unusable either way. So the log line is the whole feature, and the
+ * user reconnects once.
+ *
+ * A session's own copy is judged differently, and only there:
+ * {@link isBlankedClaudeCredential} lets the sync guards read a blanked REPLICA
+ * as "nothing to protect", so a session the CLI blanked can take the account's
+ * live token on its next turn instead of being wedged forever (planning#495).
+ * The predicate is shared with this function so that a probe and a reader
+ * cannot come to disagree about one file; the asymmetry is in who consults it,
+ * not in what it says.
  */
 interface UnusableSource {
   kind: "missing" | "blanked" | "unreadable";
@@ -1157,15 +1167,16 @@ export class ClaudeOAuthRefresher extends EventEmitter {
     } catch {
       return { kind: "missing", detail: `source file missing at ${file}` };
     }
-    let oauth: Record<string, unknown> | undefined;
+    let parsed: Record<string, unknown>;
     try {
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      oauth = parsed.claudeAiOauth as Record<string, unknown> | undefined;
+      parsed = JSON.parse(raw) as Record<string, unknown>;
     } catch {
       return { kind: "unreadable", detail: `source file at ${file} is not parseable JSON` };
     }
-    const isEmpty = (value: unknown): boolean => value === undefined || value === null || value === "";
-    if (oauth && isEmpty(oauth.accessToken) && isEmpty(oauth.refreshToken)) {
+    // Shared with the sync guards rather than re-derived here (planning#495):
+    // they must agree that a blanked file holds nothing, because this names the
+    // state in a log and they act on it.
+    if (isBlankedClaudeCredential(parsed)) {
       return {
         kind: "blanked",
         detail: `the CLI blanked the source at ${file} (empty accessToken/refreshToken, expiresAt=0)`,

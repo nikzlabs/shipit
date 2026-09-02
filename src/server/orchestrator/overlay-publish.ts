@@ -136,6 +136,84 @@ export interface DepDirPublishOutcome {
   depth?: number;
   /** Base generation after the publish (bumps on advance/flatten/reset). */
   generation?: number;
+  /**
+   * How many pull+extract attempts this dep dir needed (see
+   * {@link SNAPSHOT_ATTEMPTS}). `1` is the ordinary case; `2` says the retry fired,
+   * i.e. the first read raced a concurrent write into the dep dir — the production
+   * degradation the retry exists for. Without this, a retry that keeps succeeding
+   * looks exactly like a run that never raced, so the churn is unmeasurable from
+   * the logs. Absent when no pull was attempted (aborted before it started, or an
+   * install that declined every dir before any I/O).
+   */
+  attempts?: number;
+}
+
+/**
+ * How many times a single dep dir's pull+extract may be attempted. Two, not more:
+ * the failure this exists for is a ONE-SHOT write into the dep dir during the read
+ * (see below), which a second attempt no longer sees. A dep dir being written
+ * continuously is not a safe base at any attempt count, and each attempt is a
+ * full multi-hundred-MB transfer.
+ */
+const SNAPSHOT_ATTEMPTS = 2;
+
+/**
+ * Pull a dep dir's snapshot and extract it, retrying once on failure.
+ *
+ * The dep dir is NOT quiescent while the worker tars it: compose services start in
+ * parallel with `agent.install`, and a running Node dev server writes inside the dep
+ * dir it is served from — creating `node_modules/.vite` moves the dep dir's own
+ * mtime, so tar exits 1 and the worker refuses to call the archive a base. Measured
+ * on the production host 2026-09-02 that lost the rolling base in 18 of 46 live
+ * containers (~39%).
+ *
+ * A retry is the right answer rather than tolerating the raced archive, because
+ * tar's exit-1 evidence is about the archive it just wrote and says nothing about
+ * the next one: the cache directory a dev server creates once is already there on
+ * the second read, so attempt 2 is clean and we publish something tar itself called
+ * exact. Tolerating instead would publish an archive that may be missing a top-level
+ * entry created after tar read the dep dir's listing — under a base pointer whose
+ * install marker later lets a session skip installing altogether.
+ *
+ * An abort (the session was disposed mid-pull — a NORMAL event here, see the module
+ * docstring) is never retried: the worker is gone, so a second attempt would only
+ * stream from a socket that is already being torn down.
+ */
+async function pullSnapshotWithRetry(args: {
+  workerUrl: string;
+  depDir: string;
+  destDir: string;
+  fetchSnapshot: (workerUrl: string, depDir: string, signal?: AbortSignal) => Promise<Readable>;
+  extract: (stream: Readable, destDir: string) => Promise<void>;
+  signal?: AbortSignal;
+  /**
+   * Written on every attempt, so the count survives the THROW as well as the
+   * return. A plain return value would report the retry only when it succeeded,
+   * and the case worth measuring most is the dep dir that raced twice and was
+   * declined — see `DepDirPublishOutcome.attempts`.
+   */
+  progress: { attempts: number };
+}): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    args.progress.attempts = attempt;
+    try {
+      const stream = await args.fetchSnapshot(args.workerUrl, args.depDir, args.signal);
+      await args.extract(stream, args.destDir);
+      return;
+    } catch (err) {
+      if (attempt >= SNAPSHOT_ATTEMPTS || args.signal?.aborted) throw err;
+      // A partial tree from the failed attempt must not be mixed into the retry's —
+      // extraction recreates the dir, it does not clear it. Recreated here rather
+      // than left to the extractor, so the invariant does not depend on which one
+      // is injected.
+      fs.rmSync(args.destDir, { recursive: true, force: true });
+      fs.mkdirSync(args.destDir, { recursive: true });
+      console.warn(
+        `[overlay-publish] snapshot attempt ${attempt}/${SNAPSHOT_ATTEMPTS} failed for ${args.depDir}, retrying:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
 }
 
 /**
@@ -226,10 +304,20 @@ export async function publishDepDirOverlayBases(
       continue;
     }
     let tmpDir: string | null = null;
+    // Mutable so the count is readable from BOTH the success path below and the
+    // catch — a dep dir that raced on every attempt is the one worth counting.
+    const pull = { attempts: 0 };
     try {
       tmpDir = fs.mkdtempSync(path.join(tmpRoot, "ovl-pub-"));
-      const stream = await fetchSnapshot(args.workerUrl, depDir, args.signal);
-      await extract(stream, tmpDir);
+      await pullSnapshotWithRetry({
+        workerUrl: args.workerUrl,
+        depDir,
+        destDir: tmpDir,
+        fetchSnapshot,
+        extract,
+        progress: pull,
+        ...(args.signal ? { signal: args.signal } : {}),
+      });
       // Never publish an empty snapshot. A legitimate post-install dep dir is
       // never empty (npm/pnpm always materialize at least a lockfile shadow);
       // an empty export means the worker's merged view was empty or broken —
@@ -238,7 +326,7 @@ export async function publishDepDirOverlayBases(
       // would install an empty base under the scope's pointer, which the
       // equal-commit skip then makes permanent. Decline instead.
       if (fs.readdirSync(tmpDir).length === 0) {
-        outcomes.push({ depDir, outcome: "skipped-empty" });
+        outcomes.push({ depDir, outcome: "skipped-empty", attempts: pull.attempts });
         continue;
       }
       const res = await publishBase({
@@ -260,12 +348,15 @@ export async function publishDepDirOverlayBases(
         outcome: res.outcome,
         depth: res.pointer?.depth,
         generation: res.pointer?.generation,
+        attempts: pull.attempts,
       });
     } catch (err) {
       outcomes.push({
         depDir,
         outcome: "error",
         error: err instanceof Error ? err.message : String(err),
+        // Zero when the throw came from `mkdtempSync`, before any pull started.
+        ...(pull.attempts > 0 ? { attempts: pull.attempts } : {}),
       });
     } finally {
       if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -287,13 +378,21 @@ export async function publishDepDirOverlayBases(
  *
  * Shape (stable for log parsing — `grep '\[overlay-measure\]' | ...`):
  *
- *   [overlay-measure] session=<id> repo=<url> install_ok=<bool> install_ms=<n> dirs=node_modules:created:d1g1,...
+ *   [overlay-measure] session=<id> repo=<url> install_ok=<bool> install_ms=<n> \
+ *     dirs=<depDir>:<outcome>[:d<depth>g<generation>][:a<attempts>],...
  *
  * `install_ms` is the orchestrator-observed wall-clock from install kickoff to
  * resolve — a marker-skip (deps already materialized / "main unchanged") resolves
  * in ~tens of ms, a real install in seconds, so duration alone classifies the
- * scenario; the per-dir `outcome:d<depth>g<generation>` suffix gives the publish
- * result and the overlay depth that drives the depth-cap decision.
+ * scenario; the per-dir `d<depth>g<generation>` segment gives the publish result
+ * and the overlay depth that drives the depth-cap decision.
+ *
+ * The `a<attempts>` segment is emitted **only when the retry fired** (`attempts > 1`),
+ * so an ordinary run's line is byte-identical to before and `grep ':a'` counts the
+ * dep dirs that raced a concurrent write. Each segment is independently optional and
+ * self-identifying by its leading letter, which is what keeps the grammar parseable
+ * as segments are added — an error dir carries no pointer and so renders `:a2` with
+ * no `d…g…` before it.
  */
 export function formatOverlayMeasurement(args: {
   sessionId: string;
@@ -305,7 +404,8 @@ export function formatOverlayMeasurement(args: {
   const dirs = args.outcomes
     .map((o) => {
       const depth = o.depth !== undefined ? `:d${o.depth}g${o.generation ?? "?"}` : "";
-      return `${o.depDir}:${o.outcome}${depth}`;
+      const attempts = o.attempts !== undefined && o.attempts > 1 ? `:a${o.attempts}` : "";
+      return `${o.depDir}:${o.outcome}${depth}${attempts}`;
     })
     .join(",");
   return (

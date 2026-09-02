@@ -175,6 +175,75 @@ Two changes, mirroring how `--json` field names are already handled:
   `mergedAt` is what distinguishes it. `mergedAt` is a `--json` field, and the
   plain-text row prints `merged` rather than REST's `closed`.
 
+#### A failed list is not an empty one (added later)
+
+Reviewing the `--state` fix surfaced the same shape a third time, on the same
+read. `listPullRequests` ended `if (!res.ok) return []`, so a 403 on a private
+repository, a rate-limit response and a GitHub 5xx all reached the shim as
+`{ prs: [] }` and printed **"No pull requests found."** — an unreadable
+repository and an empty one were the same answer, for every `--state`.
+
+The read now carries its outcome (`ListPullRequestsResult`: `{ ok: true, prs }`
+or `{ ok: false, error }`), and `ok: true` with an empty `prs` is the only way
+to say "none". `services/github.ts` raises `ServiceError(502, …)` on a failure
+and the route's existing `ServiceError` handler answers non-2xx, which the
+shim already renders through `formatError`. The merged path needs its own
+guard: GraphQL reports a permission failure as an `errors` array in a **200**,
+so `res.ok` is not enough there.
+
+This is the same fix `viewPullRequestResult` applies to the single-PR read
+(docs/255), and it is deliberately shaped the same way — except that a list has
+no analogue of that read's 404, where absence is a genuine answer. No status on
+this path means "there are none".
+
+#### The last two silent fallbacks: `--limit` and `--repo` (added later)
+
+Two more of the same shape, both reported alongside the fix above and cleared
+together. Neither returned an *error*; both returned a confident answer to a
+question the caller had not asked.
+
+- **`-L/--limit` was parsed and dropped.** `gh pr list` declared the flag and
+  then never put it in the query, so `--limit 100` exited 0 having returned the
+  default 30. `gh run list` did forward it, but the route dropped a non-numeric
+  value behind a `Number.isFinite` guard, so `-L abc` also ran with the default.
+  `gh workflow list` accepted it and ignored it by design, with a comment saying
+  so. Now: one `parseLimit` in the shim refuses anything but a whole number in
+  1–100 before the network call, `pr list` forwards it as the API **page size**
+  (so asking for more genuinely fetches more, rather than trimming a fixed
+  page), and `workflow list` — whose route takes no limit — applies it to the
+  rows it got back rather than lying about it.
+- **A malformed `--repo` fell back to the current repository.** `repoFlagToUrl`
+  returned `undefined` both for "no `--repo` given" and for "a `--repo` that
+  parsed to nothing", and `resolvePrTarget` could not tell the two apart — so
+  `gh pr list --repo octocat` (a typo: no owner) answered with the **session's
+  own** pull requests, exit 0. `resolvePrTarget` now raises `ServiceError(400)`
+  for a supplied-but-unparseable value; absent still means absent.
+
+Only `undefined`/`null` count as "no `--repo` given". `""` and whitespace were
+*supplied*: `gh pr close 11 --repo "$REPO"` with an unset variable arrives as an
+empty string, and reading that as absent is how it would close PR 11 in
+whichever repository the session is bound to. A non-string can arrive the same
+way through a JSON body, where the routes' Fastify generics are type
+annotations rather than validation.
+
+Three details worth keeping. The `--repo` grammar moved to
+`shared/github-repo-flag.ts` because two *processes* read this flag — the shim
+in the container and the route in the orchestrator — and a regex written out
+twice is a regex that drifts. `/pr/status` was the one `resolvePrTarget` call
+site whose `catch` did not special-case `ServiceError`, so it would have
+answered 500 where every other PR verb answers 400; it now handles it like the
+rest. And the limit's digits-only test is duplicated at the route on purpose:
+these routes are `containerAccessible`, so a bare `Number()` there would accept
+`1e2`/`0x10`/`1.0` that the shim rejects — two answers to one question.
+
+**The middle hop is the one the end-to-end tests miss.** `limit` was taught to
+the shim and to the orchestrator route, both with passing tests, while
+`agent-ops-routes.ts` — the worker relay between them — still named only
+`state` and dropped it. The composed shim → worker → orchestrator path stayed
+capped at 30 with every isolated test green. Anything added to a brokered
+verb's query has to be added in three places, and the relay is the one with no
+natural test to fail.
+
 ### Auth and identity
 
 The shim never sees the GitHub token. The orchestrator owns it. If GitHub auth is not configured for the session, the worker rejects the request with a clear error: *"GitHub is not connected for this ShipIt session. Ask the user to connect GitHub in the UI."* The shim prints this verbatim.

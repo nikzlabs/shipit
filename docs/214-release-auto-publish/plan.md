@@ -210,6 +210,22 @@ shim handler → worker relay → orchestrator service) wraps the deterministic 
   branch's. `--bootstrap` is exempt (the first release legitimately ships the whole
   new branch); the prerelease path never reaches the guard.
 
+  **Dead-PR guard:** `agentCreatePr` reports an existing pull request under one
+  `alreadyExisted` flag whether it is OPEN (pushed to) or MERGED/CLOSED (returned
+  unchanged by the not-progressed short-circuit, docs/202). The shim renders that
+  flag as "updated release PR #N" and the route marks the release `pr_open` from
+  the same result, so forwarding a dead PR announced a release nothing would
+  publish. `prepareFinalRelease` therefore refuses any non-`open`
+  `alreadyExistedReason` with a 409, which is what makes `alreadyExisted` on
+  `PrepareReleaseResult` mean "an OPEN PR was updated". The message is built from
+  `notProgressedBecause`, because the three refusals have three different
+  remedies and the obvious advice ("re-run against the old base") is wrong for
+  two of them. Usually unreachable — the head branch is rebuilt off
+  `origin/<branch>` and carries the bump commit, so the gate reads `progressed` —
+  but not provably so: an explicit version whose bump leaves the tree identical
+  to the base yields `no-new-work` on that same base, since the content-free
+  guard above runs BEFORE the bump.
+
   **`--from` takes the incoming tree WHOLESALE (conflict-proof), it does NOT
   three-way merge.** A `--from main` release should ship exactly main's tree at the
   new version. A plain `git merge main` into `release/<version>` (built off

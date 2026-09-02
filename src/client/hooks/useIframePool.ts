@@ -1,6 +1,15 @@
 import { useState, useRef, useCallback } from "react";
 
-/** Maximum number of retained iframes across all sessions and ports. */
+/**
+ * Maximum number of retained iframes across all sessions and ports — counted in
+ * `(session, port)` pairs, so a multi-service stack spends several.
+ *
+ * Reassessed after each slot started costing its own renderer process
+ * (docs/009-preview-system, "Is `MAX_IFRAME_SLOTS = 20` still right?"); 20 was
+ * kept. Read that before changing it — the short version is that the number is
+ * not the lever it looks like, and releasing slots whose preview is no longer
+ * running would beat lowering it.
+ */
 export const MAX_IFRAME_SLOTS = 20;
 
 export interface IframeSlot {
@@ -47,6 +56,12 @@ export interface IframePool {
    */
   dropSlot: (key: string) => void;
   /**
+   * Drop every slot belonging to one session, whatever port. `PreviewFrame` use
+   * only, for a session whose previews have stopped — see the hook docstring's
+   * second exception. Returns the keys it dropped.
+   */
+  dropSessionSlots: (sessionId: string) => string[];
+  /**
    * Read a slot outside the render cycle (stable identity). `usePreviewSlot`
    * uses this to compare a retained slot's recorded owner at effect time
    * without putting `slots` in its deps.
@@ -65,15 +80,34 @@ export interface IframePool {
  * viewers and agent turns, not by a mounted iframe — and reliably destroyed
  * exactly the preview the user came back to.)
  *
- * There is exactly one documented exception (planning#394):
- * `usePreviewSlot` drops a slot whose port has been taken over by a
- * *different service* — the key is `${sessionId}:${port}`, so a port that moves to a
- * new owner reuses the key, and the retained iframe would keep serving the
- * previous owner's already-loaded document under the new owner's row. That
- * drop goes through {@link IframePool.dropSlot}, which is also what LRU
- * eviction uses, so there is one removal routine and one narrow exception —
+ * There are exactly two documented exceptions, and both are cases where the
+ * retained document is already forfeit rather than judgements about when a
+ * preview is "worth" keeping.
+ *
+ * 1. **planning#394** — `usePreviewSlot` drops a slot whose port has been taken
+ *    over by a *different service*. The key is `${sessionId}:${port}`, so a port
+ *    that moves to a new owner reuses the key, and the retained iframe would
+ *    keep serving the previous owner's already-loaded document under the new
+ *    owner's row.
+ * 2. **planning#496** — `PreviewFrame` drops a session's slots
+ *    ({@link IframePool.dropSessionSlots}) when the server says that session's
+ *    previews have STOPPED. Since planning#492 each retained slot holds its own
+ *    renderer process, and once the Compose stack is torn down that process is
+ *    held for a document whose containers are gone; `PreviewFrame` reloads such
+ *    a slot when the services return (planning#478) rather than showing the
+ *    stale page, so the retention cannot pay off. Note this is narrower than
+ *    "the container was reclaimed": the idle enforcer's tier 1 and the
+ *    agent-restart path stop the agent container while deliberately keeping the
+ *    preview serving, and the server does not announce those — a slot whose
+ *    preview is still live is never touched. The active session is skipped as
+ *    well, so this can never drop the iframe the user is looking at.
+ *
+ * Both drops go through {@link IframePool.dropSlot}, which is also what LRU
+ * eviction uses, so there is one removal routine and two narrow exceptions —
  * not a second eviction policy. No other caller: for every other purpose a
- * dropped slot is the destroyed preview the paragraph above forbids.
+ * dropped slot is the destroyed preview the paragraph above forbids. In
+ * particular, note what the reverted prune got wrong — it fired on PR merge,
+ * which says nothing at all about whether the preview is still being served.
  *
  * The hook exposes the pool data structures and the mutation operations
  * (`promoteSlot`, `setSlot`, `dropSlot`). Consumers own the rendering — they
@@ -124,6 +158,24 @@ export function useIframePool(): IframePool {
     });
   }, [dropSlot]);
 
+  /**
+   * Drop every slot for one session — planning#496's exception, whose whole
+   * point is that a session's previews die together, so every port goes.
+   *
+   * Reads from `slotsRef` rather than the reactive `slots`, so the callback
+   * identity is stable and a caller can hold it without re-subscribing on every
+   * slot change. Routes each removal through {@link dropSlot} so a slot leaving
+   * the pool still has exactly one cleanup path.
+   */
+  const dropSessionSlots = useCallback((sessionId: string) => {
+    // Slot keys are `${sessionId}:${port}` and a session id never contains a
+    // colon, so the prefix cannot match a different session.
+    const prefix = `${sessionId}:`;
+    const doomed = [...slotsRef.current.keys()].filter((k) => k.startsWith(prefix));
+    for (const key of doomed) dropSlot(key);
+    return doomed;
+  }, [dropSlot]);
+
   const setSlot = useCallback((key: string, slot: IframeSlot) => {
     const updated = new Map(slotsRef.current);
     updated.set(key, { ...slot, generation: generationsRef.current.get(key) ?? 0 });
@@ -141,6 +193,7 @@ export function useIframePool(): IframePool {
     promoteSlot,
     setSlot,
     dropSlot,
+    dropSessionSlots,
     getSlot,
   };
 }

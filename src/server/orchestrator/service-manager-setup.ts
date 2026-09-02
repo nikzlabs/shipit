@@ -13,7 +13,7 @@ import type { LogStore } from "./log-store.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { resolveDepsHashInputs } from "../shared/deps-hash.js";
 import { evaluateContentKeyReport, type ContentKeyConfig } from "./install-content-key.js";
-import { agentLogAppend } from "./log-emit.js";
+import { agentLogAppend, appendAgentLog } from "./log-emit.js";
 import { collectAccountAgentEnv } from "./secret-resolver.js";
 import { getErrorMessage } from "./validation.js";
 import { formatOverlayMeasurement, type DepDirPublishOutcome } from "./overlay-publish.js";
@@ -446,12 +446,34 @@ export function trackComposeStop(
   composeStopPromises: Map<string, Promise<void>>,
   sessionId: string,
   mgr: { stop: (opts?: { removeVolumes?: boolean }) => Promise<void> },
-  opts: { removeVolumes?: boolean } = {},
+  opts: {
+    removeVolumes?: boolean;
+    /**
+     * Ran only when the stop actually SUCCEEDED — planning#496's announcement
+     * that the session's previews are gone, which a viewer acts on by dropping
+     * the session's iframes. Announcing when the stop was merely *started*
+     * would drop a live document while `compose down` was still running, and
+     * announcing on failure would drop one that is still being served.
+     */
+    onStopped?: () => void;
+  } = {},
 ): void {
+  // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form: the success and failure arms must stay separate, so `onStopped` cannot run on a failed stop and a throw inside it cannot be logged as one
   const stopPromise = mgr.stop(opts)
-    .catch((err: unknown) => {
-      console.error(`[compose:${sessionId}] Failed to stop compose stack:`, err);
-    })
+    .then(
+      () => {
+        // Guarded so a throwing callback cannot be mistaken below for the stop
+        // itself having failed.
+        try {
+          opts.onStopped?.();
+        } catch (err: unknown) {
+          console.error(`[compose:${sessionId}] onStopped callback threw:`, err);
+        }
+      },
+      (err: unknown) => {
+        console.error(`[compose:${sessionId}] Failed to stop compose stack:`, err);
+      },
+    )
     .finally(() => {
       // Only clear our entry — a fresh stop may have replaced it.
       if (composeStopPromises.get(sessionId) === stopPromise) {
@@ -721,6 +743,23 @@ export function setupServiceManager(
             installDurationMs: Date.now() - installStartedAt,
             outcomes,
           }));
+        }
+        // A publish that errors is best-effort by construction and costs only the
+        // shared-base optimization — but until this line the ONLY signal anywhere
+        // on the host was a `console.warn` inside the session container, so a
+        // ~39% failure rate on the docs/183 dep store was invisible to ops.
+        // Counts only: the dep dir name is repo-declared (`agent.dep-dirs`), so
+        // naming it here would put project text on an ops-readable channel — the
+        // exact shape `OPS_SAFE_TEMPLATES` (docs/264) exists to keep off it.
+        const failed = outcomes.filter((o) => o.outcome === "error").length;
+        if (failed > 0) {
+          appendAgentLog(
+            broadcastLog,
+            r.sessionId,
+            r,
+            "server",
+            `Dependency cache: ${failed} of ${outcomes.length} dependency directories could not be snapshotted as a shared base. Later sessions of this repository reinstall instead of reusing it.`,
+          );
         }
       } catch (err) {
         console.error(`[overlay-publish:${r.sessionId}] publish failed:`, getErrorMessage(err));

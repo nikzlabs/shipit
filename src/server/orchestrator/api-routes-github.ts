@@ -137,6 +137,38 @@ function gitBrokerDenied(
   return true;
 }
 
+/** Bounds for `-L/--limit`, matching what the Actions list already clamps to. */
+const LIMIT_MIN = 1;
+const LIMIT_MAX = 100;
+
+/**
+ * Parse a `?limit=` query parameter for the list reads.
+ *
+ * A supplied-but-nonsense value is refused rather than dropped. The Actions
+ * list used to drop it (`Number.isFinite` guarding a spread), so `-L abc` and
+ * `-L -5` both ran with the default limit and exited 0 — the caller was told a
+ * number they did not ask for. Only an ABSENT parameter stays absent, and the
+ * service then picks its own default; `?limit=` was supplied.
+ *
+ * The digits-only test matches the shim's `parseLimit` deliberately. These
+ * routes are `containerAccessible`, so this is a trust boundary in its own
+ * right — a bare `Number()` would accept `1e2`, `0x10` and `1.0` here while the
+ * shim rejected them, which is two different answers to the same question.
+ */
+function parseLimitParam(
+  raw: string | undefined,
+): { ok: true; limit: number | undefined } | { ok: false; error: string } {
+  if (raw === undefined) return { ok: true, limit: undefined };
+  const n = Number(raw);
+  if (!/^\d+$/.test(raw.trim()) || !Number.isInteger(n) || n < LIMIT_MIN || n > LIMIT_MAX) {
+    return {
+      ok: false,
+      error: `Invalid limit "${raw}". Expected a whole number between ${LIMIT_MIN} and ${LIMIT_MAX}.`,
+    };
+  }
+  return { ok: true, limit: n };
+}
+
 export async function registerGitHubRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
@@ -156,6 +188,13 @@ export async function registerGitHubRoutes(
       const git = createGitManager(gitDir);
       return { pr: await getPrStatus(deps.githubAuthManager, git, remoteUrl) };
     } catch (err) {
+      // The only `resolvePrTarget` call site that lacked this, so a bad
+      // `--repo` would have surfaced here as a 500 rather than the 400 every
+      // other PR verb answers.
+      if (err instanceof ServiceError) {
+        reply.code(err.statusCode).send({ error: err.message });
+        return;
+      }
       reply.code(500).send({ error: `Failed to get PR status: ${getErrorMessage(err)}` });
     }
   });
@@ -613,7 +652,7 @@ export async function registerGitHubRoutes(
   );
 
   // GET /api/sessions/:id/pr/list?state=open — list PRs for the session's repo
-  app.get<{ Params: { id: string }; Querystring: { state?: string; cwd?: string; repo?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { state?: string; limit?: string; cwd?: string; repo?: string } }>(
     "/api/sessions/:id/pr/list",
     { config: { containerAccessible: true } },
     async (request, reply) => {
@@ -634,10 +673,16 @@ export async function registerGitHubRoutes(
           return;
         }
         const state: PrListState = (stateRaw as PrListState | undefined) ?? "open";
+        const limit = parseLimitParam(request.query.limit);
+        if (!limit.ok) {
+          reply.code(400).send({ error: limit.error });
+          return;
+        }
         const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.query);
         const git = createGitManager(gitDir);
         const prs = await listPullRequests(git, deps.githubAuthManager, {
           state,
+          ...(limit.limit !== undefined ? { limit: limit.limit } : {}),
           remoteUrl,
         });
         return { prs };
@@ -715,12 +760,16 @@ export async function registerGitHubRoutes(
         if (gitBrokerDenied(session, reply)) return;
         const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.query);
         const git = createGitManager(gitDir);
-        const limitRaw = request.query.limit ? Number(request.query.limit) : undefined;
+        const limit = parseLimitParam(request.query.limit);
+        if (!limit.ok) {
+          reply.code(400).send({ error: limit.error });
+          return;
+        }
         const runs = await listWorkflowRuns(git, deps.githubAuthManager, {
           workflow: request.query.workflow,
           branch: request.query.branch,
           status: request.query.status,
-          ...(typeof limitRaw === "number" && Number.isFinite(limitRaw) ? { limit: limitRaw } : {}),
+          ...(limit.limit !== undefined ? { limit: limit.limit } : {}),
           remoteUrl,
         });
         return { runs };

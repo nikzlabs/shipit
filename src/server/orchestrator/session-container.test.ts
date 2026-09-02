@@ -1402,7 +1402,9 @@ describe("SessionContainerManager", () => {
       await manager.create(buildConfig());
       await manager.destroy("test-session-1");
 
-      expect(destroyed).toHaveBeenCalledWith("test-session-1");
+      // Second argument is planning#496's `previewsStopped`: a full teardown
+      // sweeps the Compose stack, so this one ends the session's previews.
+      expect(destroyed).toHaveBeenCalledWith("test-session-1", true);
     });
 
     it("is a no-op for unknown session IDs", async () => {

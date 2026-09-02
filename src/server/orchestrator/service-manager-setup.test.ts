@@ -22,6 +22,8 @@ import { RepoStore } from "./repo-store.js";
 import { applyShipitConfigChange, emitPluginReposUpdated, setupServiceManager } from "./service-manager-setup.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { installContentKeyDiagnostic } from "./install-content-key.js";
+import { isOpsSafeLine } from "./services/host-session-logs.js";
+import type { DepDirPublishOutcome } from "./overlay-publish.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
@@ -158,6 +160,60 @@ describe("setupServiceManager — overlay publish gate", () => {
 
   it("does NOT publish an install that was never observed", async () => {
     expect(await publishCallsFor({ ok: true, unverified: true })).toBe(0);
+  });
+
+  /**
+   * A publish that errors is best-effort and harms nothing — but before this line
+   * the ONLY signal on the host was a `console.warn` inside the session container,
+   * so the tar race measured on 2026-09-02 (18 of 46 live containers) was invisible
+   * to an ops session reading `shipit session logs`.
+   */
+  async function logsForOutcomes(outcomes: DepDirPublishOutcome[]): Promise<
+    { sessionId: string; source: string; text: string }[]
+  > {
+    repoStore.add(REMOTE);
+    repoStore.setTrusted(REMOTE, true);
+    const runner = runnerWithInstall();
+    vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
+    vi.spyOn(runner, "emitMessage").mockImplementation(() => undefined);
+    const broadcastLog = vi.fn();
+    const publishOverlayBases = vi.fn(async () => outcomes);
+    setupServiceManager(runner, { ...makeDeps(REMOTE), publishOverlayBases, broadcastLog });
+    await vi.waitFor(() => expect(publishOverlayBases).toHaveBeenCalled());
+    await new Promise((r) => setImmediate(r));
+    return broadcastLog.mock.calls
+      .map((c) => ({ sessionId: String(c[0]), source: String(c[1]), text: String(c[2]) }))
+      .filter((e) => e.text.startsWith("Dependency cache:"));
+  }
+
+  it("reports a failed dep-dir publish on a line an ops session may read", async () => {
+    const lines = await logsForOutcomes([
+      { depDir: "node_modules", outcome: "error", error: "tar exited with code 1" },
+      { depDir: "tools/debug/node_modules", outcome: "error", error: "tar exited with code 1" },
+      { depDir: "game/node_modules", outcome: "advanced", depth: 2, generation: 5 },
+    ]);
+    expect(lines).toEqual([{
+      sessionId: "s1",
+      // `SERVER_LOG_SOURCES` is the cheap first cut in `queryHostSessionLogs`: any
+      // other source is dropped before the template is even consulted, so a source
+      // regression would make this invisible to ops with the text still perfect.
+      source: "server",
+      text: "Dependency cache: 2 of 3 dependency directories could not be snapshotted as a shared base."
+        + " Later sessions of this repository reinstall instead of reusing it.",
+    }]);
+    // The producer's real string must match the docs/264 template, or the line is
+    // withheld from `shipit session logs` and the failure stays invisible anyway.
+    expect(isOpsSafeLine(lines[0]?.text ?? "")).toBe(true);
+    // Counts only — a repo-declared `agent.dep-dirs` name must never reach the
+    // ops-readable channel.
+    expect(lines[0]?.text).not.toMatch(/node_modules/);
+  });
+
+  it("stays quiet when every dep dir published or skipped for an ordinary reason", async () => {
+    expect(await logsForOutcomes([
+      { depDir: "node_modules", outcome: "skipped-equal" },
+      { depDir: "game/node_modules", outcome: "created", depth: 1, generation: 1 },
+    ])).toEqual([]);
   });
 });
 
@@ -691,5 +747,70 @@ describe("content-key reporting (install-content-key.ts)", () => {
 
     expect(installContentKeyDiagnostic(clone)).toBeNull();
     runner.dispose({ force: true });
+  });
+});
+
+/**
+ * planning#496 — `onStopped` is what tells every browser that a session's
+ * previews are gone, and a viewer acts on it by dropping that session's
+ * iframes. So it must fire on the stop having SUCCEEDED, never on it having
+ * been started: `compose down` is asynchronous and allowed to fail, and either
+ * mistake discards a document that is still being served.
+ */
+describe("trackComposeStop — onStopped", () => {
+  it("does not fire while the stop is still in flight", async () => {
+    const { trackComposeStop } = await import("./service-manager-setup.js");
+    let release!: () => void;
+    const mgr = { stop: () => new Promise<void>((resolve) => { release = resolve; }) };
+    const onStopped = vi.fn();
+
+    trackComposeStop(new Map(), "sess-x", mgr, { onStopped });
+    await Promise.resolve();
+    expect(onStopped).not.toHaveBeenCalled();
+
+    release();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onStopped).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fire when the stop fails, because the previews are still up", async () => {
+    const { trackComposeStop } = await import("./service-manager-setup.js");
+    const mgr = { stop: () => Promise.reject(new Error("compose down failed")) };
+    const onStopped = vi.fn();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    trackComposeStop(new Map(), "sess-x", mgr, { onStopped });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(onStopped).not.toHaveBeenCalled();
+    errors.mockRestore();
+  });
+
+  it("does not report a throwing callback as a failed stop", async () => {
+    // The callback is an SSE broadcast; if it threw, the shared `.catch` would
+    // otherwise log "Failed to stop compose stack" for a stop that worked.
+    const { trackComposeStop } = await import("./service-manager-setup.js");
+    const mgr = { stop: () => Promise.resolve() };
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    trackComposeStop(new Map(), "sess-x", mgr, {
+      onStopped: () => { throw new Error("broadcast blew up"); },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(errors.mock.calls.map((c) => String(c[0]))).toEqual([
+      "[compose:sess-x] onStopped callback threw:",
+    ]);
+    errors.mockRestore();
+  });
+
+  it("clears its entry from the in-flight map once settled", async () => {
+    const { trackComposeStop } = await import("./service-manager-setup.js");
+    const promises = new Map<string, Promise<void>>();
+    trackComposeStop(promises, "sess-x", { stop: () => Promise.resolve() });
+
+    expect(promises.has("sess-x")).toBe(true);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(promises.has("sess-x")).toBe(false);
   });
 });

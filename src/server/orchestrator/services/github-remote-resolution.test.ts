@@ -34,7 +34,9 @@ function makeGit(remotes: { name: string; url: string }[]) {
 function makeGitHub(): GitHubAuthManager {
   return {
     authenticated: true,
-    listPullRequests: vi.fn(async () => []),
+    // `{ ok: true, prs: [] }` is the shape that means "no pull requests"; a
+    // bare `[]` would now read as a failed request and make the service throw.
+    listPullRequests: vi.fn(async () => ({ ok: true as const, prs: [] })),
   } as unknown as GitHubAuthManager;
 }
 
@@ -51,7 +53,8 @@ describe("resolveGitHubRemote — reads must not write git config", () => {
     const { git } = makeGit([]);
     const gh = makeGitHub();
     await listPullRequests(git, gh, { remoteUrl: SHIPIT_REPO });
-    expect(gh.listPullRequests).toHaveBeenCalledWith("nikzlabs", "shipit", "open");
+    // The 4th argument is `-L/--limit`; undefined means "the read's own default".
+    expect(gh.listPullRequests).toHaveBeenCalledWith("nikzlabs", "shipit", "open", undefined);
   });
 
   it("does not repoint an existing GitHub origin at a --repo target", async () => {
@@ -80,7 +83,7 @@ describe("resolveGitHubRemote — reads must not write git config", () => {
     const { git, addRemote } = makeGit([{ name: "origin", url: OTHER_REPO }]);
     const gh = makeGitHub();
     await listPullRequests(git, gh, {});
-    expect(gh.listPullRequests).toHaveBeenCalledWith("o", "other", "open");
+    expect(gh.listPullRequests).toHaveBeenCalledWith("o", "other", "open", undefined);
     expect(addRemote).not.toHaveBeenCalled();
   });
 

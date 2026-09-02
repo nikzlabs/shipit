@@ -107,7 +107,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
       depsWith(),
     );
-    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 }]);
     expect(pointerFor("node_modules")).toMatchObject({ commit: HEAD, depth: 1 });
     expect(baseContentFor("node_modules")).toBe("node_modules");
   });
@@ -122,7 +122,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       },
       depsWith(),
     );
-    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 }]);
     // This workspace has no package.json/lockfile, so there is nothing to
     // content-key: the marker records a null depsHash (docs/198, commit-only).
     expect(pointerFor("node_modules")?.marker).toEqual({
@@ -147,7 +147,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       },
       depsWith(),
     );
-    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 }]);
     const marker = pointerFor("node_modules")?.marker;
     expect(marker?.runtimeKey).toBe("img|x64|glibc|node24");
     expect(marker?.installCommands).toEqual(["npm install"]);
@@ -169,7 +169,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       },
       depsWith(),
     );
-    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 }]);
     expect(pointerFor("node_modules")?.marker?.depsHash).toBeNull();
   });
 
@@ -196,8 +196,8 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       depsWith(),
     );
     expect(out).toEqual([
-      { depDir: "node_modules", outcome: "created", depth: 1, generation: 1 },
-      { depDir: "packages/app/node_modules", outcome: "created", depth: 1, generation: 1 },
+      { depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 },
+      { depDir: "packages/app/node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 },
     ]);
     // Each base holds ONLY its own dep dir's snapshot — distinct scope hashes.
     expect(baseContentFor("node_modules")).toBe("node_modules");
@@ -219,11 +219,11 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
     const session = { remoteUrl: REPO_URL, kind: undefined, workspaceDir };
 
     const first = await publishDepDirOverlayBases({ session, workerUrl: "http://w", installOk: true }, deps);
-    expect(first).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    expect(first).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 }]);
 
     head = c2; // main advanced with a dep change
     const second = await publishDepDirOverlayBases({ session, workerUrl: "http://w", installOk: true }, deps);
-    expect(second).toEqual([{ depDir: "node_modules", outcome: "advanced", depth: 2, generation: 2 }]);
+    expect(second).toEqual([{ depDir: "node_modules", outcome: "advanced", depth: 2, generation: 2, attempts: 1 }]);
   });
 
   it("no-ops when the kill switch is set (OVERLAY_DEP_STORE=0)", async () => {
@@ -272,7 +272,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
         { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir: npmWs }, workerUrl: "http://w", installOk: true },
         depsWith(),
       );
-      expect(npmOut).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+      expect(npmOut).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 }]);
     } finally {
       fs.rmSync(npmWs, { recursive: true, force: true });
     }
@@ -306,7 +306,11 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       depsWith({ createRepoGit: () => other }),
     );
     // publishBase classifies a non-default source as ineligible — no base written.
-    expect(out).toEqual([{ depDir: "node_modules", outcome: "skipped-ineligible" }]);
+    // The pull DID happen (eligibility is decided by the CAS, after the snapshot),
+    // so this carries an attempt count where the pre-I/O declines above do not.
+    expect(out).toEqual([
+      { depDir: "node_modules", outcome: "skipped-ineligible", depth: undefined, generation: undefined, attempts: 1 },
+    ]);
     expect(pointerFor("node_modules")).toBeNull();
   });
 
@@ -321,7 +325,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
       depsWith(),
     );
-    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 }]);
     expect(baseContentFor("node_modules")).toBe("node_modules");
     expect(baseContentFor("src/vendored")).toBeNull();
   });
@@ -335,7 +339,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
         extract: async (stream) => { for await (const _ of stream) { /* drain */ } },
       }),
     );
-    expect(out).toEqual([{ depDir: "node_modules", outcome: "skipped-empty" }]);
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "skipped-empty", attempts: 1 }]);
     expect(pointerFor("node_modules")).toBeNull();
     expect(baseContentFor("node_modules")).toBeNull();
   });
@@ -354,7 +358,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       }),
     );
     expect(out[0]).toMatchObject({ depDir: "node_modules", outcome: "error" });
-    expect(out[1]).toEqual({ depDir: "packages/app/node_modules", outcome: "created", depth: 1, generation: 1 });
+    expect(out[1]).toEqual({ depDir: "packages/app/node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 });
     // The failing dir wrote no base; the healthy dir did.
     expect(pointerFor("node_modules")).toBeNull();
     expect(baseContentFor("packages/app/node_modules")).toBe("packages/app/node_modules");
@@ -402,9 +406,114 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       }),
     );
     expect(out).toEqual([
-      { depDir: "node_modules", outcome: "error", error: expect.stringContaining("terminated") },
+      { depDir: "node_modules", outcome: "error", error: expect.stringContaining("terminated"), attempts: 2 },
     ]);
     expect(pointerFor("node_modules")).toBeNull();
+  });
+
+  it("retries a raced snapshot once, and publishes the clean attempt", async () => {
+    // The 2026-09-02 production degradation: a compose dev server writes inside the
+    // dep dir it is served from (`node_modules/.vite`) while the worker tars it, so
+    // tar exits 1 and refuses the archive — measured in 18 of 46 live containers
+    // (~39%), losing the rolling base each time. The write is one-shot, so the
+    // second pull no longer sees it. Publishing THAT is what keeps the guarantee
+    // that a shared base is only ever an archive tar itself called exact.
+    const attempts: string[] = [];
+    const out = await publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
+      depsWith({
+        fetchSnapshot: (_url, depDir) => {
+          attempts.push(depDir);
+          if (attempts.length === 1) {
+            return Promise.reject(new Error(
+              "tar exited with code 1 while snapshotting /workspace/node_modules: tar: .: file changed as we read it",
+            ));
+          }
+          return Promise.resolve(Readable.from([Buffer.from(depDir)]));
+        },
+      }),
+    );
+    expect(attempts).toEqual(["node_modules", "node_modules"]);
+    // `attempts: 2` is what the field is for: a retry that keeps succeeding is
+    // otherwise indistinguishable from a run that never raced.
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 2 }]);
+    expect(baseContentFor("node_modules")).toBe("node_modules");
+  });
+
+  it("gives up after the retry rather than publishing a dep dir that never read clean", async () => {
+    // A dep dir being written CONTINUOUSLY is not a safe base at any attempt count.
+    const attempts: string[] = [];
+    const out = await publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
+      depsWith({
+        fetchSnapshot: (_url, depDir) => {
+          attempts.push(depDir);
+          return Promise.reject(new Error("tar exited with code 1: tar: .: file changed as we read it"));
+        },
+      }),
+    );
+    expect(attempts).toHaveLength(2);
+    expect(out).toEqual([
+      {
+        depDir: "node_modules",
+        outcome: "error",
+        error: expect.stringContaining("file changed as we read it"),
+        attempts: 2,
+      },
+    ]);
+    expect(pointerFor("node_modules")).toBeNull();
+  });
+
+  it("does NOT retry a pull the session's disposal aborted", async () => {
+    // The worker is being SIGKILLed; a second pull would only stream from a socket
+    // that is already going away. `signal.aborted` is the tell.
+    const controller = new AbortController();
+    const attempts: string[] = [];
+    const out = await publishDepDirOverlayBases(
+      {
+        session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir },
+        workerUrl: "http://w",
+        installOk: true,
+        signal: controller.signal,
+      },
+      depsWith({
+        fetchSnapshot: () => {
+          attempts.push("pull");
+          controller.abort(new Error("session runner disposed"));
+          return Promise.reject(new Error("terminated"));
+        },
+      }),
+    );
+    expect(attempts).toHaveLength(1);
+    expect(out).toEqual([
+      { depDir: "node_modules", outcome: "error", error: expect.stringContaining("terminated"), attempts: 1 },
+    ]);
+  });
+
+  it("does not mix a failed attempt's partial tree into the retry's", async () => {
+    // `extractTarStream` recreates the dest dir, it does not clear it, so a retry
+    // over the same temp dir would otherwise publish the union of both attempts.
+    let call = 0;
+    const out = await publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
+      depsWith({
+        extract: async (stream, destDir) => {
+          for await (const _ of stream) { /* drain */ }
+          fs.mkdirSync(destDir, { recursive: true });
+          if (++call === 1) {
+            fs.writeFileSync(path.join(destDir, "half-written"), "from the raced attempt");
+            throw new Error("tar -x exited with code 1");
+          }
+          fs.writeFileSync(path.join(destDir, "content"), "clean");
+        },
+      }),
+    );
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 2 }]);
+    const ptr = pointerFor("node_modules");
+    expect(ptr).not.toBeNull();
+    // The base holds the clean attempt ALONE — no leftover from the raced one.
+    expect(fs.readdirSync(ptr?.baseDir ?? "").sort()).toEqual(["content"]);
+    expect(baseContentFor("node_modules")).toBe("clean");
   });
 
   it("stops pulling remaining dep dirs once the signal aborts", async () => {
@@ -444,7 +553,7 @@ describe("formatOverlayMeasurement", () => {
       installDurationMs: 1843,
       outcomes: [
         { depDir: "node_modules", outcome: "advanced", depth: 3, generation: 4 },
-        { depDir: "packages/api/node_modules", outcome: "created", depth: 1, generation: 1 },
+        { depDir: "packages/api/node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 },
       ],
     });
     expect(line).toBe(
@@ -463,6 +572,43 @@ describe("formatOverlayMeasurement", () => {
     });
     expect(line).toBe(
       "[overlay-measure] session=s repo=r install_ok=false install_ms=12 dirs=node_modules:skipped-ineligible",
+    );
+  });
+
+  it("adds `a<attempts>` ONLY when the retry fired, so an ordinary line is unchanged", () => {
+    // The retry (docs/183, `pullSnapshotWithRetry`) fires when a concurrent write
+    // into the dep dir raced the worker's tar. `attempts: 1` is the ordinary case
+    // and must not lengthen every line; `attempts: 2` is the signal, and `grep ':a'`
+    // is how the churn rate gets counted off service logs.
+    const line = formatOverlayMeasurement({
+      sessionId: "s",
+      repoUrl: "r",
+      installOk: true,
+      installDurationMs: 900,
+      outcomes: [
+        { depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 },
+        { depDir: "game/node_modules", outcome: "advanced", depth: 2, generation: 5, attempts: 2 },
+      ],
+    });
+    expect(line).toBe(
+      "[overlay-measure] session=s repo=r install_ok=true install_ms=900 " +
+        "dirs=node_modules:created:d1g1,game/node_modules:advanced:d2g5:a2",
+    );
+  });
+
+  it("carries `a<attempts>` on an error, which has no depth segment before it", () => {
+    // The case the field matters most for: a dep dir that raced on BOTH attempts and
+    // was declined. It reads no pointer, so `a2` must stand as its own segment rather
+    // than ride the depth suffix — that is why the grammar is segment-per-letter.
+    const line = formatOverlayMeasurement({
+      sessionId: "s",
+      repoUrl: "r",
+      installOk: true,
+      installDurationMs: 900,
+      outcomes: [{ depDir: "node_modules", outcome: "error", error: "tar exited with code 1", attempts: 2 }],
+    });
+    expect(line).toBe(
+      "[overlay-measure] session=s repo=r install_ok=true install_ms=900 dirs=node_modules:error:a2",
     );
   });
 });

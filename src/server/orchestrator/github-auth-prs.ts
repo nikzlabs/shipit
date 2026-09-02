@@ -484,8 +484,31 @@ export interface ListedPullRequest {
   mergedAt: string | null;
 }
 
-/** How many rows `listPullRequests` returns, matching real `gh`'s default limit. */
+/**
+ * The outcome of a list read: the rows, or why they could not be read.
+ *
+ * A bare array cannot express the difference. `if (!res.ok) return []` made a
+ * 403 on a private repository, a rate-limit response and a GitHub 5xx all
+ * render as `gh pr list`'s "No pull requests found." — an unreadable repository
+ * and an empty one were the same answer. That is the failure-looks-like-absence
+ * confusion `viewPullRequestResult` removes one read over, and it is why
+ * `ok: true` with an empty `prs` is now the ONLY way to say "none".
+ */
+export type ListPullRequestsResult =
+  | { ok: true; prs: ListedPullRequest[] }
+  | { ok: false; error: string };
+
+/** How many rows `listPullRequests` returns by default, matching real `gh`. */
 const PR_LIST_PAGE = 30;
+
+/** Upper bound on `-L/--limit`, the largest page either API will serve. */
+const PR_LIST_MAX = 100;
+
+/** Clamp a caller-supplied limit; absent means the default page. */
+function pageSize(limit: number | undefined): number {
+  if (limit === undefined) return PR_LIST_PAGE;
+  return Math.min(Math.max(Math.trunc(limit), 1), PR_LIST_MAX);
+}
 
 /**
  * `merged` asked over GraphQL, which has the state natively.
@@ -514,19 +537,29 @@ const MERGED_PRS_QUERY = `query($owner: String!, $repo: String!, $first: Int!) {
  * `MERGED_PRS_QUERY`). Both shapes normalise to the same row: GitHub models a
  * merged PR as closed, so `state` stays `"closed"` and `mergedAt` is what
  * distinguishes it.
+ *
+ * A failed read reports the failure (see `ListPullRequestsResult`) rather than
+ * an empty list — no status is "there are none" here, unlike the 404 that
+ * genuinely means it for a single-PR read.
+ *
+ * `limit` is `-L/--limit`. It reaches the API as the page size rather than
+ * trimming the response, so asking for more than the default actually fetches
+ * more; the shim rejects an out-of-range value before it gets here, and the
+ * clamp is the belt to that braces.
  */
 export async function listPullRequests(
   token: string,
   owner: string,
   repo: string,
   state: PrListState = "open",
-): Promise<ListedPullRequest[]> {
-  if (state === "merged") return listMergedPullRequests(token, owner, repo);
+  limit?: number,
+): Promise<ListPullRequestsResult> {
+  if (state === "merged") return listMergedPullRequests(token, owner, repo, limit);
   const res = await fetchGitHub(
-    `https://api.github.com/repos/${owner}/${repo}/pulls?state=${state}&sort=updated&direction=desc&per_page=${PR_LIST_PAGE}`,
+    `https://api.github.com/repos/${owner}/${repo}/pulls?state=${state}&sort=updated&direction=desc&per_page=${pageSize(limit)}`,
     token,
   );
-  if (!res.ok) return [];
+  if (!res.ok) return { ok: false, error: await parseGitHubError(res) };
   const prs = (await res.json()) as {
     html_url: string;
     number: number;
@@ -537,25 +570,31 @@ export async function listPullRequests(
     draft: boolean;
     merged_at?: string | null;
   }[];
-  return prs.map((pr) => ({
-    url: pr.html_url,
-    number: pr.number,
-    base: pr.base.ref,
-    head: pr.head.ref,
-    title: pr.title,
-    state: pr.state,
-    isDraft: pr.draft,
-    mergedAt: pr.merged_at ?? null,
-  }));
+  return {
+    ok: true,
+    prs: prs.map((pr) => ({
+      url: pr.html_url,
+      number: pr.number,
+      base: pr.base.ref,
+      head: pr.head.ref,
+      title: pr.title,
+      state: pr.state,
+      isDraft: pr.draft,
+      mergedAt: pr.merged_at ?? null,
+    })),
+  };
 }
 
 async function listMergedPullRequests(
   token: string,
   owner: string,
   repo: string,
-): Promise<ListedPullRequest[]> {
-  const res = await fetchGitHubGraphQL(token, MERGED_PRS_QUERY, { owner, repo, first: PR_LIST_PAGE });
-  if (!res.ok) return [];
+  limit?: number,
+): Promise<ListPullRequestsResult> {
+  const res = await fetchGitHubGraphQL(token, MERGED_PRS_QUERY, {
+    owner, repo, first: pageSize(limit),
+  });
+  if (!res.ok) return { ok: false, error: await parseGitHubError(res) };
   const data = (await res.json()) as {
     errors?: { message: string }[];
     data?: {
@@ -574,19 +613,32 @@ async function listMergedPullRequests(
       };
     };
   };
-  if (data.errors) return [];
-  return (data.data?.repository?.pullRequests?.nodes ?? []).map((pr) => ({
-    url: pr.url,
-    number: pr.number,
-    base: pr.baseRefName,
-    head: pr.headRefName,
-    title: pr.title,
-    // GitHub models a merged PR as closed; `mergedAt` is the distinguishing
-    // field, and REST would report exactly this pair for the same PR.
-    state: "closed" as const,
-    isDraft: pr.isDraft,
-    mergedAt: pr.mergedAt,
-  }));
+  // GraphQL answers 200 with an `errors` array, so this is the shape a
+  // permission failure takes here — reporting it as an empty list is exactly
+  // the confusion the result type exists to remove.
+  if (data.errors) return { ok: false, error: data.errors[0]?.message ?? "Unknown GraphQL error" };
+  // A 200 whose body does not carry the node list did not answer the question,
+  // and "did not answer" is not "there are none" — defaulting the missing path
+  // to `[]` would smuggle the original bug back in through the last gap.
+  const nodes = data.data?.repository?.pullRequests?.nodes;
+  if (!Array.isArray(nodes)) {
+    return { ok: false, error: "GitHub returned no pull request data for this repository" };
+  }
+  return {
+    ok: true,
+    prs: nodes.map((pr) => ({
+      url: pr.url,
+      number: pr.number,
+      base: pr.baseRefName,
+      head: pr.headRefName,
+      title: pr.title,
+      // GitHub models a merged PR as closed; `mergedAt` is the distinguishing
+      // field, and REST would report exactly this pair for the same PR.
+      state: "closed" as const,
+      isDraft: pr.isDraft,
+      mergedAt: pr.mergedAt,
+    })),
+  };
 }
 
 /**

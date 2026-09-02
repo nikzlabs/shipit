@@ -53,11 +53,31 @@
  * stdout/stderr that happens to quote one of these strings can't match either.
  *
  * **The table fails closed and says so.** An unmatched server line is counted
- * into `withheldUnclassified` and reported, so a producer whose wording drifts
- * shows up as "N lines withheld" instead of silently disappearing. Add a
- * template only for a line whose text is fully ShipIt-authored; when a producer
- * needs to surface interpolated detail, give it a structured field rather than
- * widening a pattern to `.*`.
+ * and reported, so a producer whose wording drifts shows up as "N lines
+ * withheld" instead of silently disappearing. Add a template only for a line
+ * whose text is fully ShipIt-authored; when a producer needs to surface
+ * interpolated detail, give it a structured field — or split the line in two, an
+ * authored one and a detail one — rather than widening a pattern to `.*`.
+ * `auto-push-scheduler.ts`'s failure branches are the worked example of the
+ * split: the CLASS is ShipIt's own word and gets a template, git's message
+ * follows on a `Git said:` line of its own and stays withheld.
+ *
+ * ## Why the withheld count is broken down, and what the breakdown may say
+ *
+ * A bare "384 withheld" is not actionable: it reads the same whether it is one
+ * chatty producer or the one line an operator needed, drifted off its template.
+ * So a withheld line is also matched against {@link WITHHELD_SHAPES} and counted
+ * under that entry's LABEL.
+ *
+ * The labels are ShipIt's own constants and the counts are integers — nothing
+ * emitted here is derived from a withheld line's own bytes, which is the
+ * property that keeps this on the safe side of the boundary above. The pattern
+ * READS the text (there is nothing else to read: the durable entry carries only
+ * a timestamp, a source and a text), but every pattern is the ShipIt-authored
+ * PREFIX of a producer's format string, so what a match reports is "a line of
+ * this producer's shape was here" and never any part of the line. A line whose
+ * shape ShipIt cannot name is counted as `withheldUnclassified` and nothing
+ * more is said about it.
  *
  * ## Redaction
  *
@@ -99,9 +119,11 @@ export const SERVER_LOG_SOURCES: ReadonlySet<string> = new Set(["server"]);
  *
  * Deliberately ABSENT, with the reason, because these are the tempting ones:
  *
- *  - `Auto-push failed: ${errMsg}` (auto-push-scheduler) — carries git's own
- *    stderr. Its two FIXED variants (invalid token, missing `workflow` scope)
- *    are listed instead.
+ *  - `Git said: ${errMsg}` (auto-push-scheduler) — git's own stderr, on the
+ *    line the split moved it to. The authored half that precedes it
+ *    (`Auto-push failed (<class>).`) is listed instead, so an ops session can
+ *    read WHICH class of failure happened without reading what git said about
+ *    it.
  *  - `[compose] Stack error: …`, `[compose] Failed to start: …`,
  *    `[compose] Reconcile failed: …` — quote workspace compose values and raw
  *    `docker compose` stderr. This is the family that broke the first design.
@@ -115,6 +137,27 @@ export const SERVER_LOG_SOURCES: ReadonlySet<string> = new Set(["server"]);
  */
 export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[] = [
   // services/auto-push-scheduler.ts — the incident that motivated docs/264.
+  {
+    // THE positive confirmation. Without it the ops surface reported only
+    // FAILURES, so silence meant "pushed fine" or "nothing to push" or "failed
+    // in a way with no template" or "aged out of the ring" — four states an
+    // operator has to tell apart and could not. Every variable part is a
+    // ShipIt-controlled number; the branch, the remote and git's own summary
+    // are deliberately not in the line at all.
+    //
+    // The wording separates the FACT (the push completed) from the ESTIMATE
+    // (the count, read from the local view of the remote before the push) —
+    // see `auto-push-scheduler.ts` `countPendingCommits` for why the count is
+    // not the network's answer.
+    producer: "auto-push-scheduler: push completed",
+    pattern: /^Auto-push completed in \d+ms: (?:\d+ commit\(s\) (?:was|were) ahead of the last known remote tip|nothing was ahead of the last known remote tip|the commit count could not be measured)\.$/,
+  },
+  {
+    // The two skips, which are the other half of "did it push?": both are
+    // fully-authored constants, and both mean the commit is still local.
+    producer: "auto-push-scheduler: not pushed (no origin / detached HEAD)",
+    pattern: /^Not pushed: (?:this session's workspace has no `origin` remote|the workspace has no current branch \(detached HEAD\))\. The commit stays in local history\.$/,
+  },
   {
     producer: "auto-push-scheduler: non-fast-forward",
     pattern: /^Auto-push rejected: this session's branch and its remote have diverged\. Measuring which side carries what\.$/,
@@ -139,6 +182,38 @@ export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[
     producer: "auto-push-scheduler: missing workflow scope",
     pattern: /^Auto-push failed: your GitHub token needs the `workflow` scope to push changes to GitHub Actions workflow files\. Update your token at https:\/\/github\.com\/settings\/tokens\.$/,
   },
+  {
+    // Fully authored only since the split moved `Git said: ${errMsg}` off the
+    // end of it — the whole reason splitting a producer is the recommended fix
+    // rather than widening a pattern.
+    producer: "auto-push-scheduler: LFS objects not uploaded",
+    pattern: /^Auto-push rejected: the remote refused the push because its Git LFS objects were not uploaded \(GH008\)\. The commit stays in this session's local history\. Run `git lfs push origin HEAD` in the terminal, then push again\.$/,
+  },
+  {
+    // The authored half of the split failure report; git's own text is on the
+    // `Git said:` line, which is withheld.
+    //
+    // The class is ENUMERATED rather than matched as a bounded slug. This table
+    // is the boundary itself, not a statement about who produced a line, so
+    // "the producer can only ever emit one of seven literals" is the wrong
+    // question — `[a-z0-9-]{1,32}` would admit `secret-token` from any future
+    // line that happened to fit the surrounding prose. `PushFailureClass`
+    // (`services/git.ts`) is a closed union; adding a member means adding it
+    // here, which is exactly the review that deserves.
+    producer: "auto-push-scheduler: failure class",
+    pattern: /^Auto-push failed \((?:non-fast-forward|invalid-refspec|auth|lfs|remote-rejected|network|unknown)\)\. The commit stays in this session's local history\.$/,
+  },
+  {
+    // A push held back while ShipIt's own rebase is in flight — the commit is
+    // not lost and a retry is armed, which is exactly what an operator reading
+    // a gap between commits needs to know. Counts only.
+    producer: "auto-push-scheduler: deferred for a rewrite",
+    pattern: /^Push deferred — this session's branch is being rewritten \(a rebase is in flight\), so a push now cannot land\. Retrying in \d+s \(attempt \d+ of \d+\)\.$/,
+  },
+  {
+    producer: "auto-push-scheduler: deferral budget spent",
+    pattern: /^A history rewrite has been in flight for \d+ deferred pushes — no longer holding this push back\.$/,
+  },
   // idle-enforcer.ts — why a container went away.
   {
     producer: "idle-enforcer: idle shutdown",
@@ -152,6 +227,15 @@ export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[
   {
     producer: "app-lifecycle: container re-adopted",
     pattern: /^Recovered a session container that had lost its orchestrator tracking entry — no restart needed\.$/,
+  },
+  {
+    // startup-tasks.ts `health_monitor_resumed`. Fully authored: `gapLabel` is
+    // computed from `gapMs` as `Ns` or `Nms`, both ShipIt-controlled numbers.
+    // Worth returning because it is the one line that explains a container
+    // "vanishing" with no die event — an ops session chasing exactly that
+    // otherwise has no way to know the events stream had a hole in it.
+    producer: "startup-tasks: docker events gap",
+    pattern: /^Docker events stream resumed after \d+m?s gap — die\/oom events during this window may have been missed\.$/,
   },
   // startup-tasks.ts — the exit-code form only; the `: <error>` form is excluded.
   {
@@ -184,10 +268,37 @@ export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[
     producer: "agent-listeners: awaiting plan approval",
     pattern: /^Agent interrupted: waiting for plan approval$/,
   },
+  // The agent adapters, relayed from the session worker as source "server"
+  // (`agent-listeners.ts` `agent.on("log", …)`). Fixed strings, one per CLI —
+  // a stuck-process warning is what an operator is looking for when a session's
+  // turns stop producing commits, and it is not otherwise visible from the host.
+  {
+    producer: "claude/process.ts: no CLI output watchdog",
+    pattern: /^Warning: No output from Claude CLI after \d+ seconds\. The process may be stuck\.$/,
+  },
+  {
+    producer: "grok/adapter.ts: no CLI output watchdog",
+    pattern: /^Warning: no output from the Grok CLI for \d+ seconds\. It may be retrying an upstream error; interrupting the turn is safe\.$/,
+  },
+  {
+    // The three fixed ways a live steer is dropped before it reaches the CLI.
+    // No interpolation in any of them — the message TEXT is deliberately never
+    // part of the line (the producer logs only its own diagnosis).
+    producer: "claude adapter/process: live steer dropped",
+    pattern: /^Live steering (?:failed: the agent process is not in streaming mode\. The message was not delivered to the CLI|write failed: (?:the streaming process is not running|stdin is not writable)\. Message dropped)\.$/,
+  },
   // keep-preview-running.ts — reserved preview restarts.
   {
     producer: "keep-preview-running: restart attempt",
     pattern: /^Restarting reserved preview runtime \(attempt \d+\/\d+\)\.$/,
+  },
+  // service-manager-setup.ts — the docs/183 overlay dep store degraded for this
+  // session. Both variable parts are counts; the dep dir NAMES are deliberately
+  // absent from the producer's string, since `agent.dep-dirs` is repo-declared
+  // text and would be exactly the free-text interpolation rule 1 forbids.
+  {
+    producer: "service-manager-setup: dep-dir base publish failed",
+    pattern: /^Dependency cache: \d+ of \d+ dependency directories could not be snapshotted as a shared base\. Later sessions of this repository reinstall instead of reusing it\.$/,
   },
   {
     producer: "keep-preview-running: gave up",
@@ -198,6 +309,73 @@ export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[
 /** Whether a line's WHOLE text is one ShipIt authored. See the table above. */
 export function isOpsSafeLine(text: string): boolean {
   return OPS_SAFE_TEMPLATES.some((t) => t.pattern.test(text));
+}
+
+/**
+ * How a WITHHELD line is named in the breakdown — the producer's own
+ * ShipIt-authored prefix, mapped to a label ShipIt owns.
+ *
+ * This table classifies; it never returns anything. Rules, which are narrower
+ * than {@link OPS_SAFE_TEMPLATES}'s in one place and wider in another:
+ *
+ *  1. **The `shape` is a constant here, not a piece of the line.** It is the
+ *     only thing that escapes, alongside a count. Never build a label out of a
+ *     captured group.
+ *  2. **The pattern is ShipIt-authored text**, anchored at the start.
+ *     Unanchored at the end on purpose — the rest of the line is free text
+ *     nobody may read. A `.*`/`.+`/`[\s\S]` is banned, so a pattern cannot
+ *     drift into matching everything and reporting one label for the lot.
+ *
+ *     One pattern (`compose: service exited`) reaches PAST an interpolated
+ *     value with a single `\S+`, to test the authored text on the far side of
+ *     a service name. That is the deliberate exception, and it is stated here
+ *     rather than left as a contradiction between this rule and the table: a
+ *     `[compose] ` prefix alone cannot tell "a service died" from "a compose
+ *     value was rejected", which is the distinction the breakdown exists to
+ *     draw. The meta-test bounds it — at most one `\S+` per pattern, and never
+ *     as the last thing in it, so the token can only ever be a bridge between
+ *     two pieces of ShipIt's own text and never the match itself.
+ *  3. **Most specific first** — the first match wins, so a family's catch-all
+ *     (`[compose] `) sits after its named members.
+ *
+ * A line matching nothing here is counted as `withheldUnclassified`, which is
+ * the honest answer and is what makes a NEW chatty producer visible: it shows up
+ * as unclassified volume rather than being absorbed into a neighbour's label.
+ */
+export const WITHHELD_SHAPES: readonly { shape: string; pattern: RegExp }[] = [
+  // service-manager-setup.ts / egress-handlers.ts — the family that broke the
+  // first design. Every one of these quotes a compose value or docker's stderr.
+  { shape: "compose: stack error", pattern: /^\[compose\] Stack error: / },
+  { shape: "compose: failed to start", pattern: /^\[compose\] Failed to start: / },
+  { shape: "compose: reconcile failed", pattern: /^\[compose\] Reconcile failed: / },
+  // startup-tasks.ts — the service NAME is the project's, so the line is
+  // withheld; that a service died N times is not.
+  {
+    shape: "compose: service exited",
+    pattern: /^\[compose\] \S+ (?:exited with code -?\d+\.|was OOM-killed \(exit -?\d+\))/,
+  },
+  { shape: "compose: other", pattern: /^\[compose\] / },
+  // ws-handlers/agent-listeners.ts — raw agent/provider error text.
+  { shape: "agent: process error", pattern: /^Agent process error: / },
+  // services/auto-push-scheduler.ts — the detail half of the split failure
+  // report, and the two interpolated forms the templates deliberately exclude.
+  { shape: "auto-push: git's own message", pattern: /^Git said: / },
+  { shape: "auto-push: unmeasured divergence", pattern: /^Divergence shape: could not be measured/ },
+  { shape: "auto-push: other", pattern: /^Auto-push /  },
+  // startup-tasks.ts / route-registry.ts / idle-enforcer.ts — raw docker and
+  // git text, each on a container-lifecycle path.
+  { shape: "container: exit detail", pattern: /^Session container exited unexpectedly: / },
+  { shape: "container: idle destroy failed", pattern: /^Failed to destroy idle container: / },
+  { shape: "session: workspace not restored", pattern: /^Session workspace could not be restored: / },
+  { shape: "session: memory breaker tripped", pattern: /^Session disabled — / },
+];
+
+/**
+ * The label for a withheld line's shape, or null when ShipIt cannot name it.
+ * Reads the text; returns only a constant from {@link WITHHELD_SHAPES}.
+ */
+export function classifyWithheldLine(text: string): string | null {
+  return WITHHELD_SHAPES.find((s) => s.pattern.test(text))?.shape ?? null;
 }
 
 /** The durable channel the orchestrator's per-session log lines land in. */
@@ -262,14 +440,35 @@ export interface HostSessionLogResult {
   /** True when older matches were dropped to honour `lines`. */
   truncated: boolean;
   /**
-   * Server-source lines in the window that matched no {@link OPS_SAFE_TEMPLATES}
-   * entry and were therefore withheld.
+   * Every server-source line in the window that matched no
+   * {@link OPS_SAFE_TEMPLATES} entry and was therefore withheld.
    *
    * Reported rather than swallowed. Most of these are lines that legitimately
    * carry workspace or raw error text and will never be returned — but a
    * non-zero count is also the ONLY signal that a producer's wording drifted
    * away from its template, so a line an operator needs would otherwise just
    * stop appearing with nothing to notice.
+   */
+  withheldTotal: number;
+  /**
+   * The withheld total split by {@link WITHHELD_SHAPES} label, largest first,
+   * and never including a shape with a count of zero.
+   *
+   * Turns "384 withheld" into something an operator can act on: one chatty
+   * producer reads very differently from 384 lines spread across every shape
+   * there is. Carries ShipIt's own labels and integer counts only — see the
+   * module docstring for why that is not a hole in the content boundary.
+   */
+  withheldByShape: { shape: string; count: number }[];
+  /**
+   * Withheld lines whose shape ShipIt could not name — the residue of
+   * {@link withheldTotal} after {@link withheldByShape}.
+   *
+   * The number to watch. A producer that drifts off its template, or a new one
+   * nobody has classified, lands here rather than being absorbed into a
+   * neighbour's label — so a rising unclassified count is the signal that this
+   * file needs an entry, and it is the count a maintainer reads to decide which
+   * template to write next.
    */
   withheldUnclassified: number;
   /**
@@ -416,7 +615,10 @@ export function queryHostSessionLogs(
   const lines = normalizeLines(query.lines);
 
   const matched: HostSessionLogEntry[] = [];
+  let withheldTotal = 0;
   let withheldUnclassified = 0;
+  /** Label → count. Keyed by a constant from `WITHHELD_SHAPES`, never by text. */
+  const byShape = new Map<string, number>();
   // MAX_RETAINED_CHANNEL_BYTES, not the default: this read FILTERS the stream,
   // so the default one-generation window would hide server lines that are still
   // on disk behind a megabyte of agent stdout.
@@ -443,7 +645,12 @@ export function queryHostSessionLogs(
     // ShipIt authored is withheld — but COUNTED, so a drifted producer surfaces
     // as "N withheld" instead of vanishing.
     if (!isOpsSafeLine(entry.text)) {
-      withheldUnclassified++;
+      withheldTotal++;
+      // Named by ShipIt's own table, or not named at all. Nothing derived from
+      // the line's bytes leaves this branch either way.
+      const shape = classifyWithheldLine(entry.text);
+      if (shape === null) withheldUnclassified++;
+      else byShape.set(shape, (byShape.get(shape) ?? 0) + 1);
       continue;
     }
     matched.push({ ts: entry.ts, source: entry.source, text: redactStage1(entry.text).text });
@@ -458,6 +665,13 @@ export function queryHostSessionLogs(
     entries: page,
     total: matched.length,
     truncated: page.length < matched.length,
+    withheldTotal,
+    // Largest first, ties broken by label so the output is stable between two
+    // reads of the same window — an operator comparing them should see a
+    // difference only when the counts actually differ.
+    withheldByShape: [...byShape.entries()]
+      .map(([shape, count]) => ({ shape, count }))
+      .sort((a, b) => b.count - a.count || a.shape.localeCompare(b.shape)),
     withheldUnclassified,
     logsRetained: logStore.hasChannel(session.id, AGENT_CHANNEL),
   };

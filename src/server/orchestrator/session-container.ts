@@ -353,8 +353,18 @@ export interface SessionContainerManagerEvents {
   container_exited: [sessionId: string, exitCode: number, error?: string];
   /** Emitted when a container is successfully started. */
   container_started: [sessionId: string];
-  /** Emitted when a container is destroyed. */
-  container_destroyed: [sessionId: string];
+  /**
+   * Emitted when a container is destroyed.
+   *
+   * `previewsStopped` says whether this teardown also swept the session's
+   * Compose stack, i.e. whether its previews actually died. It is FALSE on the
+   * `preserveChildResources` path (the agent-restart / image-rotation flow and
+   * the idle enforcer's tier 1), which stops the agent container precisely so
+   * the user's preview keeps serving — a listener that treats every
+   * `container_destroyed` as "the preview is gone" is wrong for the commonest
+   * teardown there is (planning#496).
+   */
+  container_destroyed: [sessionId: string, previewsStopped: boolean];
   /**
    * Emitted when a Compose-managed (i.e. user) container belonging to a
    * session exits unexpectedly. The Docker event-stream listener used to
@@ -1242,9 +1252,17 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * Also cleans up Docker resources (containers, networks, volumes) created
    * by the session through the Docker API proxy.
    */
-  async destroy(sessionId: string): Promise<void> {
+  /**
+   * @param opts.replacementFollows This teardown is one half of a rebuild — a
+   * replacement container is about to be created for the same session (Rescue,
+   * the create-retry path). Suppresses the `previewsStopped` announcement on
+   * `container_destroyed`, because the previews return on the same origins
+   * moments later and a viewer would otherwise discard a retained document that
+   * could have reconnected (planning#496).
+   */
+  async destroy(sessionId: string, opts: { replacementFollows?: boolean } = {}): Promise<void> {
     this.lastCreateErrors.delete(sessionId);
-    return destroyContainer(this.lifecycleDeps(), sessionId);
+    return destroyContainer(this.lifecycleDeps(), sessionId, opts);
   }
 
   /**

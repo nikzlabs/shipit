@@ -25,6 +25,7 @@ import { newSessionAgentId } from "../utils/new-session-agent.js";
 import { resolveAuthedSelection, resolveParkedRestore } from "../utils/resolve-authed-selection.js";
 import { useForegroundSignal } from "./useForegroundSignal.js";
 import { notifySessionNetworkModeChanged } from "./useSessionNetworkMode.js";
+import { notifyPreviewsStopped } from "./usePreviewsStopped.js";
 
 let reloadingForClientUpdate = false;
 
@@ -249,6 +250,17 @@ export function useServerEvents(): void {
     es.addEventListener("session_egress_changed", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as { sessionId: string };
       notifySessionNetworkModeChanged(data.sessionId);
+    });
+
+    // planning#496 — one session's preview stack was torn down, so any iframe
+    // this tab still holds for it is a renderer process kept for a document
+    // whose containers are gone. Announced only where previews genuinely stop
+    // (a full container teardown, the idle enforcer's tier 2), never for the
+    // tier-1/agent-restart teardowns that keep the preview serving. Missing it
+    // costs nothing but the reclaim, so there is no snapshot to reconcile from.
+    es.addEventListener("session_previews_stopped", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as { sessionId: string };
+      notifyPreviewsStopped(data.sessionId);
     });
 
     // docs/285 — a session's runner was REPLACED (its container was rebuilt).

@@ -18,7 +18,21 @@ export interface HealthDetailsProps {
 
 export function HealthDetails({ sessionId, health, error }: HealthDetailsProps) {
   return (
-    <div className="px-3 py-2 border-t border-(--color-border-secondary) bg-(--color-bg-tertiary) font-mono text-[11px] leading-relaxed">
+    // Bounded for the same reason as the strip's creation-error box: this block
+    // is inserted into TerminalPanel's flex column above a `flex-1 min-h-0` log
+    // view, so its content height is taken first and the log gets the leftover.
+    // The `poll error` row below carries an unbounded message, and on a narrow
+    // panel any `break-all` value can wrap into extra lines. `max-h-48` sits
+    // above the block's natural height (measured: 178px for the nine rows at a
+    // 900px width), so opening details looks exactly as it did; past that it
+    // scrolls. `tabIndex` makes the clipped rows reachable by keyboard.
+    <div
+      className="max-h-48 overflow-y-auto px-3 py-2 border-t border-(--color-border-secondary) bg-(--color-bg-tertiary) font-mono text-[11px] leading-relaxed"
+      tabIndex={0}
+      role="group"
+      aria-label="Session health details"
+      data-testid="health-details"
+    >
       <DetailRow label="session" value={sessionId} />
       <DetailRow label="container" value={health?.containerState ?? "—"} />
       <DetailRow label="container id" value={health?.containerId ?? "—"} />

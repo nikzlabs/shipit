@@ -160,8 +160,17 @@ describe("Integration: Ops session logs (docs/264)", () => {
     ]) {
       expect(res.body).not.toContain(marker);
     }
-    // Withheld, and reported — never silently dropped.
-    expect((res.json() as { withheldUnclassified: number }).withheldUnclassified).toBe(1);
+    // Withheld, and reported — never silently dropped. The breakdown names the
+    // PRODUCER from ShipIt's own table; the line's own bytes (the marker above)
+    // are already asserted absent from the whole payload.
+    const withheld = res.json() as {
+      withheldTotal: number;
+      withheldUnclassified: number;
+      withheldByShape: { shape: string; count: number }[];
+    };
+    expect(withheld.withheldTotal).toBe(1);
+    expect(withheld.withheldByShape).toEqual([{ shape: "compose: stack error", count: 1 }]);
+    expect(withheld.withheldUnclassified).toBe(0);
   });
 
   it("answers for a session with no runner and no container", async () => {

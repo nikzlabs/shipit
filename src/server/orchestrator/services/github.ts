@@ -1482,16 +1482,26 @@ export async function viewPullRequest(
   return { ...pr, ...conversation.conversation };
 }
 
-/** List PRs for the session's repo. */
+/**
+ * List PRs for the session's repo.
+ *
+ * A failed read raises, exactly as `viewPullRequest` does for a single PR: the
+ * caller is `gh pr list`, which would otherwise print "No pull requests found."
+ * for a repository it merely lacks permission to read.
+ */
 export async function listPullRequests(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
-  options: { state?: PrListState; remoteUrl?: string } = {},
+  options: { state?: PrListState; limit?: number; remoteUrl?: string } = {},
 ): Promise<ListedPullRequest[]> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
   const remote = await resolveGitHubRemote(git, options.remoteUrl);
   if ("error" in remote) throw new ServiceError(400, remote.error);
-  return githubAuthManager.listPullRequests(remote.owner, remote.repo, options.state ?? "open");
+  const read = await githubAuthManager.listPullRequests(
+    remote.owner, remote.repo, options.state ?? "open", options.limit,
+  );
+  if (!read.ok) throw new ServiceError(502, `Failed to list pull requests: ${read.error}`);
+  return read.prs;
 }
 
 // ---- GitHub Actions (backs `gh run` / `gh workflow`) ----

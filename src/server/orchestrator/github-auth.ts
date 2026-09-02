@@ -8,7 +8,7 @@ import { GitHubAppTokenMinter, type AppTokenMintResult } from "./github-app-toke
 // Sub-module imports — delegated implementations
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl, listOrgs as listOrgsImpl } from "./github-auth-repos.js";
 import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, addLabelsToPullRequest as addLabelsToPullRequestImpl, removeLabelFromPullRequest as removeLabelFromPullRequestImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, viewPullRequestResult as viewPullRequestResultImpl, viewPullRequestConversation as viewPullRequestConversationImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
-import type { PullRequestDetail, PrConversation, PrListState, ListedPullRequest } from "./github-auth-prs.js";
+import type { PullRequestDetail, PrConversation, PrListState, ListPullRequestsResult } from "./github-auth-prs.js";
 import { getCheckStatus as getCheckStatusImpl, getCheckRunAnnotations as getCheckRunAnnotationsImpl, getJobLogs as getJobLogsImpl } from "./github-auth-checks.js";
 import {
   listWorkflowRuns as listWorkflowRunsImpl,
@@ -747,14 +747,19 @@ export class GitHubAuthManager extends EventEmitter {
 
   /**
    * List pull requests for a repository.
+   *
+   * Reports a failed read rather than an empty list — including the missing
+   * token, which is a reason the repository could not be read, not evidence
+   * that it holds no pull requests.
    */
   async listPullRequests(
     owner: string,
     repo: string,
     state: PrListState = "open",
-  ): Promise<ListedPullRequest[]> {
-    if (!this._token) return [];
-    return listPullRequestsImpl(this._token, owner, repo, state);
+    limit?: number,
+  ): Promise<ListPullRequestsResult> {
+    if (!this._token) return { ok: false, error: "Not authenticated with GitHub" };
+    return listPullRequestsImpl(this._token, owner, repo, state, limit);
   }
 
   /**

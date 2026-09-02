@@ -1054,6 +1054,11 @@ describe("ClaudeOAuthRefresher", () => {
     // Diagnosis only, deliberately: a file this reader believes is empty may be
     // a partial write or a shape it has not been taught, and the account is
     // unusable either way. Nothing deletes or repairs it.
+    //
+    // planning#495 did NOT change this. The blank probe it added applies to a
+    // session's REPLICA, never to an account root — a blanked source stays
+    // `unorderable`, so the harvest still cannot publish over one, and the
+    // sign-in race that ruled out repairing it here is left untouched.
     it("leaves a blanked source on disk and still reports missing_credentials", async () => {
       const now = 1_700_000_000_000;
       const rig = buildRig({ accounts: [makeAccount("acct-1")], initialNow: now });

@@ -1,3 +1,9 @@
+---
+issue: planning#492
+title: Preview System
+description: The preview pane — port detection, toolbar navigation, error capture, and per-origin renderer isolation.
+---
+
 # Preview System
 
 The preview pane shows a live iframe of the user's app. Supports Vite (managed) and any other dev server (auto-detected via port scanning).
@@ -159,8 +165,258 @@ inherit the previous element's confirmation.
 
 Red badge on preview shows error count. Clicking opens collapsible panel with details, stack traces, per-error "Fix" buttons, and "Send to Claude" for all errors.
 
+## Renderer isolation
+
+### The iframe lifecycle, and why it is not the problem
+
+Preview iframes for sessions the user is **not** looking at stay mounted. That
+is deliberate and load-bearing: `useIframePool` retains one iframe per
+`(session, port)` slot, LRU eviction past `MAX_IFRAME_SLOTS = 20` is the *only*
+thing that drops one, and a dropped iframe is a reload the user experiences as
+their preview resetting — scroll position, SPA route, form state, and the HMR
+connection all go. A hidden slot is given Tailwind's `hidden`
+(`display: none`) and is told `{ type: "visibility", visible: false }` over
+postMessage, the cooperative contract in `docs/146-preview-visibility-contract`.
+
+What `display: none` does **not** do is release the document's WebGL contexts.
+Measured, not assumed: with four same-site child origins holding five contexts
+each and three of the four rendered `display: none`, all twenty contexts stayed
+charged against the process and four were force-lost anyway.
+
+### The problem: one renderer for every open session
+
+Preview origins are `{sessionId}--{port}.<host>` — subdomains of the one
+registrable domain ShipIt itself is served from. A browser's process model keys
+on **site**, not origin, so by default every open session's preview *and*
+ShipIt's own UI share a single renderer process. That has two consequences:
+
+1. **WebGL context exhaustion.** Blink's cap is 16 live contexts per *renderer
+   process*, and past it the **oldest** are force-lost. So the preview that goes
+   blank is typically the one the user has had open longest — broken by sessions
+   they are not looking at. A production trace showed four preview origins in
+   one renderer (pid 20524) and three `webglcontextlost` events in 4.6 s.
+2. **Main-thread contention.** A heavy preview competes with ShipIt's own UI and
+   with every other session's preview on one thread.
+
+### The fix
+
+`preview-proxy.ts` sets **`Origin-Agent-Cluster: ?1`** on every preview
+response (`withOriginIsolation`). It requests an origin-keyed agent cluster,
+which Chrome implements as origin-level *process* isolation — each preview
+origin gets its own renderer, its own main thread, and its own 16-context
+budget. It is a request rather than a promise: a browser may decline a
+dedicated process under memory pressure, and one without origin-keyed process
+isolation ignores it. The subdomain scheme is untouched
+(`docs/175-preview-subdomain-only`), and no iframe lifecycle changes:
+background slots stay mounted exactly as before.
+
+**Whatever the upstream sent is replaced**, and every case variant is dropped
+first so the field can't be emitted twice (a duplicate or list value is a
+structured-header parse failure, which reads as *no* isolation request at all).
+Respecting an app's own `Origin-Agent-Cluster` was considered and rejected: one
+`?0` from an arbitrary dev server re-collapses every open session into one
+renderer, and the resulting blank canvas appears in a *different* session from
+the app that caused it, so this cannot be a per-app choice. The case for
+respecting it — a security-headers middleware defaulting to `?0` — turns out
+not to exist; Helmet and Hono's `secure-headers` both default to `?1`. The
+override costs legacy `document.domain` relaxation (already off by default in
+current Chrome) and same-site *cross-origin* `SharedArrayBuffer` /
+`WebAssembly.Module` transfer between two different preview origins. Same-origin
+frames are unaffected, which is every ordinary preview.
+
+Three details that are easy to get wrong, all recorded in the
+`withOriginIsolation` docstring:
+
+- The header must be on **every document response for the origin, including the
+  connecting page** (`docs/286-preview-connect-without-gate`). An origin's
+  agent-cluster key is fixed by its first document and held for the whole
+  browsing-context group, and a preview opened before its dev server is
+  listening gets the connecting page first. Measured, not assumed: with the
+  header on the app page but *not* on the connecting page that preceded it,
+  four origins that each reloaded into a marked page still ended up in **zero**
+  extra renderers — the reload buys nothing, because the key was already fixed.
+  With the header on both, the same four origins got four renderers.
+- **`window.originAgentCluster` does not test it.** Chrome makes documents
+  origin-keyed *logically* by default, so it reads `true` with or without the
+  header. Only counting renderer processes distinguishes the two.
+- It needs a **potentially-trustworthy origin**. HTTPS and `*.localhost`
+  qualify, so production and local development get isolation. The Tailscale
+  sslip override (`docs/216`, `docs/254-local-bind-and-tailnet-access`) serves
+  previews over plain http, where the header is ignored and behaviour is
+  unchanged.
+
+### Measurement
+
+Reproduced in headless Chromium against a probe server: one parent document
+embedding N iframes on `https://{a,b,c,d}.example.com`, resolved with
+`--host-resolver-rules=MAP * 127.0.0.1`, five WebGL contexts per child.
+Renderer processes counted from `ps` on `--type=renderer`; memory as summed
+PSS, not RSS, so pages shared between processes are not counted once each.
+
+| 4 origins × 5 contexts | renderer processes | `webglcontextlost` | oldest origin's live contexts |
+|---|---|---|---|
+| Without the header | 1 (all co-located) | **4** | 1 of 5 |
+| With `Origin-Agent-Cluster: ?1` | 4 (one each) | **0** | 5 of 5 |
+
+Both numbers that define the bug move, and the instrument demonstrably produces
+a positive as well as a negative (`docs/265`).
+
+Cost of splitting, measured separately with **zero** WebGL contexts so it is
+process overhead alone and not the memory of contexts that are no longer
+force-lost, with PIDs scoped to the launched browser by its throwaway
+`--user-data-dir`, three runs per arm (spread ≤1 MiB): 8 previews go from
+**157 MiB to 246 MiB summed PSS — ≈11 MiB per preview origin**.
+
+### Is `MAX_IFRAME_SLOTS = 20` still right?
+
+Asked because each retained slot can now cost a renderer process, where before
+it cost a document in a process that already existed. **Assessed, and the answer
+is yes — 20 stays.** Note the cap counts `(session, port)` pairs, not sessions,
+so a three-service stack consumes three slots and the ceiling is more reachable
+than "20 sessions" suggests.
+
+1. **The cap was never implicated.** The production trace that motivated the
+   isolation work had four live origins against a cap of 20. Lowering it would
+   not have prevented a single `webglcontextlost` event in that trace.
+2. **The one mechanism that could make 20 actively dangerous does not bite.**
+   If a browser refused dedicated processes past its own renderer limit, a large
+   pool would silently undo the isolation. Measured 4 → 20 origins: Chrome grants
+   every one its own renderer, linearly, no reuse. And the instrument is not
+   blind to reuse — forcing `--renderer-process-limit=3` with 8 origins does
+   produce sharing (7 processes, not 8), so a zero here is a real zero. Even at
+   that absurd limit, `webglcontextlost` stayed **0**: the degradation is
+   graceful, not a cliff.
+3. **The saving is small and only in the worst case.** A completely full pool
+   costs ~230 MiB of renderer overhead above baseline (slope 11.4 MiB/origin
+   over the 4 → 20 sweep). Halving the cap saves ~115 MiB *only* when the pool
+   is full, and nothing at all in the ordinary case where it never fills.
+4. **The cost of lowering it is certain, not conditional.** Eviction is a
+   preview reset — scroll position, SPA route, form state, and the HMR
+   connection — paid every time the user cycles through more `(session, port)`
+   pairs than the cap. That is the regression the pool docstring exists to
+   prevent, traded for memory the user is not short of.
+
+**The finding worth acting on is a different one.** `dropSlot` has exactly two
+callers — LRU eviction and the planning#394 service-takeover case — so nothing
+releases a slot when a *background* session's preview stops or its container is
+reclaimed. Those slots hold a renderer process for a document that is already
+doomed: `PreviewFrame` reloads a retained slot when the service it was waiting
+on comes back (planning#478), precisely so the user does not return to a stale
+page. So for a reclaimed session, retention is **provably worthless** — the
+document is thrown away on return regardless.
+
+Releasing on liveness would be strictly better than lowering the cap, because it
+evicts by *whether retention can still pay off* rather than by recency, and so
+never destroys a preview that could have been restored intact. **Implemented —
+see "Releasing a stopped session's slots" below.**
+
+### Releasing a stopped session's slots
+
+planning#496. A retained slot earns its renderer process only while the preview
+it holds is still being served. Once a session's Compose stack is torn down, the
+document is talking to containers that no longer exist and `PreviewFrame`
+reloads the slot when the services return (planning#478) rather than showing the
+stale page — so the process is held for a document that is already forfeit. The
+server now says so and the browser drops the slot.
+
+**Which teardowns count is the whole difficulty, and the obvious answers are
+both wrong.** Two were checked at the source and rejected before the third:
+
+- **Runner disposal is not it.** `ContainerSessionRunner.dispose()` says in as
+  many words that it does *not* stop worker resources — "the container stays
+  alive and a new runner may reconnect to it. Stopping the preview would force a
+  full restart on reconnect." (Its *registered* `"disposed"` listener in
+  `service-manager-setup.ts` does stop the ServiceManager unless preservation
+  was armed, so disposal sometimes coincides with previews stopping — but not
+  reliably enough to key on. An unexpected container exit takes that path and
+  goes unannounced: a missed reclaim, which is the benign direction.)
+- **`container_destroyed` alone is not it either.** It fires on both teardown
+  shapes, including `destroyAgentContainer()` (`preserveChildResources`), which
+  exists precisely so a worker refresh does not interrupt the preview stack.
+- **And "the container was reclaimed" is not it**, which is where planning#496's
+  original framing was wrong. The idle enforcer is *tiered*: **tier 1** stops the
+  agent container and keeps the previews running — it tells the user "The preview
+  is still running" — and only **tier 2** stops the surviving stacks. The common
+  idle reclamation deliberately keeps previews alive, so the prize is smaller
+  than that issue assumed, and a listener that fired on tier 1 would destroy
+  exactly the preview tier 1 exists to preserve.
+
+So the signal is the narrow one. `container_destroyed` gained a
+`previewsStopped` flag, true only when the teardown both had the Compose sweep
+in scope (`!preserveChildResources`, read straight off the condition that gates
+the sweep so the two cannot drift) **and** has no replacement following it.
+That second term matters: Rescue and the create-retry path destroy fully and
+immediately rebuild, so their previews return on the same origins moments
+later, and a background document could have survived and reconnected — dropping
+it there is real state loss rather than an inevitable reload. Both pass
+`replacementFollows: true`.
+
+The SSE event **`session_previews_stopped`** is then broadcast from the two
+places previews genuinely stop: such a teardown, and tier 2's `services.stop` —
+the latter **only once `compose down` has actually resolved**. Announcing when
+the stop was merely *started* would drop a live document mid-teardown, and
+announcing on failure would drop one that is still being served; `compose down`
+is asynchronous and allowed to fail, so `trackComposeStop` gained an `onStopped`
+callback that runs on the success arm alone.
+
+**What the flag does not promise.** `cleanupSessionDockerResources` is
+deliberately best-effort — it swallows a failed list and continues past
+individual stop/remove failures — so `previewsStopped: true` asserts the shape
+of the teardown, not a verified outcome. That is the right predicate for the
+decision anyway: the paths it covers (archive, repo delete, disk-tier
+escalation, standby cleanup) are terminal for the session, so a retained
+document is not worth keeping even if some orphan survived the sweep. What it
+is not is a guarantee that no container is still listening, and no caller should
+read it as one.
+
+On the client, `notifyPreviewsStopped` → `useReleaseStoppedPreviews` →
+`IframePool.dropSessionSlots`, which routes every removal through `dropSlot` so
+a slot leaving the pool still has one cleanup path. Two properties are
+load-bearing and both are pinned by tests:
+
+- **The active session is never touched.** Its preview dying is already handled
+  where the user can see it (the planning#478 waiting overlay), and pulling the
+  iframe out from under the user is the failure mode the pool exists to prevent.
+  The guard compares against the same `sessionId` prop the rendered slot uses,
+  so it cannot disagree with what is on screen for any committed render. (Under
+  concurrent rendering there is a pre-commit window where the handler ref
+  already holds the next session's closure while the DOM still shows the
+  previous one. That is inherent to the latest-callback pattern the client uses
+  everywhere — `useEventListener` documents the same shape — and the cost here
+  is one background slot reloading, so it is accepted rather than special-cased.)
+- **A miss is benign.** A viewer that misses the event (an SSE interruption)
+  keeps the slot until LRU evicts it, which is the behaviour that shipped
+  before. That is why this is transition-keyed with no reconciling snapshot,
+  unlike docs/285's runner incarnation, where missing the signal strands a
+  viewer permanently and the authoritative snapshot is the recovery path.
+
+**Not covered:** a preview stopped some other way — `shipit service stop`, a
+service that crashes — while the session is in the background. The pane already
+handles that for the *active* session, and extending the announcement to every
+service transition would put the pool back in the business of judging liveness
+per service rather than per teardown.
+
+### Limits
+
+- **An already-open tab is not repaired.** An origin's agent-cluster key is
+  fixed for the life of its browsing-context group, so a session whose preview
+  origin was site-keyed before this shipped stays that way. A fresh tab picks up
+  the new keying; a reload within the same group may not.
+- **A service worker can answer a navigation without reaching the proxy.** A
+  cache-first preview serving its own first document from cache commits that
+  document with no header, and opts its origin out. Recorded in
+  `src/server/shipit-docs/preview.md` so the agent building such an app knows.
+- Neither is worth engineering around here: both are narrow, both self-correct
+  on a fresh browsing context, and the alternative is an origin-versioning
+  scheme that changes preview URLs — which `docs/175-preview-subdomain-only`
+  rules out.
+
 ## Key files
 
+- `src/server/orchestrator/preview-proxy.ts` — `withOriginIsolation`, applied at every preview response path
+- `src/client/hooks/useIframePool.ts` — LRU slot retention; background iframes stay mounted; `dropSessionSlots`
+- `src/client/hooks/usePreviewsStopped.ts` — the `session_previews_stopped` channel and the active-session guard
+- `src/server/orchestrator/bootstrap-managers.ts` — `announcePreviewsStopped`, wired to the two teardowns that stop previews
 - `src/server/port-scanner.ts` — `checkPort`, `scanPorts`, `DEFAULT_SCAN_PORTS`
 - `src/server/vite-manager.ts` — Vite lifecycle, wrapper config with error plugin
 - `src/server/vite-error-plugin.ts` — Error capture script injection

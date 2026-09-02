@@ -1062,4 +1062,108 @@ describe("GET /pr/list state handling", () => {
       expect(githubAuth.listPullRequestsCalls).toEqual([]);
     },
   );
+
+  it(
+    "answers non-2xx when the GitHub read failed, rather than 200 with no PRs",
+    { timeout: 15_000 },
+    async () => {
+      // The whole route used to answer 200 with `{ prs: [] }` for a 403 or a
+      // 5xx, so `gh pr list` printed "No pull requests found." and a caller
+      // read an unreadable repository as an empty one.
+      await githubAuth.setToken("test-token");
+      githubAuth.setListPrFailure("Resource not accessible by integration");
+      const { sessionId } = await setupPrimedSession();
+      const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/pr/list` });
+      expect(res.statusCode).toBe(502);
+      expect(res.json().error).toContain("Resource not accessible by integration");
+      expect(res.json().prs).toBeUndefined();
+    },
+  );
+
+  it(
+    "refuses an invalid ?limit= rather than quietly using the default",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      // `1e2`, `0x10` and `1.0` are all 100/16/1 to `Number()` but are rejected
+      // by the shim, and this route is a trust boundary of its own — the two
+      // must not answer the same question differently. `""` was supplied.
+      for (const bad of ["abc", "0", "-5", "2.5", "101", "1e2", "0x10", "1.0", ""]) {
+        const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/pr/list?limit=${bad}` });
+        expect({ bad, status: res.statusCode }).toEqual({ bad, status: 400 });
+        expect(res.json().error).toContain("between 1 and 100");
+      }
+      expect(githubAuth.listPullRequestsCalls).toEqual([]);
+    },
+  );
+
+  it(
+    "passes a valid ?limit= through to the read",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/pr/list?limit=7` });
+      expect(res.statusCode).toBe(200);
+      expect(githubAuth.listPullRequestsCalls.at(-1)?.limit).toBe(7);
+    },
+  );
+
+  it(
+    "leaves the limit undefined when the parameter is absent",
+    { timeout: 15_000 },
+    async () => {
+      // Absent means "the read picks its own default", not limit=0.
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/pr/list` });
+      expect(githubAuth.listPullRequestsCalls.at(-1)?.limit).toBeUndefined();
+    },
+  );
+
+  it(
+    "refuses a malformed ?repo= instead of listing the session's own PRs",
+    { timeout: 15_000 },
+    async () => {
+      // `--repo octocat` (no owner) used to normalize to "no repo given" and
+      // fall back to the session repository, answering 200 with the WRONG
+      // repository's pull requests.
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/pr/list?repo=octocat` });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain("Invalid --repo");
+      expect(githubAuth.listPullRequestsCalls).toEqual([]);
+    },
+  );
+
+  it(
+    "refuses a malformed ?repo= on pr/status too, as a 400 not a 500",
+    { timeout: 15_000 },
+    async () => {
+      // `/pr/status` was the one `resolvePrTarget` call site whose catch did
+      // not special-case ServiceError, so it would have answered 500 where
+      // every other PR verb answers 400.
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/pr/status?repo=octocat` });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain("Invalid --repo");
+    },
+  );
+
+  it(
+    "still answers 200 with an empty list for a repo that genuinely has none",
+    { timeout: 15_000 },
+    async () => {
+      // The other half: absence must keep its own answer, or the fix would
+      // just swap one indistinguishable pair for another.
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/pr/list` });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ prs: [] });
+    },
+  );
 });

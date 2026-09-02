@@ -131,13 +131,29 @@ describe("auto-push: success and failure", () => {
     const claude2 = await waitForClaude(() => latestClaude, prevClaude);
     claude2.finish("test-session-1");
 
-    // Wait directly for the github_push_result — bails the moment it arrives
-    // instead of paying a quiet-period tail.
-    const pushResult = await client.receiveType("github_push_result", 5000);
-    expect(pushResult).toMatchObject({
-      type: "github_push_result",
-      success: true,
-    });
+    // docs/264 — the positive confirmation, against REAL git. The count comes
+    // from `@{upstream}`, which a unit fake cannot show is right; here the turn
+    // produced exactly one commit on top of the branch the fixture pushed, so a
+    // measurement that reads "0" or "could not be measured" is a broken one.
+    // Waited on BEFORE `github_push_result` because the log line precedes it,
+    // and `receiveType` would consume past it.
+    const isCompleted = (m: WsServerMessage) =>
+      m.type === "log_append" && m.channel === "agent"
+      && m.records.some((r) => r.text.startsWith("Auto-push completed"));
+    const messages = await client.collectUntil(isCompleted, { quietMs: 250 });
+
+    const completed = messages
+      .flatMap((m) => (m.type === "log_append" ? m.records : []))
+      .map((r) => r.text)
+      .find((t) => t.startsWith("Auto-push completed"));
+    // Exactly ONE: the fixture pushed the branch, then this turn wrote one file
+    // and auto-committed once. A looser `[1-9]\d*` would go green on a
+    // measurement that counted the whole branch history.
+    expect(completed).toMatch(
+      /^Auto-push completed in \d+ms: 1 commit\(s\) was ahead of the last known remote tip\.$/,
+    );
+
+    expect(messages.some((m) => m.type === "github_push_result" && m.success)).toBe(true);
   });
 
   /**
