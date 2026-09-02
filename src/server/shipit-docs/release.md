@@ -73,6 +73,15 @@ below** (those are kept only to explain what the command does and as a fallback)
       or `--allow-empty` to cut a bump-only release on purpose. (`--bootstrap`
       implies this — the first release legitimately ships everything on the new
       branch.)
+    - **Dead-PR guard:** if `release/<version>`'s only pull request is already
+      merged or closed and cannot host new work, `prepare` **refuses** rather
+      than reporting that dead PR as an updated release. The error names the PR,
+      the branch it targeted, and the remedy — which differs by cause: re-run
+      with `--release-branch <that branch>` when this run targeted a different
+      one, pass `--from <branch>` when the release would carry no changes, or
+      release a different version (a fresh `release/<version>` branch) when the
+      old base is gone. The version bump has already been pushed to
+      `release/<version>` at that point; nothing publishes until a PR carries it.
 
     **Cold-start caveat — the merge-trigger workflow must be on the branch.**
     GitHub Actions evaluates a workflow as it exists *on the branch that was
