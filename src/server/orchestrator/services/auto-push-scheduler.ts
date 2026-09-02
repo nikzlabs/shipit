@@ -376,8 +376,14 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
    * `console.warn` runs first for the same reason: it is the surface with the
    * fewest ways to fail.
    */
-  const report = (sessionId: string, text: string): void => {
-    console.warn(`[auto-push] ${sessionId}: ${text}`);
+  const report = (sessionId: string, text: string, level: "warn" | "info" = "warn"): void => {
+    // `info` exists for the ONE outcome that is not a problem: a push that
+    // landed. It takes the same three surfaces, because the docs/264 ops read
+    // showed that reporting only failures makes silence unreadable — an
+    // operator asking "did the last five turns push?" cannot tell "pushed
+    // fine" from "failed in a way with no template" from "the line aged out".
+    if (level === "info") console.log(`[auto-push] ${sessionId}: ${text}`);
+    else console.warn(`[auto-push] ${sessionId}: ${text}`);
     try {
       deps.broadcastLog(sessionId, "server", text);
     } catch (err) {
@@ -388,6 +394,20 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
     } catch (err) {
       console.error(`[auto-push] ${sessionId}: could not emit to attached viewers:`, err);
     }
+  };
+
+  /**
+   * Git's own words, on a line of their own.
+   *
+   * The other half of the split described in `services/host-session-logs.ts`:
+   * the authored line that precedes this one carries ShipIt's classification and
+   * is ops-safe; this one carries text ShipIt does not control and is withheld
+   * at the session boundary by construction. Same three surfaces as any other
+   * `report`, so the session's OWN Logs panel loses nothing — the reader there
+   * still gets the diagnosis and the detail, one under the other.
+   */
+  const reportGitText = (sessionId: string, errMsg: string): void => {
+    report(sessionId, `Git said: ${errMsg}`);
   };
 
   /**
@@ -420,6 +440,43 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
       + `${shape.sharedBase ? "" : "; the two histories share no common commit"}.`,
       atRisk,
     ].join("");
+  };
+
+  /**
+   * How far HEAD is ahead of the last known remote tip, or null when that
+   * cannot be counted.
+   *
+   * **An estimate, and the line that reports it says so.** It is the local view
+   * (`@{upstream}`), taken BEFORE the push — a push that lands fast-forwards
+   * that ref, so afterwards the answer is always 0 — and a local view can be
+   * stale (someone else pushed) or point somewhere other than the ref
+   * `pushToOrigin` targets (a hand-configured upstream). Making it exact would
+   * put a fetch in front of every push, and `git push` does not report a count
+   * back either. So the reported wording is "N commit(s) were ahead of the last
+   * known remote tip", never "N commit(s) pushed": the push completing is the
+   * fact, the count is ShipIt's own measurement, and an operator must be able
+   * to tell which is which.
+   *
+   * Read through `@{upstream}` rather than through a branch name this function
+   * resolves for itself. One git call instead of two, and — the reason it
+   * matters — the measurement stays entirely out of the push's own control
+   * flow: `pushToOrigin` resolves the branch, decides between its two skips and
+   * reports them, and a second `getCurrentBranch()` here would sit in front of
+   * all of that. The tracking ref is also the semantically right comparison,
+   * since `GitManager.push` passes `--set-upstream` on every push.
+   *
+   * Null means "no local view" — a branch never pushed before (no upstream yet),
+   * a detached HEAD, a ref that does not resolve. Reported as unmeasured rather
+   * than as 0: a first push announcing "0 commit(s) pushed" is the misreport
+   * this module has a whole docstring about.
+   */
+  const countPendingCommits = async (git: GitManager, sessionId: string): Promise<number | null> => {
+    try {
+      return (await git.aheadBehind("@{upstream}"))?.ahead ?? null;
+    } catch (err) {
+      console.warn(`[auto-push] ${sessionId}: could not count the commits to push:`, err);
+      return null;
+    }
   };
 
   /**
@@ -641,6 +698,9 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
     // `isNonFastForwardError` matches, which is how a push that never reached the
     // remote came to be reported as a diverged branch. Skip it and retry.
     if (await rebaseInProgress(git, sessionId) && await deferForRewrite(git, sessionId)) return;
+    // Both measured before the push, for the success report below.
+    const pending = await countPendingCommits(git, sessionId);
+    const startedAt = Date.now();
     try {
       // The `onSkip` callback closes the module's last fully silent exit: both
       // of `pushToOrigin`'s null returns used to land on a bare `if (!branch)
@@ -660,18 +720,50 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
       // gets its own notice, and the next rewrite window its own retry budget.
       notifiedDiverged.delete(sessionId);
       deferrals.delete(sessionId);
-      deps.getRunner(sessionId)?.emitMessage({
-        type: "github_push_result",
-        success: true,
-        message: `Auto-pushed to origin/${branch}`,
-        branch,
-      });
-      // A push just landed → CI is about to register. Bump this session's repo
-      // to fast cadence for the post-push window so the first non-none check is
-      // observed quickly. The poller re-arms the supervisor if the gate was
-      // already open (a closed tab keeps the supervisor paused; the user will
-      // see fresh data on their next visit via forceRefreshSession).
-      deps.notifyAutoPush?.(sessionId);
+      // The positive confirmation (docs/264). Counts and a duration only — no
+      // branch, no remote, no git output — which is what lets it be an OPS-SAFE
+      // template (`services/host-session-logs.ts`) and therefore what makes
+      // "did the last five turns push?" answerable from an ops session.
+      //
+      // The push COMPLETING is the fact; the count is ShipIt's own pre-push
+      // measurement against the last known remote tip, and the wording keeps
+      // those apart (see `countPendingCommits`). "nothing was ahead" is worth
+      // its own wording because a run of it is a different diagnosis from a run
+      // of rejections — but it means what it says, not "the turn committed
+      // nothing": this scheduler is also armed by an agent-driven HEAD move.
+      const outcome = pending === null
+        ? "the commit count could not be measured."
+        : pending === 0
+          ? "nothing was ahead of the last known remote tip."
+          : `${pending} commit(s) ${pending === 1 ? "was" : "were"} ahead of the last known remote tip.`;
+      report(sessionId, `Auto-push completed in ${Date.now() - startedAt}ms: ${outcome}`, "info");
+      // Post-push bookkeeping, OUTSIDE the push's own `catch`. A throw from a
+      // viewer transport or from the PR poller is not a git failure, and
+      // letting one land in that catch reported a push that HAD ALREADY
+      // SUCCEEDED as `Auto-push failed (…)` — and, if the thrown message
+      // carried an auth marker, invalidated the user's GitHub token on the
+      // strength of it. Isolated individually, for the same reason `report`
+      // isolates its surfaces: they fail independently.
+      try {
+        deps.getRunner(sessionId)?.emitMessage({
+          type: "github_push_result",
+          success: true,
+          message: `Auto-pushed to origin/${branch}`,
+          branch,
+        });
+      } catch (emitErr) {
+        console.error(`[auto-push] ${sessionId}: could not emit the push result to viewers:`, emitErr);
+      }
+      try {
+        // A push just landed → CI is about to register. Bump this session's repo
+        // to fast cadence for the post-push window so the first non-none check is
+        // observed quickly. The poller re-arms the supervisor if the gate was
+        // already open (a closed tab keeps the supervisor paused; the user will
+        // see fresh data on their next visit via forceRefreshSession).
+        deps.notifyAutoPush?.(sessionId);
+      } catch (notifyErr) {
+        console.error(`[auto-push] ${sessionId}: could not bump the PR poller's cadence:`, notifyErr);
+      }
     } catch (err) {
       // The raw failure, named and complete, BEFORE any branch decides what to
       // make of it. In the 2026-08-18 LFS incident the stderr git actually
@@ -808,12 +900,17 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
         } catch (markErr) {
           console.error(`[auto-push] ${sessionId}: could not mark the GitHub token invalid:`, markErr);
         }
-        report(
-          sessionId,
-          invalidated
-            ? "Auto-push failed: your GitHub token is invalid or expired. Sign in again in Settings → GitHub."
-            : `Auto-push failed: ${errMsg}`,
-        );
+        if (invalidated) {
+          report(
+            sessionId,
+            "Auto-push failed: your GitHub token is invalid or expired. Sign in again in Settings → GitHub.",
+          );
+          return;
+        }
+        // Same split as the generic branch below: the class ShipIt assigned,
+        // then git's own words on their own line.
+        report(sessionId, `Auto-push failed (${failure}). The commit stays in this session's local history.`);
+        reportGitText(sessionId, errMsg);
         return;
       }
       if (failure === "lfs") {
@@ -825,19 +922,27 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
           sessionId,
           "Auto-push rejected: the remote refused the push because its Git LFS objects were not "
           + "uploaded (GH008). The commit stays in this session's local history. Run "
-          + "`git lfs push origin HEAD` in the terminal, then push again. "
-          + `Git said: ${errMsg}`,
+          + "`git lfs push origin HEAD` in the terminal, then push again.",
+        );
+        reportGitText(sessionId, errMsg);
+        return;
+      }
+      if (errMsg.includes("workflow")) {
+        report(
+          sessionId,
+          "Auto-push failed: your GitHub token needs the `workflow` scope to push changes to GitHub Actions workflow files. Update your token at https://github.com/settings/tokens.",
         );
         return;
       }
-      report(
-        sessionId,
-        errMsg.includes("workflow")
-          ? "Auto-push failed: your GitHub token needs the `workflow` scope to push changes to GitHub Actions workflow files. Update your token at https://github.com/settings/tokens."
-          // The class is in the user-visible line too: it is what tells a reader
-          // whether the message below is a divergence, a credential, or neither.
-          : `Auto-push failed (${failure}): ${errMsg}`,
-      );
+      // The split the ops-safe table asks for (docs/264): the CLASS is ShipIt's
+      // own word and lands on a line of its own, so an ops session can read
+      // WHICH kind of failure happened; git's message follows on the `Git said:`
+      // line and stays withheld across the session boundary. The class was
+      // already in the user-visible line — it is what tells a reader whether the
+      // message below is a divergence, a credential, or neither — and it stays
+      // there; what changed is that it no longer shares a line with git's text.
+      report(sessionId, `Auto-push failed (${failure}). The commit stays in this session's local history.`);
+      reportGitText(sessionId, errMsg);
     }
   }
 }

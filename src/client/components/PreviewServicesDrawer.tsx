@@ -200,11 +200,25 @@ function FocusServiceCard({
           </div>
         </div>
 
-        {/* A crashed service summarizes its error + a one-click fix above the log. */}
+        {/* A crashed service summarizes its error + a one-click fix above the log.
+            `svc.error` is raw Compose stderr, so it is unbounded — and this row
+            is `shrink-0` in the same column as the log below, so an unbounded
+            message cannot shrink and pushes the log out of the card entirely
+            (measured: a 24-line stderr left zero log visible in a 420px drawer
+            and clipped the row's own "Ask the agent to fix" link). `max-h-20` +
+            `overflow-y-auto` bound it at ~5 scrollable lines; a short error
+            renders exactly as it always did. `tabIndex` puts the clipped text
+            in the tab order so a keyboard-only user can scroll it. */}
         {isError && (
           <div className="flex items-start gap-2 px-4 py-2 shrink-0 bg-(--color-error-subtle) border-b border-(--color-error)/25 text-xs text-(--color-error)">
             <WarningCircleIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0 mt-px" />
-            <span className="min-w-0">
+            <span
+              className="min-w-0 flex-1 max-h-20 overflow-y-auto"
+              tabIndex={0}
+              role="group"
+              aria-label={`${svc.name} error detail`}
+              data-testid="service-error-detail"
+            >
               {svc.error || "Service crashed."}{" "}
               <button type="button" onClick={() => onAskFix(svc)} className="text-(--color-text-link) hover:underline font-medium whitespace-nowrap cursor-pointer">
                 Ask the agent to fix →
@@ -226,7 +240,18 @@ function FocusServiceCard({
           </div>
         ) : active ? (
           // The live log, shown directly — the reason the focus card fills the space.
-          <LogView channel={`service:${svc.name}`} send={send} />
+          // The `flex-1 min-h-0` wrapper is what makes it take the LEFTOVER space,
+          // the same way its two sibling branches and TerminalPanel's log do.
+          // `<LogView>`'s own root is `h-full`, whose flex base is the full column
+          // height and whose min-content height (search row + xterm rows) is a
+          // floor it cannot shrink past — so as a bare child it overflowed the
+          // card's `overflow-hidden` and had its last rows clipped even with no
+          // banner above it (measured: 41px clipped on a healthy service). That
+          // is also why a tall error row squeezed it to nothing rather than
+          // sharing the column with it.
+          <div className="flex-1 min-h-0" data-testid="service-log-slot">
+            <LogView channel={`service:${svc.name}`} send={send} />
+          </div>
         ) : (
           <div className="flex-1" style={{ backgroundColor: "#030712" }} />
         )}

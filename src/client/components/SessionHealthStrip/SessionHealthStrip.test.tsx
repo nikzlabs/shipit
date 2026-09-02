@@ -239,6 +239,48 @@ describe("SessionHealthStrip", () => {
     });
   });
 
+  // `lastCreateError` carries `getErrorMessage(err)` straight from a failed
+  // Docker create, so it is unbounded and routinely multi-line. The strip is a
+  // `flex: 0 1 auto` child of TerminalPanel's column and the log view is
+  // `flex-1 min-h-0`, so an unbounded error box takes its content height first
+  // and the log gets only what is left — measured in a browser at 316px of a
+  // 420px panel, leaving the log with no visible rows at all.
+  describe("a long creation error cannot squeeze out the log view", () => {
+    it("bounds the error box's height and scrolls the overflow", async () => {
+      defaultPolls({
+        ...healthMissing,
+        lastCreateError: "OCI runtime create failed: no such file or directory\n".repeat(24),
+        lastCreateErrorAt: Date.now(),
+      });
+
+      render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
+
+      // Queried by ROLE + accessible name, not by testid: that fails if either
+      // the `role` or the `aria-label` goes away, which a testid lookup would
+      // not notice.
+      const box = await screen.findByRole("group", { name: "Container creation error detail" });
+      expect(box).toHaveClass("max-h-20", "overflow-y-auto");
+      // The clipped text has to be reachable without a mouse.
+      expect(box).toHaveAttribute("tabindex", "0");
+    });
+
+    // The expanded details block sits in the same column and carries the poll
+    // error, which is unbounded too. Measured at a 420px panel with a long poll
+    // error: the block reached 232px and the log view fell to 97px, with no
+    // ceiling on either. The cap sits above the block's natural height (178px),
+    // so opening details is visually unchanged.
+    it("bounds the expanded details block, which carries the unbounded poll error", async () => {
+      fetchMock.mockRejectedValue(new Error("connect ECONNREFUSED 172.18.0.5:8080 ".repeat(20)));
+
+      render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
+      fireEvent.click(await screen.findByRole("button", { name: /details/i }));
+
+      const details = screen.getByRole("group", { name: "Session health details" });
+      expect(details).toHaveClass("max-h-48", "overflow-y-auto");
+      expect(details).toHaveAttribute("tabindex", "0");
+    });
+  });
+
   describe("button click sets rescueState with startedAt", () => {
     it("sets rescueState with startedAt when Restart agent is clicked", async () => {
       // First call: GET /container/health → missing
