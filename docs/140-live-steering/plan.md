@@ -631,10 +631,36 @@ in which that state is not this turn's:
 - **No re-dispatch.** The quota failover and the auth-heal retry re-run
   `input.prompt` on a fresh credential. That prompt is the USER's; re-running it
   because an adopted turn hit a limit repeats work the agent already did and
-  still doesn't retry what failed. Both stand down. (Reasoned from the code and
-  **not** pinned by a test — reaching the failover needs the credential-selection
-  harness on a streaming *dispatched* turn, which no existing harness builds, and
-  a test against the executor harness alone passes with the guard removed.)
+  still doesn't retry what failed. Both stand down. (The *quota* half is reasoned
+  from the code and **not** pinned by a test — reaching the failover needs the
+  credential-selection harness on a streaming *dispatched* turn, which no
+  existing harness builds, and a test against the executor harness alone passes
+  with the guard removed.)
+
+  **"No re-dispatch" is the whole rule, and reading it as "no recovery" cost a
+  user a false sign-in card.** `willRecoverAuth` used to return `false` here, and
+  the auth listener treats `false` as "no heal is possible, so this failure is
+  terminal" — so when a sibling container rotated the shared single-use Claude
+  refresh token (production 2026-09-02, session e683868e), the session serving a
+  self-wake was told to sign in while two siblings on the same account healed
+  silently within the minute. Whether the OAuth token can be healed has nothing
+  to do with whose prompt is running. The two questions are now separate:
+  `willRecoverAuth` answers only "can the credential be healed", and
+  `recoverAuth` skips the re-run for an adopted turn, ending it through the same
+  terminal teardown the failed-heal path uses. For a turn that reaches recovery
+  at all, the card is reserved for a heal that was attempted and refused (the
+  listener still decides the rest on its own: a metered key, a non-vendor
+  subscription, a turn with no healer wired). Pinned by `turn-self-wake-commit.test.ts`.
+
+  **And the flag is read after the hand-over, not before it.** `servingAdoptedTurn`
+  is set at the END of `rearmForCliStartedTurn`, which first awaits the finished
+  turn's whole post-turn sequence — a commit plus a PR round-trip. For those
+  seconds the flag reads false while the turn actually running belongs to the
+  CLI, so a 401 in that window was judged by a flag describing the wrong turn and
+  re-dispatched the user's prompt in full, side effects included — a worse
+  outcome than the card. `recoverAuth` therefore awaits `rearmInFlight` before
+  asking. That await costs an ordinary turn nothing: a re-arm exists only once
+  the invoking turn has had its own `agent_result`.
 - **The partial-turn finalize must still fire.** It is gated on
   `!receivedResult`, which deliberately survives an adoption — so an adopted turn
   that died on a bare `done` had its streamed rows left `in_progress` for the
