@@ -7,7 +7,7 @@ import path from "node:path";
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { WorkflowRunSummary, WorkflowJobSummary, WorkflowSummary } from "../github-auth-actions.js";
-import type { PullRequestDetail, PrConversation } from "../github-auth-prs.js";
+import type { PullRequestDetail, PrConversation, PrListState, ListedPullRequest } from "../github-auth-prs.js";
 import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
 import type { AutoMergeManagedReason, PrAutoMergeError } from "../../shared/types/github-types.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
@@ -1418,8 +1418,8 @@ export async function viewPullRequest(
 export async function listPullRequests(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
-  options: { state?: "open" | "closed" | "all"; remoteUrl?: string } = {},
-): Promise<{ url: string; number: number; base: string; head: string; title: string; state: "open" | "closed"; isDraft: boolean }[]> {
+  options: { state?: PrListState; remoteUrl?: string } = {},
+): Promise<ListedPullRequest[]> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
   const remote = await resolveGitHubRemote(git, options.remoteUrl);
   if ("error" in remote) throw new ServiceError(400, remote.error);

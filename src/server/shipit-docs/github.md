@@ -131,7 +131,7 @@ The shim:
 | `gh pr create [-t TITLE] [-b BODY\|--body-file FILE] [-B BASE] [-d/--draft] [--fill] [-l/--label LABEL]` | Push current branch and open a PR. Use `--body-file -` with a quoted heredoc for markdown bodies. With `--fill`, an empty body is filled from recent commits. `--label` is repeatable / comma-separated and best-effort. |
 | `gh pr edit [<n>] [-t TITLE] [-b BODY\|--body-file FILE] [--add-label LABEL] [--remove-label LABEL]` | Update title/body and/or add/remove labels. `<n>` defaults to the current branch's PR. `--add-label`/`--remove-label` are repeatable / comma-separated, may be given alone (no title/body needed), and are best-effort. `--label`/`-l` is an additive alias for `--add-label`. |
 | `gh pr view [<n>] [-c/--comments] [--json FIELDS] [-q/--jq EXPR]` | Read a PR. With `--json title,body,state,…` returns just those fields; `-q` extracts from them (see "Extracting one value" below). `--comments` prints the PR's review feedback — see "Reading review feedback" below. |
-| `gh pr list [--state open\|closed\|all] [--json …] [-q/--jq EXPR]` | List PRs in the session's repo. |
+| `gh pr list [--state open\|closed\|merged\|all] [--json …] [-q/--jq EXPR]` | List PRs in the session's repo, most recently updated first (30 rows). `--state` defaults to `open`; any other value is refused by name rather than silently listing the open ones. `--state merged` returns closed PRs that actually merged, each carrying a non-null `mergedAt`. |
 | `gh pr status` | Print the current branch's PR (or "No PR"). |
 | `gh pr comment [<n>] (-b BODY\|--body-file FILE)` | Leave an issue-style comment on a PR. |
 | `gh pr ready [<n>]` | Mark a draft PR as ready for review. |

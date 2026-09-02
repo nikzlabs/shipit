@@ -937,3 +937,49 @@ describe("repo-aware PR brokering (docs/211)", () => {
     },
   );
 });
+
+// ---------------------------------------------------------------------------
+// GET /pr/list — ?state= validation
+// ---------------------------------------------------------------------------
+
+describe("GET /pr/list state handling", () => {
+  it(
+    "defaults to open when ?state= is absent",
+    { timeout: 15_000 },
+    async () => {
+      // In-container callers omit the parameter; that must keep meaning "open".
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/pr/list` });
+      expect(res.statusCode).toBe(200);
+      expect(githubAuth.listPullRequestsCalls.at(-1)?.state).toBe("open");
+    },
+  );
+
+  it(
+    "passes ?state=merged through instead of coercing it to open",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/pr/list?state=merged` });
+      expect(res.statusCode).toBe(200);
+      expect(githubAuth.listPullRequestsCalls.at(-1)?.state).toBe("merged");
+    },
+  );
+
+  it(
+    "refuses an unknown ?state= by name rather than listing the open PRs",
+    { timeout: 15_000 },
+    async () => {
+      // The bug this replaces: `?state=merged` (and any typo) silently became
+      // `open`, so the caller got a plausible-looking wrong answer.
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/pr/list?state=bogus` });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain("open, closed, merged, all");
+      expect(githubAuth.listPullRequestsCalls).toEqual([]);
+    },
+  );
+});

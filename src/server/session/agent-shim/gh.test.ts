@@ -887,6 +887,66 @@ describe("gh pr list", () => {
     );
     expect(out.calls[0].path).toContain("state=closed");
   });
+
+  // `--state merged` used to fall through the broker's `state` fallback and
+  // list the OPEN PRs instead — no error, no warning, and a caller that
+  // reasonably concluded the repo had no merged PRs at all.
+  it("refuses an unknown --state instead of quietly listing the open PRs", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "list", "--state", "mrged"],
+      { "GET /agent-ops/pr/list": { status: 200, body: { prs: [] } } },
+    );
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain('unknown --state "mrged"');
+    expect(out.stderr).toContain("open, closed, merged, all");
+    // Refused before the network call, like an unknown --json field.
+    expect(out.calls).toEqual([]);
+  });
+
+  it("forwards --state merged rather than rejecting it", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "list", "--state", "merged"],
+      { "GET /agent-ops/pr/list": { status: 200, body: { prs: [] } } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toContain("state=merged");
+  });
+
+  it("labels a merged row 'merged', not the REST state 'closed'", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "list", "--state", "merged"],
+      {
+        "GET /agent-ops/pr/list": {
+          status: 200,
+          body: {
+            prs: [
+              { number: 9, title: "A", state: "closed", isDraft: false, head: "h", base: "b", url: "u", mergedAt: "2026-08-02T00:00:00Z" },
+            ],
+          },
+        },
+      },
+    );
+    expect(out.stdout).toContain("merged");
+    expect(out.stdout).not.toContain("closed");
+  });
+
+  it("can return mergedAt via --json", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "list", "--state", "merged", "--json", "number,mergedAt"],
+      {
+        "GET /agent-ops/pr/list": {
+          status: 200,
+          body: { prs: [{ number: 9, mergedAt: "2026-08-02T00:00:00Z" }] },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual([{ number: 9, mergedAt: "2026-08-02T00:00:00Z" }]);
+  });
 });
 
 describe("gh pr status", () => {

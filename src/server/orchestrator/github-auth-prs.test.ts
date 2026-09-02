@@ -7,12 +7,24 @@
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { viewPullRequestConversation, viewPullRequest, viewPullRequestResult } from "./github-auth-prs.js";
+import { viewPullRequestConversation, viewPullRequest, viewPullRequestResult, listPullRequests } from "./github-auth-prs.js";
 
 function mockFetch(payload: unknown, status = 200): void {
   vi.spyOn(globalThis, "fetch").mockResolvedValue(
     new Response(JSON.stringify(payload), { status, headers: { "Content-Type": "application/json" } }),
   );
+}
+
+/** Like `mockFetch`, but keeps each request's URL and body for assertions. */
+function mockFetchRecording(payload: unknown): { urls: string[]; bodies: string[] } {
+  const urls: string[] = [];
+  const bodies: string[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    urls.push(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    bodies.push(typeof init?.body === "string" ? init.body : "");
+    return new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } });
+  });
+  return { urls, bodies };
 }
 
 function graphqlPr(over: Record<string, unknown> = {}): unknown {
@@ -229,5 +241,88 @@ describe("viewPullRequest", () => {
       author: { login: "alice" }, labels: [{ name: "bug", color: "f00", description: "d" }],
       createdAt: "2026-08-01T00:00:00Z", updatedAt: "2026-08-02T00:00:00Z", mergedAt: null,
     });
+  });
+});
+
+/**
+ * `--state merged` used to reach here as `open` (the route's silent fallback),
+ * so a repository full of merged PRs answered with its OPEN ones — a wrong
+ * answer that read like a valid one.
+ *
+ * The replacement must not reintroduce that answer by another route, which is
+ * why `merged` goes to GraphQL: REST has no merged state, so it could only
+ * fetch closed PRs and filter, and a filter over one page returns "none" for a
+ * repository whose recent closes happen to be unmerged. These tests pin the
+ * server-side selection, not a client-side window.
+ */
+describe("listPullRequests", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function restPr(over: Record<string, unknown>): unknown {
+    return {
+      html_url: "u", number: 1, base: { ref: "main" }, head: { ref: "feat" },
+      title: "T", state: "closed", draft: false, merged_at: null, ...over,
+    };
+  }
+
+  function graphqlNodes(nodes: unknown[]): unknown {
+    return { data: { repository: { pullRequests: { nodes } } } };
+  }
+
+  const NODE = {
+    url: "u", number: 8, title: "T", isDraft: false,
+    mergedAt: "2026-08-02T00:00:00Z", baseRefName: "main", headRefName: "feat",
+  };
+
+  it("selects merged PRs server-side rather than filtering a page of closed ones", async () => {
+    const { urls, bodies } = mockFetchRecording(graphqlNodes([NODE]));
+    await listPullRequests("tok", "o", "r", "merged");
+    expect(urls).toEqual(["https://api.github.com/graphql"]);
+    expect(bodies[0]).toContain("states: MERGED");
+    // No REST page to fall out of: nothing asks /pulls?state=closed.
+    expect(urls.some((u) => u.includes("/pulls?"))).toBe(false);
+  });
+
+  it("returns a merge GitHub selected even when it is far from the recent closes", async () => {
+    // The page-boundary case that sank the filter-a-page approach: this PR
+    // merged long ago and would sit past any bounded scan of recent closes.
+    const { bodies } = mockFetchRecording(
+      graphqlNodes([{ ...NODE, number: 4, mergedAt: "2024-01-01T00:00:00Z" }]),
+    );
+    const prs = await listPullRequests("tok", "o", "r", "merged");
+    expect(prs.map((p) => p.number)).toEqual([4]);
+    expect(bodies[0]).toContain('"first":30');
+  });
+
+  it("normalises a merged row onto the same shape REST states return", async () => {
+    mockFetchRecording(graphqlNodes([NODE]));
+    // `state` stays "closed" because that is how GitHub models a merged PR;
+    // `mergedAt` is the field that distinguishes it.
+    expect(await listPullRequests("tok", "o", "r", "merged")).toEqual([
+      { url: "u", number: 8, base: "main", head: "feat", title: "T", state: "closed", isDraft: false, mergedAt: "2026-08-02T00:00:00Z" },
+    ]);
+  });
+
+  it("returns nothing on a GraphQL error rather than a half-mapped row", async () => {
+    mockFetch({ errors: [{ message: "Resource not accessible" }] });
+    expect(await listPullRequests("tok", "o", "r", "merged")).toEqual([]);
+  });
+
+  it("passes the REST states through untouched and carries mergedAt", async () => {
+    const { urls } = mockFetchRecording([restPr({ number: 3, state: "open", merged_at: null })]);
+    const prs = await listPullRequests("tok", "o", "r", "open");
+    expect(urls[0]).toContain("state=open");
+    expect(urls[0]).toContain("per_page=30");
+    expect(prs).toEqual([
+      { url: "u", number: 3, base: "main", head: "feat", title: "T", state: "open", isDraft: false, mergedAt: null },
+    ]);
+  });
+
+  it("reports a merged PR reached via 'all' the same way", async () => {
+    // `all` stays on REST, so mergedAt has to survive that mapping too —
+    // otherwise the two paths disagree about the same pull request.
+    mockFetchRecording([restPr({ number: 8, state: "closed", merged_at: "2026-08-02T00:00:00Z" })]);
+    const prs = await listPullRequests("tok", "o", "r", "all");
+    expect(prs[0]).toMatchObject({ state: "closed", mergedAt: "2026-08-02T00:00:00Z" });
   });
 });

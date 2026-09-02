@@ -466,18 +466,64 @@ export async function markPullRequestReady(
   return { success: true, message: "Pull request marked ready for review" };
 }
 
+/** The pull-request states `listPullRequests` accepts (real `gh`'s set). */
+export type PrListState = "open" | "closed" | "merged" | "all";
+
+/** Same set as a value, for validating a query parameter. */
+export const PR_LIST_STATES: readonly PrListState[] = ["open", "closed", "merged", "all"];
+
+/** A single row of `listPullRequests`. `mergedAt` is null unless the PR merged. */
+export interface ListedPullRequest {
+  url: string;
+  number: number;
+  base: string;
+  head: string;
+  title: string;
+  state: "open" | "closed";
+  isDraft: boolean;
+  mergedAt: string | null;
+}
+
+/** How many rows `listPullRequests` returns, matching real `gh`'s default limit. */
+const PR_LIST_PAGE = 30;
+
 /**
- * List open pull requests for a repository.
+ * `merged` asked over GraphQL, which has the state natively.
+ *
+ * REST does not: there, a merged PR is a closed one carrying a `merged_at`, so
+ * REST could only answer by fetching closed PRs and filtering — and a filter
+ * over one page is not a bound. A repository whose most recently updated closed
+ * PRs happen to be unmerged would answer "no merged pull requests", reproducing
+ * through a second mechanism exactly the wrong-but-plausible answer this state
+ * exists to remove. GraphQL does the selection server-side, so 30 merged rows
+ * are 30 merged rows however old they are.
+ */
+const MERGED_PRS_QUERY = `query($owner: String!, $repo: String!, $first: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequests(states: MERGED, first: $first, orderBy: { field: UPDATED_AT, direction: DESC }) {
+      nodes { url number title isDraft mergedAt baseRefName headRefName }
+    }
+  }
+}`;
+
+/**
+ * List a repository's pull requests in the given state.
  * Returns a small array of PR metadata sorted by most recently updated.
+ *
+ * The three REST states go to REST; `merged` goes to GraphQL (see
+ * `MERGED_PRS_QUERY`). Both shapes normalise to the same row: GitHub models a
+ * merged PR as closed, so `state` stays `"closed"` and `mergedAt` is what
+ * distinguishes it.
  */
 export async function listPullRequests(
   token: string,
   owner: string,
   repo: string,
-  state: "open" | "closed" | "all" = "open",
-): Promise<{ url: string; number: number; base: string; title: string; state: "open" | "closed"; isDraft: boolean; head: string }[]> {
+  state: PrListState = "open",
+): Promise<ListedPullRequest[]> {
+  if (state === "merged") return listMergedPullRequests(token, owner, repo);
   const res = await fetchGitHub(
-    `https://api.github.com/repos/${owner}/${repo}/pulls?state=${state}&sort=updated&direction=desc&per_page=30`,
+    `https://api.github.com/repos/${owner}/${repo}/pulls?state=${state}&sort=updated&direction=desc&per_page=${PR_LIST_PAGE}`,
     token,
   );
   if (!res.ok) return [];
@@ -489,6 +535,7 @@ export async function listPullRequests(
     title: string;
     state: "open" | "closed";
     draft: boolean;
+    merged_at?: string | null;
   }[];
   return prs.map((pr) => ({
     url: pr.html_url,
@@ -498,6 +545,47 @@ export async function listPullRequests(
     title: pr.title,
     state: pr.state,
     isDraft: pr.draft,
+    mergedAt: pr.merged_at ?? null,
+  }));
+}
+
+async function listMergedPullRequests(
+  token: string,
+  owner: string,
+  repo: string,
+): Promise<ListedPullRequest[]> {
+  const res = await fetchGitHubGraphQL(token, MERGED_PRS_QUERY, { owner, repo, first: PR_LIST_PAGE });
+  if (!res.ok) return [];
+  const data = (await res.json()) as {
+    errors?: { message: string }[];
+    data?: {
+      repository?: {
+        pullRequests?: {
+          nodes?: {
+            url: string;
+            number: number;
+            title: string;
+            isDraft: boolean;
+            mergedAt: string | null;
+            baseRefName: string;
+            headRefName: string;
+          }[];
+        };
+      };
+    };
+  };
+  if (data.errors) return [];
+  return (data.data?.repository?.pullRequests?.nodes ?? []).map((pr) => ({
+    url: pr.url,
+    number: pr.number,
+    base: pr.baseRefName,
+    head: pr.headRefName,
+    title: pr.title,
+    // GitHub models a merged PR as closed; `mergedAt` is the distinguishing
+    // field, and REST would report exactly this pair for the same PR.
+    state: "closed" as const,
+    isDraft: pr.isDraft,
+    mergedAt: pr.mergedAt,
   }));
 }
 
