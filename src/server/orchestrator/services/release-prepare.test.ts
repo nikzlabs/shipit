@@ -19,9 +19,15 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import { buildPlanProposeInput, planRelease, prepareRelease } from "./release-prepare.js";
 import type { ReleasePlan } from "./release-prepare.js";
 
-const { agentCreatePrMock } = vi.hoisted(() => ({ agentCreatePrMock: vi.fn() }));
+const { agentCreatePrMock, findBranchPullRequestMock } = vi.hoisted(() => ({
+  agentCreatePrMock: vi.fn(),
+  findBranchPullRequestMock: vi.fn(),
+}));
 
-vi.mock("./github.js", () => ({ agentCreatePr: agentCreatePrMock }));
+vi.mock("./github.js", () => ({
+  agentCreatePr: agentCreatePrMock,
+  findBranchPullRequest: findBranchPullRequestMock,
+}));
 
 interface GitOverrides {
   remoteBranches?: string[];
@@ -69,6 +75,10 @@ let dir: string;
 
 beforeEach(() => {
   agentCreatePrMock.mockReset();
+  // No pre-existing PR for the head branch — the ordinary case. Tests that need
+  // one override this.
+  findBranchPullRequestMock.mockReset();
+  findBranchPullRequestMock.mockResolvedValue(null);
   agentCreatePrMock.mockResolvedValue({
     number: 7,
     url: "https://github.com/o/r/pull/7",
@@ -322,36 +332,80 @@ describe("prepareRelease — the release PR must target the requested release br
     alreadyExistedReason: "open",
   });
 
-  const prepareInto = (releaseBranch: string) =>
-    prepareRelease(makeGit({ diffFiles: 4, remoteBranches: ["main", "stable", "stable-2"] }).git, githubAuth, {
-      dir,
-      bump: "patch",
-      releaseBranch,
-      from: "main",
-    });
+  /** Returns the git fake too, so a test can assert nothing destructive ran. */
+  const prepareInto = (releaseBranch: string) => {
+    const { git, calls } = makeGit({ diffFiles: 4, remoteBranches: ["main", "stable", "stable-2"] });
+    const promise = prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch, from: "main" });
+    return { promise, calls };
+  };
 
-  it("refuses an OPEN PR whose base is not the requested release branch", async () => {
-    agentCreatePrMock.mockResolvedValue(openPrInto("stable"));
-    await expect(prepareInto("stable-2")).rejects.toMatchObject({ statusCode: 409 });
+  async function messageFrom(promise: Promise<unknown>): Promise<string> {
+    try {
+      await promise;
+    } catch (err: unknown) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    throw new Error("expected prepareRelease to refuse, but it resolved");
+  }
+
+  // The PREFLIGHT. Refusing only on `agentCreatePr`'s result is too late: the
+  // head branch has been reset and force-pushed by then, so a typo'd
+  // `--release-branch` costs the open PR its diff, checks and reviews before we
+  // object. Nothing destructive may run.
+  it("refuses before touching the branch when the open PR targets another base", async () => {
+    findBranchPullRequestMock.mockResolvedValue({ number: 7, base: "stable", state: "open", merged: false });
+    const { promise, calls } = prepareInto("stable-2");
+    await expect(promise).rejects.toMatchObject({ statusCode: 409 });
+    expect(calls.createBranchFrom).not.toHaveBeenCalled();
+    expect(calls.commitPaths).not.toHaveBeenCalled();
+    expect(calls.forcePush).not.toHaveBeenCalled();
+    expect(agentCreatePrMock).not.toHaveBeenCalled();
   });
 
-  it("names both branches, the wrong-branch consequence, and that the bump is already pushed", async () => {
-    agentCreatePrMock.mockResolvedValue(openPrInto("stable"));
-    let message = "";
-    try {
-      await prepareInto("stable-2");
-    } catch (err: unknown) {
-      message = err instanceof Error ? err.message : String(err);
-    }
+  it("does not claim the bump was pushed when it refused before pushing", async () => {
+    findBranchPullRequestMock.mockResolvedValue({ number: 7, base: "stable", state: "open", merged: false });
+    const message = await messageFrom(prepareInto("stable-2").promise);
     expect(message).toMatch(/open pull request \(#7\) into "stable", but this release targets "stable-2"/);
     expect(message).toMatch(/wrong maintenance branch/);
     expect(message).toMatch(/--release-branch stable\b/);
-    expect(message).toMatch(/already been pushed/);
+    expect(message).not.toMatch(/already pushed/);
+  });
+
+  // A preflight can't be authoritative — the PR may be retargeted between it and
+  // the create. The check on the returned value is what actually guarantees
+  // `releaseBranch` and `prNumber` describe the same PR.
+  it("still refuses when the base changes after the preflight, and says the bump landed", async () => {
+    findBranchPullRequestMock.mockResolvedValue(null);
+    agentCreatePrMock.mockResolvedValue(openPrInto("stable"));
+    // One run only: `writeVersionToSource` mutates the temp package.json, so a
+    // second prepare in the same test would compute 0.2.2 and assert nothing.
+    const { promise, calls } = prepareInto("stable-2");
+    const message = await messageFrom(promise);
+    expect(calls.forcePush).toHaveBeenCalled();
+    expect(message).toMatch(/already pushed to "release\/0\.2\.1".*checks are stale/s);
+  });
+
+  // The branch name comes from the GitHub API and is rendered into a command the
+  // user is invited to run. Git refs may legally contain `;`, `$`, `(`, `)` and
+  // quotes, so a hostile ref must not become shell syntax we composed.
+  it("does not paste a shell-unsafe branch name into the suggested command", async () => {
+    findBranchPullRequestMock.mockResolvedValue({
+      number: 7,
+      base: "stable;$(touch /tmp/pwned)",
+      state: "open",
+      merged: false,
+    });
+    const message = await messageFrom(prepareInto("stable-2").promise);
+    expect(message).toMatch(/--release-branch <branch>/);
+    expect(message).not.toMatch(/--release-branch stable;/);
+    // The raw name still appears as quoted prose, so the user can identify it.
+    expect(message).toContain('into "stable;$(touch /tmp/pwned)"');
   });
 
   it("accepts an OPEN PR that does target the requested release branch", async () => {
+    findBranchPullRequestMock.mockResolvedValue({ number: 7, base: "stable", state: "open", merged: false });
     agentCreatePrMock.mockResolvedValue(openPrInto("stable"));
-    await expect(prepareInto("stable")).resolves.toMatchObject({
+    await expect(prepareInto("stable").promise).resolves.toMatchObject({
       kind: "pr-opened",
       prNumber: 7,
       releaseBranch: "stable",
@@ -373,7 +427,7 @@ describe("prepareRelease — the release PR must target the requested release br
       deletions: 1,
       alreadyExisted: false,
     });
-    await expect(prepareInto("stable")).resolves.toMatchObject({
+    await expect(prepareInto("stable").promise).resolves.toMatchObject({
       kind: "pr-opened",
       prNumber: 9,
       alreadyExisted: false,

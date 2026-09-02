@@ -441,12 +441,21 @@ export async function registerGitHubRoutes(
         // exactly those failures — the routinely-hit ones — with the container
         // still on its pre-prepare `shipit.yaml`, compose file and node_modules,
         // which is the condition `workspace-rewrite.ts` exists to prevent.
-        // Over-notifying is the safe direction: the helper is best-effort and
-        // idempotent, and this route already fires it for the prerelease path,
-        // which rewrites nothing at all.
+        //
+        // Gated on `treeRewritten` rather than fired unconditionally, because
+        // the notification is NOT free: `reevaluateWorkspaceConfig` can rerun
+        // service setup or queue a Compose reconcile (which clears the service
+        // map, poller and log followers), and `notifyWorkspaceRewritten` opens
+        // the install gate, tearing down install-gated preview services before
+        // the content-key marker is checked. Firing that after an auth failure,
+        // a dirty tree or a prerelease tag — none of which touch the worktree —
+        // would disrupt a live session for no reason. `prepareRelease` reports
+        // the one moment that matters, so this asks it instead of guessing.
+        let treeRewritten = false;
         let result;
         try {
           result = await prepareRelease(git, deps.githubAuthManager, {
+            onTreeRewrite: () => { treeRewritten = true; },
             dir: gitDir,
             bump: request.body?.bump,
             prerelease: request.body?.prerelease,
@@ -466,7 +475,7 @@ export async function registerGitHubRoutes(
             chatHistory: deps.chatHistoryManager,
           });
         } finally {
-          if (gitDir === dir) {
+          if (gitDir === dir && treeRewritten) {
             onWorkspaceRewritten(deps.runnerRegistry.get(request.params.id), "release-prepare");
           }
         }

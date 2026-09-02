@@ -233,21 +233,34 @@ shim handler → worker relay → orchestrator service) wraps the deterministic 
   stable-2`. The result would then pair that PR's number with the *requested*
   branch, and both the shim and the lifecycle poller would name a maintenance
   branch the PR does not target; merging it publishes through the wrong one.
-  Worse than the dead-PR case, because it succeeds. `prepareFinalRelease`
-  therefore also requires `pr.baseBranch === releaseBranch`. The create path
-  cannot trip it: `agentCreatePr` opens against `base: releaseBranch` and echoes
-  that value back.
+  Worse than the dead-PR case, because it succeeds. The create path cannot trip
+  it: `agentCreatePr` opens against `base: releaseBranch` and echoes that value
+  back.
 
-  **Both guards throw AFTER the worktree was rewritten**, which is why the route
-  fires `onWorkspaceRewritten` in a `finally` rather than after a successful
-  return. `prepareRelease` rewrites the tree before most of the ways it can fail
-  — the content-free guard, the no-op-bump 500, the force-push, `agentCreatePr`'s
-  own errors, and these two guards all throw once `createBranchFrom` has checked
-  the release branch out — so notifying only on success left exactly the
-  routinely-hit failures with the container still on its pre-prepare
-  `shipit.yaml`, compose file and `node_modules`. Over-notifying is the safe
-  direction: the helper is best-effort and idempotent, and the route already
-  fired it for the prerelease path, which rewrites nothing.
+  It is checked **twice, on purpose**. A PREFLIGHT (`findBranchPullRequest`,
+  exported from `github.ts` for exactly this) runs before `createBranchFrom`,
+  because `agentCreatePr` force-pushes the head branch *before* it decides
+  anything — so a caller that only inspects its RESULT has already replaced the
+  open PR's payload and voided its diff, checks and reviews, for a run it is
+  about to refuse. A typo'd `--release-branch` must not cost that. The check on
+  the returned value then stays as the authoritative one: the PR can be
+  retargeted between the two moments, and only it can guarantee `releaseBranch`
+  and `prNumber` describe the same pull request. The message says which of the
+  two fired, since "nothing happened yet" and "your PR's checks are now stale"
+  are different situations for the user.
+
+  Both guards, and most other failures, throw AFTER the worktree was rewritten —
+  which is why the route fires `onWorkspaceRewritten` from a `finally` rather
+  than after a successful return. But it fires it **only when the tree was
+  actually rewritten**, which `prepareRelease` reports through an `onTreeRewrite`
+  callback invoked at each `checkout -B`. Notifying unconditionally is NOT a free
+  simplification, and an earlier revision of this doc wrongly said it was: a
+  spurious call can rerun service setup or queue a Compose `reconcile()` (which
+  clears the service map, the poller and the log followers), and
+  `notifyWorkspaceRewritten` opens the install gate, tearing down install-gated
+  preview services before the content-key marker is checked. An auth failure, a
+  dirty tree or a prerelease tag touches no worktree and must disturb none of
+  that.
 
   **`--from` takes the incoming tree WHOLESALE (conflict-proof), it does NOT
   three-way merge.** A `--from main` release should ship exactly main's tree at the

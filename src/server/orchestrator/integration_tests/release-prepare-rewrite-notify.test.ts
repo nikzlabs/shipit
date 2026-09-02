@@ -30,11 +30,11 @@ import {
   createTestCredentialStore,
   createTestDatabaseManager,
 } from "./test-helpers.js";
-import { DatabaseManager } from "../../shared/database.js";
+import type { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
-import { CredentialStore } from "../credential-store.js";
+import type { CredentialStore } from "../credential-store.js";
 
 let tmpDir: string;
 let app: Awaited<ReturnType<typeof buildApp>>;
@@ -128,9 +128,12 @@ function setupRemoteWithStable(sessionDir: string): void {
   execSync("git push origin main:stable", { cwd: sessionDir, env });
 }
 
-async function postPrepare(sessionId: string): Promise<{ status: number; body: { error?: string } }> {
+async function postPrepare(
+  sessionId: string,
+  extra: Record<string, unknown> = {},
+): Promise<{ status: number; body: { error?: string } }> {
   const http = await import("node:http");
-  const body = JSON.stringify({ bump: "patch" });
+  const body = JSON.stringify({ bump: "patch", ...extra });
   return new Promise((resolve, reject) => {
     const req = http.request(
       `http://127.0.0.1:${port}/api/sessions/${sessionId}/release/prepare`,
@@ -182,5 +185,37 @@ describe("Integration: release prepare tells the container its tree was rewritte
       env: { ...process.env, HOME: tmpDir },
     }).toString().trim();
     expect(head).toBe("release/0.2.1");
+  });
+
+  /**
+   * The other half of the contract, and the reason this isn't an unconditional
+   * `finally`. The notification is not free — `reevaluateWorkspaceConfig` can
+   * queue a Compose reconcile that clears the service map, poller and log
+   * followers, and `notifyWorkspaceRewritten` opens the install gate, tearing
+   * down install-gated preview services. Firing it after a failure that never
+   * touched the worktree would disrupt a live session for nothing.
+   */
+  it("does NOT notify when prepare fails before touching the worktree", async () => {
+    const { sessionId, sessionDir } = await createSession();
+    setupRemoteWithStable(sessionDir);
+
+    const runner = app.runnerRegistry.get(sessionId);
+    const rewrites: string[] = [];
+    (runner as { notifyWorkspaceRewritten?: (label: string) => void }).notifyWorkspaceRewritten = (label) => {
+      rewrites.push(label);
+    };
+
+    // `stable` exists, but this run asks for a maintenance branch that doesn't —
+    // refused up front, before any `checkout -B`.
+    const res = await postPrepare(sessionId, { releaseBranch: "nonexistent" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/doesn't exist on the remote/);
+
+    expect(rewrites).toEqual([]);
+    const head = execSync("git rev-parse --abbrev-ref HEAD", {
+      cwd: sessionDir,
+      env: { ...process.env, HOME: tmpDir },
+    }).toString().trim();
+    expect(head).not.toBe("release/0.2.1");
   });
 });
