@@ -42,8 +42,6 @@ import { ProviderRouteUnavailableError } from "./provider-route-preflight.js";
  * docs/260 §3 — one refused attempt in a turn's attempt loop: which credential,
  * what the provider actually said, and when it claims the window resets.
  */
-import fsTrace from "node:fs";
-const TRACE=(m: string)=>{if(process.env.SHI_TRACE){try{fsTrace.appendFileSync("/tmp/shi-trace.log",`${Date.now()%1000000} pid${process.pid} ${m}\n`);}catch{/* ignore */}}};
 export interface RefusedAttempt {
   routeId: string;
   label: string;
@@ -620,9 +618,7 @@ export async function executeAgentTurn(
    * paths in general, with its own test, not a rider on this one.
    */
   const settleTurnWithoutRedispatch = async (): Promise<void> => {
-    TRACE(`settleTurnWithoutRedispatch enter rearmInFlight=${!!rearmInFlight}`);
     if (rearmInFlight) await rearmInFlight;
-    TRACE(`settleTurnWithoutRedispatch past-wait servingAdopted=${servingAdoptedTurn} commitAndPrMemo=${!!commitAndPrPromise} commitMemo=${!!commitPromise}`);
     holdPostTurn();
     try {
       if (runner) runner.running = false;
@@ -1151,7 +1147,6 @@ export async function executeAgentTurn(
     // `drainNext` starts nothing, so no later turn's edits can be swept into
     // this turn's commit.
     onError: async () => {
-      TRACE(`onError enter rearmInFlight=${!!rearmInFlight} commitAndPrMemo=${!!commitAndPrPromise}`);
       agentErrored = true;
       // docs/140 — an ADOPTED turn can die here (an adapter error, a crashed
       // process) while its re-arm is still awaiting the predecessor's post-turn
@@ -1163,7 +1158,6 @@ export async function executeAgentTurn(
       // while a re-arm is genuinely running, so the ordinary error path is
       // unchanged. (Defined below; `onError` fires long after.)
       if (rearmInFlight) await rearmInFlight;
-      TRACE(`onError past-wait commitAndPrMemo=${!!commitAndPrPromise} commitMemo=${!!commitPromise}`);
       holdPostTurn();
       try {
         finishTurn();
@@ -1598,13 +1592,9 @@ export async function executeAgentTurn(
    * in flight awaits the same commit instead of racing a second `git add -A`.
    */
   let commitPromise: Promise<string | null> | null = null;
-  const commitOnce = (): Promise<string | null> => {
-    TRACE(`commitOnce called memoHit=${!!commitPromise}`);
-    return (commitPromise ??= runCommit());
-  };
+  const commitOnce = (): Promise<string | null> => (commitPromise ??= runCommit());
 
   const runCommitAndPrInner = async (): Promise<void> => {
-    TRACE(`runCommitAndPrInner RUNNING postTurn=${postTurn}`);
     // docs/169 — rebase turns commit via `git rebase --continue` and force-push
     // after the whole flow; auto-committing here would corrupt the rebase.
     if (postTurn === "none") return;
@@ -1661,10 +1651,7 @@ export async function executeAgentTurn(
    * duplicate PR round-trip.
    */
   let commitAndPrPromise: Promise<void> | null = null;
-  const runCommitAndPr = (): Promise<void> => {
-    TRACE(`runCommitAndPr called memoHit=${!!commitAndPrPromise}`);
-    return (commitAndPrPromise ??= runCommitAndPrInner());
-  };
+  const runCommitAndPr = (): Promise<void> => (commitAndPrPromise ??= runCommitAndPrInner());
 
   // The SSE `session_agent_finished` broadcast is a pure UI signal aimed at
   // OTHER tabs/viewers — the active viewer already learned `running=false` over
@@ -1826,9 +1813,7 @@ export async function executeAgentTurn(
     await postTurnStep("read-head-at-adoption", async () => {
       headAtAdoption.value = (await input.readTurnStartHeadHash?.()) ?? null;
     });
-    TRACE(`rearm awaiting post-turn (streamingPostTurn=${!!streamingPostTurn})`);
     await postTurnStep("await-post-turn", () => streamingPostTurn ?? Promise.resolve());
-    TRACE(`rearm past-await streamingPostTurnFired=${streamingPostTurnFired}`);
     // A second edge can arrive while we await (a wake and the wake turn's first
     // assistant event are separate frames): the first one through re-arms and
     // the rest see the cleared flag and stand down.
@@ -1852,7 +1837,6 @@ export async function executeAgentTurn(
     // adopted turn — but not free, and a reader that threw says so only in the
     // server log.
     turnStartHeadHash = headAtAdoption.value;
-    TRACE("rearm CLEARING memos");
     commitPromise = null;
     commitAndPrPromise = null;
     resultTurnSummary = null;
