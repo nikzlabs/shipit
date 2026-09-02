@@ -218,12 +218,13 @@ describe("PreviewServicesDrawer", () => {
       render(<PreviewServicesDrawer services={services} {...baseProps()} />);
       fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
 
-      const box = screen.getByTestId("service-error-detail");
-      expect(box.className).toContain("max-h-20");
-      expect(box.className).toContain("overflow-y-auto");
+      // Queried by ROLE + accessible name, not by testid: that fails if either
+      // the `role` or the `aria-label` goes away, which a testid lookup would
+      // not notice.
+      const box = screen.getByRole("group", { name: "db error detail" });
+      expect(box).toHaveClass("max-h-20", "overflow-y-auto");
       // The clipped text has to be reachable without a mouse.
-      expect(box.getAttribute("tabindex")).toBe("0");
-      expect(box.getAttribute("aria-label")).toBe("db error detail");
+      expect(box).toHaveAttribute("tabindex", "0");
     });
 
     it("gives the log view a flex-1 min-h-0 slot so it takes the leftover space", () => {
@@ -240,8 +241,7 @@ describe("PreviewServicesDrawer", () => {
       // which carries `flex-1 min-h-0` itself, so a class check on it passes
       // whether or not the wrapper exists.
       const slot = screen.getByTestId("service-log-slot");
-      expect(slot.className).toContain("flex-1");
-      expect(slot.className).toContain("min-h-0");
+      expect(slot).toHaveClass("flex-1", "min-h-0");
       expect(slot).toContainElement(screen.getByTestId("log-view"));
     });
   });

@@ -255,12 +255,29 @@ describe("SessionHealthStrip", () => {
 
       render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
 
-      const box = await screen.findByTestId("container-create-error");
-      expect(box.className).toContain("max-h-20");
-      expect(box.className).toContain("overflow-y-auto");
+      // Queried by ROLE + accessible name, not by testid: that fails if either
+      // the `role` or the `aria-label` goes away, which a testid lookup would
+      // not notice.
+      const box = await screen.findByRole("group", { name: "Container creation error detail" });
+      expect(box).toHaveClass("max-h-20", "overflow-y-auto");
       // The clipped text has to be reachable without a mouse.
-      expect(box.getAttribute("tabindex")).toBe("0");
-      expect(box.getAttribute("aria-label")).toBe("Container creation error detail");
+      expect(box).toHaveAttribute("tabindex", "0");
+    });
+
+    // The expanded details block sits in the same column and carries the poll
+    // error, which is unbounded too. Measured at a 420px panel with a long poll
+    // error: the block reached 232px and the log view fell to 97px, with no
+    // ceiling on either. The cap sits above the block's natural height (178px),
+    // so opening details is visually unchanged.
+    it("bounds the expanded details block, which carries the unbounded poll error", async () => {
+      fetchMock.mockRejectedValue(new Error("connect ECONNREFUSED 172.18.0.5:8080 ".repeat(20)));
+
+      render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
+      fireEvent.click(await screen.findByRole("button", { name: /details/i }));
+
+      const details = screen.getByRole("group", { name: "Session health details" });
+      expect(details).toHaveClass("max-h-48", "overflow-y-auto");
+      expect(details).toHaveAttribute("tabindex", "0");
     });
   });
 
