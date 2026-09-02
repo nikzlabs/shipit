@@ -42,10 +42,19 @@ but cannot land it. This feature moves the permission to the **repository**.
 12. The permission for sandbox sessions does not change. A sandbox session has
     no repository record, so it keeps its own per-session grant.
 13. Ops sessions cannot merge. Their behaviour does not change.
+14. A merge includes the work that the agent did in the same turn. The merge
+    command commits the pending changes and pushes them before it merges.
+15. If ShipIt cannot commit the pending changes, the merge does not happen. The
+    agent is told why, and the pull request stays open.
+16. The checks in req 7 apply to the code that the merge lands. If the push in
+    req 14 adds new commits, the checks for those new commits decide the merge.
 
 ## Open questions
 
-None.
+- After the push in req 14, the checks for the new commits start again, so a
+  direct merge is nearly always refused for pending checks (req 16). Should the
+  merge command then wait for green by itself, or refuse and let the agent
+  decide? See the question put to the user on 2026-09-02.
 
 ## Resolved questions
 
@@ -63,3 +72,8 @@ None.
   the agent can grant itself. This keeps the rule from
   `docs/224-sandbox-merge-capability`: a capability is set server-side and is
   never inferred from workspace files. (req 3)
+- 2026-09-02 — The agent works in the turn, and ShipIt commits only after the
+  turn ends. Must the merge command commit and push first? **Answer: yes.**
+  Without it the merge lands the state from before the turn, and the agent
+  believes its work shipped. `agentCreatePr()` already flushes this way through
+  `flushPendingTurnCommit()`; the merge must do the same. (req 14, 15, 16)
