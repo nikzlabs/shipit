@@ -136,6 +136,16 @@ export interface DepDirPublishOutcome {
   depth?: number;
   /** Base generation after the publish (bumps on advance/flatten/reset). */
   generation?: number;
+  /**
+   * How many pull+extract attempts this dep dir needed (see
+   * {@link SNAPSHOT_ATTEMPTS}). `1` is the ordinary case; `2` says the retry fired,
+   * i.e. the first read raced a concurrent write into the dep dir — the production
+   * degradation the retry exists for. Without this, a retry that keeps succeeding
+   * looks exactly like a run that never raced, so the churn is unmeasurable from
+   * the logs. Absent when no pull was attempted (aborted before it started, or an
+   * install that declined every dir before any I/O).
+   */
+  attempts?: number;
 }
 
 /**
@@ -176,8 +186,16 @@ async function pullSnapshotWithRetry(args: {
   fetchSnapshot: (workerUrl: string, depDir: string, signal?: AbortSignal) => Promise<Readable>;
   extract: (stream: Readable, destDir: string) => Promise<void>;
   signal?: AbortSignal;
+  /**
+   * Written on every attempt, so the count survives the THROW as well as the
+   * return. A plain return value would report the retry only when it succeeded,
+   * and the case worth measuring most is the dep dir that raced twice and was
+   * declined — see `DepDirPublishOutcome.attempts`.
+   */
+  progress: { attempts: number };
 }): Promise<void> {
   for (let attempt = 1; ; attempt++) {
+    args.progress.attempts = attempt;
     try {
       const stream = await args.fetchSnapshot(args.workerUrl, args.depDir, args.signal);
       await args.extract(stream, args.destDir);
@@ -286,6 +304,9 @@ export async function publishDepDirOverlayBases(
       continue;
     }
     let tmpDir: string | null = null;
+    // Mutable so the count is readable from BOTH the success path below and the
+    // catch — a dep dir that raced on every attempt is the one worth counting.
+    const pull = { attempts: 0 };
     try {
       tmpDir = fs.mkdtempSync(path.join(tmpRoot, "ovl-pub-"));
       await pullSnapshotWithRetry({
@@ -294,6 +315,7 @@ export async function publishDepDirOverlayBases(
         destDir: tmpDir,
         fetchSnapshot,
         extract,
+        progress: pull,
         ...(args.signal ? { signal: args.signal } : {}),
       });
       // Never publish an empty snapshot. A legitimate post-install dep dir is
@@ -304,7 +326,7 @@ export async function publishDepDirOverlayBases(
       // would install an empty base under the scope's pointer, which the
       // equal-commit skip then makes permanent. Decline instead.
       if (fs.readdirSync(tmpDir).length === 0) {
-        outcomes.push({ depDir, outcome: "skipped-empty" });
+        outcomes.push({ depDir, outcome: "skipped-empty", attempts: pull.attempts });
         continue;
       }
       const res = await publishBase({
@@ -326,12 +348,15 @@ export async function publishDepDirOverlayBases(
         outcome: res.outcome,
         depth: res.pointer?.depth,
         generation: res.pointer?.generation,
+        attempts: pull.attempts,
       });
     } catch (err) {
       outcomes.push({
         depDir,
         outcome: "error",
         error: err instanceof Error ? err.message : String(err),
+        // Zero when the throw came from `mkdtempSync`, before any pull started.
+        ...(pull.attempts > 0 ? { attempts: pull.attempts } : {}),
       });
     } finally {
       if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -353,13 +378,21 @@ export async function publishDepDirOverlayBases(
  *
  * Shape (stable for log parsing — `grep '\[overlay-measure\]' | ...`):
  *
- *   [overlay-measure] session=<id> repo=<url> install_ok=<bool> install_ms=<n> dirs=node_modules:created:d1g1,...
+ *   [overlay-measure] session=<id> repo=<url> install_ok=<bool> install_ms=<n> \
+ *     dirs=<depDir>:<outcome>[:d<depth>g<generation>][:a<attempts>],...
  *
  * `install_ms` is the orchestrator-observed wall-clock from install kickoff to
  * resolve — a marker-skip (deps already materialized / "main unchanged") resolves
  * in ~tens of ms, a real install in seconds, so duration alone classifies the
- * scenario; the per-dir `outcome:d<depth>g<generation>` suffix gives the publish
- * result and the overlay depth that drives the depth-cap decision.
+ * scenario; the per-dir `d<depth>g<generation>` segment gives the publish result
+ * and the overlay depth that drives the depth-cap decision.
+ *
+ * The `a<attempts>` segment is emitted **only when the retry fired** (`attempts > 1`),
+ * so an ordinary run's line is byte-identical to before and `grep ':a'` counts the
+ * dep dirs that raced a concurrent write. Each segment is independently optional and
+ * self-identifying by its leading letter, which is what keeps the grammar parseable
+ * as segments are added — an error dir carries no pointer and so renders `:a2` with
+ * no `d…g…` before it.
  */
 export function formatOverlayMeasurement(args: {
   sessionId: string;
@@ -371,7 +404,8 @@ export function formatOverlayMeasurement(args: {
   const dirs = args.outcomes
     .map((o) => {
       const depth = o.depth !== undefined ? `:d${o.depth}g${o.generation ?? "?"}` : "";
-      return `${o.depDir}:${o.outcome}${depth}`;
+      const attempts = o.attempts !== undefined && o.attempts > 1 ? `:a${o.attempts}` : "";
+      return `${o.depDir}:${o.outcome}${depth}${attempts}`;
     })
     .join(",");
   return (
