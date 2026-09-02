@@ -1,5 +1,5 @@
-import { CircleNotchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
+import { Spinner } from "./Spinner.js";
 import type { StreamingActivity } from "./StreamingIndicator.js";
 
 interface AgentStatusBarProps {
@@ -14,10 +14,7 @@ export function AgentStatusBar({ activity }: AgentStatusBarProps) {
   // 8px gap and we leave bottom padding at 0.
   return (
     <div className="mx-4 px-4 py-0 last:pb-2 flex items-center gap-1.5">
-      <CircleNotchIcon
-        size={ICON_SIZE.XS}
-        className="animate-spin text-(--color-text-tertiary)"
-      />
+      <Spinner size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />
       <span className="text-xs text-(--color-text-tertiary)">
         {activity?.label ?? "Working..."}
       </span>

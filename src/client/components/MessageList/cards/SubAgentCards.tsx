@@ -1,6 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: fetches the consult output the serve-path projection stripped (docs/244, planning#299) when the viewer opens, with cancellation on close — an external-system read with cleanup.
 import { useState, useEffect } from "react";
-import { ArrowsOutSimpleIcon, CircleNotchIcon } from "@phosphor-icons/react";
+import { Spinner } from "../../Spinner.js";
+import { ArrowsOutSimpleIcon } from "@phosphor-icons/react";
 import type { SubAgentConsultCard as SubAgentConsultCardData } from "../../../../server/shared/types.js";
 import { subAgentPreviewLine } from "../../../../server/shared/transcript-slice.js";
 import { getHarness, getModel } from "../../../../server/shared/catalogue/index.js";
@@ -77,7 +78,7 @@ export function SubAgentSpawnChipRow({ chip }: { chip: SubAgentSpawnChip }) {
   return (
     <div className="flex justify-start" data-testid="sub-agent-spawn-chip">
       <div className="flex items-center gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-2 text-xs text-(--color-text-secondary)">
-        <CircleNotchIcon size={14} className="animate-spin text-(--color-text-tertiary)" />
+        <Spinner size={14} className="text-(--color-text-tertiary)" />
         Asking {name}… <span className="text-(--color-text-tertiary)">(often several minutes)</span>
       </div>
     </div>
@@ -166,7 +167,7 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
         data-pending="true"
         className="flex items-start gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-1.5 text-xs text-(--color-text-tertiary)"
       >
-        <CircleNotchIcon size={14} className="mt-0.5 shrink-0 animate-spin text-(--color-text-tertiary)" />
+        <Spinner size={14} className="mt-0.5 shrink-0 text-(--color-text-tertiary)" />
         <div className="min-w-0">
           {summary}
           <RunAttribution text={attribution} />

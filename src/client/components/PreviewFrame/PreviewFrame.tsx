@@ -1,7 +1,8 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: auth-blocked detection + iframe refresh (external system sync)
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { Spinner } from "../Spinner.js";
 import { useEventListener } from "../../hooks/useEventListener.js";
-import { WarningIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon } from "@phosphor-icons/react";
+import { WarningIcon, ArrowClockwiseIcon, ArrowSquareOutIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { Button } from "../ui/button.js";
 import type { PreviewError } from "../../hooks/usePreviewErrors.js";
@@ -740,7 +741,7 @@ export function PreviewFrame({
     overlayContent = (
       <div className="text-center space-y-3 max-w-sm px-4">
         {starting
-          ? <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
+          ? <Spinner size={ICON_SIZE.MD} className="mx-auto text-(--color-accent)" />
           : <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />}
         <p className="font-medium">
           {starting
@@ -760,7 +761,7 @@ export function PreviewFrame({
   } else if (showStarting && !showIframe) {
     overlayContent = (
       <div className="text-center space-y-3">
-        <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
+        <Spinner size={ICON_SIZE.MD} className="mx-auto text-(--color-accent)" />
         <p>Starting dev server...</p>
       </div>
     );
@@ -1023,13 +1024,13 @@ export function PreviewFrame({
         {/* Transition overlay while polling for new session/port (background iframe may be visible underneath) */}
         {isTransitioning && !overlayContent && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/10 pointer-events-none">
-            <CircleNotchIcon size={ICON_SIZE.MD} className="animate-spin text-(--color-accent)" />
+            <Spinner size={ICON_SIZE.MD} className="text-(--color-accent)" />
           </div>
         )}
         {/* Stale iframe with spinner during session switch (showStarting + old iframe still visible) */}
         {showStarting && showIframe && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/10 pointer-events-none">
-            <CircleNotchIcon size={ICON_SIZE.MD} className="animate-spin text-(--color-accent)" />
+            <Spinner size={ICON_SIZE.MD} className="text-(--color-accent)" />
           </div>
         )}
         {/* State overlay — covers the iframe area */}

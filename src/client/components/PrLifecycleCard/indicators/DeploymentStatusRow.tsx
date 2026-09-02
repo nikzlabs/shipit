@@ -1,5 +1,6 @@
 import type { GitHubDeploymentStatus } from "../../../../server/shared/types.js";
-import { GlobeIcon, XCircleIcon, CircleNotchIcon } from "@phosphor-icons/react";
+import { Spinner } from "../../Spinner.js";
+import { GlobeIcon, XCircleIcon } from "@phosphor-icons/react";
 
 export function DeploymentStatusRow({ deployments }: { deployments: GitHubDeploymentStatus[] }) {
   if (deployments.length === 0) return null;
@@ -12,7 +13,7 @@ export function DeploymentStatusRow({ deployments }: { deployments: GitHubDeploy
         const isFailed = d.state === "failure" || d.state === "error";
         return (
           <div key={`${d.environment}-${i}`} className="flex items-center gap-1.5 text-xs">
-            {isPending && <CircleNotchIcon size={12} className="text-(--color-warning) animate-spin shrink-0" />}
+            {isPending && <Spinner size={12} className="text-(--color-warning) shrink-0" />}
             {isActive && <GlobeIcon size={12} className="text-(--color-success) shrink-0" />}
             {isFailed && <XCircleIcon size={12} className="text-(--color-error) shrink-0" />}
             {!isPending && !isActive && !isFailed && <GlobeIcon size={12} className="text-(--color-text-tertiary) shrink-0" />}

@@ -10,11 +10,10 @@
  */
 
 import { useState, useCallback } from "react";
+import { Spinner } from "../Spinner.js";
 import {
   ArrowsClockwiseIcon,
-  SkullIcon,
-  CircleNotchIcon,
-  CaretDownIcon,
+  SkullIcon, CaretDownIcon,
   CaretUpIcon,
   StethoscopeIcon,
   CpuIcon,
@@ -203,7 +202,7 @@ export function RecoveryActions({
         title={canKillAgent ? "Force-kill the agent process (SIGKILL). Use when interrupt didn't take." : "No agent running"}
       >
         {isKilling
-          ? <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+          ? <Spinner size={ICON_SIZE.XS} />
           : <SkullIcon size={ICON_SIZE.XS} />}
         Kill agent
       </Button>
@@ -215,7 +214,7 @@ export function RecoveryActions({
         title="Destroy and recreate just the agent container. Leaves the compose stack running — use when the agent is wedged but your preview/dev-server are fine."
       >
         {isRestarting
-          ? <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+          ? <Spinner size={ICON_SIZE.XS} />
           : <CpuIcon size={ICON_SIZE.XS} />}
         Restart agent
       </Button>
@@ -227,7 +226,7 @@ export function RecoveryActions({
         title="Stop the compose stack, destroy the agent container, then recreate everything from scratch. Use when the session is wedged."
       >
         {isRestarting
-          ? <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+          ? <Spinner size={ICON_SIZE.XS} />
           : <ArrowsClockwiseIcon size={ICON_SIZE.XS} />}
         Rescue session
       </Button>

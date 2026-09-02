@@ -15,6 +15,8 @@
 
 import { sessionRelativePath } from "../path-utils.js";
 import { pluginSkillLabel } from "../../server/shared/plugin-skill-marker.js";
+import { Spinner } from "./Spinner.js";
+import { ICON_SIZE } from "../design-tokens.js";
 
 export interface StreamingActivity {
   /** Human-readable label for current activity (e.g., "Editing src/app.ts") */
@@ -25,9 +27,7 @@ export interface StreamingActivity {
 
 /** Small spinner icon for in-progress tool executions. */
 export function ToolSpinner() {
-  return (
-    <span className="tool-spinner inline-block w-3 h-3 border border-(--color-info) border-t-transparent rounded-full" />
-  );
+  return <Spinner size={ICON_SIZE.XS} className="text-(--color-info)" />;
 }
 
 /**

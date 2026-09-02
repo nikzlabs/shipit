@@ -6,15 +6,51 @@
 - [x] The search jump re-centres until the transcript's height settles (req 7). A group-sized
       `contain-intrinsic-size` estimate resolves to the real height in the frame the jump reveals
       it, so a single `scrollIntoView` lands beside the match rather than on it
-- [x] An infinite animation animates only `transform`/`opacity` and steps at ~10 Hz, so an
-      indicator stops dragging the main-thread rendering lifecycle through every vsync (req 13)
+- [x] ~~An infinite animation animates only `transform`/`opacity` and steps at ~10 Hz~~ —
+      superseded 2026-09-02. The rate cap was a visual regression (req 14) and did not hold the
+      rate either, since step boundaries are per-animation. Replaced by: an infinite animation
+      animates `opacity` and nothing else, unstepped and smooth (reqs 13 + 14)
+- [x] Spinners are one `<Spinner />` — twelve spokes with a rotating opacity stagger — instead of
+      ~50 rotating Phosphor icons, so they cost 0 main-thread frames/s instead of 50 while
+      looking smooth at display rate (reqs 13, 14)
+- [x] The spinner's phase offset lives in twelve `@keyframes`, not in a staggered
+      `animation-delay`. Twelve animations sharing one phase behave as one; measured on a
+      running ShipIt the delay spelling costs 50 main frames/s against 5 for pixel-identical
+      output (reqs 13, 14)
+- [x] `scripts/measure-spinner-cost.mjs` reproduces the A/B, including a CONTROLLED pair (one
+      element, one timing, only the property changed) and — given an app URL — the phase pair,
+      which no synthetic fixture reproduces
+
+From independent review (all fixed):
+
+- [x] `TodoPanel`'s in-progress ring kept a `.tool-spinner` class whose animation this change
+      deleted, so an active task showed a frozen arc while every test passed. The class is gone
+      entirely rather than kept as a marker, and a guard now checks `Spinner.tsx` and
+      `index.css` agree on the spoke count
+- [x] "Compositing was never the variable" overstated the evidence — the before/after pair
+      varied the element type as well as the property. A controlled same-element pair now
+      carries the claim, and the compositing question is recorded as separate and unsettled
+- [x] The cost claim is narrowed to renderer MAIN-THREAD work: the new spinner deliberately
+      draws more compositor frames, so req 13's "processor" is not established by these numbers
+- [x] The documented "twelve staggered opacity spinners" case was not staggered
+- [x] Policy-guard bypasses closed: all client `.css` files (not just `index.css`),
+      comma-separated animation lists, arbitrary-value `animate-[…]` and `[animation:…]`
+      utilities, inline animation styles, and the `animation-name`/`animation-iteration-count`
+      longhands that let the cascade hide an infinite animation across two rules. The component
+      scan's positive control now runs the real scan over a fixture directory
+- [x] Under `prefers-reduced-motion` the travelling head is dropped for a uniform breath — the
+      design creates *perceived* rotation, so "it is only opacity" argued about the
+      implementation rather than what the user sees
+- [x] The auto-fix indicator keeps its wrench (static) rather than becoming a generic spinner
+      indistinguishable from the CI one beside it
 - [x] Decorative illustration (the rocket scene, the preview-setup art) is finite instead, so an
       idle empty screen settles at nothing rather than at 10 Hz (req 13)
 - [x] The `running` service dot stops animating — a steady state is not in-flight work, and it
       was what made a session with nothing happening animate at all (req 13)
-- [x] Guard test over every infinite animation, checking the animated properties as well as the
-      step rate (`index.animation-policy.test.ts`) — the saving is the union, so one animation
-      breaking either rule cancels it
+- [x] Guard test over every infinite animation (`index.animation-policy.test.ts`) — the saving is
+      the union, so one animation breaking the rule cancels it. Now also scans components for
+      `animate-spin`/`ping`/`bounce`, which is what would have caught the ~50 call sites that
+      never touched `index.css`; each of its four guards verified to fail on its own violation
 - [x] `trace-idle-frames.mjs` measured its window over every event in the trace, including the
       browser process and Perfetto's flush, so every per-second rate it has ever reported was
       1.35x too low

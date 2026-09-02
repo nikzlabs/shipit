@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect/useRef manage the Monaco editor lifecycle.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CircleNotchIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
 import type * as MonacoEditor from "monaco-editor";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
@@ -205,7 +205,7 @@ export function FileEditModal({
             Cancel
           </Button>
           <Button variant="primary" size="md" onClick={save} disabled={!canSave}>
-            {saving && <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" />}
+            {saving && <Spinner size={ICON_SIZE.SM} />}
             Save
           </Button>
         </div>

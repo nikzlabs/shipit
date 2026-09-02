@@ -1,6 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: auto-close on async repo clone completion (reacts to external process finishing)
 import { useState, useRef, useEffect } from "react";
-import { CircleNotchIcon, GithubLogoIcon, EyeIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
+import { GithubLogoIcon, EyeIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { RepoInfo } from "../../server/shared/types.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
@@ -137,7 +138,7 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
           {/* Clone progress indicator */}
           {isCloning && (
             <Alert variant="warning" className="mb-3 items-center">
-              <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin text-(--color-warning)" />
+              <Spinner size={ICON_SIZE.SM} className="text-(--color-warning)" />
               <span>Cloning repository...</span>
             </Alert>
           )}
@@ -160,7 +161,7 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
           {/* Loading spinner while fetching initial repo list */}
           {loadingRepos && !isCloning && (
             <div className="mt-4 flex items-center justify-center gap-2 py-6">
-              <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin text-(--color-text-tertiary)" />
+              <Spinner size={ICON_SIZE.SM} className="text-(--color-text-tertiary)" />
               <span className="text-xs text-(--color-text-secondary)">Loading repositories...</span>
             </div>
           )}

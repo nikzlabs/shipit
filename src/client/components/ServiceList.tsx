@@ -1,6 +1,4 @@
-import {
-  CircleNotchIcon,
-  PlayIcon,
+import { PlayIcon,
   StopIcon,
   ArrowClockwiseIcon,
   ArrowSquareOutIcon,
@@ -9,6 +7,7 @@ import {
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { ManagedServiceState } from "../stores/preview-store.js";
+import { Spinner } from "./Spinner.js";
 
 interface ServiceListProps {
   services: ManagedServiceState[];
@@ -66,7 +65,7 @@ function StatusIndicator({ status }: { status: ManagedServiceState["status"] }) 
         </span>
       );
     case "starting":
-      return <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin text-(--color-accent)" />;
+      return <Spinner size={ICON_SIZE.SM} className="text-(--color-accent)" />;
     case "error":
       return <span className="w-2.5 h-2.5 rounded-full bg-(--color-error) shadow-[0_0_8px_var(--color-error)]" />;
     default:

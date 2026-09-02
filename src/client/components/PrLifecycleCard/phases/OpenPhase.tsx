@@ -9,7 +9,8 @@ import { WarningIcon, XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../../design-tokens.js";
 import { PrStateBadge } from "../PrStateBadge.js";
 import { PrMergeActions, PrStatusActions } from "../PrStatusActions.js";
-import { BranchLabel, Spinner } from "../shared.js";
+import { BranchLabel } from "../shared.js";
+import { Spinner } from "../../Spinner.js";
 import { FailedChecksList, DeploymentStatusRow } from "../indicators/index.js";
 
 export function OpenPhase({
@@ -111,7 +112,7 @@ export function OpenPhase({
         )}
         {isAutoFixRunning && (
           <div className="mt-1 flex items-center gap-2">
-            <Spinner />
+            <Spinner size={14} className="text-(--color-info) shrink-0" />
             <span className="text-xs text-(--color-warning)">
               Auto-fixing (attempt {autoFix.attemptCount}/{autoFix.maxAttempts})...
             </span>

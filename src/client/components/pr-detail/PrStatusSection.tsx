@@ -12,9 +12,7 @@
 
 import {
   CheckCircleIcon,
-  XCircleIcon,
-  CircleNotchIcon,
-  GlobeIcon,
+  XCircleIcon, GlobeIcon,
   WarningIcon,
   SealCheckIcon,
   EyeIcon,
@@ -33,6 +31,7 @@ import {
   ResolveConflictsButton,
 } from "../PrStatusControls.js";
 import { PrActionsMenu } from "../PrActionsMenu.js";
+import { Spinner } from "../Spinner.js";
 
 function ChecksSummary({ display, checks }: { display: CiDisplay; checks: PrCardState["checks"] }) {
   if (display.kind === "unknown") {
@@ -58,7 +57,7 @@ function ChecksSummary({ display, checks }: { display: CiDisplay; checks: PrCard
     icon = <XCircleIcon size={ICON_SIZE.SM} className="text-(--color-error)" />;
     label = `${display.failed} of ${display.total} checks failing`;
   } else {
-    icon = <CircleNotchIcon size={ICON_SIZE.SM} className="text-(--color-warning) animate-spin" />;
+    icon = <Spinner size={ICON_SIZE.SM} className="text-(--color-warning)" />;
     label = display.total === 0 ? "Waiting for CI to start" : `${display.passed}/${display.total} checks complete`;
   }
 
@@ -178,7 +177,7 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
       )}
       {isAutoFixRunning && autoFix && (
         <div className="flex items-center gap-2 text-xs text-(--color-warning)">
-          <CircleNotchIcon size={12} className="animate-spin" />
+          <Spinner size={12} />
           Auto-fixing (attempt {autoFix.attemptCount}/{autoFix.maxAttempts})...
         </div>
       )}
@@ -202,7 +201,7 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
             const isFailed = d.state === "failure" || d.state === "error";
             return (
               <div key={`${d.environment}-${i}`} className="flex items-center gap-1.5 text-xs">
-                {isPending && <CircleNotchIcon size={12} className="text-(--color-warning) animate-spin shrink-0" />}
+                {isPending && <Spinner size={12} className="text-(--color-warning) shrink-0" />}
                 {isActive && <GlobeIcon size={12} className="text-(--color-success) shrink-0" />}
                 {isFailed && <XCircleIcon size={12} className="text-(--color-error) shrink-0" />}
                 {!isPending && !isActive && !isFailed && <GlobeIcon size={12} className="text-(--color-text-tertiary) shrink-0" />}

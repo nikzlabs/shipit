@@ -20,7 +20,8 @@
  */
 
 import { useState, type CSSProperties, type ReactNode } from "react";
-import { CaretDownIcon, CheckIcon, CircleNotchIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
+import { CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -217,7 +218,7 @@ function FieldEditor({
         >
           <span className="inline-flex min-w-0 items-center gap-1">{trigger}</span>
           {saving ? (
-            <CircleNotchIcon size={ICON_SIZE.XS} className="ml-1 shrink-0 animate-spin text-(--color-text-tertiary)" />
+            <Spinner size={ICON_SIZE.XS} className="ml-1 shrink-0 text-(--color-text-tertiary)" />
           ) : chevron ? (
             // Caret space is RESERVED (always `ml-0.5` + icon width), only its
             // opacity fades in — so revealing it never changes the trigger's

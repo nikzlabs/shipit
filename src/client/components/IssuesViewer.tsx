@@ -36,6 +36,7 @@ import type {
   TrackerInfo,
   TrackerIssue,
 } from "../../server/shared/types.js";
+import { Spinner } from "./Spinner.js";
 
 export interface IssuesViewerProps {
   trackers: TrackerInfo[];
@@ -671,7 +672,9 @@ export function IssuesViewer({
             title="Refresh issues"
             className="inline-flex items-center gap-1.5"
           >
-            <ArrowClockwiseIcon size={ICON_SIZE.SM} className={loading ? "animate-spin" : ""} />
+            {loading
+              ? <Spinner size={ICON_SIZE.SM} />
+              : <ArrowClockwiseIcon size={ICON_SIZE.SM} />}
             <span className="hidden sm:inline">Refresh</span>
           </Button>
         </div>

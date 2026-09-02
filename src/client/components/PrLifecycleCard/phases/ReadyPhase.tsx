@@ -1,7 +1,7 @@
 import { useSessionStore } from "../../../stores/session-store.js";
+import { Spinner } from "../../Spinner.js";
 import type { PrCardState } from "../../../stores/pr-store.js";
 import { Button } from "../../ui/button.js";
-import { CircleNotchIcon } from "@phosphor-icons/react";
 import { PrStateBadge } from "../PrStateBadge.js";
 import { DiffStats, SessionTitleLabel, PreviouslyMergedNote, useOpenPrDiff } from "../shared.js";
 
@@ -45,7 +45,7 @@ export function ReadyPhase({
             disabled={creating || !onCreatePr}
             className="h-6 shrink-0 bg-(--color-success) hover:bg-(--color-success) hover:opacity-90 text-(--color-text-inverse)"
           >
-            {creating && <CircleNotchIcon size={12} className="animate-spin" />}
+            {creating && <Spinner size={12} />}
             {creating ? "Creating PR..." : "Create PR"}
           </Button>
         )}

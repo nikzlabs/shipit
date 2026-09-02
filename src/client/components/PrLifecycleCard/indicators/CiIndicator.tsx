@@ -1,5 +1,6 @@
 import type { PrCardState } from "../../../stores/pr-store.js";
-import { CheckCircleIcon, XCircleIcon, CircleNotchIcon, CircleDashedIcon } from "@phosphor-icons/react";
+import { Spinner } from "../../Spinner.js";
+import { CheckCircleIcon, XCircleIcon, CircleDashedIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../../design-tokens.js";
 import { useCiDisplay } from "../../../hooks/useCiDisplay.js";
 
@@ -47,7 +48,7 @@ export function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
   const pendingTitle = display.total === 0 ? "Waiting for CI checks to start" : `CI running  ${display.passed}/${display.total}`;
   return (
     <span className="h-6 text-(--color-warning) text-xs flex items-center gap-1 shrink-0 animate-pulse" title={pendingTitle}>
-      <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" /> {pendingLabel}
+      <Spinner size={ICON_SIZE.SM} /> {pendingLabel}
     </span>
   );
 }

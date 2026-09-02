@@ -58,6 +58,7 @@ import type {
   TrackerInfo,
   TrackerIssue,
 } from "../../server/shared/types.js";
+import { Spinner } from "./Spinner.js";
 
 export interface IssueDetailProps {
   selection: IssueSelection;
@@ -210,7 +211,9 @@ export function IssueDetail({
           title="Refresh issue"
           className="shrink-0 h-7 w-7 p-0"
         >
-          <ArrowClockwiseIcon size={ICON_SIZE.SM} className={loading ? "animate-spin" : ""} />
+          {loading
+            ? <Spinner size={ICON_SIZE.SM} />
+            : <ArrowClockwiseIcon size={ICON_SIZE.SM} />}
         </Button>
 
         {url && (

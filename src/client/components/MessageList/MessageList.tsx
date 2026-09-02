@@ -1,5 +1,5 @@
 import { useMemo, useRef, useDeferredValue, type ReactNode } from "react";
-import { CircleNotchIcon } from "@phosphor-icons/react";
+import { Spinner } from "../Spinner.js";
 import type { SearchMatch } from "../../hooks/useSearch.js";
 import { buildVisualElements, type VisualElement } from "../visual-elements.js";
 import { RewindPoint, type RewindGapAction } from "../RewindPoint.js";
@@ -381,7 +381,7 @@ export function MessageList({
     compacting && isLoading ? (
       <div key="compacting-indicator" className="flex justify-start" data-testid="compacting-indicator">
         <div className="flex items-center gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-2 text-xs text-(--color-text-secondary)">
-          <CircleNotchIcon size={14} className="animate-spin text-(--color-text-tertiary)" />
+          <Spinner size={14} className="text-(--color-text-tertiary)" />
           Compacting context…
         </div>
       </div>

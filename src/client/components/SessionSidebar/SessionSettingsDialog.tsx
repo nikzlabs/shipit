@@ -1,5 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: load this session's egress override when the dialog opens (external system sync)
 import { useEffect, useState } from "react";
+import { Spinner } from "../Spinner.js";
 import {
   GlobeIcon,
   ShieldCheckIcon,
@@ -7,9 +8,7 @@ import {
   WarningIcon,
   CheckCircleIcon,
   ClockClockwiseIcon,
-  ArrowsClockwiseIcon,
-  CircleNotchIcon,
-} from "@phosphor-icons/react";
+  ArrowsClockwiseIcon, } from "@phosphor-icons/react";
 import {
   Dialog,
   DialogContent,
@@ -322,7 +321,7 @@ export function SessionSettingsDialog({
                   data-testid="session-settings-restart"
                 >
                   {restarting
-                    ? <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+                    ? <Spinner size={ICON_SIZE.XS} />
                     : <ArrowsClockwiseIcon size={ICON_SIZE.XS} />}
                   Restart to apply now
                 </Button>

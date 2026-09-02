@@ -1,4 +1,5 @@
-import { CloudArrowDownIcon, GitMergeIcon, HardDrivesIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, WrenchIcon } from "@phosphor-icons/react";
+import { CloudArrowDownIcon, GitMergeIcon, HardDrivesIcon, CheckCircleIcon, XCircleIcon, WrenchIcon } from "@phosphor-icons/react";
+import { Spinner } from "../Spinner.js";
 import { AUTO_MERGE_ICON_CLASS, ICON_SIZE } from "../../design-tokens.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { usePrStore, useActiveAutoMerge } from "../../stores/pr-store.js";
@@ -21,9 +22,14 @@ export function SessionStatusDot({ sessionId }: { sessionId: string }) {
   const ci = useCiDisplay(card?.checks);
   const autoFix = card?.autoFix;
 
-  // Priority 1: Auto-fix running (a specific form of agent activity)
+  // Priority 1: Auto-fix running (a specific form of agent activity).
+  // The wrench stays, and no longer spins. It used to be a rotating icon, but a
+  // generic spinner in its place would be indistinguishable from the CI one
+  // below at this size — leaving colour and a hover-only `title` to carry the
+  // difference. The indicator only renders WHILE auto-fix runs, so its presence
+  // is the "running" signal and the rotation was never carrying it.
   if (autoFix?.status === "running") {
-    return <span className="shrink-0 text-(--color-autofix) flex" title="Auto-fix running"><WrenchIcon size={ICON_SIZE.XS} className="animate-spin" /></span>;
+    return <span className="shrink-0 text-(--color-autofix) flex" title="Auto-fix running"><WrenchIcon size={ICON_SIZE.XS} /></span>;
   }
 
   // Priority 2: Agent running — takes precedence over CI status; the agent
@@ -41,7 +47,7 @@ export function SessionStatusDot({ sessionId }: { sessionId: string }) {
   // Priority 4: CI pending. Routed through `useCiDisplay` so an expired grace
   // override doesn't leave a permanent spinner in the sidebar either.
   if (ci.kind === "pending") {
-    return <span className="shrink-0 text-(--color-warning) flex" title={`CI running ${ci.passed}/${ci.total}`}><CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" /></span>;
+    return <span className="shrink-0 text-(--color-warning) flex" title={`CI running ${ci.passed}/${ci.total}`}><Spinner size={ICON_SIZE.XS} /></span>;
   }
 
   // Priority 5: CI passed

@@ -19,6 +19,7 @@
  */
 
 import { useState } from "react";
+import { Spinner } from "../Spinner.js";
 import { usePrStore, useActiveAutoMerge } from "../../stores/pr-store.js";
 import type { PrCardState } from "../../stores/pr-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
@@ -33,7 +34,7 @@ import {
   MergeButton,
   ResolveConflictsButton,
 } from "../PrStatusControls.js";
-import { CircleNotchIcon, PaperPlaneTiltIcon } from "@phosphor-icons/react";
+import { PaperPlaneTiltIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { DiffStats, PreviouslyMergedNote, useOpenPrDiff } from "./shared.js";
 import { CiIndicator, ReviewIndicator, MergeConflictIndicator } from "./indicators/index.js";
@@ -86,7 +87,7 @@ function PendingReviewButton({ sessionId, count }: { sessionId: string; count: n
       title="Send local diff comments to GitHub as one review"
     >
       {submitting ? (
-        <CircleNotchIcon size={14} className="animate-spin" />
+        <Spinner size={14} />
       ) : (
         <PaperPlaneTiltIcon size={ICON_SIZE.SM} />
       )}
