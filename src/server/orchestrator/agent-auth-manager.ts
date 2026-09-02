@@ -89,7 +89,7 @@ export interface AgentAuthScopeOptions {
   credentialDir?: string;
 }
 
-export interface AgentAuthManager extends EventEmitter {
+export interface AgentAuthManager extends EventEmitter<AgentAuthManagerEvents> {
   /**
    * Which login flow this manager implements. The key of the map that holds it,
    * and the identity every `agent_auth_*` broadcast carries.

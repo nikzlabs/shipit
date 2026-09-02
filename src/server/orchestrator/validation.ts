@@ -170,9 +170,6 @@ const BINARY_EXTENSIONS = new Set([
   ".sqlite", ".db",
 ]);
 
-/** Image extensions that can be viewed natively via the Read tool. */
-export const IMAGE_UPLOAD_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"]);
-
 /** Check if a file path refers to a likely binary file based on its extension. */
 function isBinaryUpload(filePath: string): boolean {
   const ext = path.extname(filePath).toLowerCase();

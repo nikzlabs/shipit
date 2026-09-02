@@ -320,7 +320,3 @@ export const useFileReviewStore = create<FileReviewState>((set, get) => ({
     return get().composingByKey[makeKey(sessionId, filePath)] ?? false;
   },
 }));
-
-export function fileReviewKey(sessionId: string, filePath: string): string {
-  return makeKey(sessionId, filePath);
-}

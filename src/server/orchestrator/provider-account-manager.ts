@@ -1341,10 +1341,6 @@ export function providerAccountCredentialRoot(
   return path.join(credentialsDir, PROVIDER_ACCOUNTS_SUBDIR, provider, accountId);
 }
 
-export function providerDisplayLabel(provider: AgentId): string {
-  return PROVIDER_LABEL[provider];
-}
-
 /**
  * The placeholder label for a newly created account: the provider's own name
  * ("Claude", "Codex") for the first one, then "Claude2", "Claude3", … The

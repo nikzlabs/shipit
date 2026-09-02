@@ -266,6 +266,3 @@ export class FileReviewStore {
     ).run(new Date().toISOString(), reviewId);
   }
 }
-
-// Backwards-compatible alias for callers that still import ReviewStore.
-export { FileReviewStore as ReviewStore };

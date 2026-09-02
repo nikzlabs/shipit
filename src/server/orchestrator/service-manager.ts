@@ -600,24 +600,24 @@ export interface ServiceManagerOptions {
 // ---------------------------------------------------------------------------
 
 export interface ServiceManagerEvents {
-  service_status: (service: ManagedService) => void;
-  service_log: (serviceName: string, text: string) => void;
-  stack_ready: () => void;
-  stack_error: (error: Error) => void;
+  service_status: [service: ManagedService];
+  service_log: [serviceName: string, text: string];
+  stack_ready: [];
+  stack_error: [error: Error];
   /**
    * Emitted after each `syncSecrets()` pass (compose start, reconcile,
    * `refreshSecrets()`). Carries the full declared/missing/required snapshot
    * + the resolved `agent: true` values so the runner can push them into
    * the agent container without a follow-up call.
    */
-  secrets_status: (snapshot: SecretsStatusInternalSnapshot) => void;
+  secrets_status: [snapshot: SecretsStatusInternalSnapshot];
 }
 
 // ---------------------------------------------------------------------------
 // ServiceManager
 // ---------------------------------------------------------------------------
 
-export class ServiceManager extends EventEmitter {
+export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private readonly sessionId: string;
   private readonly workspaceDir: string;
   private composeConfig: ComposeConfig;
@@ -1992,12 +1992,13 @@ export class ServiceManager extends EventEmitter {
       this.emit("stack_ready");
     } catch (err) {
       this._startupComplete = true;
+      const error = err instanceof Error ? err : new Error(String(err));
       // Only the services we actually tried to start reflect this failure.
       // Gated services are intentionally held by the install gate (which is
       // still pending) — don't clobber their held status with a stack error
       // that's about the services we brought up.
       for (const svc of startNow) {
-        this.updateServiceStatus(svc.name, "error", (err as Error).message);
+        this.updateServiceStatus(svc.name, "error", error.message);
       }
       // A refused port is not a consequence of THIS failure and outlives it —
       // the plugin service is still held back, and the reason is still the only
@@ -2005,7 +2006,7 @@ export class ServiceManager extends EventEmitter {
       // after the log followers attach; here there may be no followers at all,
       // and saying it late beats not saying it (review finding).
       this.reportPortRefusals();
-      this.emit("stack_error", err);
+      this.emit("stack_error", error);
       throw err;
     } finally {
       // 6. Begin periodic polling to detect crashes.

@@ -3,7 +3,6 @@ import Markdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import type { Element as HastElement, Text as HastText } from "hast";
-import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/tooltip.js";
 import { CopyButton } from "./ui/copy-button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { MessageSegment } from "./MessageList.js";
@@ -535,31 +534,6 @@ export const MarkdownContent = memo(({ text, shipitLinks = false }: {
     </div>
   );
 });
-
-/** Hover tooltip that renders its content as markdown. Scrollable. */
-export function MarkdownTooltip({ content, children }: { content: string; children: React.ReactNode }) {
-  return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <div>{children}</div>
-        </TooltipTrigger>
-        <TooltipContent side="bottom" align="start" className="max-w-lg max-h-80 overflow-auto p-3">
-          <div className="prose dark:prose-invert prose-sm max-w-none text-xs">
-            <Markdown
-              remarkPlugins={remarkPlugins}
-              components={markdownComponents}
-              urlTransform={urlTransform}
-              skipHtml
-            >
-              {content}
-            </Markdown>
-          </div>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  );
-}
 
 /**
  * Syntax-highlighted fenced code block with a header and "Copy" button.

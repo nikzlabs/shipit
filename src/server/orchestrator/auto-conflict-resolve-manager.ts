@@ -21,7 +21,7 @@
 import type { PrStatusSummary, PrMergeableState } from "../shared/types/github-types.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { getErrorMessage } from "./validation.js";
-import { AutoRemediationManager, type RemediationState } from "./auto-remediation-manager.js";
+import { AutoRemediationManager } from "./auto-remediation-manager.js";
 import type { RemediationArbiter } from "./auto-remediation-arbiter.js";
 
 /** Hard cap on the number of work-doing attempts per session per head SHA. */
@@ -65,12 +65,6 @@ export type RebaseAndResolveCb = (
   sessionId: string,
   baseBranch: string,
 ) => Promise<AutoResolveResult>;
-
-/**
- * Backwards-compatible alias for the shared `RemediationState`. The conflict
- * manager's original state shape is now exactly the shared shape.
- */
-export type AutoConflictResolveState = RemediationState;
 
 /** The conflict manager's poll signal: the mergeable verdict + the base branch. */
 interface ConflictSignal {

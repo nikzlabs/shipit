@@ -87,12 +87,3 @@ export function getMcpOAuthProvider(id: string): McpOAuthProviderConfig | undefi
 export function platformSourceEnvName(source: string): string {
   return `MCP_PLATFORM_${source.toUpperCase()}`;
 }
-
-/**
- * Inverse of {@link platformSourceEnvName}. Returns `null` for env var names
- * that aren't in the MCP_PLATFORM_* namespace.
- */
-export function platformSourceFromEnvName(envName: string): string | null {
-  const m = /^MCP_PLATFORM_(.+)$/.exec(envName);
-  return m ? m[1].toLowerCase() : null;
-}

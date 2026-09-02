@@ -67,12 +67,6 @@ import {
 /** Which piece of non-turn work is running — what the failure notice names. */
 export type NonTurnPurpose = "session-naming" | "pr-description";
 
-/** Human-facing label for a purpose, used in the failure notice's prose. */
-export const NON_TURN_PURPOSE_LABEL: Record<NonTurnPurpose, string> = {
-  "session-naming": "Session naming",
-  "pr-description": "Pull-request description",
-};
-
 /**
  * The signature every text-generating feature in the orchestrator is threaded
  * with (`generateText`).

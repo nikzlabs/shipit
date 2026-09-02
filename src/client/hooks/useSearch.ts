@@ -10,11 +10,7 @@ export interface SearchMatch {
   length: number;
 }
 
-export interface SearchState {
-  query: string;
-  matches: SearchMatch[];
-  currentMatchIndex: number;
-}
+const NO_MATCHES: SearchMatch[] = [];
 
 /**
  * Hook for searching through chat messages.
@@ -23,10 +19,6 @@ export interface SearchState {
  * Returns all match locations (message index + character offset) so the
  * UI can highlight them, plus navigation to step through matches.
  */
-export type UseSearchReturn = ReturnType<typeof useSearch>;
-
-const NO_MATCHES: SearchMatch[] = [];
-
 export function useSearch(messages: ChatMessage[]) {
   const [query, setQuery] = useState("");
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);

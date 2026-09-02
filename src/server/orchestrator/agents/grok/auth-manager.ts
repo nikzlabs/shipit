@@ -53,6 +53,7 @@ import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import { ensureConfigDir, firstEpochMs, probeNestedString } from "../agent-auth-base.js";
 import type {
   AgentAuthManager,
+  AgentAuthManagerEvents,
   AgentAuthStartOptions,
   AgentAuthScopeOptions,
 } from "../../agent-auth-manager.js";
@@ -326,7 +327,13 @@ export interface XaiAuthManagerOptions {
   timeoutMs?: number;
 }
 
-export class XaiAuthManager extends EventEmitter implements AgentAuthManager {
+export interface XaiAuthManagerEvents extends AgentAuthManagerEvents {
+  xai_auth_pending: [ev: XaiAuthPendingEvent];
+  xai_auth_complete: [];
+  xai_auth_failed: [payload: { reason: XaiAuthFailureReason; message?: string }];
+}
+
+export class XaiAuthManager extends EventEmitter<XaiAuthManagerEvents> implements AgentAuthManager {
   readonly loginId: LoginIntegrationId = "xai-oauth";
 
   private proc: ChildProcess | null = null;

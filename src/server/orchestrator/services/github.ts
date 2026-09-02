@@ -165,14 +165,6 @@ export function getGitHubStatus(githubAuthManager: GitHubAuthManager): GitHubSta
   return githubAuthManager.getStatus();
 }
 
-/** Get user's GitHub repos (empty array if not authenticated). */
-export async function getGitHubRepos(
-  githubAuthManager: GitHubAuthManager,
-): Promise<{ fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }[]> {
-  if (!githubAuthManager.authenticated) return [];
-  return githubAuthManager.listUserRepos();
-}
-
 /** List the user's GitHub organizations (empty array if not authenticated). */
 export async function listGitHubOrgs(
   githubAuthManager: GitHubAuthManager,

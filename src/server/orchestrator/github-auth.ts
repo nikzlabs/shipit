@@ -1106,13 +1106,3 @@ export class GitHubAuthManager extends EventEmitter {
     }
   }
 }
-
-// Barrel re-exports from sub-modules for backwards compatibility
-export { createRepo, listUserRepos, searchRepos, listOrgs } from "./github-auth-repos.js";
-export { viewPullRequestResult, createPullRequest, findPullRequest, findPullRequestAnyState, mergePullRequest, enableAutoMerge, disableAutoMerge, updatePullRequest, addPullRequestComment, addLabelsToPullRequest, removeLabelFromPullRequest, markPullRequestReady, listPullRequests, viewPullRequest, viewPullRequestConversation, getPullRequestNodeId } from "./github-auth-prs.js";
-export type { PullRequestDetail, PrConversation, PrConversationComment, PrConversationReview, PrConversationThread } from "./github-auth-prs.js";
-export { getCheckStatus, getCheckRunAnnotations, getJobLogs } from "./github-auth-checks.js";
-export { listWorkflowRuns, getWorkflowRun, listWorkflowRunJobs, listWorkflows, getWorkflow, rerunWorkflowRun, type WorkflowRunSummary, type WorkflowJobSummary, type WorkflowSummary, type RerunWorkflowRunResult } from "./github-auth-actions.js";
-export { getReleaseByTag, type ReleaseByTag } from "./github-auth-releases.js";
-export { createIssue } from "./github-auth-issues.js";
-export { addReviewThreadReply, resolveReviewThread, unresolveReviewThread, submitPullRequestReview } from "./github-auth-review-threads.js";

@@ -276,7 +276,7 @@ All types live in `src/server/shared/types/`:
 | `claude-types.ts` | `ClaudeEvent`, NDJSON message types |
 | `agent-types.ts` | `AgentProcess`, `AgentEvent`, `AgentCapabilities` |
 | `deployment-types.ts` | `GitHubDeploymentStatus` |
-| `github-types.ts` | `WsGitHubSetToken`, `WsGitHubPush`, … (GitHub WS messages) |
+| `github-types.ts` | `WsGitHubStatus`, `WsGitHubPushResult`, … (GitHub WS server messages) |
 | `terminal-types.ts` | `TerminalProcess`, `WsTerminalStart`, … |
 | `usage-types.ts` | `UsageTurn`, `TurnUsage`, `SessionUsage`, `WeeklyUsage` |
 | `attachment-types.ts` | `ImageAttachment`, `FileContextRef` |

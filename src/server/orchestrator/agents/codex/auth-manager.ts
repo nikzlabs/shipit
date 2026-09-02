@@ -45,6 +45,7 @@ import {
 } from "../agent-auth-base.js";
 import type {
   AgentAuthManager,
+  AgentAuthManagerEvents,
   AgentAuthStartOptions,
   AgentAuthScopeOptions,
 } from "../../agent-auth-manager.js";
@@ -286,7 +287,13 @@ export interface CodexAuthManagerOptions {
   timeoutMs?: number;
 }
 
-export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
+export interface CodexAuthManagerEvents extends AgentAuthManagerEvents {
+  codex_auth_pending: [ev: CodexAuthPendingEvent];
+  codex_auth_complete: [];
+  codex_auth_failed: [payload: CodexAuthFailedEvent];
+}
+
+export class CodexAuthManager extends EventEmitter<CodexAuthManagerEvents> implements AgentAuthManager {
   readonly loginId: LoginIntegrationId = "openai-chatgpt";
 
   private proc: ChildProcess | null = null;

@@ -124,11 +124,7 @@ function Dialog({
   return <DialogPrimitive.Root open={open} onOpenChange={onOpenChange} {...props} />;
 }
 
-const DialogTrigger = DialogPrimitive.Trigger;
-
 const DialogPortal = DialogPrimitive.Portal;
-
-const DialogClose = DialogPrimitive.Close;
 
 const DialogOverlay = forwardRef<
   ComponentRef<typeof DialogPrimitive.Overlay>,
@@ -270,7 +266,6 @@ DialogDescription.displayName = DialogPrimitive.Description.displayName;
 
 export {
   Dialog,
-  DialogTrigger,
   DialogPortal,
   DialogOverlay,
   DialogContent,
@@ -278,5 +273,4 @@ export {
   DialogFooter,
   DialogTitle,
   DialogDescription,
-  DialogClose,
 };

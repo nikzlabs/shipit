@@ -51,9 +51,6 @@ export interface DeclaredLinearTracker {
 /** docs/248 — one entry of `issues.trackers`. */
 export type DeclaredTracker = DeclaredGitHubTracker | DeclaredLinearTracker;
 
-/** The `kind` values this build recognizes. An unknown one warns and skips (req 7). */
-export const KNOWN_TRACKER_KINDS: readonly DeclaredTracker["kind"][] = ["github", "linear"];
-
 /** The tracker id a declaration resolves to — its routable destination. */
 export function declaredTrackerId(decl: DeclaredTracker): TrackerId {
   return decl.kind === "github"

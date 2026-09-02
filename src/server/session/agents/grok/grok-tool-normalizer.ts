@@ -33,19 +33,14 @@
  *     wire — guarded next door against `inputKeyTreatment`.
  *   - `spawn_subagent` → `Agent`: carries `description`/`prompt`/
  *     `subagent_type`, already the subagent key set. `Agent` rather than `Task`
- *     because `Agent` is in the Claude tool map, which lets the guard test hold
- *     every mapping to canonical coherence: canonicalizeTool("grok", raw) must
- *     equal canonicalizeTool("claude", transcript).
+ *     because `Agent` is the name the subagent registries recognize.
  *   - `search_replace` → `Edit`, `write` → `Write`: the bodies already use
  *     `DIFF_BODY_KEYS` spellings, so the rename alone makes `diffStatsFor` and
  *     the DiffBlock work unchanged.
  *   - `list_dir` → `Glob` is the loosest of the set, knowingly: Claude's `Glob`
  *     matches a pattern where Grok's tool enumerates one directory, so the
- *     transcript says "Glob" for a listing. It is what the canonical model
- *     already asserts (both sides are `glob`), and Claude's vocabulary has no
- *     directory-listing name to prefer. If a `list_directory` canonical is ever
- *     added, both tool maps change and the coherence guard forces this row to
- *     follow — which is the mechanism working, not a gap to pre-empt here.
+ *     transcript says "Glob" for a listing, because Claude's vocabulary has no
+ *     directory-listing name to prefer.
  *
  * Three advertised tools with canonical mappings are DELIBERATELY not here:
  * `ask_user_question`, `enter_plan_mode`, `exit_plan_mode`. Their transcript
@@ -58,12 +53,11 @@
  * the shipit MCP bridge's `ask` tool anyway (see `writeMcpConfig`). Revisit
  * with real captures under the planning#435 interactive work.
  *
- * Unknown names — the media/meta tools GROK_TOOL_MAP leaves unmapped, and MCP
+ * Unknown names — the media/meta tools this table leaves unmapped, and MCP
  * tools — pass through untouched, input and all: renaming keys on a tool we
  * don't know would corrupt its modal display.
  *
- * The guard tests next door tie this table to `GROK_TOOL_MAP` (canonical
- * coherence, and the exclusion list is closed) and to the real registries (the
+ * The guard tests next door tie this table to the real registries (the
  * treatments the docs/272 recognition matrix needs must hold for the mapped
  * names), so a future registry-spelling migration — the planning#337 class —
  * goes red here by name instead of degrading silently.
@@ -89,11 +83,9 @@ export const GROK_TRANSCRIPT_TOOL_NAMES: Record<string, string> = {
 };
 
 /**
- * The advertised-and-canonically-mapped names {@link GROK_TRANSCRIPT_TOOL_NAMES}
- * deliberately leaves raw (see the module docstring). Exported so the guard
- * test can hold the exclusion CLOSED: a name in `GROK_TOOL_MAP` must be in
- * exactly one of the two tables, so a future grok tool cannot land unmapped by
- * accident.
+ * The advertised names {@link GROK_TRANSCRIPT_TOOL_NAMES} deliberately leaves
+ * raw (see the module docstring). Exported so the guard test can hold the two
+ * tables disjoint.
  */
 export const GROK_UNNORMALIZED_INTERACTIVE_TOOLS = new Set([
   "ask_user_question",

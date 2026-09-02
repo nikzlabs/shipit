@@ -345,7 +345,7 @@ export interface ClaudeOAuthRefresherDeps {
  * Non-public state is per-account and isolated — one account's failure does
  * not affect another's schedule.
  */
-export class ClaudeOAuthRefresher extends EventEmitter {
+export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvents> {
   private readonly deps: Required<Omit<ClaudeOAuthRefresherDeps, "safetyMarginMs">> & { safetyMarginMs: number };
   private readonly accounts = new Map<string, AccountState>();
   private started = false;

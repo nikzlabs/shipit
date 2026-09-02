@@ -7,14 +7,14 @@ import os from "node:os";
 import path from "node:path";
 import { CredentialStore } from "./credential-store.js";
 import { accountServiceForHarness, ProviderAccountManager } from "./provider-account-manager.js";
-import type { AgentAuthManager, AgentAuthStartOptions, AgentAuthScopeOptions } from "./agent-auth-manager.js";
+import type { AgentAuthManager, AgentAuthManagerEvents, AgentAuthStartOptions, AgentAuthScopeOptions } from "./agent-auth-manager.js";
 
 /**
  * Minimal fake {@link AgentAuthManager} that records the scoped options it was
  * driven with, so the orchestration tests can assert routing without spawning
  * a real CLI. `configured` simulates whether the account dir has credentials.
  */
-class FakeAuthManager extends EventEmitter implements AgentAuthManager {
+class FakeAuthManager extends EventEmitter<AgentAuthManagerEvents> implements AgentAuthManager {
   startCalls: AgentAuthStartOptions[] = [];
   cancelCalls = 0;
   signOutCalls: AgentAuthScopeOptions[] = [];

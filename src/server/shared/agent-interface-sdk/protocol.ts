@@ -27,12 +27,6 @@ export type AgentInterfaceResponse = {
   | { ok: false; error: string }
 );
 
-export interface ShipItVisibilityMessage {
-  source: typeof SHIPIT_PAGE_MESSAGE_SOURCE;
-  type: "visibility";
-  visible: boolean;
-}
-
 export function isAgentInterfaceRequest(value: unknown): value is AgentInterfaceRequest {
   if (!value || typeof value !== "object") return false;
   const message = value as Partial<AgentInterfaceRequest>;

@@ -357,7 +357,7 @@ One entry each: `AGENT_CREDENTIAL_PATHS`
 per-agent credential isolation and sub-agent provisioning both iterate it),
 `HARNESS_CREDENTIAL_VARS` (`shared/spawn-routing.ts:28` — env keys to scrub
 for scoped-home spawns; a miss silently bills the wrong route),
-`AGENT_TOOL_MAPS` (`session/agents/tool-map.ts:42`), `AUTH_ERROR`
+`<X>_TOOL_NAMES` (`shared/agent-tool-names.ts`), `AUTH_ERROR`
 (`services/agent-auth-gate.ts:5`), `AGENT_LIMIT_LABELS`
 (`ws-handlers/agent-rate-limits.ts:13`), `PROVIDER_LABEL` ×2
 (`provider-account-manager.ts:48`, `provider-route-preflight.ts:34`),
@@ -442,7 +442,10 @@ String-literal validators that **drop or reject a new id**:
 ### 6. The session adapter — `src/server/session/agents/<id>/`
 
 Mirror `claude/` or `codex/` per the shape table: `adapter.ts` implementing
-`AgentProcess`, `tool-map.ts`, tests. Specifics that bite:
+`AgentProcess`, a `<id>-tool-normalizer.ts` if the CLI's tool vocabulary
+differs from Claude's (`opencode/`, `grok/` are the templates — the
+`<X>_TRANSCRIPT_TOOL_NAMES` table plus its guard test), tests. Specifics
+that bite:
 
 - `writeMcpConfig(ctx)` bundles Playwright + the `shipit` bridge + user
   servers in the CLI's own wire format, returning
@@ -459,8 +462,7 @@ Mirror `claude/` or `codex/` per the shape table: `adapter.ts` implementing
   overlapping cache figures need an `<id>-token-usage.ts` normalizer
   (`shared/codex-token-usage.ts` is the template — it is imported directly,
   not dispatched, so `session-namer.ts` needs the import too).
-- Register in `session/agents/index.ts` (barrel), `tool-map.ts`
-  `AGENT_TOOL_MAPS`, and `createWorkerAgent`
+- Register in `createWorkerAgent`
   (`session/session-worker.ts:807`) — **the one factory where a miss
   silently runs the wrong CLI**; extend
   `session-worker-agent-factory.test.ts` in the same commit.
@@ -506,8 +508,8 @@ in `app-di.ts`.
 Build-breaking by design (good — they *are* the checklist):
 `agent-cli-install.test.ts` (catalogue↔installer↔Dockerfile parity),
 `catalogue.test.ts`, `session-worker-agent-factory.test.ts`,
-`session/agents/agent-registry.test.ts` (asserts exactly 2 agents and their
-order — will fail), `tool-map.test.ts`.
+`shared/agent-registry-runtime.test.ts` (asserts the exact agent list and
+its order — will fail).
 
 Want a new case or sibling file: `shared/agent-registry.test.ts` +
 `agent-registry-signout.test.ts` (or refactor them to iterate

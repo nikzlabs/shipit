@@ -6,6 +6,14 @@ description: A shared usePolling<T> hook that collapses the repeated interval-po
 
 # usePolling shared hook
 
+## Status
+
+**2026-09-02 — prototype removed as unadopted.** `src/client/hooks/usePolling.ts` and
+its test were deleted: none of the three planned migrations (`HostPanel`,
+`SessionDiagnosticsPanel`, `useContainerHealthPoll`) ever landed, so the hook's
+only importer was its own test. The design below is kept as reference; a
+future migration re-creates the hook from it.
+
 A shared `usePolling<T>` hook for the recurring "fetch a snapshot on an interval
 into React state, with cleanup" pattern. Several client surfaces hand-roll the
 same `[data/error/loading]` + `setInterval` + stale-guard + cleanup scaffolding.

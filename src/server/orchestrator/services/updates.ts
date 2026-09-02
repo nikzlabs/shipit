@@ -21,7 +21,6 @@ import {
   writeChannel,
 } from "../release-channel.js";
 import type { ReleaseChannel } from "../release-channel.js";
-import { resolveVersion } from "../build-id.js";
 import { parseGitHubRemote } from "../git-utils.js";
 import { gitArgsWithHooksDisabled } from "../../shared/git-hooks-guard.js";
 import { gitSpawnOverridesForTree } from "../../shared/git-tree-uid.js";
@@ -367,12 +366,6 @@ export async function setChannel(channel: ReleaseChannel): Promise<UpdateStatus>
     throw new ServiceError(500, `Failed to set channel: ${(err as Error).message}`);
   }
   return checkForUpdates();
-}
-
-/** The current channel + version of the running instance (no fetch). */
-export async function getVersion() {
-  const channel = await readChannel();
-  return resolveVersion(channel);
 }
 
 /**
