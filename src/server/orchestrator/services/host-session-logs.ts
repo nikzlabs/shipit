@@ -189,6 +189,14 @@ export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[
     producer: "keep-preview-running: restart attempt",
     pattern: /^Restarting reserved preview runtime \(attempt \d+\/\d+\)\.$/,
   },
+  // service-manager-setup.ts — the docs/183 overlay dep store degraded for this
+  // session. Both variable parts are counts; the dep dir NAMES are deliberately
+  // absent from the producer's string, since `agent.dep-dirs` is repo-declared
+  // text and would be exactly the free-text interpolation rule 1 forbids.
+  {
+    producer: "service-manager-setup: dep-dir base publish failed",
+    pattern: /^Dependency cache: \d+ of \d+ dependency directories could not be snapshotted as a shared base\. Later sessions of this repository reinstall instead of reusing it\.$/,
+  },
   {
     producer: "keep-preview-running: gave up",
     pattern: /^Reserved preview runtime could not be restored after bounded retries\. The reservation remains enabled; check session and service logs\.$/,

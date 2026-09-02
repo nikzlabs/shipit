@@ -240,12 +240,15 @@ export class InstallController {
       const full = path.join(this.workspaceDir, rel);
       if (!fs.existsSync(full)) return reply.code(404).send({ error: `dep dir not found: ${rel}` });
       const { stream, done } = createDepSnapshotTar(this.workspaceDir, rel);
-      // A non-zero tar exit means the piped archive is truncated; the consumer
-      // validates extraction, but destroy the stream so a truncated tar surfaces
-      // as a stream error rather than a silently-short archive.
+      // A rejected `done` means the archive must not be trusted as a base. The
+      // producer owns the teardown now — it withholds end-of-stream until tar's exit
+      // code is in and destroys the stream with the error — so this only logs. It
+      // used to `destroy()` the stream from here, which was a RACE it usually lost:
+      // `'close'` fires after stdout's `'end'`, so the reply had already completed
+      // successfully, and both exit-1 shapes leave a structurally complete archive
+      // for the orchestrator to extract and publish.
       done.catch((err: unknown) => {
         console.warn(`[dep-snapshot] tar failed for ${rel}:`, err instanceof Error ? err.message : String(err));
-        stream.destroy(err instanceof Error ? err : new Error(String(err)));
       });
       reply.header("content-type", "application/x-tar");
       return reply.send(stream);

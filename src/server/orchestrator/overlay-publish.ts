@@ -139,6 +139,66 @@ export interface DepDirPublishOutcome {
 }
 
 /**
+ * How many times a single dep dir's pull+extract may be attempted. Two, not more:
+ * the failure this exists for is a ONE-SHOT write into the dep dir during the read
+ * (see below), which a second attempt no longer sees. A dep dir being written
+ * continuously is not a safe base at any attempt count, and each attempt is a
+ * full multi-hundred-MB transfer.
+ */
+const SNAPSHOT_ATTEMPTS = 2;
+
+/**
+ * Pull a dep dir's snapshot and extract it, retrying once on failure.
+ *
+ * The dep dir is NOT quiescent while the worker tars it: compose services start in
+ * parallel with `agent.install`, and a running Node dev server writes inside the dep
+ * dir it is served from — creating `node_modules/.vite` moves the dep dir's own
+ * mtime, so tar exits 1 and the worker refuses to call the archive a base. Measured
+ * on the production host 2026-09-02 that lost the rolling base in 18 of 46 live
+ * containers (~39%).
+ *
+ * A retry is the right answer rather than tolerating the raced archive, because
+ * tar's exit-1 evidence is about the archive it just wrote and says nothing about
+ * the next one: the cache directory a dev server creates once is already there on
+ * the second read, so attempt 2 is clean and we publish something tar itself called
+ * exact. Tolerating instead would publish an archive that may be missing a top-level
+ * entry created after tar read the dep dir's listing — under a base pointer whose
+ * install marker later lets a session skip installing altogether.
+ *
+ * An abort (the session was disposed mid-pull — a NORMAL event here, see the module
+ * docstring) is never retried: the worker is gone, so a second attempt would only
+ * stream from a socket that is already being torn down.
+ */
+async function pullSnapshotWithRetry(args: {
+  workerUrl: string;
+  depDir: string;
+  destDir: string;
+  fetchSnapshot: (workerUrl: string, depDir: string, signal?: AbortSignal) => Promise<Readable>;
+  extract: (stream: Readable, destDir: string) => Promise<void>;
+  signal?: AbortSignal;
+}): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const stream = await args.fetchSnapshot(args.workerUrl, args.depDir, args.signal);
+      await args.extract(stream, args.destDir);
+      return;
+    } catch (err) {
+      if (attempt >= SNAPSHOT_ATTEMPTS || args.signal?.aborted) throw err;
+      // A partial tree from the failed attempt must not be mixed into the retry's —
+      // extraction recreates the dir, it does not clear it. Recreated here rather
+      // than left to the extractor, so the invariant does not depend on which one
+      // is injected.
+      fs.rmSync(args.destDir, { recursive: true, force: true });
+      fs.mkdirSync(args.destDir, { recursive: true });
+      console.warn(
+        `[overlay-publish] snapshot attempt ${attempt}/${SNAPSHOT_ATTEMPTS} failed for ${args.depDir}, retrying:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+}
+
+/**
  * Publish each declared dep dir's post-install snapshot as the next rolling base
  * for its `(repo, runtime, dep-dir)` scope. Returns one outcome per *candidate*
  * dep dir (empty when the feature is off / the session is ineligible / nothing is
@@ -228,8 +288,14 @@ export async function publishDepDirOverlayBases(
     let tmpDir: string | null = null;
     try {
       tmpDir = fs.mkdtempSync(path.join(tmpRoot, "ovl-pub-"));
-      const stream = await fetchSnapshot(args.workerUrl, depDir, args.signal);
-      await extract(stream, tmpDir);
+      await pullSnapshotWithRetry({
+        workerUrl: args.workerUrl,
+        depDir,
+        destDir: tmpDir,
+        fetchSnapshot,
+        extract,
+        ...(args.signal ? { signal: args.signal } : {}),
+      });
       // Never publish an empty snapshot. A legitimate post-install dep dir is
       // never empty (npm/pnpm always materialize at least a lockfile shadow);
       // an empty export means the worker's merged view was empty or broken —

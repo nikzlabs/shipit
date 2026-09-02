@@ -13,7 +13,7 @@ import type { LogStore } from "./log-store.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { resolveDepsHashInputs } from "../shared/deps-hash.js";
 import { evaluateContentKeyReport, type ContentKeyConfig } from "./install-content-key.js";
-import { agentLogAppend } from "./log-emit.js";
+import { agentLogAppend, appendAgentLog } from "./log-emit.js";
 import { collectAccountAgentEnv } from "./secret-resolver.js";
 import { getErrorMessage } from "./validation.js";
 import { formatOverlayMeasurement, type DepDirPublishOutcome } from "./overlay-publish.js";
@@ -721,6 +721,23 @@ export function setupServiceManager(
             installDurationMs: Date.now() - installStartedAt,
             outcomes,
           }));
+        }
+        // A publish that errors is best-effort by construction and costs only the
+        // shared-base optimization — but until this line the ONLY signal anywhere
+        // on the host was a `console.warn` inside the session container, so a
+        // ~39% failure rate on the docs/183 dep store was invisible to ops.
+        // Counts only: the dep dir name is repo-declared (`agent.dep-dirs`), so
+        // naming it here would put project text on an ops-readable channel — the
+        // exact shape `OPS_SAFE_TEMPLATES` (docs/264) exists to keep off it.
+        const failed = outcomes.filter((o) => o.outcome === "error").length;
+        if (failed > 0) {
+          appendAgentLog(
+            broadcastLog,
+            r.sessionId,
+            r,
+            "server",
+            `Dependency cache: ${failed} of ${outcomes.length} dependency directories could not be snapshotted as a shared base. Later sessions of this repository reinstall instead of reusing it.`,
+          );
         }
       } catch (err) {
         console.error(`[overlay-publish:${r.sessionId}] publish failed:`, getErrorMessage(err));
