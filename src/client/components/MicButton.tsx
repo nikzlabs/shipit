@@ -13,7 +13,8 @@
  * not supported (see plan "Gestures (resolved)").
  */
 
-import { MicrophoneIcon, SpinnerGapIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { MicrophoneIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { WithTooltip } from "./ui/tooltip.js";
 import { Popover, PopoverAnchor, PopoverContent } from "./ui/popover.js";
@@ -94,7 +95,7 @@ export function MicButton({
           data-testid="mic-button"
           data-state="transcribing"
         >
-          <SpinnerGapIcon size={iconSize} className="animate-spin" />
+          <Spinner size={iconSize} />
         </button>
       </WithTooltip>
     );

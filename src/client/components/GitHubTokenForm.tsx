@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CircleNotchIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
 import { ICON_SIZE } from "../design-tokens.js";
 
 export interface GitHubTokenFormProps {
@@ -63,7 +63,7 @@ export function GitHubTokenForm({ onSubmit }: GitHubTokenFormProps) {
       >
         {loading ? (
           <>
-            <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" />
+            <Spinner size={ICON_SIZE.SM} />
             Connecting...
           </>
         ) : (

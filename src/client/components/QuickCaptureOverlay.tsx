@@ -1,7 +1,8 @@
 // eslint-disable-next-line no-restricted-imports -- focus restoration, Escape listener
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Spinner } from "./Spinner.js";
 import { useEventListener } from "../hooks/useEventListener.js";
-import { CircleNotchIcon, XIcon } from "@phosphor-icons/react";
+import { XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
@@ -295,7 +296,7 @@ export function QuickCaptureOverlay({
           <div className="min-w-0">
             {!bootstrapLoaded ? (
               <span className="inline-flex items-center gap-2 text-sm text-(--color-text-secondary)">
-                <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" />
+                <Spinner size={ICON_SIZE.SM} />
                 Loading repos
               </span>
             ) : repos.length === 0 ? (

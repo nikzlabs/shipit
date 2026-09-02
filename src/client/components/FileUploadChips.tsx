@@ -1,4 +1,5 @@
-import { FileIcon, CircleNotchIcon, WarningCircleIcon, ArrowClockwiseIcon } from "@phosphor-icons/react";
+import { FileIcon, WarningCircleIcon, ArrowClockwiseIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -52,7 +53,7 @@ function ImageThumbnail({ u, index, onRemove }: { u: UploadItem; index: number; 
         // pointer-events-none: the overlay covers the button, and a pasted
         // image is previewable from local bytes before the POST finishes.
         <div className="absolute inset-0 flex items-center justify-center bg-black/40 rounded-md pointer-events-none">
-          <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin text-white" />
+          <Spinner size={ICON_SIZE.SM} className="text-white" />
         </div>
       )}
       {u.status !== "uploading" && (
@@ -81,7 +82,7 @@ function FileChip({ u, index, onRemove, onRetry }: { u: UploadItem; index: numbe
       title={u.status === "error" ? u.error : u.name}
     >
       {u.status === "uploading" && (
-        <CircleNotchIcon size={ICON_SIZE.XS} className="shrink-0 animate-spin text-(--color-text-secondary)" />
+        <Spinner size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-secondary)" />
       )}
       {u.status === "ready" && (
         <FileIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-secondary)" />

@@ -8,22 +8,15 @@
  */
 
 import { useGitStore } from "../stores/git-store.js";
+import { Spinner } from "./Spinner.js";
 import { useSessionDefaultBranch, useSessionHasBaseBranch } from "../utils/default-branch.js";
 import { Button } from "./ui/button.js";
 import {
-  ArrowsClockwiseIcon,
-  CircleNotchIcon,
-  WarningIcon,
+  ArrowsClockwiseIcon, WarningIcon,
   XCircleIcon,
   XIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
-
-function Spinner() {
-  return (
-    <CircleNotchIcon size={14} className="animate-spin text-(--color-info) shrink-0" />
-  );
-}
 
 export function RebaseBanner({ sessionId }: { sessionId: string }) {
   const rebaseStatus = useGitStore((s) => s.rebaseStatus);
@@ -113,7 +106,7 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
         {/* Rebase in progress */}
         {rebaseStatus === "in_progress" && (
           <>
-            <Spinner />
+            <Spinner size={14} className="text-(--color-info) shrink-0" />
             <span className="text-(--color-text-secondary) flex-1">
               Rebasing onto <code className="font-mono text-(--color-text-tertiary)">{baseBranch}</code>…
             </span>
@@ -149,7 +142,7 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
         {/* Resolving (agent is working on conflicts) */}
         {rebaseStatus === "resolving" && (
           <>
-            <Spinner />
+            <Spinner size={14} className="text-(--color-info) shrink-0" />
             <span className="text-(--color-text-secondary) flex-1">
               Rebase in progress — agent is resolving conflicts…
             </span>

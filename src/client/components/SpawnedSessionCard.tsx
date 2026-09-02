@@ -19,7 +19,8 @@
  * store. That keeps the component cheap to mount and easy to test.
  */
 
-import { ArrowSquareOutIcon, CircleNotchIcon, GitBranchIcon, GitCommitIcon, PlusCircleIcon, WrenchIcon } from "@phosphor-icons/react";
+import { ArrowSquareOutIcon, GitBranchIcon, GitCommitIcon, PlusCircleIcon, WrenchIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -196,7 +197,7 @@ export function SpawnedSessionCard({
             className="flex items-center gap-1 text-(--color-success)"
             data-testid="spawned-session-status"
           >
-            <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+            <Spinner size={ICON_SIZE.XS} />
             Running
           </span>
         ) : (

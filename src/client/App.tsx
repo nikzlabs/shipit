@@ -32,9 +32,7 @@ import { useComposerNetworkMode } from "./hooks/useSessionNetworkMode.js";
 import { useSessionActivation } from "./hooks/useSessionActivation.js";
 import { useAppKeyboardShortcuts } from "./hooks/useAppKeyboardShortcuts.js";
 import { useAppModals } from "./hooks/useAppModals.js";
-import {
-  CircleNotchIcon,
-  EyeIcon,
+import { EyeIcon,
   HardDrivesIcon,
   BookOpenIcon,
   ListChecksIcon,
@@ -168,6 +166,7 @@ import { isAgentMessagingBlocked } from "./utils/agent-messaging-trust.js";
 import { useChatDisabledReason, useHarnessOnboardingPanelVisible } from "./utils/chat-runnable.js";
 import { useGitHubGateLatch } from "./hooks/useGitHubGateLatch.js";
 import type { SendCommentsPayload } from "./components/FilePreviewModal.js";
+import { Spinner } from "./components/Spinner.js";
 
 export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
@@ -2347,10 +2346,7 @@ export default function App() {
     return (
       <div className="flex h-(--app-height) items-center justify-center bg-(--color-bg-primary)">
         {showBootstrapSpinner && (
-          <CircleNotchIcon
-            size={ICON_SIZE.MD}
-            className="animate-spin text-(--color-text-tertiary)"
-          />
+          <Spinner size={ICON_SIZE.MD} className="text-(--color-text-tertiary)" />
         )}
       </div>
     );

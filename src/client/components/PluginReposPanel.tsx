@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Spinner } from "./Spinner.js";
 import {
   WarningIcon,
   PlugsIcon,
@@ -8,7 +9,6 @@ import {
   ClockClockwiseIcon,
   ArrowsClockwiseIcon,
   XIcon,
-  CircleNotchIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import {
@@ -215,7 +215,7 @@ function PluginRepoCard({
             onClick={() => void runRefresh()}
           >
             {refreshing || repo.status === "activating" ? (
-              <CircleNotchIcon size={ICON_SIZE.XS} className="mr-1 inline animate-spin" />
+              <Spinner size={ICON_SIZE.XS} className="mr-1 inline" />
             ) : (
               <ArrowsClockwiseIcon size={ICON_SIZE.XS} className="mr-1 inline" />
             )}
@@ -680,7 +680,7 @@ function HostGrantOutcomeRow({
             onClick={() => void restart(summary.restartSessionId!)}
           >
             {restarting ? (
-              <CircleNotchIcon size={ICON_SIZE.XS} className="mr-1 inline animate-spin" />
+              <Spinner size={ICON_SIZE.XS} className="mr-1 inline" />
             ) : null}
             Restart to apply now
           </CardAction>

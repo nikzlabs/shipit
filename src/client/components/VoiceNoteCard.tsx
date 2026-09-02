@@ -13,7 +13,8 @@
  * way — the stored flag is not read.)
  */
 
-import { PlayIcon, PauseIcon, SpinnerGapIcon, WarningCircleIcon, MegaphoneIcon } from "@phosphor-icons/react";
+import { PlayIcon, PauseIcon, WarningCircleIcon, MegaphoneIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useVoicePlayback } from "../voice/use-voice-playback.js";
 import { armAutoplay } from "../voice/voice-notes.js";
@@ -38,7 +39,7 @@ export function VoiceNoteCard({ id, headline }: { id: string; headline: string }
 
   const icon =
     state === "loading" ? (
-      <SpinnerGapIcon size={ICON_SIZE.SM} className="animate-spin" />
+      <Spinner size={ICON_SIZE.SM} />
     ) : state === "playing" ? (
       <PauseIcon size={ICON_SIZE.SM} weight="fill" />
     ) : state === "error" ? (

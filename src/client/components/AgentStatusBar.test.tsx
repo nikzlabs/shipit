@@ -18,9 +18,8 @@ describe("AgentStatusBar", () => {
     expect(screen.getByText("Editing src/foo.ts")).toBeInTheDocument();
   });
 
-  it("renders a spinning icon", () => {
+  it("renders a spinner", () => {
     const { container } = render(<AgentStatusBar />);
-    const spinner = container.querySelector(".animate-spin");
-    expect(spinner).toBeInTheDocument();
+    expect(container.querySelector(".spinner")).toBeInTheDocument();
   });
 });

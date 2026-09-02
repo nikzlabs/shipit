@@ -1,4 +1,5 @@
 import { CheckIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
 import type { TaskItem } from "./task-list.js";
 
 /**
@@ -49,10 +50,9 @@ function StatusIcon({ status }: { status: TaskItem["status"] }) {
       );
     case "in_progress":
       return (
-        <span
-          className="tool-spinner inline-block w-3.5 h-3.5 border border-(--color-accent) border-t-transparent rounded-full shrink-0"
-          data-testid="status-in-progress"
-        />
+        <span data-testid="status-in-progress" className="shrink-0 inline-flex">
+          <Spinner size={14} className="text-(--color-accent)" />
+        </span>
       );
     case "pending":
       return (

@@ -50,42 +50,77 @@
   --ease-in: ease-in;
 }
 
-/* ── What an INFINITE animation costs, and the two rules (docs/265) ────────────
-   A page holding a live IntersectionObserver runs the whole main-thread
-   rendering lifecycle on every frame the browser SCHEDULES, and a running
-   animation schedules one per vsync. ShipIt always holds such observers (one per
-   `content-visibility: auto` transcript row, plus auto-animate and Present
-   cards), and none of them is removable — so a single ever-running spinner cost
-   an *idle* session ~150 ms of main thread per second.
+/* ── What an INFINITE animation costs, and the one rule (docs/265) ─────────────
+   ONE RULE, enforced by `index.animation-policy.test.ts`:
 
-   Two rules, both enforced by `index.animation-policy.test.ts`, which is also
-   where the reasoning about how they can be got wrong lives:
+     An infinite animation may animate `opacity`, and nothing else. It then needs
+     no `steps()` and should stay smooth.
 
-     1. An infinite animation may animate ONLY `transform` and `opacity`.
-        Rule 2 does nothing without this: stepping an animation of `left` or of
-        `stroke-dashoffset` still wakes the main thread 60 times a second.
-     2. It must use `steps(N)` at about 10 steps a second. A stepped compositor
-        animation wakes the main thread only when its value changes.
+   Why. A live `IntersectionObserver` target — ShipIt always has some, one per
+   `content-visibility: auto` transcript group plus auto-animate and Present
+   cards — makes Chrome recompute intersections, which needs the full main-thread
+   rendering lifecycle. A `transform` animation moves geometry, so every frame it
+   produces drags that lifecycle behind it. An `opacity` animation moves none, so
+   it produces the same compositor frames and wakes the main thread not at all.
 
-   The cost is the UNION over running animations, so a single animation that
-   breaks either rule cancels the saving from every other one — which is why
-   these are a test and not a convention.
+   The controlled measurement, ONE element with ONE timing and only the property
+   changed (`node scripts/measure-spinner-cost.mjs`; fuller table in
+   `docs/265-transcript-render-cost/plan.md` §2c):
 
-   A FINITE animation is exempt from both and stays smooth: it stops, so it costs
-   nothing in the steady state. That is the right shape for a decorative
-   illustration (the rocket scene, the preview-setup art), and preferring it is
-   also how an idle empty screen gets to cost nothing rather than 10 Hz.
+     transform, linear     60 main frames/s, 39.1 ms/s
+     opacity,   linear      0 main frames/s,  2.5 ms/s
 
-   Note that the step boundaries are per-animation, measured from its own start
-   time. Two 10 Hz animations mounted 37 ms apart cost 15 frames a second, not
-   10. Siblings that mount together (the stars, the three blinking dots) do share
-   a train if their delays are whole multiples of the step period — worth keeping
-   when it is free, but it is not a document-wide clock and nothing relies on
-   it. */
+   Read that as renderer MAIN-THREAD cost. The opacity spinner deliberately draws
+   more compositor frames than the stepped one did — that is what smooth means —
+   so this is not a claim about total processor or battery cost.
+
+   Three controls, because the tempting explanations are all wrong: `contain:
+   strict` does not rescue a transform; `scale` and `translate` cost what
+   `rotate` costs, so it is geometry and not rotation; and opacity stays free with
+   the animating element observed directly and inside a `content-visibility: auto`
+   container. What this does NOT establish is a claim about compositing: a
+   production trace recorded `compositeFailed` on a rotating icon, and whether
+   the transform was accelerated is a separate question from the one measured
+   here. The rule rests on the property, which is what the controlled pair varies.
+
+   THE OLD RULE SAID `transform` WAS FINE IF STEPPED. That was wrong twice over.
+   It read as a visual regression (a 10 fps spinner is choppy by construction, and
+   unmistakably so at 120 Hz), and it did not even deliver 10 Hz: step boundaries
+   run from each animation's own start time, so independently mounted spinners do
+   not share a train and their wake-ups add. Twelve stepped transforms mounted
+   7 ms apart measured 60 main frames/s against 10 for one — which is the shape of
+   the production trace that showed 118.5 main frames/s on a 120 Hz display with
+   the "10 Hz" rule in force.
+
+   PHASE MATTERS EVEN FOR OPACITY, and this one only shows up against a real app.
+   Twelve opacity animations sharing one phase behave as one; twelve phases do
+   not. Measured on a running ShipIt: a spinner phased with a staggered
+   `animation-delay` costs 50 main frames/s, and the same spinner with the phase
+   moved into its keyframes costs 5. Pixel-identical output, ten times the cost.
+   Neither a bare fixture nor one with 1,500 `content-visibility` rows reproduces
+   it, so measure this one with `measure-spinner-cost.mjs <seconds> <appUrl>`.
+
+   A FINITE animation is exempt: it stops, so it costs nothing in the steady
+   state. That is the right shape for decoration (the rocket scene, the
+   preview-setup art), and it is the only way to animate a property — like
+   `stroke-dashoffset` — that this rule otherwise forbids. Silence means finite:
+   the CSS default is one iteration, so only `infinite` makes an animation
+   unbounded. For that reading to be sound, the `animation-name` and
+   `animation-iteration-count` LONGHANDS are banned outright — they let the
+   cascade split one animation across two rules, neither of which looks unbounded
+   on its own. Write one `animation:` shorthand.
+
+   The progress spinner is built out of this rule: see `.spinner` below and
+   `components/Spinner.tsx`. */
 @theme {
-  --animate-spin: spin 1s steps(10) infinite;
-  --animate-ping: ping 1s steps(10) infinite;
-  --animate-pulse: pulse 2s steps(20) infinite;
+  /* `pulse` animates opacity only, so Tailwind's own smooth default is already
+     free. It is re-declared here purely to pin that — an edit that swaps in a
+     transform would otherwise look harmless. `--animate-spin` and
+     `--animate-ping` are deliberately NOT re-declared: both animate transform,
+     so no infinite use of them is affordable, and the policy test fails the
+     build on `animate-spin` / `animate-ping` / `animate-bounce` appearing in a
+     component. Use `<Spinner />` instead. */
+  --animate-pulse: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
 /* docs/211 — sandbox-session accent: teal, distinct from PR violet, ops amber,
@@ -417,15 +452,94 @@ html, body {
   }
 }
 
-/* Spinning indicator for in-progress tools */
-@keyframes spin-slow {
-  to {
-    transform: rotate(360deg);
+/* ── The progress spinner (docs/265; components/Spinner.tsx) ──
+   Twelve fixed spokes whose OPACITY is animated so a bright head travels round
+   the ring. Nothing moves, so by the rule above it runs smooth at the display's
+   own rate for a fraction of what rotating one icon cost.
+
+   WHY TWELVE @keyframes INSTEAD OF ONE PLUS A STAGGERED animation-delay. The
+   obvious spelling is a single `spinner-fade` on every spoke with
+   `animation-delay: calc(var(--i) * -0.1s)`. It renders identically and it is
+   MUCH more expensive: measured in the live app, one spinner written that way
+   costs 50 main-thread frames/s, and the same spinner with the stagger moved
+   into the keyframes costs 5.6. Twelve animations sharing one phase behave as
+   one; twelve phases do not. (The old `steps()` rule was undone by the same
+   effect — see the rule comment above `@theme`.) So the phase offset lives in
+   the keyframes and every spoke runs on delay 0.
+
+   Each block is the same sawtooth sampled at a different offset: spoke i is
+   brightest at i/12 through the cycle and fades to 0.12 over the remaining
+   cycle, with the `x.xx%`/`x.xx%` pair a step back up to full at the wrap. To
+   regenerate, opacity at t=0 is `0.12 + 0.88 * i/12`.
+
+   The trailing opacity is 0.12 rather than 0: a spoke that vanishes makes the
+   ring read as a gap chasing its tail, which is a busier shape than the comet.
+
+   Sizes are proportional so one rule serves every ICON_SIZE — the component sets
+   only width/height. `currentColor` is what lets a spinner take the same
+   `text-(--color-*)` token the icon it replaced took. */
+@keyframes spoke-0 { 0% { opacity: 1 } 100% { opacity: 0.12 } }
+@keyframes spoke-1 { 0% { opacity: 0.1933 } 8.3233% { opacity: 0.12 } 8.3333% { opacity: 1 } 100% { opacity: 0.1933 } }
+@keyframes spoke-2 { 0% { opacity: 0.2667 } 16.6567% { opacity: 0.12 } 16.6667% { opacity: 1 } 100% { opacity: 0.2667 } }
+@keyframes spoke-3 { 0% { opacity: 0.34 } 24.99% { opacity: 0.12 } 25% { opacity: 1 } 100% { opacity: 0.34 } }
+@keyframes spoke-4 { 0% { opacity: 0.4133 } 33.3233% { opacity: 0.12 } 33.3333% { opacity: 1 } 100% { opacity: 0.4133 } }
+@keyframes spoke-5 { 0% { opacity: 0.4867 } 41.6567% { opacity: 0.12 } 41.6667% { opacity: 1 } 100% { opacity: 0.4867 } }
+@keyframes spoke-6 { 0% { opacity: 0.56 } 49.99% { opacity: 0.12 } 50% { opacity: 1 } 100% { opacity: 0.56 } }
+@keyframes spoke-7 { 0% { opacity: 0.6333 } 58.3233% { opacity: 0.12 } 58.3333% { opacity: 1 } 100% { opacity: 0.6333 } }
+@keyframes spoke-8 { 0% { opacity: 0.7067 } 66.6567% { opacity: 0.12 } 66.6667% { opacity: 1 } 100% { opacity: 0.7067 } }
+@keyframes spoke-9 { 0% { opacity: 0.78 } 74.99% { opacity: 0.12 } 75% { opacity: 1 } 100% { opacity: 0.78 } }
+@keyframes spoke-10 { 0% { opacity: 0.8533 } 83.3233% { opacity: 0.12 } 83.3333% { opacity: 1 } 100% { opacity: 0.8533 } }
+@keyframes spoke-11 { 0% { opacity: 0.9267 } 91.6567% { opacity: 0.12 } 91.6667% { opacity: 1 } 100% { opacity: 0.9267 } }
+
+.spinner {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.spinner > i {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 12%;
+  height: 26%;
+  margin: -13% 0 0 -6%;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+/* Negative angles so the comet head travels clockwise as the phase advances. */
+.spinner > i:nth-child(1) { transform: rotate(0deg) translateY(-140%); animation: spoke-0 1.2s linear infinite }
+.spinner > i:nth-child(2) { transform: rotate(-30deg) translateY(-140%); animation: spoke-1 1.2s linear infinite }
+.spinner > i:nth-child(3) { transform: rotate(-60deg) translateY(-140%); animation: spoke-2 1.2s linear infinite }
+.spinner > i:nth-child(4) { transform: rotate(-90deg) translateY(-140%); animation: spoke-3 1.2s linear infinite }
+.spinner > i:nth-child(5) { transform: rotate(-120deg) translateY(-140%); animation: spoke-4 1.2s linear infinite }
+.spinner > i:nth-child(6) { transform: rotate(-150deg) translateY(-140%); animation: spoke-5 1.2s linear infinite }
+.spinner > i:nth-child(7) { transform: rotate(-180deg) translateY(-140%); animation: spoke-6 1.2s linear infinite }
+.spinner > i:nth-child(8) { transform: rotate(-210deg) translateY(-140%); animation: spoke-7 1.2s linear infinite }
+.spinner > i:nth-child(9) { transform: rotate(-240deg) translateY(-140%); animation: spoke-8 1.2s linear infinite }
+.spinner > i:nth-child(10) { transform: rotate(-270deg) translateY(-140%); animation: spoke-9 1.2s linear infinite }
+.spinner > i:nth-child(11) { transform: rotate(-300deg) translateY(-140%); animation: spoke-10 1.2s linear infinite }
+.spinner > i:nth-child(12) { transform: rotate(-330deg) translateY(-140%); animation: spoke-11 1.2s linear infinite }
+
+/* Under reduced motion the travelling head goes away entirely. No box moves
+   either way, but the whole point of the design is that a bright point is
+   *perceived* to travel round the ring, and that perception is what the
+   preference is about — "it is only opacity" would be an argument about the
+   implementation, not about what the user sees. The ring keeps a slow, uniform
+   breath instead: still obviously in-flight, with no direction and no position
+   to track. Every spoke shares one animation, so this is also the cheapest
+   state the component has. */
+@media (prefers-reduced-motion: reduce) {
+  /* Same specificity as the numbered rules above, so it wins on source order. */
+  .spinner > i:nth-child(n) {
+    animation: spinner-breathe 2.4s ease-in-out infinite alternate;
   }
 }
 
-.tool-spinner {
-  animation: spin-slow 1s steps(10) infinite;
+@keyframes spinner-breathe {
+  from { opacity: 0.85 }
+  to { opacity: 0.3 }
 }
 
 /* ── Preview empty-state illustration (PreviewSetupInvite.tsx) ──

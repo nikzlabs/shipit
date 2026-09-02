@@ -39,11 +39,10 @@
  */
 
 import { useEventListener } from "../hooks/useEventListener.js";
+import { Spinner } from "./Spinner.js";
 import { createPortal } from "react-dom";
 import {
-  StopIcon,
-  SpinnerGapIcon,
-  XIcon,
+  StopIcon, XIcon,
   WarningCircleIcon,
   ArrowClockwiseIcon,
 } from "@phosphor-icons/react";
@@ -128,13 +127,17 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
               data-testid="mobile-recording-stop"
               className="relative flex h-32 w-32 items-center justify-center rounded-full bg-(--color-error) text-white shadow-2xl transition-transform active:scale-95"
             >
-              <span className="absolute inset-0 rounded-full bg-(--color-error)/40 motion-safe:animate-ping" />
+              {/* `animate-ping` scales, and an infinite transform animation costs a
+                  main-thread rendering pass per frame (docs/265). `animate-pulse`
+                  animates opacity only, which is free, and reads the same here: a
+                  halo breathing behind the stop button. */}
+              <span className="absolute inset-0 rounded-full bg-(--color-error)/40 motion-safe:animate-pulse" />
               <StopIcon size={ICON_SIZE.XL} weight="fill" className="relative" />
             </button>
           )}
           {transcribing && (
             <div className="flex h-32 w-32 items-center justify-center rounded-full bg-white/10">
-              <SpinnerGapIcon size={ICON_SIZE.XL} className="animate-spin text-white/80" />
+              <Spinner size={ICON_SIZE.XL} className="text-white/80" />
             </div>
           )}
           {error && (

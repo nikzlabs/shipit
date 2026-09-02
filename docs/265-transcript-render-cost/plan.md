@@ -385,15 +385,19 @@ the GC reading above, that is the expected result rather than a missing explanat
 `JSEventListeners` counts registrations, not calls, so the production figure is not subject to the
 call-counting error either. What remains unidentified is the subtree whose mount registers ~620.
 
-### 2c. What an infinite animation is allowed to be (req 13)
+### 2c. What an infinite animation is allowed to be (req 13, req 14)
 
-A page holding a live `IntersectionObserver` runs the whole main-thread rendering lifecycle on
-every frame the browser *schedules*, and a running animation schedules one per vsync. ShipIt
-always holds such observers — Chrome makes one internally per `content-visibility: auto`
-transcript row, `@formkit/auto-animate` makes more, and so does every inline Present card — so a
-single ever-running indicator cost an **idle** session ~177 ms of main thread per second on a
-long transcript. That is the reported "25% of a core on a session where nothing is happening",
+A page holding a live `IntersectionObserver` target runs the whole main-thread rendering
+lifecycle on every frame a **geometry-moving** animation produces. ShipIt always holds such
+observers — Chrome makes one internally per `content-visibility: auto` transcript row,
+`@formkit/auto-animate` makes more, and so does every inline Present card — so a single
+ever-running `transform` indicator cost an **idle** session ~177 ms of main thread per second on
+a long transcript. That is the reported "25% of a core on a session where nothing is happening",
 of which the main thread is the largest but not the only part.
+
+*(The first version of this paragraph said "on every frame the browser schedules, and a running
+animation schedules one per vsync", which is the reading that produced the wrong rule below. It
+is not the property of the frame that costs — it is the property being animated.)*
 
 `checklist.md` had this recorded and left unfixed, because it read the choice as being between
 the two observer sources and both are load-bearing. **The animation is a third ingredient and
@@ -408,28 +412,123 @@ as long as the service did — which is how a session with nothing happening had
 animating. `starting` keeps its spinner. An audit of the other infinite animations found no
 second case of the same mistake.
 
-**An infinite animation must be compositor-only and stepped.** `steps(N)` wakes the main thread
-only when the value changes, and the frame rate is measured to be exactly N per second — *but
-only for a property Chrome can animate off the main thread*. `steps(10)` on an animation of
-`left` still costs 60 frames/s. So the rule is two-part: `transform`/`opacity` only, stepped at
-about 10 Hz. `--animate-spin`, `--animate-ping` and `--animate-pulse` are re-declared in an
-`@theme` block; `.tool-spinner` takes `steps(10)`.
+**An infinite animation may animate `opacity`, and nothing else** (req 13 + req 14).
+
+*This replaced an earlier rule — "compositor-only, stepped at about 10 Hz" — which was wrong,
+and the correction is the interesting part.* That rule read the cost as being about the number
+of frames an animation schedules, and set out to schedule fewer. It shipped, and the user came
+back with requirement 14: the interface no longer froze but was *visibly sluggish*, because a
+10 fps spinner is choppy by construction. Re-measuring found the rule was also not collecting
+the saving it paid for.
+
+The mechanism is narrower than "frames are expensive". A live IntersectionObserver target makes
+Chrome recompute intersections, which needs the whole main-thread rendering lifecycle. A
+`transform` animation moves geometry, so every frame it produces drags that lifecycle behind
+it. An `opacity` animation moves none — it produces the *same* compositor frames and wakes the
+main thread **not at all**.
+
+Measured by `scripts/measure-spinner-cost.mjs` on pages carrying 30 `content-visibility: auto`
+rows plus a live observer. The **controlled pair** is the row that carries the causal claim — one
+element, one timing, only the animated property changed:
+
+| | draw frames/s | **main frames/s** | main-thread ms/s |
+|---|---|---|---|
+| same element, `transform`, linear | 60 | **60** | 39.1 |
+| same element, `opacity`, linear | 60 | **0** | 2.5 |
+
+The before/after pair is the same finding at the size of the real change, but it varies the
+element type as well (a rotating `<svg>` becomes a span of twelve children), so on its own it
+would show only that the replacement is cheaper, not that the property is why:
+
+| | draw frames/s | **main frames/s** | main-thread ms/s | style recalcs per main frame |
+|---|---|---|---|---|
+| one stepped-transform spinner (old rule, best case) | 10 | 10 | 6.6 | 1 |
+| twelve, mounted 7 ms apart (old rule, real case) | 60 | **60** | 36.0 | 1 |
+| one opacity spinner, unstepped | 60 | **0** | 2.2 | 0 |
+| twelve, mounted 7 ms apart | 60 | **0** | 2.4 | 0 |
+
+So the smooth version is *cheaper than* the choppy one it replaced, and requirements 13 and 14
+stopped being a trade.
+
+**Two things this does not say.** The numbers are renderer MAIN-THREAD cost: the opacity spinner
+deliberately draws more compositor frames than the stepped one, so compositor/Viz/GPU work goes
+*up*, and requirement 13's "processor" would need a process-wide trace nobody has taken. And it is
+not a claim about *compositing*: the production trace recorded `compositeFailed` on the rotating
+icon, and whether a transform was accelerated is a different question from the one the controlled
+pair varies. The rule rests on the property, which is what that pair isolates.
+
+Three further controls, because the tempting explanations are all wrong: `contain: strict` does not
+rescue a transform; `scale` and `translate` cost exactly what `rotate` costs, so it is geometry and
+not rotation; and opacity stays free with the animating element observed *directly* and inside a
+`content-visibility: auto` container.
+
+The old rule under-delivered even on its own terms. **Step boundaries run from each animation's own
+start time**, so independently mounted spinners never share a train and their wake-ups add — twelve
+reached display rate against 10 for one. Spinners appear whenever a request starts, which is never
+the same frame. A production trace on a 120 Hz display showed 118.5 main-thread frames/s with the
+"10 Hz" rule in force.
+
+**Phase matters for opacity too, and only a real app shows it.** Twelve opacity animations sharing
+one phase behave as one; twelve phases do not. Measured on a running ShipIt: a spinner phased by a
+staggered `animation-delay` costs **50** main frames/s, and the same spinner with the phase moved
+into its keyframes costs **5** — pixel-identical output, ten times the cost, reproduced across
+runs. Neither a bare fixture nor one with 1,500 `content-visibility` rows reproduces the
+difference, which is why `measure-spinner-cost.mjs` takes an app URL and injects into a live page
+for that pair; the mechanism behind the app-dependence is not established. It is why the spinner
+carries twelve `@keyframes` blocks rather than one plus a delay: the delay spelling is the one
+anyone would write, and it is the expensive one.
+
+**What this cost in code.** `animate-spin` was on ~50 Phosphor `<svg>` icons. They are now a
+single `<Spinner />` (`components/Spinner.tsx`, styled by `.spinner` in `index.css`): twelve
+fixed spokes whose opacity is animated so a bright head travels the ring. Sampling it frame by
+frame is what answers requirement 14 directly — across eight consecutive frames of a 120 Hz
+display (less than ONE step of the old spinner) the old one renders a single repeated image and
+this one renders eight distinct ones, because adjacent spokes crossfade every frame. What is
+quantised is how many spoke *positions* the ring has, not how often it updates.
+
+Under `prefers-reduced-motion` the travelling head is dropped for a uniform breath. No box moves
+either way, but the design deliberately creates *perceived* rotation, and "it is only opacity"
+argues about the implementation rather than about what the user sees. `--animate-pulse` drops its
+`steps()` and goes back to Tailwind's smooth default — it already animated opacity only, so it
+was the one utility paying the choppiness for no reason at all. `--animate-spin` and
+`--animate-ping` are no longer declared: both animate transform, and no infinite use of either
+is affordable. The one `animate-ping` call site (the mobile recording halo) became
+`animate-pulse`.
+
+`spin-slow` and the `.tool-spinner` class are both gone. Keeping the class as a bare test marker
+was the first attempt and it was a trap: `TodoPanel` styled its own ring with it and would have
+gone on rendering a frozen arc, passing every test, because a class with no rules looks exactly
+like a class whose rules were deleted. Both call sites render a `<Spinner>` and the tests match on
+`.spinner`.
+
+The auto-fix indicator keeps its wrench and stops rotating, rather than becoming a generic spinner:
+at sidebar size that would have been indistinguishable from the CI one beside it, leaving colour
+and a hover-only tooltip to carry the difference. The indicator renders only *while* auto-fix runs,
+so its presence was always the "running" signal and the rotation was carrying nothing.
 
 **Decoration is finite instead.** The rocket scene and the preview-setup illustration both sit
 on *empty* screens a user can stay on indefinitely, and one of them animates
-`stroke-dashoffset`, which stepping cannot help. They now run about 24 s at their original
-easing and stop — a finite animation is exempt from both rules because it ends.
+`stroke-dashoffset`, which no rule here can make cheap. They now run about 24 s at their
+original easing and stop — a finite animation is exempt because it ends, and that exemption is
+the only way to animate a property the rule forbids.
 
-Two more measured constraints make this a rule enforced by a test rather than a convention:
+One measured constraint makes this a rule enforced by a test rather than a convention: **the
+cost is the union over running animations.** A single transform animation puts the whole page
+back at display rate and cancels the saving from every other one — so this cannot be left to
+each author to remember.
 
-- **The cost is the union over running animations.** One animation breaking either rule puts the
-  whole page back at display rate, cancelling the saving from every other one.
-- **Step boundaries run from each animation's own start time**, so there is no shared clock:
-  two `steps(10)` animations mounted 37 ms apart cost 20.1 frames/s, not 10. Each animation is
-  individually capped; independently-phased ones add.
+`index.animation-policy.test.ts` enforces it in four ways, each verified to fail on its own
+violation: the property rule over every `animation:` shorthand, every `--animate-*` theme value
+and the longhand spelling; a check that none of them is stepped (stepping an opacity animation
+spends smoothness for nothing); a check that `--animate-spin`/`ping`/`bounce` stay *undeclared*;
+and a scan of every client `.ts`/`.tsx` for `animate-spin`/`animate-ping`/`animate-bounce`,
+since Tailwind still defines those and a component can reach one without touching `index.css` at
+all. That last scan is the one that would have caught the original 50 call sites.
 
-`index.animation-policy.test.ts` checks the properties and the step rate over every `animation:`
-shorthand, every `--animate-*` theme value, and the longhand spelling.
+Two ways this file could pass while measuring nothing, both now closed: `keyframeProperties`
+matched `@keyframes` by *substring*, so asking for `spin` found `spinner-fade` and reported
+opacity for a rotation; and the staleness guard counted animations rather than naming them, so
+it would have been satisfied by any four.
 
 Not changed: `content-visibility: auto`. Its benefit is now measured rather than assumed — it
 **halves first contentful paint** on a 2,000-row transcript (123 ms against 227 ms) — so the

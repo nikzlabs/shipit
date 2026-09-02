@@ -10,7 +10,8 @@
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: poll the host overview while the tab is visible
 import { useCallback, useEffect, useState } from "react";
-import { ArrowClockwiseIcon, CircleNotchIcon, WarningIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
+import { ArrowClockwiseIcon, WarningIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { formatRelativeDate } from "../utils/dates.js";
@@ -154,7 +155,7 @@ export function HostPanel({ isActiveTab }: HostPanelProps) {
           aria-label="Refresh host overview"
         >
           {loading
-            ? <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" />
+            ? <Spinner size={ICON_SIZE.SM} />
             : <ArrowClockwiseIcon size={ICON_SIZE.SM} />}
         </Button>
       </div>

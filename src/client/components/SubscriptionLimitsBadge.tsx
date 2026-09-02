@@ -1,4 +1,5 @@
-import { ArrowClockwiseIcon, CircleNotchIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { ArrowClockwiseIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
 // eslint-disable-next-line no-restricted-imports -- useEffect: one-shot /api/oauth/usage fetch when the mobile status dropdown mounts it (external system sync)
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -779,7 +780,7 @@ function LimitsRefreshButton({
       data-refresh-problem={problem ?? undefined}
     >
       {refreshing ? (
-        <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+        <Spinner size={ICON_SIZE.XS} />
       ) : failed ? (
         <WarningCircleIcon size={ICON_SIZE.XS} />
       ) : (

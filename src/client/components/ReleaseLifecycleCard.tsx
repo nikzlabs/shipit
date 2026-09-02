@@ -22,13 +22,12 @@
  */
 
 import { useState } from "react";
+import { Spinner } from "./Spinner.js";
 import {
   TagIcon,
   RocketLaunchIcon,
   CheckCircleIcon,
-  XCircleIcon,
-  CircleNotchIcon,
-  SealCheckIcon,
+  XCircleIcon, SealCheckIcon,
   ArrowSquareOutIcon,
   GlobeIcon,
   ProhibitIcon,
@@ -86,7 +85,7 @@ function GateIndicator({ checks }: { checks?: ReleaseChecksSummary }) {
       className="text-(--color-warning) text-xs flex items-center gap-1 shrink-0 animate-pulse"
       title="Release gate running"
     >
-      <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" /> Gate running
+      <Spinner size={ICON_SIZE.SM} /> Gate running
     </span>
   );
 }
@@ -146,7 +145,7 @@ function headerIconFor(phase: ReleaseStatusSummary["phase"]) {
     return <ProhibitIcon size={ICON_SIZE.SM} className="text-(--color-text-tertiary)" />;
   }
   if (phase === "tagging" || phase === "pr_merged" || phase === "gating" || phase === "deploying") {
-    return <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin text-(--color-warning)" />;
+    return <Spinner size={ICON_SIZE.SM} className="text-(--color-warning)" />;
   }
   return <RocketLaunchIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />;
 }

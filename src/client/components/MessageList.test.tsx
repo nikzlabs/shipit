@@ -1773,8 +1773,8 @@ describe("MessageList", () => {
         { role: "assistant", text: "Editing", toolUse: [{ type: "tool_use", id: "t2", name: "Edit", input: { file_path: "b.ts", old_string: "a", new_string: "b" } }], streaming: true },
       ];
       render(<MessageList messages={messages} isLoading={true} />);
-      // There should be exactly one spinner (the tool-spinner class) in the DOM
-      const spinners = document.querySelectorAll(".tool-spinner");
+      // There should be exactly one spinner in the DOM
+      const spinners = document.querySelectorAll(".spinner");
       expect(spinners).toHaveLength(1);
     });
 
@@ -1789,7 +1789,7 @@ describe("MessageList", () => {
         },
       ];
       render(<MessageList messages={messages} isLoading={true} />);
-      expect(document.querySelector(".tool-spinner")).not.toBeInTheDocument();
+      expect(document.querySelector(".spinner")).not.toBeInTheDocument();
     });
   });
 

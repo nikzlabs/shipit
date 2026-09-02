@@ -1,5 +1,5 @@
 import { memo, type RefObject } from "react";
-import { CircleNotchIcon } from "@phosphor-icons/react";
+import { Spinner } from "../Spinner.js";
 import { TodoPanel } from "../TodoPanel.js";
 import { isTaskListTool } from "../../../server/shared/task-list-tools.js";
 import type { SearchMatch } from "../../hooks/useSearch.js";
@@ -224,7 +224,7 @@ function TranscriptRowInner({
         )}
         {msg.queued && (
           <div className="flex items-center gap-1.5 mb-1.5 text-xs text-(--color-accent-text)/80 font-medium">
-            <CircleNotchIcon size={12} className="animate-spin" />
+            <Spinner size={12} />
             Queued{msg.queuePosition !== undefined ? ` #${msg.queuePosition}` : ""}
           </div>
         )}

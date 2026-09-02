@@ -64,11 +64,23 @@ time and complained about by a user.
     running, no typing and no network traffic, the page must cost close to nothing — however
     long the conversation is, and whatever the page is showing.
 
+14. Motion in the interface must look smooth. A spinner or other indicator must not visibly
+    step or stutter, including on a 120 Hz display where everything around it is smooth.
+    This holds *at the same time as* requirement 13 — meeting one by giving up the other is
+    not meeting them.
+
 ## Open questions
 
 *(none)*
 
 ## Resolved questions
+
+- **2026-09-02 — Requirement 14 added.** The user reported the interface had stopped freezing
+  but now felt *"visibly sluggish, especially on a 120 Hz monitor"*, and traced it to the fix
+  for requirement 13: that fix capped every infinite animation at ten steps a second, which is
+  choppy by construction. Recorded as a requirement rather than a bug because the first fix
+  was measured against requirement 13 alone and passed — nothing in the requirements said the
+  result had to still look right. No trade was needed in the end: see `plan.md` §2c.
 
 - **2026-08-15 — Must the whole conversation stay present in the page?** Asked because the
   cheapest way to meet requirement 3 is to render only the visible part ("windowing"), which

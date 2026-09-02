@@ -8,7 +8,8 @@
  * OpenAI bakes speed into the audio).
  */
 
-import { PlayIcon, PauseIcon, SpinnerGapIcon, StopIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { PlayIcon, PauseIcon, StopIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { WithTooltip } from "./ui/tooltip.js";
 import { useVoicePlayback } from "../voice/use-voice-playback.js";
@@ -41,7 +42,7 @@ export function PlayTurnButton({ turnId, text }: { turnId: string; text: string 
 
   const mainIcon =
     state === "loading" ? (
-      <SpinnerGapIcon size={ICON_SIZE.SM} className="animate-spin" />
+      <Spinner size={ICON_SIZE.SM} />
     ) : state === "playing" ? (
       <PauseIcon size={ICON_SIZE.SM} weight="fill" />
     ) : state === "error" ? (

@@ -1,6 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: setTimeout for disconnect delay with cleanup (timer-based side effect)
 import { useEffect, useRef, useState } from "react";
-import { CheckCircleIcon, CircleNotchIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { Spinner } from "./Spinner.js";
+import { CheckCircleIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { WsStatus } from "../hooks/useWebSocket.js";
 
@@ -94,7 +95,7 @@ export function ConnectionBanner({
       }`}
     >
       {isConnecting ? (
-        <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+        <Spinner size={ICON_SIZE.XS} />
       ) : (
         <WarningCircleIcon size={ICON_SIZE.XS} weight="fill" />
       )}

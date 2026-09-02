@@ -10,7 +10,6 @@ import { useSessionDefaultBranch } from "../../utils/default-branch.js";
 import type { PrCardState } from "../../stores/pr-store.js";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../ui/tooltip.js";
 import { MarkdownContent } from "../message-markdown.js";
-import { CircleNotchIcon } from "@phosphor-icons/react";
 
 // NB: block-level `flex` (not `inline-flex`) so the chip renders at exactly
 // h-6 regardless of its parent. As an inline-flex element it would be
@@ -29,12 +28,6 @@ const CONVENTIONAL_DEFAULT_BRANCHES = new Set(["main", "master"]);
 export function isDefaultBranch(branch: string, repoDefault?: string): boolean {
   if (repoDefault) return branch === repoDefault;
   return CONVENTIONAL_DEFAULT_BRANCHES.has(branch);
-}
-
-export function Spinner() {
-  return (
-    <CircleNotchIcon size={14} className="animate-spin text-(--color-info) shrink-0" />
-  );
 }
 
 export function DiffStats({ ins, del, onClick }: { ins: number; del: number; onClick?: () => void }) {
