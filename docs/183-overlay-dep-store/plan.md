@@ -240,11 +240,21 @@ retry now emits a session log line (`service-manager-setup.ts`) carrying **count
 names stay off it because `agent.dep-dirs` is repo-declared text and the line is on the docs/264
 ops-readable channel (its `OPS_SAFE_TEMPLATES` entry is what lets `shipit session logs` show it at all).
 
+**Measuring the retry.** A retry that keeps succeeding is indistinguishable from a run that never raced,
+so `DepDirPublishOutcome` carries an `attempts` count (1 ordinarily, 2 when the retry fired) and
+`formatOverlayMeasurement` renders it as an `:a<attempts>` segment — **only when it is greater than 1**,
+so an ordinary line is byte-identical to before and `grep ':a'` counts the dep dirs that raced. It is its
+own segment rather than part of the `d<depth>g<generation>` suffix because the case worth counting most
+is an `"error"`, which read no pointer and so has no depth to hang it on. `attempts` is absent when no
+pull was attempted at all (aborted before it started, or an install that declined every dir before any
+I/O). An aggregate rate across sessions is a separate, unbuilt signal — planning#493.
+
 Regression coverage: `dep-snapshot.test.ts` blocks tar on an undrained stdout and mutates the tree while
 it is provably mid-read, asserting that both race shapes reject *and* that the stream errors rather than
 ending cleanly (plus that `TAR_OPTIONS` is not honoured); `overlay-publish.test.ts` covers the retry —
-raced-then-clean publishes, twice-raced declines, an aborted pull is not retried, and a failed attempt's
-partial tree never mixes into the retry's; `service-manager-setup.test.ts` asserts the log line's real
+raced-then-clean publishes, twice-raced declines, an aborted pull is not retried, a failed attempt's
+partial tree never mixes into the retry's, and the `attempts` count reaches both the outcome and the
+`[overlay-measure]` line in each shape; `service-manager-setup.test.ts` asserts the log line's real
 string matches the ops-safe template, carries the `"server"` source, and names no dep dir.
 
 ### Reused vs dropped vs changed (relative to the whole-workspace implementation already on the branch)
