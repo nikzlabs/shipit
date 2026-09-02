@@ -74,7 +74,7 @@ Supported subcommands:
   gh pr create   [-t TITLE] [-b BODY|--body-file FILE] [-B BASE] [-d|--draft] [--fill] [-l|--label LABEL]
   gh pr edit     [<number>] [-t TITLE] [-b BODY|--body-file FILE] [--add-label LABEL] [--remove-label LABEL]
   gh pr view     [<number>] [-c|--comments] [--json FIELDS] [-q|--jq EXPR]
-  gh pr list     [--state STATE] [--json FIELDS] [-q|--jq EXPR]
+  gh pr list     [--state open|closed|merged|all] [--json FIELDS] [-q|--jq EXPR]
   gh pr status
   gh pr comment  [<number>] (-b BODY|--body-file FILE)
   gh pr ready    [<number>]
@@ -240,7 +240,15 @@ const PR_VIEW_JSON_FIELDS = [
 /** The subset of `PR_VIEW_JSON_FIELDS` that requires the conversation fetch. */
 const PR_CONVERSATION_FIELDS = new Set(["comments", "reviews", "reviewThreads", "reviewDecision"]);
 
-const PR_LIST_JSON_FIELDS = ["base", "head", "isDraft", "number", "state", "title", "url"];
+const PR_LIST_JSON_FIELDS = ["base", "head", "isDraft", "mergedAt", "number", "state", "title", "url"];
+
+/**
+ * The `--state` values `gh pr list` accepts. `merged` is not a GitHub REST
+ * state — the broker maps it onto closed-with-a-merge-timestamp — but real `gh`
+ * takes it, so a caller reasonably types it and it must not silently degrade to
+ * `open` (docs/116).
+ */
+const PR_LIST_STATES = ["open", "closed", "merged", "all"];
 
 const RUN_JSON_FIELDS = [
   "conclusion", "createdAt", "databaseId", "displayTitle", "event", "headBranch",
@@ -706,7 +714,19 @@ async function handlePrList(args: string[], deps: RunDeps): Promise<void> {
     ? jsonFields(parsed.values.json, deps, "gh pr list", PR_LIST_JSON_FIELDS)
     : undefined;
 
-  const qs = targetQuery(deps, parsed.values.repo, { state: parsed.values.state });
+  // Validate --state before the network call too. An unrecognised value used to
+  // fall through to the broker's `open` default, so `--state merged` answered
+  // with the OPEN pull requests and no warning — a wrong answer that reads like
+  // a valid one.
+  const state = parsed.values.state;
+  if (state !== undefined && !PR_LIST_STATES.includes(state)) {
+    fail(
+      deps.io,
+      `gh pr list: unknown --state "${state}"\nSupported states for gh pr list: ${PR_LIST_STATES.join(", ")}`,
+    );
+  }
+
+  const qs = targetQuery(deps, parsed.values.repo, { state });
   const res = await deps.call("GET", `/agent-ops/pr/list${qs}`, undefined, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to list PRs"), 1);
@@ -720,8 +740,10 @@ async function handlePrList(args: string[], deps: RunDeps): Promise<void> {
     success(deps.io, "No pull requests found.");
     return;
   }
+  // REST reports a merged PR as `closed`; say "merged" in the human-readable
+  // rows so a `--state merged` listing doesn't read as a list of closed PRs.
   const lines = prs.map(
-    (pr) => `#${asString(pr.number)}\t${asString(pr.title)}\t${asString(pr.head)}\t${asString(pr.state)}${pr.isDraft === true ? " DRAFT" : ""}`,
+    (pr) => `#${asString(pr.number)}\t${asString(pr.title)}\t${asString(pr.head)}\t${pr.mergedAt ? "merged" : asString(pr.state)}${pr.isDraft === true ? " DRAFT" : ""}`,
   );
   success(deps.io, lines.join("\n"));
 }

@@ -307,6 +307,17 @@ export class StubGitHubAuthManager extends EventEmitter {
       avatarUrl: undefined,
     };
   }
+  /**
+   * Mirrors `GitHubAuthManager.listPullRequests`, backing `GET /pr/list`.
+   * Records the resolved `state` because that is the thing under test: the
+   * route used to coerce every unrecognised value to "open", so a fake that
+   * dropped the argument could not fail on the wrong state being listed.
+   */
+  listPullRequestsCalls: { owner: string; repo: string; state: string }[] = [];
+  async listPullRequests(owner: string, repo: string, state = "open") {
+    this.listPullRequestsCalls.push({ owner, repo, state });
+    return [];
+  }
   async setToken(token: string) {
     if (!token.trim()) {
       this.emit("auth_failed", "Token cannot be empty");

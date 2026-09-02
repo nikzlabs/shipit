@@ -48,6 +48,7 @@ import {
   unresolveReviewThread,
   ServiceError,
 } from "./services/index.js";
+import { PR_LIST_STATES, type PrListState } from "./github-auth-prs.js";
 import { getErrorMessage } from "./validation.js";
 import { guardMergeSync } from "./services/branch-sync.js";
 import { parseGitHubRemote } from "./git-utils.js";
@@ -621,11 +622,20 @@ export async function registerGitHubRoutes(
       try {
         const session = sessionManager.get(request.params.id);
         if (gitBrokerDenied(session, reply)) return;
+        // Absent still means `open` — in-container callers rely on that. But an
+        // explicitly-supplied unknown value is refused by name rather than
+        // degrading to the default: the old fallback turned `?state=merged`
+        // into a list of OPEN PRs, which reads like a valid answer.
+        const stateRaw = request.query.state;
+        if (stateRaw !== undefined && !PR_LIST_STATES.includes(stateRaw as PrListState)) {
+          reply.code(400).send({
+            error: `Unknown state "${stateRaw}". Supported states: ${PR_LIST_STATES.join(", ")}`,
+          });
+          return;
+        }
+        const state: PrListState = (stateRaw as PrListState | undefined) ?? "open";
         const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.query);
         const git = createGitManager(gitDir);
-        const stateRaw = request.query.state;
-        const state: "open" | "closed" | "all" =
-          stateRaw === "closed" || stateRaw === "all" ? stateRaw : "open";
         const prs = await listPullRequests(git, deps.githubAuthManager, {
           state,
           remoteUrl,

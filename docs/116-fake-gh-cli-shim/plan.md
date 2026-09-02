@@ -144,6 +144,37 @@ signal: **3** unsupported expression (message names it), **1** supported
 expression that doesn't fit the data, **2** usage errors including `-q`
 without `--json` (which real `gh` also refuses, before any network call).
 
+#### `gh pr list --state` (added later)
+
+The same indistinguishable-failure shape recurred one flag over. `--state` was
+forwarded unvalidated, and the orchestrator route coerced anything that wasn't
+`closed`/`all` to `"open"` — so `gh pr list --state merged`, which real `gh`
+accepts, answered with the repository's **open** pull requests, exit 0, no
+warning. A caller reasonably read that as "this repository has no merged PRs".
+Observed in production 2026-09-02 during an ops investigation, where the wrong
+answer stood until an unrelated cross-check contradicted it.
+
+Two changes, mirroring how `--json` field names are already handled:
+
+- **`--state` is validated by name**, in `handlePrList` before the network call
+  (exit 2, message listing `open, closed, merged, all`), and again at the route,
+  which now answers 400 for an explicitly-supplied unknown value. An **absent**
+  `state` still means `open` — in-container callers depend on that default, so
+  only a supplied-and-unrecognised value is refused.
+- **`merged` is supported for real** rather than merely rejected, and it is the
+  one state that does **not** go to REST. REST has no merged state — a merged PR
+  is a closed one carrying `merged_at` — so REST could only fetch closed PRs and
+  filter, and a filter over one page is not a bound: a repository whose most
+  recently updated closed PRs happen to be unmerged answers "no merged pull
+  requests", reproducing the original wrong-but-plausible answer through a
+  second mechanism. Widening the page only moves that boundary. So
+  `listPullRequests` (`github-auth-prs.ts`) sends `merged` to GraphQL's native
+  `pullRequests(states: MERGED)`, where the selection happens server-side and 30
+  merged rows are 30 merged rows however old they are. Both shapes normalise to
+  the same row: `state` stays `"closed"` (GitHub models a merge that way) and
+  `mergedAt` is what distinguishes it. `mergedAt` is a `--json` field, and the
+  plain-text row prints `merged` rather than REST's `closed`.
+
 ### Auth and identity
 
 The shim never sees the GitHub token. The orchestrator owns it. If GitHub auth is not configured for the session, the worker rejects the request with a clear error: *"GitHub is not connected for this ShipIt session. Ask the user to connect GitHub in the UI."* The shim prints this verbatim.
