@@ -25,6 +25,10 @@ function fakeGit(overrides: Partial<Record<keyof GitManager, unknown>>): GitMana
     forcePush: vi.fn(async () => {}),
     diffStatVsBranch: vi.fn(async () => ({ insertions: 1, deletions: 0 })),
     advancedBeyondMergedBase: vi.fn(async () => false),
+    // The clause-reporting sibling the boolean is defined in terms of. Stubbed
+    // consistently with it, so a path that reaches for one and not the other
+    // can't quietly read `undefined`.
+    mergedBaseProgress: vi.fn(async () => "base-not-contained" as const),
     ...overrides,
   } as unknown as GitManager;
 }

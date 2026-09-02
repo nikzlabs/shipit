@@ -124,6 +124,51 @@ describe("GitManager.advancedBeyondMergedBase (docs/202 re-arm detection)", () =
     expect(await git.advancedBeyondMergedBase("does-not-exist")).toBe(false);
   });
 
+  /**
+   * `mergedBaseProgress` is the same gate with its answer named. The boolean is
+   * defined as `=== "progressed"`, so these pin that the split reports the
+   * clause the caller then explains — and the last one pins the remedy the
+   * docs promise, against real git rather than a mock.
+   */
+  describe("mergedBaseProgress (which clause refused)", () => {
+    it("names the containment failure when the base moved on under the branch", async () => {
+      const git = setup({ merge: "squash", rebase: false, newWork: true });
+      expect(await git.mergedBaseProgress("main")).toBe("base-not-contained");
+    });
+
+    it("names the empty diff when the branch is on the base with nothing new", async () => {
+      const git = setup({ merge: "squash", rebase: true, newWork: false });
+      expect(await git.mergedBaseProgress("main")).toBe("no-new-work");
+    });
+
+    it("reports progressed when both clauses hold", async () => {
+      const git = setup({ merge: "squash", rebase: true, newWork: true });
+      expect(await git.mergedBaseProgress("main")).toBe("progressed");
+    });
+
+    it("reports base-unknown when origin/<base> is missing", async () => {
+      const git = setup({ merge: "regular", rebase: true, newWork: true });
+      expect(await git.mergedBaseProgress("does-not-exist")).toBe("base-unknown");
+    });
+
+    it("an ordinary `git merge origin/main` turns base-not-contained into progressed", async () => {
+      // The documented escape, end to end: a squash-merged branch that gained a
+      // new commit while the base advanced cannot open a PR. Merging the base in
+      // satisfies clause 1 without rewriting history, and the new work survives
+      // in the two-dot diff so clause 2 still holds.
+      const git = setup({ merge: "squash", rebase: false, newWork: true });
+      expect(await git.mergedBaseProgress("main")).toBe("base-not-contained");
+
+      run("git merge --no-edit origin/main", workDir);
+
+      expect(await git.mergedBaseProgress("main")).toBe("progressed");
+      expect(await git.advancedBeyondMergedBase("main")).toBe(true);
+      // The escape ships the new work and nothing already-merged.
+      const diff = run("git diff --name-only origin/main..HEAD", workDir).trim();
+      expect(diff).toBe("new-work.txt");
+    });
+  });
+
   it("diffStatTwoDot reports HEAD-side changes (non-empty with new work)", async () => {
     const git = setup({ merge: "regular", rebase: true, newWork: true });
     const stat = await git.diffStatTwoDot("origin/main");

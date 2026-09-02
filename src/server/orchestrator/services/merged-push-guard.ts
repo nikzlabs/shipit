@@ -157,14 +157,25 @@ export function formatMergedPushNotice(block: MergedPushBlock, commitHash: strin
   const into = block.baseBranch ? ` into ${block.baseBranch}` : "";
   const commit = commitHash ? ` (${commitHash.slice(0, 7)})` : "";
   const branch = block.branch ? ` ${block.branch}` : "";
+  const base = block.baseBranch ?? "<base>";
   return (
     `Not pushed — pull request ${pr} already merged.\n\n`
     + `Pull request ${pr} merged${into}, so this session's branch${branch} has no open pull `
     + `request — and a merged branch is usually deleted on GitHub. Pushing would recreate it `
     + `carrying a commit that belongs to no pull request: the "my changes are missing from the `
     + `merged PR" failure mode.\n\n`
-    + `The commit${commit} is safe in this session's local history. To ship it, open a new pull `
-    + `request from this branch (\`gh pr create\` pushes on its own path), or reset the branch to `
-    + `the latest base (\`shipit branch reset-to-base\`) and redo the work there.`
+    // The old advice named `gh pr create` and `shipit branch reset-to-base` as
+    // if either would do. Neither ships a branch that gained commits after the
+    // merge while the base moved on: `gh pr create` reprints the merged PR, and
+    // reset-to-base REFUSES that shape (clause `head-moved`) rather than
+    // discarding it. The ordinary merge below is what actually works.
+    + `The commit${commit} is safe in this session's local history. To ship it, bring the branch `
+    + `onto the current base and open a new pull request:\n\n`
+    + `    git fetch origin && git merge origin/${base}\n`
+    + `    gh pr create ...\n\n`
+    + `That is an ordinary merge — not a rebase or a hard reset — so it rewrites no published `
+    + `history and discards nothing. If instead the branch holds nothing you still need, `
+    + `\`shipit branch reset-to-base\` moves it onto the base; it refuses (rather than discards) `
+    + `when the branch carries commits of its own.`
   );
 }

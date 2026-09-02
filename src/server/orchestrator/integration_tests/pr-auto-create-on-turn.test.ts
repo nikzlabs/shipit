@@ -75,6 +75,11 @@ beforeEach(async () => {
           // docs/202 — stub the re-arm detection so a test can flip
           // "progressed" without constructing a real rebase against a remote.
           if (prop === "advancedBeyondMergedBase") return async () => reArmProgressed;
+          // The clause-reporting sibling `agentCreatePr` uses. Kept in step with
+          // the boolean above so the two stubs can't disagree.
+          if (prop === "mergedBaseProgress") {
+            return async () => (reArmProgressed ? "progressed" : "base-not-contained");
+          }
           // The re-arm helper freshens `origin/<base>` before deciding (a stale
           // remote-tracking ref inverts the detection — see
           // `pr-rearm.ts#freshenBaseRef`). There's no real remote here, so a

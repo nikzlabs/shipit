@@ -997,6 +997,14 @@ export async function agentCreatePr(
    *   exists to fix.
    */
   alreadyExistedReason?: "open" | "merged-not-progressed" | "closed-not-progressed";
+  /**
+   * Which clause of `advancedBeyondMergedBase` refused, on the merged/closed
+   * short-circuit only. The remedies differ and one of them is a no-op, so the
+   * PR's state alone is not enough to tell the caller what to do:
+   * `base-not-contained` wants the base merged in, `no-new-work` means there is
+   * nothing to ship at all, `base-unknown` means fetch first.
+   */
+  notProgressedBecause?: "base-not-contained" | "no-new-work" | "base-unknown";
   /** Non-fatal warning when one or more labels could not be applied. */
   labelWarning?: string;
 }> {
@@ -1072,6 +1080,7 @@ export async function agentCreatePr(
     // the not-progressed-merged short-circuits).
     const returnExistingPr = async (
       alreadyExistedReason: "open" | "merged-not-progressed" | "closed-not-progressed",
+      notProgressedBecause?: "base-not-contained" | "no-new-work" | "base-unknown",
     ) => {
       const stats = await git.diffStatVsBranch(existingPr.base);
       // Apply any requested labels additively to the existing PR — best-effort.
@@ -1088,6 +1097,7 @@ export async function agentCreatePr(
         deletions: stats.deletions,
         alreadyExisted: true as const,
         alreadyExistedReason,
+        ...(notProgressedBecause ? { notProgressedBecause } : {}),
         labelWarning,
       };
     };
@@ -1113,10 +1123,11 @@ export async function agentCreatePr(
     // Closed/merged PR. Only re-arm for a NEW PR when the branch has genuinely
     // progressed beyond the merged base (rebased onto the current base + new
     // work). Otherwise keep blocking the duplicate and return its metadata.
-    const progressed = await git.advancedBeyondMergedBase(existingPr.base);
-    if (!progressed) {
+    const progress = await git.mergedBaseProgress(existingPr.base);
+    if (progress !== "progressed") {
       return await returnExistingPr(
         existingPr.merged ? "merged-not-progressed" : "closed-not-progressed",
+        progress,
       );
     }
     // Progressed: open a NEW PR targeting the prior PR's base. The old remote

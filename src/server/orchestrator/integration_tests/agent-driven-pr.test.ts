@@ -402,6 +402,9 @@ describe("agent-driven PR creation (Phase 2)", () => {
       expect(result.alreadyExisted).toBe(true);
       expect(result.number).toBe(9);
       expect(result.alreadyExistedReason).toBe("merged-not-progressed");
+      // …and WHICH clause refused, so the shim offers the merge rather than the
+      // "nothing to ship" wording.
+      expect(result.notProgressedBecause).toBe("base-not-contained");
       expect(githubAuth.createPullRequestCalls).toHaveLength(0);
     },
   );

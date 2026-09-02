@@ -125,6 +125,11 @@ describe("formatMergedPushNotice", () => {
     expect(notice).toContain("0d9a31d"); // the abandoned commit, short form
     expect(notice).toContain("gh pr create");
     expect(notice).toContain("shipit branch reset-to-base");
+    // The escape that actually works for a branch that gained commits after the
+    // merge — `gh pr create` alone reprints the merged PR, and reset-to-base
+    // refuses this shape rather than discarding it.
+    expect(notice).toContain("git merge origin/main");
+    expect(notice).toContain("refuses (rather than discards)");
   });
 
   it("degrades gracefully when the PR pointers are unknown", () => {
