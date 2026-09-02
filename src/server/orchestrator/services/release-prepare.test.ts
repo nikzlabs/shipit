@@ -186,7 +186,10 @@ describe("prepareRelease — content-free guard (docs/214)", () => {
  * (docs/202), and forwarding one would announce a release that was never opened.
  */
 describe("prepareRelease — only an OPEN release PR may be reported", () => {
-  const deadPr = (reason: string, notProgressedBecause: string) => ({
+  type DeadReason = "merged-not-progressed" | "closed-not-progressed";
+  type NotProgressed = "base-not-contained" | "no-new-work" | "base-unknown";
+
+  const deadPr = (alreadyExistedReason?: DeadReason, notProgressedBecause?: NotProgressed) => ({
     number: 12,
     url: "https://github.com/o/r/pull/12",
     title: "Release v0.2.0",
@@ -195,9 +198,28 @@ describe("prepareRelease — only an OPEN release PR may be reported", () => {
     insertions: 1,
     deletions: 1,
     alreadyExisted: true,
-    alreadyExistedReason: reason,
-    notProgressedBecause,
+    ...(alreadyExistedReason ? { alreadyExistedReason } : {}),
+    ...(notProgressedBecause ? { notProgressedBecause } : {}),
   });
+
+  /** Prepare against `stable-2` while the dead PR targeted `stable`. */
+  const prepareAgainstOtherBase = () =>
+    prepareRelease(makeGit({ diffFiles: 4, remoteBranches: ["main", "stable", "stable-2"] }).git, githubAuth, {
+      dir,
+      bump: "patch",
+      releaseBranch: "stable-2",
+      from: "main",
+    });
+
+  /** The refusal message, for the assertions that must also check what is ABSENT. */
+  async function refusalMessage(): Promise<string> {
+    try {
+      await prepareAgainstOtherBase();
+    } catch (err: unknown) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    throw new Error("expected prepareRelease to refuse, but it resolved");
+  }
 
   it("forwards an updated OPEN PR as alreadyExisted", async () => {
     agentCreatePrMock.mockResolvedValue({
@@ -223,26 +245,59 @@ describe("prepareRelease — only an OPEN release PR may be reported", () => {
 
   it("refuses a MERGED PR instead of reporting it as an updated release", async () => {
     agentCreatePrMock.mockResolvedValue(deadPr("merged-not-progressed", "base-not-contained"));
-    const { git } = makeGit({ diffFiles: 4, remoteBranches: ["main", "stable", "stable-2"] });
-    await expect(
-      prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable-2", from: "main" }),
-    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(prepareAgainstOtherBase()).rejects.toMatchObject({ statusCode: 409 });
   });
 
-  it("names the dead PR, its base and the remedy in the error", async () => {
+  it("says merged, names the PR and its base, and cannot be reopened", async () => {
     agentCreatePrMock.mockResolvedValue(deadPr("merged-not-progressed", "base-not-contained"));
-    const { git } = makeGit({ diffFiles: 4, remoteBranches: ["main", "stable", "stable-2"] });
-    await expect(
-      prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable-2", from: "main" }),
-    ).rejects.toThrow(/merged pull request \(#12, into "stable"\).*re-run against "stable"/s);
+    await expect(prepareAgainstOtherBase()).rejects.toThrow(
+      /merged pull request \(#12 into "stable"\), which GitHub cannot reopen/,
+    );
   });
 
-  it("refuses a CLOSED PR too, and says closed rather than merged", async () => {
-    agentCreatePrMock.mockResolvedValue(deadPr("closed-not-progressed", "no-new-work"));
-    const { git } = makeGit({ diffFiles: 4, remoteBranches: ["main", "stable", "stable-2"] });
-    await expect(
-      prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable-2", from: "main" }),
-    ).rejects.toThrow(/closed pull request \(#12/);
+  // A closed PR *can* be reopened through GitHub's API — ShipIt declines to
+  // reuse it. Claiming otherwise (as an earlier draft did) misinforms the user.
+  it("says a CLOSED PR is one ShipIt won't reuse, not one GitHub can't reopen", async () => {
+    agentCreatePrMock.mockResolvedValue(deadPr("closed-not-progressed", "base-not-contained"));
+    const message = await refusalMessage();
+    expect(message).toMatch(/closed pull request \(#12 into "stable"\), which ShipIt won't reuse/);
+    expect(message).not.toMatch(/GitHub cannot reopen/);
+  });
+
+  // The three refusals have three different remedies, and the generic advice
+  // ("re-run against the old base") is actively wrong for two of them.
+  it("base-not-contained points at the release branch the dead PR targeted", async () => {
+    agentCreatePrMock.mockResolvedValue(deadPr("merged-not-progressed", "base-not-contained"));
+    await expect(prepareAgainstOtherBase()).rejects.toThrow(/--release-branch stable/);
+  });
+
+  it("no-new-work asks for content rather than a re-run against the same base", async () => {
+    agentCreatePrMock.mockResolvedValue(deadPr("merged-not-progressed", "no-new-work"));
+    const message = await refusalMessage();
+    expect(message).toMatch(/identical to "stable".*--from <branch>/s);
+    expect(message).not.toMatch(/--release-branch/);
+  });
+
+  it("base-unknown says the base is gone rather than telling the user to re-run against it", async () => {
+    agentCreatePrMock.mockResolvedValue(deadPr("merged-not-progressed", "base-unknown"));
+    const message = await refusalMessage();
+    expect(message).toMatch(/"stable" is no longer on the remote/);
+    expect(message).not.toMatch(/--release-branch/);
+  });
+
+  // `alreadyExistedReason` is optional on `agentCreatePr`'s return, so a reason
+  // we cannot read must fail closed — an unreadable reason is a PR we cannot
+  // prove is live.
+  it("refuses an existing PR whose reason is absent", async () => {
+    agentCreatePrMock.mockResolvedValue(deadPr());
+    await expect(prepareAgainstOtherBase()).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("does not claim an absent reason is 'merged' — it says only that it is not open", async () => {
+    agentCreatePrMock.mockResolvedValue(deadPr());
+    const message = await refusalMessage();
+    expect(message).toMatch(/a pull request \(#12 into "stable"\) that is not open/);
+    expect(message).not.toMatch(/merged/);
   });
 });
 

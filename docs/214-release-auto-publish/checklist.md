@@ -136,3 +136,12 @@ opens a chore PR that forward-ports the released version onto `main`.
 - [x] Tests: `templates-release.test.ts` — sync job present in the rendered workflow; write helper ⇔
   `writeVersionToSource` byte-identity across all four ecosystems + lockfile bump + non-zero on missing field;
   scaffold returns four artifacts
+- [x] Dead-PR guard: `prepareFinalRelease` refuses a non-`open` `alreadyExistedReason` with a 409
+  instead of forwarding it as `alreadyExisted` — the shim printed a MERGED release PR as
+  "updated release PR #N", announcing a release nothing would publish
+- [x] Message built from `notProgressedBecause` (`base-not-contained` → `--release-branch <base>`,
+  `no-new-work` → `--from <branch>`, `base-unknown` → release a different version); merged vs closed
+  worded correctly (only a merged PR is unreopenable), an absent reason says only "not open"
+- [x] Tests: `release-prepare.test.ts` — OPEN still forwarded, merged/closed/absent-reason refused,
+  one per-reason remedy assertion; all refusal guards verified red with the guard deleted
+- [x] Docs: `shipit-docs/release.md` dead-PR guard bullet, plan.md above

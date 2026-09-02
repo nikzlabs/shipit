@@ -110,9 +110,8 @@ export async function handleReleasePrepare(args: string[], deps: RunDeps): Promi
   switch (b.kind) {
     case "pr-opened":
       report(deps.io, b, json, [
-        // `alreadyExisted` means an OPEN PR was updated. `prepareFinalRelease`
-        // refuses to return a merged/closed one, so "updated" can never name a
-        // dead PR — see its guard before the `pr-opened` return.
+        // `prepareFinalRelease` refuses to return a merged/closed PR, so
+        // "updated" can never name a dead one.
         `${b.alreadyExisted ? "updated" : "opened"} release PR #${asString(b.prNumber)} → ${asString(b.prUrl)}`,
         `version:    ${asString(b.version)} (tag ${asString(b.tag)})`,
         `base:       ${asString(b.releaseBranch)}`,

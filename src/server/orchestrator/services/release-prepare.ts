@@ -302,14 +302,9 @@ export type PrepareReleaseResult =
       prNumber: number;
       prUrl: string;
       /**
-       * True iff an OPEN release PR was updated rather than a new one opened —
-       * which is exactly what the shim prints ("updated release PR #N").
-       *
-       * `agentCreatePr` also hands back MERGED/CLOSED pull requests (its
-       * not-progressed short-circuit, docs/202) under the same `alreadyExisted`
-       * flag; forwarding one here would report a dead pull request as an
-       * in-flight release. `prepareFinalRelease` refuses that case outright, so
-       * this flag can only ever mean "open" — see the guard at its return.
+       * True iff an OPEN release PR was updated rather than a new one opened.
+       * `prepareFinalRelease` refuses to build this result around a dead PR, so
+       * it can never mean merged/closed — see `deadReleasePrMessage`'s caller.
        */
       alreadyExisted: boolean;
       /**
@@ -561,32 +556,23 @@ async function prepareFinalRelease(
   });
 
   // A release result may only ever carry an OPEN pull request: the shim renders
-  // `alreadyExisted` as "updated release PR #N", so a MERGED/CLOSED one would
-  // announce a release that is in flight when nothing was opened at all.
-  // `agentCreatePr` returns exactly that from its not-progressed short-circuit
-  // (docs/202), under the same flag.
+  // `alreadyExisted` as "updated release PR #N", and the route marks the release
+  // `pr_open` off this result — so handing back the dead PR `agentCreatePr`
+  // returns from its not-progressed short-circuit (docs/202, same flag) would
+  // announce a release that nothing will publish. Refuse instead.
   //
-  // The ordinary flow can't reach it — `release/<version>` was just rebuilt off
+  // Usually unreachable: `release/<version>` was just rebuilt off
   // `origin/<releaseBranch>` and carries the bump commit, so the progress gate
-  // reads "progressed" and opens a NEW pull request. It becomes reachable when
-  // the dead pull request targeted a DIFFERENT base than this run's release
-  // branch (a changed `--release-branch` / `release.branch`, or a base that no
-  // longer exists on the remote): the gate then measures against that other
-  // base and refuses. Nothing can be merged in that state, so fail loudly.
+  // reads "progressed" and opens a NEW pull request. Not provably so, though —
+  // an explicit version whose bump leaves the tree identical to the base yields
+  // `no-new-work` on the very same base (the content-free guard above runs
+  // BEFORE the bump, so it can't catch that), and a prior PR on a different base
+  // yields `base-not-contained` / `base-unknown`.
   //
-  // Testing for `!== "open"` rather than for the two dead values is deliberate:
-  // the reason is optional on the return type, and a reason we can't read is a
-  // pull request we can't prove is live. Refusing is the safe answer.
+  // `!== "open"` rather than the two dead values: the reason is optional on the
+  // return type, and a reason we can't read is a PR we can't prove is live.
   if (pr.alreadyExisted && pr.alreadyExistedReason !== "open") {
-    const state = pr.alreadyExistedReason === "closed-not-progressed" ? "closed" : "merged";
-    throw new ServiceError(
-      409,
-      `The branch "${headBranch}" already has a ${state} pull request (#${pr.number}, into "${pr.baseBranch}"), ` +
-        `and GitHub cannot reopen it. The version bump was pushed to "${headBranch}" but has no pull request to ` +
-        `carry it, so nothing would publish. This usually means this run targets a different release branch ` +
-        `("${releaseBranch}") than that pull request did — re-run against "${pr.baseBranch}", or release a ` +
-        `different version.`,
-    );
+    throw new ServiceError(409, deadReleasePrMessage(headBranch, releaseBranch, pr));
   }
 
   return {
@@ -601,6 +587,68 @@ async function prepareFinalRelease(
     prUrl: pr.url,
     alreadyExisted: pr.alreadyExisted,
   };
+}
+
+/**
+ * The 409 for a `release/<version>` branch whose only pull request is dead.
+ *
+ * Built from `notProgressedBecause` rather than described generically, because
+ * the three refusals have three different remedies and two of them make the
+ * obvious advice wrong: re-running against the old base can't work when that
+ * base is gone, and can only repeat itself when the release is empty.
+ */
+function deadReleasePrMessage(
+  headBranch: string,
+  releaseBranch: string,
+  pr: {
+    number: number;
+    baseBranch: string;
+    alreadyExistedReason?: "open" | "merged-not-progressed" | "closed-not-progressed";
+    notProgressedBecause?: "base-not-contained" | "no-new-work" | "base-unknown";
+  },
+): string {
+  // Only a MERGED PR is truly unreopenable; a closed one ShipIt declines to
+  // reuse (docs/202) even though GitHub would allow reopening it. An absent
+  // reason means we don't know which — say so rather than guessing "merged",
+  // since the guard above deliberately treats absence as unproven, not as dead.
+  const at = `(#${pr.number} into "${pr.baseBranch}")`;
+  let state: string;
+  switch (pr.alreadyExistedReason) {
+    case "closed-not-progressed":
+      state = `a closed pull request ${at}, which ShipIt won't reuse for a new release`;
+      break;
+    case "merged-not-progressed":
+      state = `a merged pull request ${at}, which GitHub cannot reopen`;
+      break;
+    default:
+      state = `a pull request ${at} that is not open, which ShipIt won't reuse for a new release`;
+  }
+
+  let remedy: string;
+  switch (pr.notProgressedBecause) {
+    case "base-not-contained":
+      remedy =
+        `The branch doesn't contain the tip of "${pr.baseBranch}", because this run targets "${releaseBranch}" ` +
+        `instead. Re-run with --release-branch ${pr.baseBranch}, or release a different version.`;
+      break;
+    case "no-new-work":
+      remedy =
+        `With the version bump applied the branch is identical to "${pr.baseBranch}", so there is nothing to ` +
+        `ship. Bring content in with --from <branch>, or release a different version.`;
+      break;
+    case "base-unknown":
+      remedy =
+        `"${pr.baseBranch}" is no longer on the remote (deleted or renamed), so ShipIt can't tell whether this ` +
+        `branch has moved past it. Release a different version — that starts from a fresh branch.`;
+      break;
+    default:
+      remedy = "Release a different version — that starts from a fresh branch.";
+  }
+
+  return (
+    `The branch "${headBranch}" already has ${state}. The version bump was pushed to "${headBranch}" but has ` +
+    `no pull request to carry it, so nothing would publish. ${remedy}`
+  );
 }
 
 /** Build the bump PR body — a short, stable rationale plus optional notes. */
