@@ -82,7 +82,9 @@ header whose chip shows the worst state.</p>
         <span class="chip mono">v1.2.0 @ 9d04e11</span>
         <span class="chip warn">2 needs</span>
         <span class="spread"></span>
-        <button class="btn">↻ Refresh</button>
+        <!-- PINNED — no Refresh (req 8, user 2026-09-02). This card carried one
+             when the mock was drawn; a pin only moves when the declaration
+             changes, so the button could never do anything. -->
       </div>
       <div class="crow"><div class="grow sub">uses <b>palette</b></div></div>
       <div class="crow"><span class="ic">⚠</span><div class="grow">Credential <code class="kbd">FAL_KEY</code> is not set for this project</div><button class="btn pri">Add key…</button></div>
@@ -131,7 +133,7 @@ the wrong place. "Allow" posts to the existing browser-only <code>POST /api/egre
         <span class="chip mono">v1.2.0 @ —</span>
         <span class="chip err">unavailable</span>
         <span class="spread"></span>
-        <button class="btn">↻ Retry</button>
+        <!-- Pinned, so no button here either — see the note below. -->
       </div>
       <div class="crow"><span class="ic err">✕</span><div class="grow">This repository has never been fetched (authorization failed).
         The session continues without its services and commands.</div></div>
@@ -139,6 +141,13 @@ the wrong place. "Allow" posts to the existing browser-only <code>POST /api/egre
 
   </div>
 </div>
+<p class="note"><b>Amended 2026-09-02.</b> Refresh is the action of a
+<b>branch-tracking</b> repository only (req 12, as amended). A pinned one moves
+only when the declaration changes, so its card states that instead of carrying a
+button. One case this leaves open and deliberately unbuilt: a pinned repository
+that was <i>never fetched</i> (the second card above) genuinely could be retried
+after the authorization is fixed — the user's rule says no button, and adding one
+back is theirs to decide rather than a carve-out to infer.</p>
 
 <h2>3 · Quiet project — cards present, no dot; files-only repos included</h2>
 <div class="rail">

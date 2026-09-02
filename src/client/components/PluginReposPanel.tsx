@@ -6,11 +6,16 @@ import {
   GlobeIcon,
   CheckCircleIcon,
   ClockClockwiseIcon,
+  ArrowsClockwiseIcon,
   XIcon,
   CircleNotchIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
-import { usePluginReposStore, type PluginHostGrantScope } from "../stores/plugin-repos-store.js";
+import {
+  usePluginReposStore,
+  type PluginHostGrantScope,
+  type PluginRepoRefreshOutcome,
+} from "../stores/plugin-repos-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useApi, ApiError } from "../hooks/useApi.js";
@@ -27,6 +32,10 @@ import { RichErrorText } from "./PrLifecycleCard/RichErrorText.js";
  * that needs it, with the one action that closes it. Collision, settings and
  * install problems arrive as ordinary issue rows on the repository's card
  * (verified live in the dogfood instance for all three).
+ *
+ * req 12's USER half lives here too: a tracked repository's card carries the
+ * Refresh action, on the same route and the same round `shipit plugin refresh`
+ * runs. A pinned one deliberately does not (req 8).
  */
 export function PluginReposPanel() {
   const snapshot = usePluginReposStore((s) => s.snapshot);
@@ -134,6 +143,27 @@ function PluginRepoCard({
   // goes with it, which is exactly the silence the issue records.
   const [grant, setGrant] = useState<EgressHostGrantOutcome | null>(null);
   const [failedHost, setFailedHost] = useState<string | null>(null);
+  // req 12 — the user's half of the refresh verb. The outcome lives on the CARD
+  // for the reason the grant outcome does: `unchanged` changes nothing visible,
+  // so without a reported answer the button would look broken exactly when it
+  // worked.
+  const refreshRepo = usePluginReposStore((s) => s.refreshRepo);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshed, setRefreshed] = useState<PluginRepoRefreshOutcome | null>(null);
+  // req 8 — a pinned repository has no refresh action: it stays at its exact
+  // revision until the declaration changes, so the button could only ever
+  // report "already at". `self` has no tracked version to move at all (req 27),
+  // which the mockup ratified before the tab was built.
+  const canRefresh = !isSelf && !repo.pinned;
+  const runRefresh = async () => {
+    setRefreshing(true);
+    setRefreshed(null);
+    try {
+      setRefreshed(await refreshRepo(repo.name));
+    } finally {
+      setRefreshing(false);
+    }
+  };
   return (
     <div className="rounded-lg border border-(--color-border-primary) bg-(--color-bg-secondary) overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-(--color-border-primary) px-3 py-2 text-sm">
@@ -167,6 +197,30 @@ function PluginRepoCard({
             to the person reading the card — something to go and set. */}
         {needCount > 0 && (
           <Chip tone="warn">{`${needCount} need${needCount > 1 ? "s" : ""}`}</Chip>
+        )}
+        {/* req 12, mockup-plugins-tab.html §1 — the header's one action, right
+            of everything that identifies the version it would move. Disabled
+            while a round this session already started is running: refresh IS
+            that round (`plugin-refresh.ts`), and a second one would queue
+            behind the first and report on it. */}
+        {canRefresh && (
+          <CardAction
+            className="ml-auto"
+            disabled={refreshing || repo.status === "activating"}
+            title={
+              repo.status === "activating"
+                ? "This repository is already updating"
+                : `Fetch ${repo.name} at its declared ref and activate it now`
+            }
+            onClick={() => void runRefresh()}
+          >
+            {refreshing || repo.status === "activating" ? (
+              <CircleNotchIcon size={ICON_SIZE.XS} className="mr-1 inline animate-spin" />
+            ) : (
+              <ArrowsClockwiseIcon size={ICON_SIZE.XS} className="mr-1 inline" />
+            )}
+            Refresh
+          </CardAction>
         )}
       </div>
 
@@ -291,6 +345,10 @@ function PluginRepoCard({
         </div>
       )}
 
+      {refreshed && (
+        <RefreshOutcomeRow outcome={refreshed} onDismiss={() => setRefreshed(null)} />
+      )}
+
       {grant && <HostGrantOutcomeRow grant={grant} onDismiss={() => setGrant(null)} />}
 
       {failedHost && (
@@ -377,6 +435,88 @@ function PluginRepoCard({
           and settings, with edits applying without a refresh (req 27).
         </div>
       )}
+      {repo.pinned && (
+        // req 8 — the answer to "why has this card no Refresh?", said on the
+        // card rather than left as a difference between two cards for the user
+        // to work out. It names the one thing that DOES move a pinned version.
+        <div className="border-t border-(--color-border-primary) px-3 py-2 text-xs text-(--color-text-tertiary)">
+          {/* Names the ONE edit that moves it, not "shipit.yaml changes":
+              editing a service, a setting or another plugin in the same file
+              leaves this repository exactly where it is (review finding). */}
+          Pinned to an exact revision — it moves only when this repository's{" "}
+          <code className="font-mono">pin:</code> in{" "}
+          <code className="font-mono">shipit.yaml</code> changes, so there is nothing to refresh.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * req 12 — what the Refresh press did, said where it was pressed.
+ *
+ * It exists because THREE of the four outcomes are invisible in the card the
+ * refetch brings back. `unchanged` is the plain case: the branch tip is what is
+ * already live, so a correct refresh leaves the card byte-identical and the
+ * button reads as broken. A re-install lands on the same commit for the same
+ * reason (docs/266 reqs 5, 6). Even `activated` only moves nine characters of a
+ * commit chip, which is not an answer to "did that work?".
+ *
+ * The failure half is deliberately still reported here even though the card
+ * grows an issue row for it: the row is about the repository's state, this is
+ * about the act, and a user who pressed a button is owed the answer next to it.
+ * `RichErrorText` with `links={false}` because a detail carries git's output
+ * and a plugin's own install stderr — the same reason the issue rows do.
+ */
+function RefreshOutcomeRow({
+  outcome,
+  onDismiss,
+}: {
+  outcome: PluginRepoRefreshOutcome;
+  onDismiss: () => void;
+}) {
+  const short = outcome.commit ? outcome.commit.slice(0, 9) : null;
+  const headline = outcome.kind === "failed"
+    ? `Refresh failed${short ? ` — still on \`${short}\`` : ""}.`
+    : outcome.kind === "activated"
+      ? `Updated to \`${short ?? "a new commit"}\`.`
+      : outcome.kind === "reinstalled"
+        // Neither "updated" nor "already at": the commit did not move and the
+        // plugin was installed again anyway (docs/273).
+        ? `Re-installed \`${short ?? "the live commit"}\`.`
+        : `Already at \`${short ?? "the declared version"}\` — nothing to update.`;
+  return (
+    <div
+      className="flex flex-wrap items-start gap-2 border-t border-(--color-border-primary) px-3 py-2 text-sm"
+      data-testid="plugin-refresh-outcome"
+    >
+      <span className="mt-0.5 flex-none">
+        {outcome.kind === "failed" ? (
+          <WarningIcon size={ICON_SIZE.SM} className="text-(--color-error)" />
+        ) : outcome.kind === "unchanged" ? (
+          <CheckCircleIcon size={ICON_SIZE.SM} className="text-(--color-text-tertiary)" />
+        ) : (
+          <CheckCircleIcon size={ICON_SIZE.SM} className="text-(--color-success)" />
+        )}
+      </span>
+      <div className="min-w-0 flex-1 space-y-0.5 break-words">
+        <p className="text-(--color-text-primary)">
+          <RichErrorText text={headline} links={false} />
+        </p>
+        {outcome.detail && (
+          <p className="text-xs text-(--color-text-secondary)">
+            <RichErrorText text={outcome.detail} links={false} />
+          </p>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss"
+        className="ml-auto flex-none text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-[color] duration-(--duration-fast)"
+      >
+        <XIcon size={ICON_SIZE.SM} />
+      </button>
     </div>
   );
 }

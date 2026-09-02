@@ -1838,6 +1838,22 @@ only the `shipit.yaml` key says `plugins:`.
 | Needs — hosts (req 24) ✓ | tab mock 1 | The plugin card's needs rows, over the existing `POST /api/egress/hosts` (global or session scope; browser-only) | **Built**, and the design-era text below was overtaken twice. All three execution surfaces are now bound by the same allowlist (`containComposeServices` for services, `plugin-egress.ts` for the CLI and install containers), so the row no longer hedges across them — though it still names the claiming plugin, because req 24 asks for req 23's grouping. The bigger change is that the card asks ONE predicate, `orchestrator/egress-host-reach.ts`: **can this host be made reachable at all, and by whom** — `allowed`, `grantable`, `blocked-by-session` (docs/211's Network-off sandbox, which carries no user hosts), `blocked-by-deployment` (`SESSION_EGRESS_DNS=0`, where the fixed Tier A floor is the whole reach of every contained session). The two `blocked-*` verdicts render as ONE row with **no button**, because there every grant writes a durable entry that changes nothing (planning#383). The same predicate answers the grant route's outcome report and the Tier C decision route's card rule, so the surface that offers a grant, the one that reports what it did, and the one that decides whether to prompt cannot disagree — the consolidation planning#377/#380/#383 argued for, each of which was one surface being optimistic about a different thing. Grant endpoints stay browser-only, so plugin code cannot self-grant. Original design-era note, kept because it records why the row names a claimant: "Host not allowed" was evaluated against the **agent container's** allowlist alone, since containment then lived only in the agent's netns (round-two finding 4) |
 | Degraded / collision reporting (reqs 13, 20) | tab mock 2 | Card states inside the Plugins tab | **One card per declared repo, always** — simultaneous problems compose as multiple issue rows under one header whose status chip shows the worst state (round-two finding 8). Every card state, including degraded and collision, keeps the full `owner/repo` + ref @ commit identity visible (req 19 — the identity is what the standing grant trades approval for). **Degraded** distinguishes "refresh failed — prior version `<sha>` remains active" (req 15) from "never fetched — session runs without this repo's services" (req 13); **collision** names the colliding domain and the fix as "under the `use` entry whose alias is `<alias>`" (a `use` entry is a YAML sequence item, so there is no bracket path). A card states each fact **once**: a phase-2 failure names the selectors the declared version lacks, so the snapshot's own "not in this repository's `exports.plugins` manifest" line is suppressed for exactly those names (the failure carries them as `missingSelectors`) — it still fires when the attempt failed for another reason and the LIVE generation is what lacks the selector. Found by dogfooding the spine, not by review. Not transcript cards — no new DB columns, stores, or migrations |
 
+**The card's Refresh action is the same round, not a browser path** (req 12,
+user 2026-09-02). `PluginReposPanel` posts `POST /api/sessions/:id/plugin/refresh`
+— the route `shipit plugin refresh` already posts — so the trust gate, the
+settled hook that re-links `/plugins/<name>` and re-materializes skills, the
+per-repository serial queue, install-before-publish and req 15's
+failure-leaves-the-prior-generation-live all come with it. Two things are the
+card's own. It is gated on `PluginRepoCardView.pinned`, read off the
+**declaration** rather than the live generation's recorded ref (a repository
+pinned *after* a branch-built generation went live must stop offering an action
+that cannot move it — req 8), and a pinned card states what does move it instead
+of leaving the difference between two cards for the user to interpret. And the
+outcome is rendered on the card, because three of the four outcomes are
+invisible in the refetched snapshot: `unchanged` is byte-identical (the right
+answer at a branch tip), a re-install lands on the same commit by construction
+(docs/266 reqs 5, 6), and `activated` moves nine characters of a chip.
+
 **The credential boundary is held by construction, not by convention** (req 23,
 last sentence: a plugin's store "can never resolve ShipIt's own platform
 credentials"). There is exactly ONE producer of the satisfied-name set —

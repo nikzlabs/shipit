@@ -195,6 +195,16 @@ export interface PluginRepoCardView {
   /** The live generation's exact commit; null for self and when nothing is live. */
   commit: string | null;
   status: PluginRepoStatus;
+  /**
+   * req 8 — the declaration names a tag or SHA rather than tracking a branch.
+   *
+   * The card's refresh action is absent here, and that is the requirement
+   * rather than a simplification: a pinned project "stays at that exact
+   * revision until its declaration changes", so the only honest way to move it
+   * is to edit `shipit.yaml`. Always `false` for `repo: self`, which has no
+   * tracked version at all (req 27) and is excluded by its own `status`.
+   */
+  pinned: boolean;
   uses: PluginRepoUseView[];
   /** Problems attached to this repo (a failed activation, a missing selector). */
   issues: string[];
@@ -1070,6 +1080,11 @@ export function buildPluginReposSnapshot(
       ref: isSelf ? null : live.commit ? live.ref ?? null : declaredRef,
       commit: live.commit ?? null,
       status: cardStatus(isSelf, live),
+      // Read off the DECLARATION, not off the live generation's ref: what may
+      // be refreshed is decided by what the project asks for now, and a
+      // generation built before the declaration was pinned would otherwise keep
+      // offering an action that cannot move it (req 8).
+      pinned: !isSelf && Boolean(repo.pin),
       uses,
       issues,
     };
