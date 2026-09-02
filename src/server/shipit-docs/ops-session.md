@@ -131,11 +131,25 @@ dropped unless the session was created as an ops session.
   below). Matched lines are then redacted like the rest of the ops surface.
 
   Lines that were withheld are **counted and reported**, not silently dropped —
-  `withheld: N server line(s) …`. Most of those legitimately carry workspace or
-  raw error text and never will be returned. But a count that looks too high for
-  the incident is also the only signal that a producer's wording has drifted off
-  its template, so treat it as "ask the operator to read the session's Logs panel
-  for this window", not as noise.
+  `withheld: N server line(s) …`, followed by a `by shape:` breakdown. The
+  breakdown is ShipIt's own label for each producer plus a count; no part of a
+  withheld line is in it. Read it as triage: one label carrying almost all of the
+  count is a chatty producer and usually not your incident, while a spread — or a
+  large `unclassified ×N`, which is where a producer whose wording drifted off
+  its template lands — is a reason to ask the operator to read the session's Logs
+  panel for that window.
+
+  **Push outcomes are reported on both sides, so silence means something.** A
+  successful auto-push writes `Auto-push completed in Nms: N commit(s) were
+  ahead of the last known remote tip.` — or `nothing was ahead …` — alongside
+  the existing rejection, deferral and failure lines. So "did the last five
+  turns push?" is answerable here: a run of completions, a run of `nothing was
+  ahead`, or an explicit failure. Read the two halves of that line differently:
+  the push **completing** is a fact, the **count** is ShipIt's own pre-push
+  measurement against its local view of the remote, which can be stale. What the
+  failure lines do NOT carry is git's own message: a failure prints
+  `Auto-push failed (<class>). …` and puts git's words on a separate `Git said:`
+  line that stays withheld.
 
   It reads the durable store, so a session whose container is already gone still
   answers. If a session's logs were pruned — archive, delete, or full reset

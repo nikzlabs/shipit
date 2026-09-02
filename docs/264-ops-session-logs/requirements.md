@@ -38,6 +38,27 @@ hand and paste it into chat.
 9. Tests cover the kind gate, the source filter (a non-server entry can never
    appear in the output), and the container-is-gone case.
 
+These come from a second incident packet (2026-09-02): an operator running an
+ops session could not answer "did the last five agent turns produce any
+commits?" from `shipit session logs`. The window returned 67 agent-start/exit
+lines, reported `384 server line(s)` withheld, and said nothing about any push.
+
+10. An ops session can tell a **successful** push from silence. A push that
+    landed, and a push that had nothing to send, each produce a line the ops
+    read returns — so an absence of failure lines is no longer the only
+    evidence that pushing is working. Where such a line reports something
+    ShipIt measured rather than something the remote confirmed, it says so.
+11. The withheld count is reported **broken down**, so an operator can tell one
+    chatty producer from a real signal and a maintainer can tell which template
+    to write next. The breakdown carries ShipIt-authored labels and counts
+    only; no part of a withheld line appears in it.
+12. A line whose text is entirely ShipIt-authored is **eligible** to be
+    returned, and where a producer mixes authored text with interpolated
+    detail the fix is at the producer — split the line, or give it a structured
+    field — never a widened pattern. The table is not, and cannot be, an
+    exhaustive index of every authored line in the codebase: requirement 11's
+    breakdown is what surfaces the ones not yet added.
+
 ## Non-requirements
 
 - Fixing the auto-push silence itself. The incident packet scopes that out

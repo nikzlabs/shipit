@@ -891,6 +891,8 @@ const LOGS_BODY = {
   ],
   total: 1,
   truncated: false,
+  withheldTotal: 0,
+  withheldByShape: [],
   withheldUnclassified: 0,
   logsRetained: true,
 };
@@ -952,15 +954,40 @@ describe("shipit session logs (docs/264)", () => {
     expect(pruned.stdout).toContain("NOT evidence that nothing happened");
   });
 
-  it("reports withheld lines rather than letting them vanish", async () => {
+  it("reports withheld lines rather than letting them vanish, broken down by shape", async () => {
     // A non-zero count is the only signal that a producer's wording drifted off
-    // its ops-safe template, so the renderer must never swallow it.
+    // its ops-safe template, so the renderer must never swallow it — and a bare
+    // total is not actionable, hence the per-shape split.
     const { run } = makeRunner();
     const out = await run(["session", "logs", "7bc72326"], {
-      [LOGS_ROUTE]: { status: 200, body: { ...LOGS_BODY, withheldUnclassified: 4 } },
+      [LOGS_ROUTE]: {
+        status: 200,
+        body: {
+          ...LOGS_BODY,
+          withheldTotal: 4,
+          withheldByShape: [{ shape: "compose: service exited", count: 3 }],
+          withheldUnclassified: 1,
+        },
+      },
     });
     expect(out.stdout).toContain("withheld");
     expect(out.stdout).toContain("4 server line(s)");
+    expect(out.stdout).toContain("by shape: compose: service exited ×3, unclassified ×1");
+  });
+
+  it("still reports a total against an orchestrator that predates the breakdown", async () => {
+    // The shim and the orchestrator are versioned separately; an older server
+    // sends only `withheldUnclassified`, and printing nothing there would read
+    // as "no lines were withheld".
+    const { run } = makeRunner();
+    const out = await run(["session", "logs", "7bc72326"], {
+      [LOGS_ROUTE]: {
+        status: 200,
+        body: { entries: LOGS_BODY.entries, total: 1, truncated: false, withheldUnclassified: 7, logsRetained: true },
+      },
+    });
+    expect(out.stdout).toContain("7 server line(s)");
+    expect(out.stdout).toContain("by shape: unclassified ×7");
   });
 
   it("says what was dropped when the tail was capped", async () => {
