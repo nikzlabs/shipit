@@ -78,6 +78,18 @@ export const usePluginReposStore = create<PluginReposState>((set, get) => ({
   forSessionId: null,
 
   fetchSnapshot: async (sessionId: string) => {
+    // A fetch for a session the app has already left is dropped by `fetchOnce`
+    // anyway — but only AFTER it has taken a generation, and taking one
+    // invalidates the fetch the session the user is now on has in flight
+    // (independent review). The two `finally` refetches are how that happens:
+    // `allowHost` and `refreshRepo` capture their session at entry, and a POST
+    // is long enough for the user to switch during it, so the outgoing
+    // session's tidy-up refetch could take the incoming session's seeding
+    // fetch down with it and leave the new session with `snapshot: null` — no
+    // Plugins tab at all until the next shipit.yaml edit or reload. Every
+    // other caller passes the ACTIVE session, so returning early here costs
+    // them nothing and is the one place both paths pass through.
+    if (useSessionStore.getState().sessionId !== sessionId) return;
     const generation = ++fetchGeneration;
     const applied = await fetchOnce(sessionId, generation, set);
     // Retry in the background while the answer is still moving: the checkout

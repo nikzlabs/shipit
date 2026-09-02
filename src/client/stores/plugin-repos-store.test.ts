@@ -392,6 +392,56 @@ describe("refreshRepo", () => {
     }
   });
 
+  // Independent review, medium finding. The tidy-up refetch belongs to the
+  // session the press happened in, and a POST is long enough for the user to
+  // switch during it. Taking a fetch generation for a session nobody is on
+  // invalidates the fetch the session they ARE on has in flight, so the new
+  // session ends with `snapshot: null` — and no Plugins tab at all — until the
+  // next shipit.yaml edit or a reload.
+  it("a refresh finishing after a session switch does not strand the new session", async () => {
+    // The two must OVERLAP for this to reproduce: a B fetch that has already
+    // landed cannot be invalidated retroactively. B's GET is therefore still in
+    // flight when A's tidy-up refetch runs, which is the real timing — a
+    // session switch starts B's seeding fetch immediately, while A's POST is
+    // the slow leg.
+    const gate = (): [Promise<void>, () => void] => {
+      let open!: () => void;
+      const held = new Promise<void>((resolve) => { open = resolve; });
+      return [held, open];
+    };
+    const [refreshHeld, releaseRefresh] = gate();
+    const [seedHeld, releaseSeed] = gate();
+    const seeded = snapshot({ declared: true, warnings: ["session B"] });
+    globalThis.fetch = (async (url: string) => {
+      if (url === REFRESH_URL) {
+        await refreshHeld;
+        return new Response(JSON.stringify({ rows: [{ status: "unchanged", after: "x" }] }), { status: 200 });
+      }
+      if (url.endsWith("sessionId=sess-b")) {
+        await seedHeld;
+        return new Response(JSON.stringify(seeded), { status: 200 });
+      }
+      return new Response(JSON.stringify(snapshot()), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const refreshing = usePluginReposStore.getState().refreshRepo("tools");
+    useSessionStore.setState({ sessionId: "sess-b" });
+    usePluginReposStore.getState().reset();
+    const seedingB = usePluginReposStore.getState().fetchSnapshot("sess-b");
+
+    // A finishes and runs its `finally` refetch while B's GET is still open.
+    releaseRefresh();
+    await refreshing;
+    releaseSeed();
+    await seedingB;
+
+    // Before the guard, A's refetch took a newer generation on the way to being
+    // dropped itself, B's response then failed the latest-wins check, and this
+    // read `null` — no snapshot, and so no Plugins tab for session B.
+    expect(usePluginReposStore.getState().forSessionId).toBe("sess-b");
+    expect(usePluginReposStore.getState().snapshot?.warnings).toEqual(["session B"]);
+  });
+
   it("does nothing without a session", async () => {
     const impl = captureFetch(rowResponse({ status: "unchanged", after: "x" }));
     usePluginReposStore.setState({ forSessionId: null });

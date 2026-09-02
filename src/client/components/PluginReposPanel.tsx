@@ -440,7 +440,11 @@ function PluginRepoCard({
         // card rather than left as a difference between two cards for the user
         // to work out. It names the one thing that DOES move a pinned version.
         <div className="border-t border-(--color-border-primary) px-3 py-2 text-xs text-(--color-text-tertiary)">
-          Pinned to an exact revision — it moves only when this project's{" "}
+          {/* Names the ONE edit that moves it, not "shipit.yaml changes":
+              editing a service, a setting or another plugin in the same file
+              leaves this repository exactly where it is (review finding). */}
+          Pinned to an exact revision — it moves only when this repository's{" "}
+          <code className="font-mono">pin:</code> in{" "}
           <code className="font-mono">shipit.yaml</code> changes, so there is nothing to refresh.
         </div>
       )}

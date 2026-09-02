@@ -529,7 +529,37 @@ describe("PluginReposPanel", () => {
       }
     });
 
-    it("reports a failure with its reason, naming the commit still live (req 15)", async () => {
+    // An activation failure is a 200 carrying `{status:"failed", after:"<prior
+    // commit>"}` — req 15 keeps the prior generation whole and live, so what
+    // the user most needs is which version they are still on. An earlier
+    // version of this test used the 400 shape below, which carries no `after`
+    // at all, and so passed with the "still on" rendering deleted (independent
+    // review).
+    it("reports a failed round and names the commit still live (req 15)", async () => {
+      const snapshot = card();
+      setSnapshot(snapshot);
+      const { restore } = stub(
+        { status: "failed", before: "abcdef0123", after: "abcdef0123", detail: "install exited 1" },
+        snapshot,
+      );
+      try {
+        render(<PluginReposPanel />);
+        fireEvent.click(screen.getByText("Refresh"));
+        await waitFor(() => expect(screen.getByTestId("plugin-refresh-outcome")).toBeTruthy());
+        const row = screen.getByTestId("plugin-refresh-outcome");
+        expect(row.textContent).toContain("Refresh failed");
+        expect(row.textContent).toContain("still on");
+        expect(row.textContent).toContain("abcdef012");
+        expect(row.textContent).toContain("install exited 1");
+      } finally {
+        restore();
+      }
+    });
+
+    // The other failure shape: the request never produced a row. A 400 (a name
+    // the declaration does not have) and a 501 (a runtime with no refresh hook)
+    // both land here, and from the user's side they are the same event.
+    it("reports a refused request too, rather than going silent", async () => {
       const snapshot = card();
       setSnapshot(snapshot);
       const { restore } = stub(null, snapshot);
