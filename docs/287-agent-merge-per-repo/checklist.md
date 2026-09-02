@@ -38,9 +38,13 @@ Revision 2 (2026-09-02), after two review rounds.
 - [ ] `guardMergeSync()` verdict carries `pushed: boolean` (no taxonomy)
 - [ ] `cancelAutoPush(sessionId)` only when the push landed
 - [ ] One live read per attempt: a merge-only GraphQL query by PR number
-      (`state`, `isDraft`, `mergeable`, `reviewDecision`, `headRefOid`, rollup + its `oid`)
+      (`state`, `isDraft`, `reviewDecision`, `headRefOid`, rollup state + its `oid`)
+- [ ] A response carrying any GraphQL `errors` refuses; a null rollup counts as
+      zero checks only in an error-free response
 - [ ] Zero-check grace via a new `PrStatusPoller.awaitCiGraceDecision()` facade
       that awaits `ensureWorkflowsLoaded()` (the tracker is private and needs it)
+- [ ] Merge grace keyed by repository + PR + head SHA, and an unknown CI history
+      starts the grace instead of skipping it
 - [ ] Query asks only for what the gate reads; a null rollup means zero checks
 - [ ] Gate table implemented in full: failed read, rollup-SHA mismatch,
       local-HEAD mismatch, draft/closed, failing, pending, both zero-check cases

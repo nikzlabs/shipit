@@ -9,11 +9,13 @@ description: Widen the docs/224 merge gate from a per-sandbox grant to a per-rep
 Implements [requirements.md](./requirements.md). Extends
 `docs/224-sandbox-merge-capability` (the shim, the route, the guardrails).
 
-> **Revision 4, 2026-09-02.** Four independent review rounds; every finding
+> **Revision 5, 2026-09-02.** Five independent review rounds; every finding
 > verified at the source before it was accepted. Round 1 rebuilt the ownership
 > check, round 2 replaced the status gate and caught a `cwd` rule that would have
 > broken every merge, round 3 replaced the query and the grace window, round 4
-> bound provenance to the repository and made an arming revocable. See
+> bound provenance to the repository, and round 5 closed a partial-response hole
+> and refuted round 4's `--auto` safeguard. Everything except `--auto` is settled;
+> that one is an open scope question in requirements.md. See
 > [What the reviews changed](#what-the-reviews-changed).
 
 ## What changes, in one line
@@ -188,11 +190,17 @@ the caller supplied, `mergeable` is never consulted by the gate, and the rollup'
 built. The gate reads `statusCheckRollup.state`, and treats a **null rollup** as
 zero checks.
 
+**A null rollup counts only in a response that carries no `errors`.**
+`graphqlQuery()` logs non-rate-limit GraphQL errors and still returns the body,
+so a partial response can hold `errors` *and* a null rollup — which would read as
+"this repository has no CI" and merge. The gate requires an empty `errors` array
+and the presence of the fields it decides on, before any of the rows below apply.
+
 The gate then reads:
 
 | Condition | Result |
 |---|---|
-| the read failed, or the node is missing | refuse — never "no checks" |
+| the read failed, the node is missing, or the response carries **any** GraphQL `errors` | refuse — never "no checks" |
 | rollup `commit.oid !== headRefOid` | refuse: the checks describe an older commit (req 16) |
 | repo-bound and `headRefOid !== local HEAD` | refuse: GitHub does not have this session's work (req 14) |
 | `state !== "OPEN"`, or `isDraft` | refuse (req 7) |
@@ -226,11 +234,17 @@ tracker constructed fresh for the merge route would have none of the sticky
 which does the preload and then the existing call. One grace implementation, one
 caller-visible answer.
 
-For a **sandbox** session targeting several repositories the tracker's key
-(session + head SHA) can be overwritten between merges of different pull
-requests. That direction is conservative — a replaced entry starts a fresh grace,
-so the gate refuses for longer, never sooner — and a SHA collision across two
-pull requests is not a real case.
+Two corrections round 5 made to that reuse, both accepted:
+
+- **The merge grace is keyed by repository, pull request *and* head SHA**, not by
+  session and SHA as the tracker keys its own. Two pull requests can legitimately
+  share a commit SHA, so "that cannot really happen" was wrong; a sandbox session
+  merging in several repositories would otherwise share one timer.
+- **An unknown CI history starts the grace, it does not skip it.**
+  `shouldForcePending()` returns false immediately when it has no prior CI
+  signal — right for the poller, which will see the repository again, and wrong
+  for a one-shot merge decision in an arbitrary sandbox clone that has neither a
+  workflow parse nor poll history. For the merge gate, unknown means wait.
 
 **The local-HEAD row** is the half `guardMergeSync()` cannot cover. That guard
 compares local HEAD with the remote-*tracking* ref and, by design, **proceeds
@@ -287,7 +301,18 @@ pass. If native arming is unavailable — no branch protection, or "Allow
 auto-merge" off (docs/077) — the command **refuses with GitHub's reason** rather
 than falling back to managed.
 
-Two additions make it safe, both from round 4:
+> **Unsettled — see the open question in requirements.md.** Round 5 refuted the
+> safeguard below: `expectedHeadOid` is a precondition checked when the arming is
+> *enabled*, not a binding on the merge GitHub performs later, and GitHub keeps
+> an arming alive across a push by anyone with write access. So a native arming
+> can still land a commit the agent never authorised. A safe arming has to be
+> ShipIt's own, keyed by canonical repository, pull-request number **and**
+> expected SHA, with durable state, a revocation protocol, restart behaviour and
+> arm-versus-revoke serialisation — a piece of work in its own right. The rest of
+> this section describes the rejected shape and is kept only until that scope
+> decision is made.
+
+Two additions were meant to make it safe, both from round 4:
 
 - **`expectedHeadOid`.** GitHub's `enablePullRequestAutoMerge` mutation accepts
   it and `enableAutoMerge()` does not send it today. Passing the SHA from the
@@ -359,8 +384,11 @@ repo-scoped agent permission exists.
 | 3 | managed `--auto` is session-bound and SHA-less | native arming only; refuse with GitHub's reason |
 | 4 | `--repo` could record a foreign PR as the session's | provenance write requires a canonical-repo match |
 | 4 | the grace tracker is private and needs a preload | one `awaitCiGraceDecision()` facade on the poller |
-| 4 | a native arming outlived the permission | `expectedHeadOid`, recorded arming, cancelled on revocation |
+| 4 | a native arming outlived the permission | `expectedHeadOid`, recorded arming, cancelled on revocation — **refuted in round 5** |
 | 4 | the merge query asked for more than the gate uses | `number`, `mergeable` and `contexts` dropped |
+| 5 | `expectedHeadOid` binds the arming, not the merge | `--auto` is now an open scope question |
+| 5 | a partial GraphQL response reads as "no CI" | any `errors` refuses, before the gate table applies |
+| 5 | the CI grace was keyed by session + SHA | keyed by repository + PR + SHA; unknown CI starts the grace |
 
 ## Key files
 

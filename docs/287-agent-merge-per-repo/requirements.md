@@ -55,7 +55,16 @@ but cannot land it. This feature moves the permission to the **repository**.
 
 ## Open questions
 
-None.
+- Does the agent keep a way to say "merge this when the checks pass" (`--auto`),
+  or does this feature stop at "merge now, if the checks already passed"? Review
+  round 5 showed the safe version is a piece of work in itself: GitHub's own
+  arming is not bound to the commit it was granted for, so a later push can land
+  a commit nobody authorised, and a ShipIt arming that *is* bound needs durable
+  state, a revocation protocol and restart and race handling. Without any arming
+  the agent cannot land work in the same turn that produced it, because nothing
+  wakes a session when CI turns green. This is a scope decision, so it is the
+  user's. Blocks only the `--auto` part of req 17; the rest of the design is
+  settled.
 
 ## Resolved questions
 
