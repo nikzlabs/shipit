@@ -363,7 +363,12 @@ export async function restartContainer(
   const noContainer = !existing;
   if (existing) {
     try {
-      await withTimeout(deps.containerManager.destroy(sessionId), PHASE_TIMEOUT_MS.destroying_container);
+      await withTimeout(
+        // Rescue rebuilds immediately, so the previews return on the same origins
+        // — a viewer must not be told they are gone (planning#496).
+        deps.containerManager.destroy(sessionId, { replacementFollows: true }),
+        PHASE_TIMEOUT_MS.destroying_container,
+      );
     } catch (err) {
       console.warn(`[rescue] destroy container failed for ${sessionId}:`, err);
     }
@@ -374,7 +379,12 @@ export async function restartContainer(
     // Rescue is about to build. `destroy` bumps the teardown counter before its
     // own "nothing to destroy" return, which is what cancels it.
     try {
-      await withTimeout(deps.containerManager.destroy(sessionId), PHASE_TIMEOUT_MS.destroying_container);
+      await withTimeout(
+        // Rescue rebuilds immediately, so the previews return on the same origins
+        // — a viewer must not be told they are gone (planning#496).
+        deps.containerManager.destroy(sessionId, { replacementFollows: true }),
+        PHASE_TIMEOUT_MS.destroying_container,
+      );
     } catch (err) {
       console.warn(`[rescue] cancelling an in-flight create failed for ${sessionId}:`, err);
     }

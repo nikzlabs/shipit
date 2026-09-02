@@ -560,7 +560,9 @@ async function attemptContainerCreate(
 ): Promise<unknown> {
   const { mgr, runner, sessionId } = opts;
   try {
-    if (opts.destroyFirst) await mgr.destroy(sessionId);
+    // A replacement create follows immediately, so this teardown does not end
+    // the session's previews (planning#496).
+    if (opts.destroyFirst) await mgr.destroy(sessionId, { replacementFollows: true });
     // Snapshot the teardown counter HERE — after our own `destroyFirst` (which
     // bumps it, and must not cancel the create it exists to make room for) and
     // before the preflight awaits below. A teardown during the workspace check

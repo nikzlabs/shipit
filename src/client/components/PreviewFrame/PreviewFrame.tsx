@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: auth-blocked detection + iframe refresh (external system sync)
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useEventListener } from "../../hooks/useEventListener.js";
 import { WarningIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
@@ -11,6 +11,7 @@ import { useUiStore } from "../../stores/ui-store.js";
 import { resolvePreviewHost, suggestWildcardHost } from "../../utils/preview-host.js";
 import { StartupSteps } from "../StartupSteps.js";
 import { useIframePool } from "../../hooks/useIframePool.js";
+import { useReleaseStoppedPreviews } from "../../hooks/usePreviewsStopped.js";
 import { usePreviewSlot, buildSubdomainUrl } from "../../hooks/usePreviewSlot.js";
 import { useDeviceFrame } from "./DeviceFrame.js";
 import { ViewportResizeHandles } from "./ViewportResizeHandles.js";
@@ -164,7 +165,29 @@ export function PreviewFrame({
   // Slots are keyed by "sessionId:port". Only the active slot is visible.
   // Background slots keep their iframes alive in the DOM. See `useIframePool`
   // for LRU eviction and `usePreviewSlot` for slot creation.
-  const { slots, slotOrder, iframeRefs, createdSlotsRef, promoteSlot, setSlot, dropSlot, getSlot } = useIframePool();
+  const { slots, slotOrder, iframeRefs, createdSlotsRef, promoteSlot, setSlot, dropSlot, dropSessionSlots, getSlot } = useIframePool();
+
+  // planning#496 — a session's previews stopped, so the iframes this pool holds
+  // for it are renderer processes kept for a document whose containers are gone.
+  // Release them; a later visit recreates the slot at its remembered path. The
+  // active session is never touched — see the hook.
+  //
+  // `slotCanGoBack` is component state keyed by slot, so it has to be forgotten
+  // alongside the slot: a rebuilt iframe has no history of its own, and a
+  // retained `true` would offer a Back button with nowhere to go — the same
+  // reason this is not persisted with `previewPaths` in the first place.
+  const releaseStoppedSession = useCallback((stoppedSessionId: string) => {
+    const dropped = dropSessionSlots(stoppedSessionId);
+    if (dropped.length > 0) {
+      setSlotCanGoBack((prev) => {
+        const next = new Map(prev);
+        for (const key of dropped) next.delete(key);
+        return next;
+      });
+    }
+    return dropped;
+  }, [dropSessionSlots]);
+  useReleaseStoppedPreviews(sessionId, releaseStoppedSession);
 
   const activeSlotKey = activePort ? `${sessionId ?? "_"}:${activePort}` : null;
   const activeSlot = activeSlotKey ? slots.get(activeSlotKey) ?? null : null;

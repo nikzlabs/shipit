@@ -749,3 +749,68 @@ describe("content-key reporting (install-content-key.ts)", () => {
     runner.dispose({ force: true });
   });
 });
+
+/**
+ * planning#496 — `onStopped` is what tells every browser that a session's
+ * previews are gone, and a viewer acts on it by dropping that session's
+ * iframes. So it must fire on the stop having SUCCEEDED, never on it having
+ * been started: `compose down` is asynchronous and allowed to fail, and either
+ * mistake discards a document that is still being served.
+ */
+describe("trackComposeStop — onStopped", () => {
+  it("does not fire while the stop is still in flight", async () => {
+    const { trackComposeStop } = await import("./service-manager-setup.js");
+    let release!: () => void;
+    const mgr = { stop: () => new Promise<void>((resolve) => { release = resolve; }) };
+    const onStopped = vi.fn();
+
+    trackComposeStop(new Map(), "sess-x", mgr, { onStopped });
+    await Promise.resolve();
+    expect(onStopped).not.toHaveBeenCalled();
+
+    release();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onStopped).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fire when the stop fails, because the previews are still up", async () => {
+    const { trackComposeStop } = await import("./service-manager-setup.js");
+    const mgr = { stop: () => Promise.reject(new Error("compose down failed")) };
+    const onStopped = vi.fn();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    trackComposeStop(new Map(), "sess-x", mgr, { onStopped });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(onStopped).not.toHaveBeenCalled();
+    errors.mockRestore();
+  });
+
+  it("does not report a throwing callback as a failed stop", async () => {
+    // The callback is an SSE broadcast; if it threw, the shared `.catch` would
+    // otherwise log "Failed to stop compose stack" for a stop that worked.
+    const { trackComposeStop } = await import("./service-manager-setup.js");
+    const mgr = { stop: () => Promise.resolve() };
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    trackComposeStop(new Map(), "sess-x", mgr, {
+      onStopped: () => { throw new Error("broadcast blew up"); },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(errors.mock.calls.map((c) => String(c[0]))).toEqual([
+      "[compose:sess-x] onStopped callback threw:",
+    ]);
+    errors.mockRestore();
+  });
+
+  it("clears its entry from the in-flight map once settled", async () => {
+    const { trackComposeStop } = await import("./service-manager-setup.js");
+    const promises = new Map<string, Promise<void>>();
+    trackComposeStop(promises, "sess-x", { stop: () => Promise.resolve() });
+
+    expect(promises.has("sess-x")).toBe(true);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(promises.has("sess-x")).toBe(false);
+  });
+});
