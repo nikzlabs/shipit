@@ -4,6 +4,22 @@ import { UNIVERSAL_GITIGNORE } from "./template-gitignores.js";
 // ---------------------------------------------------------------------------
 // Frontend template definitions
 // ---------------------------------------------------------------------------
+//
+// Design note — dependency installs belong in `agent.install`, never in a
+// compose service's `command`.
+//
+// The service and the agent container bind-mount the same workspace, so a
+// service-side `npm install` rewrites `package-lock.json` — one of the two
+// paths `depInputsForCommand("npm install")` watches (`shared/deps-hash.ts`).
+// That retriggers the agent's dependency reinstall, which tears the gated
+// service down and restarts it: a permanent ~30s loop. It buys nothing, either
+// — the install gate (default `true` for a service with `ports`) already holds
+// the service until `agent.install` finishes.
+//
+// See `shipit-docs/compose.md`, "Where to put `npm install`". The Python
+// templates are the deliberate exception (single-writer venv — see that file's
+// own note). Guarded by templates.test.ts, "Node templates keep dependency
+// installs single-writer".
 
 export const FRONTEND_TEMPLATES: ProjectTemplate[] = [
   {
@@ -115,7 +131,7 @@ compose: docker-compose.yml
   dev:
     image: node:24-slim
     working_dir: /app
-    command: sh -c "npm install && npm run dev"
+    command: npm run dev
     ports:
       - "5173:5173"
     volumes:
@@ -242,7 +258,7 @@ compose: docker-compose.yml
   dev:
     image: node:24-slim
     working_dir: /app
-    command: sh -c "npm install && npm run dev"
+    command: npm run dev
     ports:
       - "5173:5173"
     volumes:
@@ -364,7 +380,7 @@ compose: docker-compose.yml
   dev:
     image: node:24-slim
     working_dir: /app
-    command: sh -c "npm install && npm run dev"
+    command: npm run dev
     ports:
       - "5173:5173"
     volumes:
@@ -479,7 +495,7 @@ compose: docker-compose.yml
   dev:
     image: node:24-slim
     working_dir: /app
-    command: sh -c "npm install && npm run dev"
+    command: npm run dev
     ports:
       - "5173:5173"
     volumes:
@@ -593,7 +609,7 @@ compose: docker-compose.yml
   dev:
     image: node:24-slim
     working_dir: /app
-    command: sh -c "npm install && npm run dev"
+    command: npm run dev
     ports:
       - "5173:5173"
     volumes:

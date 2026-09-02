@@ -735,6 +735,25 @@ Also attributable from this run, no code change:
   (because the install-running gate had already closed) latched to `error` instead of
   retrying. A manual restart succeeded (`vite ready in 258 ms` through the overlay). Worth a
   follow-up on the service retry window; not overlay-specific.
+- **A permanent 30-second dev-server restart loop** — the fourth consequence of the same
+  two-writer race, and the one that was never recorded here. Diagnosed live on 2026-09-02
+  against deployed `bd205652`, on all five sessions of one repo (69–84 reinstall triggers
+  each over the retained log, against 1–4 for every other session on the host). The cycle:
+  the dev service's `npm install` rewrites `package-lock.json` in the shared bind mount →
+  that is one of the two paths `depInputsForCommand("npm install")` watches (with
+  `package.json`, `shared/deps-hash.ts`) → `maybeReinstallForDepChange()` fires. It is
+  leading-edge, so the first change while idle reinstalls at once; every later one lands
+  inside the reinstall or its cooldown and takes the trailing-timer branch, which is the
+  steady state the observed 30.000 s period (no drift) reflects → `reinstallForDepChange()` calls
+  `setInstallRunning(true)`, which tears the gated service down (SIGTERM, 10 s grace,
+  SIGKILL, exit 137) → the content-keyed marker skips the install in milliseconds, the gate
+  reopens, the service runs `npm install` again. Cost: ~11 s of preview downtime out of
+  every 30 s, all HMR state lost, and the egress sidecars destroyed and recreated each
+  cycle. The 137 is ShipIt's own `docker compose stop`, not an OOM (`RestartCount=0`,
+  `OOMKilled=false`, docs/239). Fixed at the source: the 10 Node templates now scaffold
+  `command: npm run dev`, which also removes the cause of the two bullets above. Projects
+  already scaffolded from the old templates keep the loop until their
+  `docker-compose.yml` gets the same edit.
 - **Spawn self-claim + archive recursion** (PR #1236, not overlay-related): `shipit session
   create` from an ungraduated session claimed the calling parent itself (self-parented
   session), and the archive cascade had no cycle guard → "Maximum call stack size exceeded".
