@@ -43,9 +43,14 @@ async function startProxy(opts: { connectRetryMs?: number } = {}): Promise<strin
 }
 
 /** An upstream "dev server" the test can start late, the way a real one boots. */
-async function startUpstream(port: number, body: string, contentType = "text/html"): Promise<void> {
+async function startUpstream(
+  port: number,
+  body: string,
+  contentType = "text/html",
+  extraHeaders: http.OutgoingHttpHeaders = {},
+): Promise<void> {
   const server = http.createServer((_req, res) => {
-    res.writeHead(200, { "Content-Type": contentType });
+    res.writeHead(200, { "Content-Type": contentType, ...extraHeaders });
     res.end(body);
   });
   await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
@@ -179,6 +184,64 @@ describe("preview proxy — connect retry", () => {
 
     expect(res.status).toBe(502);
     expect(Date.now() - started).toBeLessThan(2_000);
+  });
+});
+
+describe("preview proxy — renderer isolation", () => {
+  // Every preview origin is a subdomain of the host ShipIt itself is served
+  // from, so a browser's site-keyed process model puts them all in one
+  // renderer — one main thread, and one 16-context WebGL budget shared by every
+  // open session. `Origin-Agent-Cluster: ?1` is what splits them.
+
+  it("marks a served page, so its origin gets its own renderer", async () => {
+    const port = await reservePort();
+    const base = await startProxy();
+    await startUpstream(port, "<html><head></head><body>up</body></html>");
+
+    const res = await previewRequest(base, port);
+
+    expect(res.status).toBe(200);
+    expect(res.headers["origin-agent-cluster"]).toBe("?1");
+  });
+
+  it("marks the connecting page, which is the origin's first document on a cold boot", async () => {
+    // The load-bearing one. An origin's agent-cluster key is decided by the
+    // first document it serves and then held for the whole browsing-context
+    // group, so a preview opened before its dev server is listening would be
+    // pinned site-keyed for the rest of the session if only the real page
+    // carried the header.
+    const port = await reservePort();
+    const base = await startProxy({ connectRetryMs: 0 });
+
+    const res = await previewRequest(base, port);
+
+    expect(res.status).toBe(503);
+    expect(res.headers["origin-agent-cluster"]).toBe("?1");
+  });
+
+  it("marks a non-HTML response, which a navigation can also land on", async () => {
+    const port = await reservePort();
+    const base = await startProxy();
+    await startUpstream(port, "body{}", "text/css");
+
+    const res = await previewRequest(base, port, { accept: "text/css" });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["origin-agent-cluster"]).toBe("?1");
+  });
+
+  it("leaves an app that states its own agent-cluster keying alone", async () => {
+    // Nothing an agent builds sets this by accident; one that does knows
+    // something about its own frames that we don't.
+    const port = await reservePort();
+    const base = await startProxy();
+    await startUpstream(port, "<html><head></head><body>up</body></html>", "text/html", {
+      "Origin-Agent-Cluster": "?0",
+    });
+
+    const res = await previewRequest(base, port);
+
+    expect(res.headers["origin-agent-cluster"]).toBe("?0");
   });
 });
 

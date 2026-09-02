@@ -55,6 +55,61 @@ export function parsePreviewSubdomain(
 }
 
 // ---------------------------------------------------------------------------
+// Renderer isolation
+// ---------------------------------------------------------------------------
+
+/**
+ * Put every preview origin in its own renderer process.
+ *
+ * Preview origins are `{sessionId}--{port}.<host>` — all subdomains of ONE
+ * registrable domain, and of the same one ShipIt itself is served from. A
+ * browser's process model keys on *site*, not origin, so by default every open
+ * session's preview and ShipIt's own UI land in a single renderer, sharing one
+ * main thread and one budget of WebGL contexts. Blink's cap is 16 live contexts
+ * PER RENDERER PROCESS; past it the oldest are force-lost. That is not
+ * slowness — it is a blank canvas in a preview the user is looking at, caused
+ * by sessions they are not.
+ *
+ * `Origin-Agent-Cluster: ?1` asks for an origin-keyed agent cluster, which
+ * Chrome implements as origin-level process isolation. Measured in a
+ * four-same-site-origin repro (docs/009-preview-system, "Renderer isolation"):
+ * without it, 4 origins occupy 1 renderer and 4 `webglcontextlost` events fire;
+ * with it, 4 origins occupy 4 renderers and none fire. Cost is ~11 MiB PSS per
+ * origin.
+ *
+ * Three things about this that are easy to get wrong:
+ *
+ *  - **It must be on EVERY document response for the origin, including the
+ *    connecting page.** The agent-cluster key is decided by the first document
+ *    an origin serves and then held for the whole browsing-context group. A
+ *    preview opened before its dev server is listening is answered by
+ *    {@link buildConnectingPage} first, so a header only on the real page would
+ *    miss the commonest boot of all.
+ *  - **`window.originAgentCluster` does not test it.** Chrome makes documents
+ *    origin-keyed *logically* by default, so that property reads `true` with or
+ *    without the header; only the header adds process isolation. Count renderer
+ *    processes instead.
+ *  - **It needs a potentially-trustworthy origin.** HTTPS and `*.localhost`
+ *    qualify, so production and local development get isolation. The Tailscale
+ *    sslip override (docs/216) serves previews over plain http, where the
+ *    header is ignored and behaviour is exactly what it is today.
+ *
+ * An upstream that sets the header itself is left alone — an app asking for a
+ * particular agent-cluster keying knows something we don't.
+ */
+const ORIGIN_AGENT_CLUSTER = "origin-agent-cluster";
+
+export function withOriginIsolation(
+  headers: http.OutgoingHttpHeaders,
+): http.OutgoingHttpHeaders {
+  const out = { ...headers };
+  if (!Object.keys(out).some((k) => k.toLowerCase() === ORIGIN_AGENT_CLUSTER)) {
+    out[ORIGIN_AGENT_CLUSTER] = "?1";
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // HMR WebSocket patch
 // ---------------------------------------------------------------------------
 
@@ -455,11 +510,11 @@ function proxyHttpAttempt(
           delete outHeaders["content-encoding"];
           delete outHeaders["transfer-encoding"];
           outHeaders["content-length"] = String(Buffer.byteLength(html));
-          rawRes.writeHead(proxyRes.statusCode ?? 200, outHeaders);
+          rawRes.writeHead(proxyRes.statusCode ?? 200, withOriginIsolation(outHeaders));
           rawRes.end(html);
         });
       } else {
-        rawRes.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
+        rawRes.writeHead(proxyRes.statusCode ?? 502, withOriginIsolation(proxyRes.headers));
         proxyRes.pipe(rawRes);
       }
     },
@@ -957,16 +1012,19 @@ export function registerPreviewProxy(
       reportError(sessionId, originPort, message, false);
       if (wantsHtmlDocument(method, headers)) {
         const body = injectPreviewBootstrap(buildConnectingPage(originPort, message));
-        rawRes.writeHead(503, {
+        // The connecting page is this origin's FIRST document on the commonest
+        // boot there is, and the first document is what fixes the origin's
+        // agent-cluster key — so it carries the isolation header too.
+        rawRes.writeHead(503, withOriginIsolation({
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store",
           "Content-Length": String(Buffer.byteLength(body)),
-        });
+        }));
         rawRes.end(body);
         return;
       }
       // Not a navigation — an asset or an XHR must not be handed HTML.
-      rawRes.writeHead(502, { "Content-Type": "application/json" });
+      rawRes.writeHead(502, withOriginIsolation({ "Content-Type": "application/json" }));
       rawRes.end(JSON.stringify({ error: "Container preview unreachable" }));
     }
 

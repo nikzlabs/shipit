@@ -1,3 +1,9 @@
+---
+issue: planning#492
+title: Preview System
+description: The preview pane — port detection, toolbar navigation, error capture, and per-origin renderer isolation.
+---
+
 # Preview System
 
 The preview pane shows a live iframe of the user's app. Supports Vite (managed) and any other dev server (auto-detected via port scanning).
@@ -159,8 +165,92 @@ inherit the previous element's confirmation.
 
 Red badge on preview shows error count. Clicking opens collapsible panel with details, stack traces, per-error "Fix" buttons, and "Send to Claude" for all errors.
 
+## Renderer isolation
+
+### The iframe lifecycle, and why it is not the problem
+
+Preview iframes for sessions the user is **not** looking at stay mounted. That
+is deliberate and load-bearing: `useIframePool` retains one iframe per
+`(session, port)` slot, LRU eviction past `MAX_IFRAME_SLOTS = 20` is the *only*
+thing that drops one, and a dropped iframe is a reload the user experiences as
+their preview resetting — scroll position, SPA route, form state, and the HMR
+connection all go. A hidden slot is given Tailwind's `hidden`
+(`display: none`) and is told `{ type: "visibility", visible: false }` over
+postMessage, the cooperative contract in `docs/146-preview-visibility-contract`.
+
+What `display: none` does **not** do is release the document's WebGL contexts.
+Measured, not assumed: with four same-site child origins holding five contexts
+each and three of the four rendered `display: none`, all twenty contexts stayed
+charged against the process and four were force-lost anyway.
+
+### The problem: one renderer for every open session
+
+Preview origins are `{sessionId}--{port}.<host>` — subdomains of the one
+registrable domain ShipIt itself is served from. A browser's process model keys
+on **site**, not origin, so by default every open session's preview *and*
+ShipIt's own UI share a single renderer process. That has two consequences:
+
+1. **WebGL context exhaustion.** Blink's cap is 16 live contexts per *renderer
+   process*, and past it the **oldest** are force-lost. So the preview that goes
+   blank is typically the one the user has had open longest — broken by sessions
+   they are not looking at. A production trace showed four preview origins in
+   one renderer (pid 20524) and three `webglcontextlost` events in 4.6 s.
+2. **Main-thread contention.** A heavy preview competes with ShipIt's own UI and
+   with every other session's preview on one thread.
+
+### The fix
+
+`preview-proxy.ts` sets **`Origin-Agent-Cluster: ?1`** on every preview
+response (`withOriginIsolation`). It requests an origin-keyed agent cluster,
+which Chrome implements as origin-level *process* isolation — each preview
+origin gets its own renderer, its own main thread, and its own 16-context
+budget. The subdomain scheme is untouched (`docs/175-preview-subdomain-only`),
+and no iframe lifecycle changes: background slots stay mounted exactly as
+before.
+
+Three details that are easy to get wrong, all recorded in the
+`withOriginIsolation` docstring:
+
+- The header must be on **every document response for the origin, including the
+  connecting page** (`docs/286-preview-connect-without-gate`). An origin's
+  agent-cluster key is fixed by its first document and held for the whole
+  browsing-context group, and a preview opened before its dev server is
+  listening gets the connecting page first. Measured, not assumed: with the
+  header on the app page but *not* on the connecting page that preceded it,
+  four origins that each reloaded into a marked page still ended up in **zero**
+  extra renderers — the reload buys nothing, because the key was already fixed.
+  With the header on both, the same four origins got four renderers.
+- **`window.originAgentCluster` does not test it.** Chrome makes documents
+  origin-keyed *logically* by default, so it reads `true` with or without the
+  header. Only counting renderer processes distinguishes the two.
+- It needs a **potentially-trustworthy origin**. HTTPS and `*.localhost`
+  qualify, so production and local development get isolation. The Tailscale
+  sslip override (`docs/216`, `docs/254-local-bind-and-tailnet-access`) serves
+  previews over plain http, where the header is ignored and behaviour is
+  unchanged.
+
+### Measurement
+
+Reproduced in headless Chromium against a probe server: one parent document
+embedding N iframes on `https://{a,b,c,d}.example.com`, resolved with
+`--host-resolver-rules=MAP * 127.0.0.1`, five WebGL contexts per child.
+Renderer processes counted from `ps` on `--type=renderer`; memory as summed
+PSS, not RSS, so pages shared between processes are not counted once each.
+
+| 4 origins × 5 contexts | renderer processes | `webglcontextlost` | oldest origin's live contexts |
+|---|---|---|---|
+| Without the header | 1 (all co-located) | **4** | 1 of 5 |
+| With `Origin-Agent-Cluster: ?1` | 4 (one each) | **0** | 5 of 5 |
+
+Both numbers that define the bug move, and the instrument demonstrably produces
+a positive as well as a negative (`docs/265`). Cost of splitting, at 8 live
+previews: **+90 MiB PSS total, ≈11 MiB per preview origin** — which is why
+`MAX_IFRAME_SLOTS` was left at 20 rather than lowered to bound process count.
+
 ## Key files
 
+- `src/server/orchestrator/preview-proxy.ts` — `withOriginIsolation`, applied at every preview response path
+- `src/client/hooks/useIframePool.ts` — LRU slot retention; background iframes stay mounted
 - `src/server/port-scanner.ts` — `checkPort`, `scanPorts`, `DEFAULT_SCAN_PORTS`
 - `src/server/vite-manager.ts` — Vite lifecycle, wrapper config with error plugin
 - `src/server/vite-error-plugin.ts` — Error capture script injection

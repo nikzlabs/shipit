@@ -11,7 +11,7 @@
 import { describe, it, expect } from "vitest";
 import vm from "node:vm";
 import { AGENT_INTERFACE_SDK_MARKER } from "../shared/agent-interface-sdk/bootstrap.js";
-import { allowPreviewBootstrapInCsp, buildUpstreamHeaders, injectPreviewBootstrap } from "./preview-proxy.js";
+import { allowPreviewBootstrapInCsp, buildUpstreamHeaders, injectPreviewBootstrap, withOriginIsolation } from "./preview-proxy.js";
 
 describe("buildUpstreamHeaders", () => {
   it("rewrites Host to loopback for the upstream", () => {
@@ -66,6 +66,36 @@ describe("buildUpstreamHeaders", () => {
     );
     expect(out["user-agent"]).toBe("test");
     expect(out.cookie).toBe("a=b");
+  });
+});
+
+describe("withOriginIsolation", () => {
+  it("asks for an origin-keyed agent cluster", () => {
+    expect(withOriginIsolation({ "Content-Type": "text/html" })).toEqual({
+      "Content-Type": "text/html",
+      "origin-agent-cluster": "?1",
+    });
+  });
+
+  it("does not mutate the headers it was handed", () => {
+    // The pass-through path writes `proxyRes.headers` straight out; a mutating
+    // helper would be editing the upstream response object in place.
+    const upstream = { "content-type": "text/css" };
+    withOriginIsolation(upstream);
+    expect(upstream).toEqual({ "content-type": "text/css" });
+  });
+
+  it("recognizes an upstream value whatever its case", () => {
+    // Ours are written in the mixed case the literal call sites use; node
+    // lowercases the ones it parses off an upstream response. A case-sensitive
+    // check would emit the header twice, which is a parse failure, not a
+    // preference.
+    expect(withOriginIsolation({ "Origin-Agent-Cluster": "?0" })).toEqual({
+      "Origin-Agent-Cluster": "?0",
+    });
+    expect(withOriginIsolation({ "origin-agent-cluster": "?0" })).toEqual({
+      "origin-agent-cluster": "?0",
+    });
   });
 });
 

@@ -223,6 +223,21 @@ ShipIt patches dev-server WebSocket URLs so HMR works through the reverse
 proxy. No configuration needed — Vite, Next.js, and other frameworks work
 out of the box.
 
+## Renderer isolation — don't send `Origin-Agent-Cluster: ?0`
+
+Every preview response carries **`Origin-Agent-Cluster: ?1`**. Preview origins
+are all subdomains of one domain, and browsers group same-site documents into a
+single renderer process — so without this header every open session's preview
+shares one main thread and one budget of 16 WebGL contexts, and the oldest
+contexts get force-lost. A user with a 3D or canvas app sees a blank canvas,
+caused by sessions they aren't even looking at.
+
+ShipIt only sets the header when your app hasn't set one itself. So if your dev
+server sends a security-headers middleware default of `Origin-Agent-Cluster: ?0`
+(some do), it wins — and it puts your preview back in the shared renderer.
+Unless you specifically need same-site frames in one agent cluster, leave the
+header to ShipIt.
+
 ## Restart triggers
 
 | Change | Effect |
