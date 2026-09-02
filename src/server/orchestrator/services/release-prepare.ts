@@ -595,8 +595,16 @@ async function prepareFinalRelease(
   // reads "progressed" and opens a NEW pull request. Not provably so, though —
   // an explicit version whose bump leaves the tree identical to the base yields
   // `no-new-work` on the very same base (the content-free guard above runs
-  // BEFORE the bump, so it can't catch that), and a prior PR on a different base
-  // yields `base-not-contained` / `base-unknown`.
+  // BEFORE the bump, so it can't catch that), a prior PR on a different base
+  // yields `base-not-contained`, and an unreachable remote yields
+  // `fetch-failed` — the gate declines to decide off a ref it could not refresh
+  // rather than risk a duplicate.
+  //
+  // `base-unknown` no longer arrives here: a prior base that is gone from a
+  // REACHABLE remote falls through to creation, because nothing can be
+  // duplicated into a base that does not exist. Its arm below is kept as a
+  // defensive default rather than deleted — the reason field is optional, and
+  // this guard must not depend on the gate's arm set staying fixed.
   //
   // `!== "open"` rather than the two dead values: the reason is optional on the
   // return type, and a reason we can't read is a PR we can't prove is live.
@@ -695,7 +703,7 @@ function deadReleasePrMessage(
     number: number;
     baseBranch: string;
     alreadyExistedReason?: "open" | "merged-not-progressed" | "closed-not-progressed";
-    notProgressedBecause?: "base-not-contained" | "no-new-work" | "base-unknown";
+    notProgressedBecause?: "base-not-contained" | "no-new-work" | "base-unknown" | "fetch-failed";
   },
 ): string {
   // Only a MERGED PR is truly unreopenable; a closed one ShipIt declines to
@@ -731,6 +739,16 @@ function deadReleasePrMessage(
       remedy =
         `"${pr.baseBranch}" is no longer on the remote (deleted or renamed), so ShipIt can't tell whether this ` +
         `branch has moved past it. Release a different version — that starts from a fresh branch.`;
+      break;
+    case "fetch-failed":
+      // A different shape from the other three: nothing about the release is
+      // wrong, ShipIt just could not reach the remote to check. Cutting a new
+      // version would repeat the same failure, so the remedy is to retry, not
+      // to change the release.
+      remedy =
+        `ShipIt could not refresh "${pr.baseBranch}" from the remote, so it declined to decide whether this ` +
+        `branch has moved past it. This is a connectivity or credentials problem, not a problem with the ` +
+        `release — check the GitHub connection and re-run the same version.`;
       break;
     default:
       remedy = "Release a different version — that starts from a fresh branch.";

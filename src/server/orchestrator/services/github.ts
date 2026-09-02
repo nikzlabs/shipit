@@ -23,6 +23,7 @@ import type { GitHubStatus } from "./types.js";
 import { logMergePerformed } from "./merge-attribution.js";
 import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./secret-scan-notice.js";
+import { freshenBaseRef } from "./freshen-base-ref.js";
 import { formatUnreadableWorkspaceNotice } from "./unreadable-workspace-notice.js";
 import { emitNoticePostTurn, persistNoticeUnattached } from "../chat-card-persistence.js";
 import type { GenerateText } from "../non-turn-model.js";
@@ -1032,9 +1033,11 @@ export async function agentCreatePr(
    * short-circuit only. The remedies differ and one of them is a no-op, so the
    * PR's state alone is not enough to tell the caller what to do:
    * `base-not-contained` wants the base merged in, `no-new-work` means there is
-   * nothing to ship at all, `base-unknown` means fetch first.
+   * nothing to ship at all, `base-unknown` means fetch first, and `fetch-failed`
+   * means ShipIt refused to decide at all because it could not refresh
+   * `origin/<base>` — no clause was evaluated.
    */
-  notProgressedBecause?: "base-not-contained" | "no-new-work" | "base-unknown";
+  notProgressedBecause?: "base-not-contained" | "no-new-work" | "base-unknown" | "fetch-failed";
   /** Non-fatal warning when one or more labels could not be applied. */
   labelWarning?: string;
 }> {
@@ -1105,12 +1108,16 @@ export async function agentCreatePr(
   //     open a NEW PR rather than pointing the agent back at a dead PR (#1357).
   const existingPr = await findBranchPr(githubAuthManager, resolved.owner, resolved.repo, head);
   let reArmBase: string | undefined;
+  // True whenever we are opening a NEW PR on a branch whose previous one is dead,
+  // with or without a usable prior base. The surviving remote branch (repos with
+  // auto-delete off) has diverged in both shapes, so both must force-with-lease.
+  let reArmedPastDeadPr = false;
   if (existingPr) {
     // Build the "return the existing PR" response (used for both the open and
     // the not-progressed-merged short-circuits).
     const returnExistingPr = async (
       alreadyExistedReason: "open" | "merged-not-progressed" | "closed-not-progressed",
-      notProgressedBecause?: "base-not-contained" | "no-new-work" | "base-unknown",
+      notProgressedBecause?: "base-not-contained" | "no-new-work" | "base-unknown" | "fetch-failed",
     ) => {
       const stats = await git.diffStatVsBranch(existingPr.base);
       // Apply any requested labels additively to the existing PR — best-effort.
@@ -1151,10 +1158,41 @@ export async function agentCreatePr(
     }
 
     // Closed/merged PR. Only re-arm for a NEW PR when the branch has genuinely
-    // progressed beyond the merged base (rebased onto the current base + new
-    // work). Otherwise keep blocking the duplicate and return its metadata.
-    const progress = await git.mergedBaseProgress(existingPr.base);
-    if (progress !== "progressed") {
+    // progressed beyond the merged base (sits on the current base + new work).
+    // Otherwise keep blocking the duplicate and return its metadata.
+    //
+    // The gate is base-relative and reads `origin/<base>` from THIS clone, which
+    // moves only when this clone fetches — nothing on the merge path does. So
+    // the fetch is a precondition, not an optimisation: against a stale ref the
+    // gate reports `progressed` for a branch carrying nothing but already-merged
+    // work, and this path would open a duplicate PR of shipped code. See
+    // `freshen-base-ref.ts`, which states the inversion, and
+    // `git-rearm-detect.test.ts`, which demonstrates it on a real repo.
+    //
+    // No `unmovedSinceMerge`-style local short-circuit here (unlike `pr-rearm`,
+    // which uses one to keep every resumed turn at zero network cost): this path
+    // runs only when the agent explicitly asked for a PR *and* the branch already
+    // has a dead one, it has just made two GitHub API calls to learn that, and
+    // the shape the short-circuit would catch — HEAD still at the merged tip — is
+    // exactly where a stale ref does the most damage.
+    const baseRefIsFresh = await freshenBaseRef(
+      git, existingPr.base, `pr-create ${options.sessionId ?? head}`,
+    );
+    const progress = baseRefIsFresh
+      ? await git.mergedBaseProgress(existingPr.base)
+      // Fail-safe: decline to decide rather than decide off a ref we know may be
+      // stale. "Not progressed" is the direction that cannot invent a duplicate.
+      : ("fetch-failed" as const);
+    // A base that does not resolve on a REACHABLE remote is a base that is gone —
+    // a deleted release branch, most often. Blocking there would be a permanent
+    // dead end: the gate can never be satisfied, so the branch could never open
+    // another PR however much real work it carries (review finding). It is also
+    // the one refusal with nothing behind it — duplicate prevention asks "is this
+    // work already merged into the prior base", and a base that no longer exists
+    // cannot receive a duplicate. So fall through and create, deliberately WITHOUT
+    // setting `reArmBase`: the new PR then targets the caller's `--base` or the
+    // repo's detected default rather than the dead branch.
+    if (progress !== "progressed" && progress !== "base-unknown") {
       return await returnExistingPr(
         existingPr.merged ? "merged-not-progressed" : "closed-not-progressed",
         progress,
@@ -1163,13 +1201,14 @@ export async function agentCreatePr(
     // Progressed: open a NEW PR targeting the prior PR's base. The old remote
     // branch often survives the merge (repos with auto-delete off) pointing at
     // the pre-rebase commits, so the create-path push below must force-with-lease.
-    reArmBase = existingPr.base;
+    if (progress === "progressed") reArmBase = existingPr.base;
+    reArmedPastDeadPr = true;
   }
 
   // Push the branch (same flow as quickCreatePr). When re-arming past a merged
   // PR the surviving remote branch has diverged, so force-with-lease instead.
   try {
-    if (reArmBase !== undefined) {
+    if (reArmedPastDeadPr) {
       await git.forcePush("origin", head);
     } else {
       await git.push("origin", head);

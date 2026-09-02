@@ -125,12 +125,16 @@ The shim:
     stay on the remote, leave your branch, and every later auto-push is rejected
     as non-fast-forward. See "Chaining several PRs from one session" in
     /shipit-docs/sessions.md.
-  - The "has the branch progressed?" check is local-git-only and compares against
-    `origin/<base>`. It needs BOTH the branch to **contain the current base tip**
-    and a non-empty diff on top, so two shapes look un-moved: a branch still at
-    the merged tip, and a branch with real new work whose base has since advanced
+  - The "has the branch progressed?" check compares your branch against
+    `origin/<base>`, which ShipIt refreshes first — a stale remote-tracking ref
+    inverts the answer, and would open a duplicate PR of work that already
+    shipped. It needs BOTH the branch to **contain the current base tip** and a
+    non-empty diff on top, so two shapes look un-moved: a branch still at the
+    merged tip, and a branch with real new work whose base has since advanced
     (other sessions merging while you worked). In both, `gh pr create` won't open
-    the new PR and the session won't return to the active (gray) state.
+    the new PR and the session won't return to the active (gray) state. If the
+    refresh itself fails, ShipIt opens nothing and says so rather than deciding
+    off a ref it cannot trust — run `git fetch origin` to see the real error.
 - Targets the repo of the **current working directory's clone**. In a normal
   repo-bound session that is always the session repo at `/workspace`, so you
   don't need to think about it. In a **Sandbox session** (no bound repo — you

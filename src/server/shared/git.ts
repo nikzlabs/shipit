@@ -825,26 +825,30 @@ export class GitManager {
    *
    * Returns true iff BOTH hold for `origin/<baseBranch>`:
    *   1. `merge-base(origin/<base>, HEAD) === rev-parse(origin/<base>)` — the
-   *      branch has been rebased onto the *current* base tip (so the
-   *      already-merged content is gone from the two-dot diff: a squash merge's
-   *      commits replay as empty against the squash commit now in the base; a
-   *      regular merge's commits are already there).
+   *      branch CONTAINS the current base tip (so the already-merged content is
+   *      gone from the two-dot diff: a squash merge's commits replay as empty
+   *      against the squash commit now in the base; a regular merge's commits
+   *      are already there). What the clause asks for is ancestry, not a rebase
+   *      — an ordinary `git merge origin/<base>` satisfies it too, and is the
+   *      move ShipIt documents, because a rebase here rewrites published history.
    *   2. The two-dot `git diff origin/<base>..HEAD` is non-empty — genuinely new
-   *      work sits on top.
+   *      work sits on top. Note this is a TREE diff: a branch holding only empty
+   *      or net-zero commits reads as "no new work".
    *
-   * Pre-rebase (merge-base ≠ base tip) we stay conservative and return false:
-   * there is no reliable content diff against a moved base (three-dot breaks on
-   * squash, two-dot picks up other commits), so a merged session keeps showing
-   * "merged" until the user rebases. A missing `origin/<base>` also returns
-   * false (fail-safe — stay merged).
+   * While the base is not contained (merge-base ≠ base tip) we stay conservative
+   * and return false: there is no reliable content diff against a moved base
+   * (three-dot breaks on squash, two-dot picks up other commits), so a merged
+   * session keeps showing "merged" until the branch is brought onto the base. A
+   * missing `origin/<base>` also returns false (fail-safe — stay merged).
    *
    * **Precondition — the caller MUST have fetched.** This reads `origin/<base>`
    * from the local clone, and that ref only moves when this clone fetches. On a
    * STALE ref clause 1 is trivially satisfied (the merge-base of a branch and
    * its own fork point *is* that fork point), so the check reports "progressed"
-   * for a branch that was never rebased and carries only already-merged work.
+   * for a branch that was never moved and carries only already-merged work.
    * Every caller therefore freshens the ref first — see
-   * `services/pr-rearm.ts#freshenBaseRef`.
+   * `orchestrator/services/freshen-base-ref.ts`, and note that a bare
+   * `git fetch origin` is NOT enough on a clone with a narrowed refspec.
    */
   async advancedBeyondMergedBase(baseBranch: string): Promise<boolean> {
     return (await this.mergedBaseProgress(baseBranch)) === "progressed";

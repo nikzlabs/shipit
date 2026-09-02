@@ -28,6 +28,7 @@ import type { PrStatusSummary, SessionInfo, WsServerMessage } from "../../shared
 import type { GitManager } from "../../shared/git.js";
 import type { SessionManager } from "../sessions.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
+import { freshenBaseRef } from "./freshen-base-ref.js";
 
 export interface ReArmDeps {
   sessionManager: SessionManager;
@@ -100,41 +101,6 @@ function priorMergedPr(deps: ReArmDeps, sessionId: string): PrStatusSummary | un
 }
 
 /**
- * Freshen `origin/<base>` before a base-relative re-arm decision.
- *
- * Both detections below ask a question *about `origin/<base>` in the session's
- * own clone*, and that remote-tracking ref only moves when THIS clone fetches.
- * Nothing on the merge path does: the poller talks to the GitHub API, the
- * post-merge hook prunes volumes, and the post-turn flow only commits and
- * pushes. So when a merged session resumes, `origin/<base>` is typically still
- * the commit the branch forked from — and a stale base silently INVERTS
- * `advancedBeyondMergedBase`: `merge-base(origin/<base>, HEAD)` trivially equals
- * that fork point, so clause 1 ("rebased onto the *current* base") passes for a
- * branch that was never rebased, and the two-dot diff is just the branch's own
- * already-merged work.
- *
- * The observed symptom: the first committing turn on a merged session un-merged
- * it and left a gray "ready" card showing the stale full-branch diff plus a
- * "Create PR" button, while the branch still carried nothing but shipped
- * commits. Worse, `clearMerged` drops `mergedHeadSha`, so the docs/218 pre-turn
- * auto-advance could never fire for that session again — the false re-arm
- * *disabled* the very feature whose absence it looked like.
- *
- * Fail-safe: a fetch failure (offline, bad credentials, evicted workspace)
- * returns false and the caller stays merged rather than deciding off a ref it
- * knows may be stale.
- */
-async function freshenBaseRef(git: GitManager, sessionId: string): Promise<boolean> {
-  try {
-    await git.fetch("origin");
-    return true;
-  } catch (err) {
-    console.warn(`[pr-rearm] base-ref fetch failed for ${sessionId} (staying merged rather than deciding off a stale ref):`, err);
-    return false;
-  }
-}
-
-/**
  * Detect whether a MERGED session's branch has progressed past its base and, if
  * so, re-arm it. Returns true when the session was re-armed, false (no-op) for a
  * non-merged session, one without a known prior base, or a branch that hasn't
@@ -181,7 +147,7 @@ export async function detectAndReArmMergedSession(args: {
     if (await unmovedSinceMerge(session, git)) return false;
     // `advancedBeyondMergedBase` is base-relative, so the base ref must be
     // current or it false-positives (see `freshenBaseRef`).
-    if (!(await freshenBaseRef(git, sessionId))) return false;
+    if (!(await freshenBaseRef(git, baseBranch, sessionId))) return false;
     progressed = await git.advancedBeyondMergedBase(baseBranch);
   } catch {
     return false; // workspace evicted / git error — fail safe, stay merged
@@ -263,7 +229,7 @@ export async function detectAndReArmResetSession(args: {
     if (await unmovedSinceMerge(session, git)) return false;
     // `headIsAtBase` compares against `origin/<base>`, so a stale ref would read
     // a branch reset onto an OLD base tip as "at base" (see `freshenBaseRef`).
-    if (!args.skipFetch && !(await freshenBaseRef(git, sessionId))) return false;
+    if (!args.skipFetch && !(await freshenBaseRef(git, baseBranch, sessionId))) return false;
     atBase = await git.headIsAtBase(baseBranch);
   } catch {
     return false; // workspace evicted / git error — fail safe, stay merged

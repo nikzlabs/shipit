@@ -151,6 +151,33 @@ describe("GitManager.advancedBeyondMergedBase (docs/202 re-arm detection)", () =
       expect(await git.mergedBaseProgress("does-not-exist")).toBe("base-unknown");
     });
 
+    it("a STALE origin/main inverts the answer — the fetch is a precondition, not an optimisation", async () => {
+      // Why every caller must freshen `origin/<base>` first. Here the feature is
+      // squash-merged on the remote and the work clone has NOT fetched, so its
+      // `origin/main` is still the fork point. Clause 1 is then trivially
+      // satisfied (the merge-base of a branch and its own fork point IS that
+      // fork point) and the two-dot diff is the branch's own already-merged
+      // work — so the gate says "progressed" for a branch carrying nothing but
+      // shipped commits. A caller acting on that opens a duplicate PR.
+      run("git fetch origin", maintainerDir);
+      run("git checkout main", maintainerDir);
+      run("git merge --squash origin/feature", maintainerDir);
+      run("git commit -m 'Squash-merge feature'", maintainerDir);
+      run("git push origin main", maintainerDir);
+      // Deliberately NOT fetching into workDir — that is the whole point.
+      const git = new GitManager(workDir);
+
+      expect(await git.mergedBaseProgress("main")).toBe("progressed"); // the false positive
+      expect(await git.advancedBeyondMergedBase("main")).toBe(true);
+
+      run("git fetch origin", workDir);
+
+      // With the ref current, the same branch reads correctly: it holds only
+      // work that already shipped, and it is not on the new base tip.
+      expect(await git.mergedBaseProgress("main")).toBe("base-not-contained");
+      expect(await git.advancedBeyondMergedBase("main")).toBe(false);
+    });
+
     it("an ordinary `git merge origin/main` turns base-not-contained into progressed", async () => {
       // The documented escape, end to end: a squash-merged branch that gained a
       // new commit while the base advanced cannot open a PR. Merging the base in

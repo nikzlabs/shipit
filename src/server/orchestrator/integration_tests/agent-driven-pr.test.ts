@@ -83,6 +83,14 @@ beforeEach(async () => {
           if (prop === "push") return async () => {};
           if (prop === "forcePush") return async () => {};
           if (prop === "listRemoteBranches") return async () => ["main"];
+          // `agentCreatePr` freshens `origin/<base>` before the progress gate
+          // (see `services/freshen-base-ref.ts`). There is no real remote here
+          // and the tests below set `refs/remotes/origin/main` by hand, so a
+          // real fetch would fail and the service would correctly fail safe,
+          // masking what these tests are actually about. The precondition
+          // itself is covered in `services/github-pr-create-base-ref.test.ts`.
+          if (prop === "fetch") return async () => {};
+          if (prop === "fetchBranch") return async () => {};
           return (target as never)[prop as never];
         },
       });
@@ -311,7 +319,7 @@ describe("agent-driven PR creation (Phase 2)", () => {
     { timeout: 15_000 },
     async () => {
       await githubAuth.setToken("test-token");
-      const { sessionId } = await setupPrimedSession();
+      const { sessionId, sessionDir } = await setupPrimedSession();
 
       // No OPEN PR for the branch, but a prior PR for it already MERGED.
       // findBranchPr falls back to the any-state lookup and recognizes it.
@@ -326,6 +334,14 @@ describe("agent-driven PR creation (Phase 2)", () => {
         merged_at: "2026-01-01T00:00:00Z",
         additions: 0,
         deletions: 0,
+      });
+      // Pin `origin/main` at HEAD so the branch reads as "on the base with an
+      // empty diff" — the shape this test is named for. Without it the fixture
+      // has no `origin/main` at all and the block came from an unresolvable base
+      // ref instead, which is a different refusal for a different reason.
+      execSync("git update-ref refs/remotes/origin/main HEAD", {
+        cwd: sessionDir,
+        env: { ...process.env, HOME: tmpDir },
       });
 
       const res = await app.inject({
@@ -345,6 +361,7 @@ describe("agent-driven PR creation (Phase 2)", () => {
       // The discriminator says WHICH short-circuit fired, so the shim can tell
       // the agent its work is unshipped rather than "a PR already exists".
       expect(result.alreadyExistedReason).toBe("merged-not-progressed");
+      expect(result.notProgressedBecause).toBe("no-new-work");
       expect(githubAuth.createPullRequestCalls).toHaveLength(0);
     },
   );

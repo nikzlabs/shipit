@@ -197,7 +197,7 @@ describe("prepareRelease — content-free guard (docs/214)", () => {
  */
 describe("prepareRelease — only an OPEN release PR may be reported", () => {
   type DeadReason = "merged-not-progressed" | "closed-not-progressed";
-  type NotProgressed = "base-not-contained" | "no-new-work" | "base-unknown";
+  type NotProgressed = "base-not-contained" | "no-new-work" | "base-unknown" | "fetch-failed";
 
   const deadPr = (alreadyExistedReason?: DeadReason, notProgressedBecause?: NotProgressed) => ({
     number: 12,
@@ -292,6 +292,19 @@ describe("prepareRelease — only an OPEN release PR may be reported", () => {
     agentCreatePrMock.mockResolvedValue(deadPr("merged-not-progressed", "base-unknown"));
     const message = await refusalMessage();
     expect(message).toMatch(/"stable" is no longer on the remote/);
+    expect(message).not.toMatch(/--release-branch/);
+  });
+
+  it("fetch-failed blames the connection, not the release, and asks for a re-run", async () => {
+    // The one arm where nothing about the release is wrong: ShipIt could not
+    // reach the remote to check. Cutting a different version repeats the same
+    // failure, so this must NOT give the "release a different version" advice
+    // the other refusals give.
+    agentCreatePrMock.mockResolvedValue(deadPr("merged-not-progressed", "fetch-failed"));
+    const message = await refusalMessage();
+    expect(message).toMatch(/could not refresh "stable"/);
+    expect(message).toMatch(/re-run the same version/);
+    expect(message).not.toMatch(/Release a different version/);
     expect(message).not.toMatch(/--release-branch/);
   });
 
