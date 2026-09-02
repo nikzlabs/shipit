@@ -11,6 +11,7 @@ import { useUiStore } from "../../stores/ui-store.js";
 import { resolvePreviewHost, suggestWildcardHost } from "../../utils/preview-host.js";
 import { StartupSteps } from "../StartupSteps.js";
 import { useIframePool } from "../../hooks/useIframePool.js";
+import { useReleaseStoppedPreviews } from "../../hooks/usePreviewsStopped.js";
 import { usePreviewSlot, buildSubdomainUrl } from "../../hooks/usePreviewSlot.js";
 import { useDeviceFrame } from "./DeviceFrame.js";
 import { ViewportResizeHandles } from "./ViewportResizeHandles.js";
@@ -164,7 +165,13 @@ export function PreviewFrame({
   // Slots are keyed by "sessionId:port". Only the active slot is visible.
   // Background slots keep their iframes alive in the DOM. See `useIframePool`
   // for LRU eviction and `usePreviewSlot` for slot creation.
-  const { slots, slotOrder, iframeRefs, createdSlotsRef, promoteSlot, setSlot, dropSlot, getSlot } = useIframePool();
+  const { slots, slotOrder, iframeRefs, createdSlotsRef, promoteSlot, setSlot, dropSlot, dropSessionSlots, getSlot } = useIframePool();
+
+  // planning#496 — a session's previews stopped, so the iframes this pool holds
+  // for it are renderer processes kept for a document whose containers are gone.
+  // Release them; a later visit recreates the slot at its remembered path. The
+  // active session is never touched — see the hook.
+  useReleaseStoppedPreviews(sessionId, dropSessionSlots);
 
   const activeSlotKey = activePort ? `${sessionId ?? "_"}:${activePort}` : null;
   const activeSlot = activeSlotKey ? slots.get(activeSlotKey) ?? null : null;

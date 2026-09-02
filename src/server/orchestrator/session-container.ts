@@ -353,8 +353,18 @@ export interface SessionContainerManagerEvents {
   container_exited: [sessionId: string, exitCode: number, error?: string];
   /** Emitted when a container is successfully started. */
   container_started: [sessionId: string];
-  /** Emitted when a container is destroyed. */
-  container_destroyed: [sessionId: string];
+  /**
+   * Emitted when a container is destroyed.
+   *
+   * `previewsStopped` says whether this teardown also swept the session's
+   * Compose stack, i.e. whether its previews actually died. It is FALSE on the
+   * `preserveChildResources` path (the agent-restart / image-rotation flow and
+   * the idle enforcer's tier 1), which stops the agent container precisely so
+   * the user's preview keeps serving — a listener that treats every
+   * `container_destroyed` as "the preview is gone" is wrong for the commonest
+   * teardown there is (planning#496).
+   */
+  container_destroyed: [sessionId: string, previewsStopped: boolean];
   /**
    * Emitted when a Compose-managed (i.e. user) container belonging to a
    * session exits unexpectedly. The Docker event-stream listener used to

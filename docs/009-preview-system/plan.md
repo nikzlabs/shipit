@@ -307,10 +307,64 @@ document is thrown away on return regardless.
 
 Releasing on liveness would be strictly better than lowering the cap, because it
 evicts by *whether retention can still pay off* rather than by recency, and so
-never destroys a preview that could have been restored intact. It is not free:
-the client has no cross-session preview-liveness signal today — `services` and
-`status` in the preview store are the **active** session's only — so it needs
-new server→client plumbing. Tracked as planning#496 rather than folded in here.
+never destroys a preview that could have been restored intact. **Implemented —
+see "Releasing a stopped session's slots" below.**
+
+### Releasing a stopped session's slots
+
+planning#496. A retained slot earns its renderer process only while the preview
+it holds is still being served. Once a session's Compose stack is torn down, the
+document is talking to containers that no longer exist and `PreviewFrame`
+reloads the slot when the services return (planning#478) rather than showing the
+stale page — so the process is held for a document that is already forfeit. The
+server now says so and the browser drops the slot.
+
+**Which teardowns count is the whole difficulty, and the obvious answers are
+both wrong.** Two were checked at the source and rejected before the third:
+
+- **Runner disposal is not it.** `ContainerSessionRunner.dispose()` says in as
+  many words that it does *not* stop worker resources — "the container stays
+  alive and a new runner may reconnect to it. Stopping the preview would force a
+  full restart on reconnect." A runner going away tells you nothing about the
+  preview.
+- **`container_destroyed` alone is not it either.** It fires on both teardown
+  shapes, including `destroyAgentContainer()` (`preserveChildResources`), which
+  exists precisely so a worker refresh does not interrupt the preview stack.
+- **And "the container was reclaimed" is not it**, which is where planning#496's
+  original framing was wrong. The idle enforcer is *tiered*: **tier 1** stops the
+  agent container and keeps the previews running — it tells the user "The preview
+  is still running" — and only **tier 2** stops the surviving stacks. The common
+  idle reclamation deliberately keeps previews alive, so the prize is smaller
+  than that issue assumed, and a listener that fired on tier 1 would destroy
+  exactly the preview tier 1 exists to preserve.
+
+So the signal is the narrow one: `container_destroyed` gained a
+`previewsStopped` flag, read straight off the same `!preserveChildResources`
+condition that gates the Compose sweep so the two cannot drift, and the SSE
+event **`session_previews_stopped`** is broadcast from the two places where
+previews genuinely stop — a full container teardown, and tier 2's
+`services.stop`.
+
+On the client, `notifyPreviewsStopped` → `useReleaseStoppedPreviews` →
+`IframePool.dropSessionSlots`, which routes every removal through `dropSlot` so
+a slot leaving the pool still has one cleanup path. Two properties are
+load-bearing and both are pinned by tests:
+
+- **The active session is never touched.** Its preview dying is already handled
+  where the user can see it (the planning#478 waiting overlay), and pulling the
+  iframe out from under the user is the failure mode the pool exists to prevent.
+  This can only ever reclaim background slots.
+- **A miss is benign.** A viewer that misses the event (an SSE interruption)
+  keeps the slot until LRU evicts it, which is the behaviour that shipped
+  before. That is why this is transition-keyed with no reconciling snapshot,
+  unlike docs/285's runner incarnation, where missing the signal strands a
+  viewer permanently and the authoritative snapshot is the recovery path.
+
+**Not covered:** a preview stopped some other way — `shipit service stop`, a
+service that crashes — while the session is in the background. The pane already
+handles that for the *active* session, and extending the announcement to every
+service transition would put the pool back in the business of judging liveness
+per service rather than per teardown.
 
 ### Limits
 
@@ -330,7 +384,9 @@ new server→client plumbing. Tracked as planning#496 rather than folded in here
 ## Key files
 
 - `src/server/orchestrator/preview-proxy.ts` — `withOriginIsolation`, applied at every preview response path
-- `src/client/hooks/useIframePool.ts` — LRU slot retention; background iframes stay mounted
+- `src/client/hooks/useIframePool.ts` — LRU slot retention; background iframes stay mounted; `dropSessionSlots`
+- `src/client/hooks/usePreviewsStopped.ts` — the `session_previews_stopped` channel and the active-session guard
+- `src/server/orchestrator/bootstrap-managers.ts` — `announcePreviewsStopped`, wired to the two teardowns that stop previews
 - `src/server/port-scanner.ts` — `checkPort`, `scanPorts`, `DEFAULT_SCAN_PORTS`
 - `src/server/vite-manager.ts` — Vite lifecycle, wrapper config with error plugin
 - `src/server/vite-error-plugin.ts` — Error capture script injection

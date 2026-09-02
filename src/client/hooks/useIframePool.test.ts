@@ -110,3 +110,64 @@ describe("useIframePool", () => {
     expect(result.current.iframeRefs.current.has("a:1")).toBe(false);
   });
 });
+
+describe("dropSessionSlots", () => {
+  it("drops every port of the named session and leaves other sessions alone", () => {
+    // planning#496 — a session's previews die together, so the whole session
+    // goes; a sibling session's slots are pointing at a stack that is still up.
+    const { result } = renderHook(() => useIframePool());
+    createSlot(result.current, "session-a:3000");
+    createSlot(result.current, "session-a:5173");
+    createSlot(result.current, "session-b:3000");
+
+    let dropped: string[] = [];
+    act(() => {
+      dropped = result.current.dropSessionSlots("session-a");
+    });
+
+    expect(dropped.sort()).toEqual(["session-a:3000", "session-a:5173"]);
+    expect([...result.current.slots.keys()]).toEqual(["session-b:3000"]);
+    expect(result.current.slotOrder).toEqual(["session-b:3000"]);
+  });
+
+  it("cleans up everything dropSlot cleans up, so a revisit rebuilds the iframe", () => {
+    // Routed through `dropSlot` rather than reimplementing removal: the created
+    // marker has to go (or `usePreviewSlot` promotes a slot that isn't there)
+    // and the generation has to bump (or the rebuilt slot reuses its React key
+    // and the iframe is never actually recreated — planning#394).
+    const { result } = renderHook(() => useIframePool());
+    createSlot(result.current, "session-a:3000");
+
+    act(() => { result.current.dropSessionSlots("session-a"); });
+
+    expect(result.current.createdSlotsRef.current.has("session-a:3000")).toBe(false);
+    expect(result.current.iframeRefs.current.has("session-a:3000")).toBe(false);
+
+    createSlot(result.current, "session-a:3000");
+    expect(result.current.slots.get("session-a:3000")?.generation).toBe(1);
+  });
+
+  it("does not match a session whose id merely starts the same", () => {
+    // Keys are `${sessionId}:${port}`, so the separator has to be part of the
+    // match — a bare `startsWith(sessionId)` would take "session-ab" down with
+    // "session-a".
+    const { result } = renderHook(() => useIframePool());
+    createSlot(result.current, "session-a:3000");
+    createSlot(result.current, "session-ab:3000");
+
+    act(() => { result.current.dropSessionSlots("session-a"); });
+
+    expect([...result.current.slots.keys()]).toEqual(["session-ab:3000"]);
+  });
+
+  it("is a no-op for a session the pool holds nothing for", () => {
+    const { result } = renderHook(() => useIframePool());
+    createSlot(result.current, "session-a:3000");
+
+    let dropped: string[] = [];
+    act(() => { dropped = result.current.dropSessionSlots("session-zzz"); });
+
+    expect(dropped).toEqual([]);
+    expect([...result.current.slots.keys()]).toEqual(["session-a:3000"]);
+  });
+});

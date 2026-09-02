@@ -1886,7 +1886,10 @@ export async function destroyContainer(
 
   sc.status = "stopped";
   deps.containers.delete(sessionId);
-  deps.emitter.emit("container_destroyed", sessionId);
+  // The second argument is whether the Compose stack went with it — the same
+  // condition the sweep above is gated on, read straight from it rather than
+  // re-derived, so the two can't drift.
+  deps.emitter.emit("container_destroyed", sessionId, !opts.preserveChildResources);
 }
 
 // ---------------------------------------------------------------------------

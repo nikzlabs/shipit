@@ -268,6 +268,39 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   /** Sessions where compose is not configured in shipit.yaml. */
   const composeNotConfigured = new Set<string>();
 
+  /**
+   * planning#496 — tell every browser that this session's previews are gone.
+   *
+   * A viewer keeps one iframe per `(session, port)` mounted so returning to a
+   * session is instant (`useIframePool`), and since planning#492 each of those
+   * costs a renderer process. Once a session's Compose stack is torn down that
+   * retention pays nothing back: the document is served by containers that no
+   * longer exist, and `PreviewFrame` reloads the slot when the services return
+   * (planning#478) rather than showing the stale page. So the browser is told,
+   * and drops the slot.
+   *
+   * Deliberately NOT emitted for every teardown. The idle enforcer's tier 1 and
+   * the agent-restart path stop the agent container while keeping the Compose
+   * stack serving — for those the retained iframe is pointing at a *live*
+   * preview, and dropping it would destroy exactly what the pool exists to
+   * keep. Both call sites below are the ones where previews genuinely stop:
+   * tier 2's stack stop, and a full container teardown.
+   *
+   * Fire-and-forget. A viewer that misses it (SSE interruption) simply keeps
+   * the slot until LRU evicts it — today's behaviour — so this is an
+   * optimization with a benign miss, not a correctness signal needing a
+   * snapshot to converge on.
+   */
+  const announcePreviewsStopped = (sessionId: string): void => {
+    sseBroadcast("session_previews_stopped", { sessionId });
+  };
+
+  // Absent in local/dogfood mode (`RUNTIME_MODE=local`), which has no containers
+  // to tear down and so nothing to announce.
+  containerManager?.on("container_destroyed", (sessionId, previewsStopped) => {
+    if (previewsStopped) announcePreviewsStopped(sessionId);
+  });
+
   // ---- Latest Docker memory stats (memory budget cache) ----
   // The periodic stats poller below writes here on every successful read,
   // having stamped the resolved budget onto the snapshot. The idle enforcer
@@ -301,6 +334,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
           if (!mgr) return;
           serviceManagers.delete(sessionId);
           trackComposeStop(composeStopPromises, sessionId, mgr);
+          announcePreviewsStopped(sessionId);
         },
       },
       sseBroadcast,
