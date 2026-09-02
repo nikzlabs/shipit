@@ -25,6 +25,7 @@ Revision 2 (2026-09-02), after two review rounds.
 - [ ] `quickCreatePr()` gains an `alreadyExisted` discriminator
 - [ ] Written by `POST /api/sessions/:id/pr`, `/pr/quick`, and `pr-lifecycle.ts`
 - [ ] Never written for a pre-existing pull request
+- [ ] Written only when the created PR's canonical repo matches the session's
 - [ ] Cleared by the docs/202 re-arm, by `pr-rearm.ts`, and by unarchive's clearing
 - [ ] Never backfilled from `pr_status`
 
@@ -38,13 +39,18 @@ Revision 2 (2026-09-02), after two review rounds.
 - [ ] `cancelAutoPush(sessionId)` only when the push landed
 - [ ] One live read per attempt: a merge-only GraphQL query by PR number
       (`state`, `isDraft`, `mergeable`, `reviewDecision`, `headRefOid`, rollup + its `oid`)
-- [ ] Zero-check grace comes from `CiGraceTracker.shouldForcePending()`
+- [ ] Zero-check grace via a new `PrStatusPoller.awaitCiGraceDecision()` facade
+      that awaits `ensureWorkflowsLoaded()` (the tracker is private and needs it)
+- [ ] Query asks only for what the gate reads; a null rollup means zero checks
 - [ ] Gate table implemented in full: failed read, rollup-SHA mismatch,
       local-HEAD mismatch, draft/closed, failing, pending, both zero-check cases
 - [ ] The live read replaces `getCheckStatus()` on the **sandbox** path too
 - [ ] Merge sends the expected `sha`
 - [ ] `--auto` arms GitHub-**native** auto-merge only; unavailable ⇒ refuse with
       GitHub's reason, never a managed fallback
+- [ ] `enableAutoMerge()` sends `expectedHeadOid`
+- [ ] An agent arming is recorded, and revoking the grant calls `disableAutoMerge()`
+      for that repository's armed sessions (req 1); a user's own arming is untouched
 
 ## After the merge
 

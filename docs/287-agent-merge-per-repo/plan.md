@@ -9,10 +9,11 @@ description: Widen the docs/224 merge gate from a per-sandbox grant to a per-rep
 Implements [requirements.md](./requirements.md). Extends
 `docs/224-sandbox-merge-capability` (the shim, the route, the guardrails).
 
-> **Revision 2, 2026-09-02.** Two independent review rounds; every finding
-> verified at the source before it was accepted. Round 1 (7 findings) rebuilt the
-> ownership check. Round 2 (7 findings, 3 blockers) replaced the status gate and
-> caught a `cwd` rule that would have broken every merge. See
+> **Revision 4, 2026-09-02.** Four independent review rounds; every finding
+> verified at the source before it was accepted. Round 1 rebuilt the ownership
+> check, round 2 replaced the status gate and caught a `cwd` rule that would have
+> broken every merge, round 3 replaced the query and the grace window, round 4
+> bound provenance to the repository and made an arming revocable. See
 > [What the reviews changed](#what-the-reviews-changed).
 
 ## What changes, in one line
@@ -100,16 +101,25 @@ which requirement 5 excludes by name.
 | `POST /api/sessions/:id/pr/quick` opens a PR | write the number |
 | `pr-lifecycle.ts` → `quickCreatePr()` opens a PR | write the number |
 | any of those returns a **pre-existing** PR | leave unchanged — it may be a person's |
-
-`quickCreatePr()` cannot tell those last two apart today: it returns the **same
-shape** for a pull request it found (`services/github.ts:656`) and one it opened
-(`:721`). It gains an `alreadyExisted` discriminator, as `agentCreatePr()`
-already has, and both of its callers pass the result through. Without that the
-implementation must either record nothing or claim a person's pull request.
 | docs/202 re-arm clears `pr_status` | clear it too |
 | explicit reset (`pr-rearm.ts`) | clear it |
 | unarchive's "old PR no longer applies" clearing | clear it |
 | sessions predating the column | `NULL` — refuse, and **never backfill from `pr_status`**, which also holds person-opened PRs |
+
+`quickCreatePr()` cannot tell the creation cases apart today: it returns the **same
+shape** for a pull request it found (`services/github.ts:656`) and one it opened
+(`:721`). It gains an `alreadyExisted` discriminator, as `agentCreatePr()`
+already has, and both of its callers pass the result through. Without that the
+implementation must either record nothing or claim a person's pull request.
+
+**And a write is repository-bound, not just creation-bound.** `agentCreatePr()`
+accepts `--repo` and passes the retargeted remote through
+(`api-routes-github.ts:320`), so an agent could open a pull request in
+repository B and have its number recorded as the ownership number for repository
+A — a number that then matches a *different* pull request at merge time. So the
+write happens only when
+`canonicalRepoKey(created.repoUrl) === canonicalRepoKey(session.remoteUrl)`.
+`alreadyExisted: false` alone is not provenance.
 
 ## 3. The merge sequence (req 7, 8, 14, 15, 16, 17)
 
@@ -162,15 +172,21 @@ The merge query asks for exactly what the gate needs, by number:
 
 ```
 pullRequest(number: $n) {
-  number state isDraft mergeable reviewDecision headRefOid
-  commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts … } } } }
+  state isDraft reviewDecision headRefOid
+  commits(last: 1) { nodes { commit { oid statusCheckRollup { state } } } }
 }
 ```
 
-One round trip, one PR, both SHAs — `headRefOid` (the ref tip) and the rollup's
-`commit.oid` (what the checks describe). Nothing is cached, nothing is
+One round trip, one pull request, both SHAs — `headRefOid` (the ref tip) and the
+rollup's `commit.oid` (what the checks describe). Nothing is cached, nothing is
 branch-keyed, and `PrStatusSummary`, `prStatusEqual()` and the poller are all
 untouched.
+
+The selection is deliberately smaller than the first draft's: `number` is what
+the caller supplied, `mergeable` is never consulted by the gate, and the rollup's
+`contexts` list is bounded — counting a bounded list is how a fail-open gate gets
+built. The gate reads `statusCheckRollup.state`, and treats a **null rollup** as
+zero checks.
 
 The gate then reads:
 
@@ -182,8 +198,8 @@ The gate then reads:
 | `state !== "OPEN"`, or `isDraft` | refuse (req 7) |
 | a required check failing | refuse (req 7) |
 | checks pending | refuse, naming `--auto` (req 17) |
-| **zero** checks, and `CiGraceTracker.shouldForcePending()` | refuse: "waiting for CI checks to start" |
-| **zero** checks past that grace | proceed — the repository has no CI |
+| **null rollup** (zero checks), inside the CI grace | refuse: "waiting for CI checks to start" |
+| **null rollup** past that grace | proceed — the repository has no CI |
 | `reviewDecision` review_required / changes_requested | refuse (req 8) |
 
 Two rows deserve their reason.
@@ -193,13 +209,28 @@ Two rows deserve their reason.
 `agentMergePullRequest()` treats `"none"` as permission to merge — a fail-open
 defect for **sandbox** merges today. Requirement 7 says the guardrails apply to
 every agent merge, so this read replaces `getCheckStatus()` on both paths.
-The grace is `CiGraceTracker.shouldForcePending()`, which already exists and
-already answers exactly this question: it is keyed by session **and head SHA**,
-starts when a head is first seen with no checks, resets on a new push, and also
-consults the repo's parsed workflows and whether any check was ever observed
-there. An earlier revision proposed deriving the window from the head commit's
-`committedDate`; round 3 rejected it correctly — commit time is not
-check-registration time, and an old commit reused as a new head would bypass it.
+The grace is the one ShipIt already has, `CiGraceTracker` — keyed by session
+**and head SHA**, started when a head is first seen with no checks, reset on a
+new push, and informed by the repo's parsed workflows and by whether any check
+was ever observed there. An earlier revision derived the window from the head
+commit's `committedDate`; round 3 rejected that correctly, since commit time is
+not check-registration time.
+
+**It is reached through one new method on `PrStatusPoller`, not called
+directly.** Round 4 found why that matters: the tracker is `private` to the
+poller, and `shouldForcePending()` is synchronous over state the poller loads
+first — the poll loop awaits `ensureWorkflowsLoaded()` before deciding, and a
+tracker constructed fresh for the merge route would have none of the sticky
+"this repo has CI" signal. So the poller exposes
+`awaitCiGraceDecision({ sessionId, repoUrl, repoKey, headSha, headBranch, baseBranch })`,
+which does the preload and then the existing call. One grace implementation, one
+caller-visible answer.
+
+For a **sandbox** session targeting several repositories the tracker's key
+(session + head SHA) can be overwritten between merges of different pull
+requests. That direction is conservative — a replaced entry starts a fresh grace,
+so the gate refuses for longer, never sooner — and a SHA collision across two
+pull requests is not a real case.
 
 **The local-HEAD row** is the half `guardMergeSync()` cannot cover. That guard
 compares local HEAD with the remote-*tracking* ref and, by design, **proceeds
@@ -254,8 +285,27 @@ Native arming has neither problem: it is bound to the pull request by number,
 server-side at GitHub, and GitHub merges it only when its own required checks
 pass. If native arming is unavailable — no branch protection, or "Allow
 auto-merge" off (docs/077) — the command **refuses with GitHub's reason** rather
-than falling back to managed. The agent then waits for green and calls again,
-which is what requirement 17 already tells it to do.
+than falling back to managed.
+
+Two additions make it safe, both from round 4:
+
+- **`expectedHeadOid`.** GitHub's `enablePullRequestAutoMerge` mutation accepts
+  it and `enableAutoMerge()` does not send it today. Passing the SHA from the
+  live read means an arming cannot outlive the commit it was granted for.
+- **Arming is revocable, because the permission is (req 1).** GitHub, not
+  ShipIt, performs the later merge, so turning the grant off would otherwise
+  leave an armed merge to land anyway — which is not what "withdraw the
+  permission" means to the person who clicked it. So an agent arming is recorded
+  on the session, and turning `allow_agent_merge` off for a repository calls the
+  existing `disableAutoMerge()` for each of that repository's sessions that
+  carries one. A *user's* own auto-merge, armed from the PR card, is untouched.
+
+**Why `--auto` is not simply deleted.** Round 4 proposed removing it, and
+requirement 17's words do not demand it. But nothing wakes a session when CI turns
+green, and an agent must not poll for a merge. Without arming, an agent whose
+checks take minutes cannot land its own work in the turn that produced it at all
+— which is requirement 4's whole purpose. The arming stays, with the two
+safeguards above.
 
 ## 4. After the merge (req 9, 10, 11)
 
@@ -307,6 +357,10 @@ repo-scoped agent permission exists.
 | 3 | `quickCreatePr()` cannot tell "found" from "opened" | give it `alreadyExisted`; add the `/pr/quick` writer |
 | 3 | `guardMergeSync()` proceeds when it cannot tell | compare the live PR head with local HEAD, fail closed |
 | 3 | managed `--auto` is session-bound and SHA-less | native arming only; refuse with GitHub's reason |
+| 4 | `--repo` could record a foreign PR as the session's | provenance write requires a canonical-repo match |
+| 4 | the grace tracker is private and needs a preload | one `awaitCiGraceDecision()` facade on the poller |
+| 4 | a native arming outlived the permission | `expectedHeadOid`, recorded arming, cancelled on revocation |
+| 4 | the merge query asked for more than the gate uses | `number`, `mergeable` and `contexts` dropped |
 
 ## Key files
 
@@ -317,9 +371,9 @@ repo-scoped agent permission exists.
 | `src/server/orchestrator/api-routes-session-repos.ts` | grant on the existing `PATCH /api/repos/:url` |
 | `src/server/orchestrator/pr-target.ts` | `mergeDisposition()`; `--repo` refused, `cwd` ignored |
 | `src/server/orchestrator/services/github.ts` | flush outcome; the merge-gate query + gate; both merge paths; `quickCreatePr()` gains `alreadyExisted` |
-| `src/server/orchestrator/ci-grace-tracker.ts` | reached from the merge gate (no change to its logic) |
+| `src/server/orchestrator/pr-status-poller.ts` | `awaitCiGraceDecision()` facade over the private `CiGraceTracker` |
+| `src/server/orchestrator/github-auth-prs.ts` | expected `sha` on the REST merge; `expectedHeadOid` on `enableAutoMerge()` |
 | `src/server/orchestrator/services/branch-sync.ts` | `pushed` on the hold verdict |
-| `src/server/orchestrator/github-auth-prs.ts` | expected `sha` on the REST merge |
 | `src/server/orchestrator/services/pr-lifecycle.ts`, `pr-rearm.ts`, `sessions.ts` | `prNumber` writers and clearers |
 | `src/server/orchestrator/api-routes-github.ts` | gate, ownership, settlement, notice |
 | `src/client/components/ProjectSettings.tsx` | Agent permissions section + toggle |
