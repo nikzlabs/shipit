@@ -285,6 +285,43 @@ function jsonFields(
   return fields;
 }
 
+/**
+ * The stderr note printed when `gh pr create` returned an EXISTING PR instead
+ * of opening one. Two very different short-circuits land here and the agent
+ * has to tell them apart:
+ *
+ * - `open` — the expected dedup. Nothing is wrong; nothing to do.
+ * - `merged-not-progressed` / `closed-not-progressed` — the branch's last PR is
+ *   dead and the branch does not contain the current base tip, so the new
+ *   commits on it have nowhere to go. The old wording ("Existing PR for this
+ *   branch") read as the first case, and an agent that trusted it believed its
+ *   work had shipped when the URL it got back was a PR merged the day before.
+ *
+ * The escape from the dead-PR case is an ordinary merge of the base into the
+ * branch: it makes the base an ancestor of HEAD (which is all the containment
+ * check wants), rewrites no published history, needs no force-push, and
+ * discards nothing.
+ */
+function existingPrNotice(body: Record<string, unknown>): string {
+  const reason = body.alreadyExistedReason;
+  if (reason !== "merged-not-progressed" && reason !== "closed-not-progressed") {
+    return "Existing open PR for this branch — printing its URL.\n";
+  }
+  const state = reason === "merged-not-progressed" ? "MERGED" : "CLOSED";
+  const num = typeof body.number === "number" ? `#${body.number}` : "for this branch";
+  const base = typeof body.baseBranch === "string" && body.baseBranch ? body.baseBranch : "main";
+  return (
+    `No new PR was opened. The last PR ${num} on this branch is ${state}, and a ${state.toLowerCase()} PR cannot take new commits.\n` +
+    `ShipIt did not open a replacement because this branch does not contain the current tip of \`${base}\`, ` +
+    `so any new commits on it are NOT shipped and have nowhere to go yet.\n` +
+    `To ship them, merge the base into the branch and re-run \`gh pr create\`:\n` +
+    `    git fetch origin && git merge origin/${base}\n` +
+    `That rewrites no published history, needs no force-push and discards nothing. ` +
+    `Do NOT rebase or \`git reset --hard\` onto the base.\n` +
+    `The ${state.toLowerCase()} PR's URL is printed below for reference.\n`
+  );
+}
+
 async function handlePrCreate(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: {
@@ -328,7 +365,7 @@ async function handlePrCreate(args: string[], deps: RunDeps): Promise<void> {
     if (res.body.alreadyExisted) {
       // Match real gh behavior: we still print the URL (the user gets exactly
       // what they expect), but note the dedup on stderr for logs.
-      deps.io.stderr(`Existing PR for this branch — printing its URL.\n`);
+      deps.io.stderr(existingPrNotice(res.body));
     }
     // Labeling is best-effort: a bad label name never blocks the PR. When the
     // orchestrator couldn't apply a label it returns a non-fatal warning here.

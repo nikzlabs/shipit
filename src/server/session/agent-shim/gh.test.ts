@@ -342,7 +342,83 @@ describe("gh pr create", () => {
     expect(out.stderr).toContain("use either -b/--body or --body-file");
   });
 
-  it("notes 'existing PR' on stderr when alreadyExisted is true", async () => {
+  it("notes an existing OPEN PR on stderr when alreadyExisted is true", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "create", "-t", "T", "-b", "B"],
+      {
+        "POST /agent-ops/pr/create": {
+          status: 200,
+          body: {
+            url: "https://github.com/x/y/pull/2",
+            alreadyExisted: true,
+            alreadyExistedReason: "open",
+          },
+        },
+      },
+    );
+    expect(out.stderr).toContain("Existing open PR");
+    // The benign dedup must not shout about unshipped work.
+    expect(out.stderr).not.toContain("NOT shipped");
+    expect(out.stdout.trim()).toBe("https://github.com/x/y/pull/2");
+    expect(out.exitCode).toBe(0);
+  });
+
+  it("says the PR is MERGED and names the merge escape when it short-circuits on a dead PR", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "create", "-t", "T", "-b", "B"],
+      {
+        "POST /agent-ops/pr/create": {
+          status: 200,
+          body: {
+            url: "https://github.com/x/y/pull/177",
+            number: 177,
+            baseBranch: "main",
+            alreadyExisted: true,
+            alreadyExistedReason: "merged-not-progressed",
+          },
+        },
+      },
+    );
+    expect(out.stderr).toContain("MERGED");
+    expect(out.stderr).toContain("#177");
+    expect(out.stderr).toContain("NOT shipped");
+    // The documented escape, with the real base branch substituted in.
+    expect(out.stderr).toContain("git merge origin/main");
+    // …and the warnings it must not weaken.
+    expect(out.stderr).toContain("Do NOT rebase");
+    // Still gh-compatible: URL on stdout, exit 0.
+    expect(out.stdout.trim()).toBe("https://github.com/x/y/pull/177");
+    expect(out.exitCode).toBe(0);
+  });
+
+  it("says CLOSED when the branch's dead PR was abandoned rather than merged", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "create", "-t", "T", "-b", "B"],
+      {
+        "POST /agent-ops/pr/create": {
+          status: 200,
+          body: {
+            url: "https://github.com/x/y/pull/5",
+            number: 5,
+            baseBranch: "develop",
+            alreadyExisted: true,
+            alreadyExistedReason: "closed-not-progressed",
+          },
+        },
+      },
+    );
+    expect(out.stderr).toContain("CLOSED");
+    expect(out.stderr).not.toContain("MERGED");
+    expect(out.stderr).toContain("git merge origin/develop");
+    expect(out.exitCode).toBe(0);
+  });
+
+  it("falls back to the open-PR wording when the orchestrator sends no reason", async () => {
+    // An older orchestrator (or a replayed response) has no discriminator. The
+    // pre-existing behavior — print the URL, note the dedup — must survive.
     const { run } = makeRunner();
     const out = await run(
       ["pr", "create", "-t", "T", "-b", "B"],
@@ -353,7 +429,7 @@ describe("gh pr create", () => {
         },
       },
     );
-    expect(out.stderr).toContain("Existing PR");
+    expect(out.stderr).toContain("Existing open PR");
     expect(out.stdout.trim()).toBe("https://github.com/x/y/pull/2");
     expect(out.exitCode).toBe(0);
   });

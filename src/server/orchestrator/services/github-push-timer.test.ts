@@ -124,6 +124,9 @@ describe("agentCreatePr — debounce cancellation is coupled to the synchronous 
     });
 
     expect(res.alreadyExisted).toBe(true);
+    // The open-PR short-circuit is the benign one — the shim must be able to
+    // tell it apart from a dead PR blocking unshipped work.
+    expect(res.alreadyExistedReason).toBe("open");
     expect(git.push).toHaveBeenCalledTimes(1);
     expect(cancelAutoPush).toHaveBeenCalledExactlyOnceWith("s1");
   });

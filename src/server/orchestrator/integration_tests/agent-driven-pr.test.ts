@@ -342,6 +342,66 @@ describe("agent-driven PR creation (Phase 2)", () => {
       // Returns the already-merged PR's metadata — no new PR.
       expect(result.alreadyExisted).toBe(true);
       expect(result.number).toBe(9);
+      // The discriminator says WHICH short-circuit fired, so the shim can tell
+      // the agent its work is unshipped rather than "a PR already exists".
+      expect(result.alreadyExistedReason).toBe("merged-not-progressed");
+      expect(githubAuth.createPullRequestCalls).toHaveLength(0);
+    },
+  );
+
+  it(
+    "reports merged-not-progressed when the branch has new work but the base moved on",
+    { timeout: 15_000 },
+    async () => {
+      // The incident shape: the PR merged, ShipIt re-armed the session, the
+      // agent made a genuinely new commit — and meanwhile OTHER sessions merged
+      // into `main`. Clause 2 of `advancedBeyondMergedBase` (non-empty diff)
+      // holds; clause 1 (branch contains the current base tip) does not, so the
+      // merged PR's URL is reprinted for work that is NOT shipped. This is the
+      // case the old "Existing PR for this branch" wording hid.
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+
+      githubAuth.setPrData(null);
+      githubAuth.setFindPrAnyStateResult({
+        url: "https://github.com/test-user/test-repo/pull/9",
+        number: 9,
+        base: "main",
+        title: "Earlier (merged) PR",
+        body: "",
+        state: "closed",
+        merged_at: "2026-01-01T00:00:00Z",
+        additions: 0,
+        deletions: 0,
+      });
+
+      const gitEnv = { ...process.env, HOME: tmpDir };
+      const forkPoint = execSync("git rev-parse HEAD", { cwd: sessionDir, env: gitEnv })
+        .toString().trim();
+      // New, unshipped work on the branch.
+      fs.writeFileSync(path.join(sessionDir, "followup.ts"), "export const y = 2;\n");
+      execSync("git add -A && git commit -m 'follow-up work'", { cwd: sessionDir, env: gitEnv });
+      // Another session's merge advances origin/main past the fork point, so
+      // merge-base(origin/main, HEAD) !== origin/main tip.
+      const tree = execSync(`git rev-parse ${forkPoint}^{tree}`, { cwd: sessionDir, env: gitEnv })
+        .toString().trim();
+      const movedBase = execSync(
+        `git commit-tree ${tree} -p ${forkPoint} -m "another session's merge"`,
+        { cwd: sessionDir, env: gitEnv },
+      ).toString().trim();
+      execSync(`git update-ref refs/remotes/origin/main ${movedBase}`, { cwd: sessionDir, env: gitEnv });
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/agent-create`,
+        payload: { title: "Follow-up slice", body: "## Summary\nUnshipped work." },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const result = res.json();
+      expect(result.alreadyExisted).toBe(true);
+      expect(result.number).toBe(9);
+      expect(result.alreadyExistedReason).toBe("merged-not-progressed");
       expect(githubAuth.createPullRequestCalls).toHaveLength(0);
     },
   );

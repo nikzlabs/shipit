@@ -99,13 +99,26 @@ The shim:
   it. Once the branch sits on the current base and carries new commits, `gh pr
   create` opens a **new** PR for that work (a merged PR can't be reopened). If the
   branch has no new work beyond what merged, it still prints the old PR's URL.
+  - **Read the shim's stderr, not just the URL.** A reprinted URL has two very
+    different meanings and the note says which: "Existing **open** PR for this
+    branch" is the ordinary dedup and nothing is wrong, while a note saying the
+    PR is **merged** or **closed** means no new PR was opened and your new
+    commits are NOT shipped.
   - To continue a session after its PR merged, **check where the branch is before
     moving it** — ShipIt usually moved it already, resetting it onto the fresh
     base and force-pushing the remote to match at the start of the merged
     session's next turn. `git fetch origin && git status -sb` tells you. If the
     branch is already on the base, just commit and run `gh pr create`. If it is
-    still at the merged tip, run `shipit branch reset-to-base` — never a
-    hand-rolled rebase or `git reset --hard`.
+    still at the merged tip with nothing new on it, run `shipit branch
+    reset-to-base` — never a hand-rolled rebase or `git reset --hard`.
+  - **If the branch carries commits made after the merge, merge the base in:**
+    `git fetch origin && git merge origin/<base>`, then `gh pr create`. That is
+    the escape from the shape above — it makes the base an ancestor of your
+    branch, which is exactly what the progress check requires, and it rewrites no
+    published history, needs no force-push and discards nothing. `shipit branch
+    reset-to-base` is the wrong tool here: it **refuses** this shape on purpose
+    (clause `head-moved`) rather than discarding anything, and the `--force
+    --reason "<why>"` override is the user's to authorise, not yours.
   - **Do not rebase onto the base to catch up.** After a squash merge it can hit
     add/add conflicts rather than dropping the shipped commits, and if any commit
     on the branch was already pushed it rewrites published history: the commits
@@ -113,9 +126,11 @@ The shim:
     as non-fast-forward. See "Chaining several PRs from one session" in
     /shipit-docs/sessions.md.
   - The "has the branch progressed?" check is local-git-only and compares against
-    `origin/<base>`, so a branch still at the merged tip looks un-moved: `gh pr
-    create` won't open the new PR and the session won't return to the active
-    (gray) state.
+    `origin/<base>`. It needs BOTH the branch to **contain the current base tip**
+    and a non-empty diff on top, so two shapes look un-moved: a branch still at
+    the merged tip, and a branch with real new work whose base has since advanced
+    (other sessions merging while you worked). In both, `gh pr create` won't open
+    the new PR and the session won't return to the active (gray) state.
 - Targets the repo of the **current working directory's clone**. In a normal
   repo-bound session that is always the session repo at `/workspace`, so you
   don't need to think about it. In a **Sandbox session** (no bound repo — you
