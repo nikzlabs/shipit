@@ -124,26 +124,75 @@ export class InstallController {
         return reply.code(400).send({ error: "commands array is required" });
       }
 
-      // Ask the marker gate first — before the `running` guard — so a finished
-      // pre-install that wrote the marker (warm-pool path) but hasn't yet
-      // flipped `_installRunning` still short-circuits cleanly.
-      const decision = await this.evaluateMarkerGate(commands);
-      if (decision.skip) {
-        // planning#2315 — the skip is honored, but say so when it is likely to
-        // have dropped output no dep dir covers. Advisory only: never blocks,
-        // never re-runs the install.
-        this.warnOnSkippedInstallOutput(commands);
-        return { skipped: true, reason: "marker" };
-      }
-      if (decision.contradicting.length > 0) {
+      // docs/248 — wait for the repo's Node pin to be resolved BEFORE anything
+      // else in this route. Two reasons, both load-bearing: the install itself
+      // must compile native addons against the Node the project targets, and
+      // `runtimeKey()` below reads the resolved version out of the environment
+      // — computing the stamp first would key the install to the image's Node
+      // and let a tree built under the old pin survive a pin change.
+      await whenNodeRuntimeReady();
+
+      // Check the stamped marker — skip only when it EXACTLY matches this
+      // session's install context (source commit + runtime fingerprint +
+      // install commands), per docs/183 Phase 3. Presence alone is no longer
+      // enough: a session over a shared overlay base inherits the base's marker
+      // from the lowerdir, so the stamp is what proves the base's deps still fit
+      // this checkout/runtime/command. A mismatch (non-default checkout,
+      // force-push, edited install command, incompatible runtime) or a legacy
+      // bare-timestamp marker is treated as a miss — the stale marker is removed
+      // and `agent.install` re-runs. Checked before the `running` guard so a
+      // finished pre-install that wrote the marker (warm-pool path) but hasn't
+      // yet flipped `_installRunning` still short-circuits cleanly.
+      const markerDir = this.stateDir;
+      const markerFile = path.join(markerDir, INSTALL_MARKER_FILE);
+      const stamp: InstallMarkerStamp = {
+        sourceCommit: await this.readSourceCommit(),
+        runtimeKey: runtimeKey(),
+        installCommands: commands,
+        // docs/197 — content key over the dependency input files. Lets a
+        // different commit whose dep files are byte-identical skip the install.
+        // `null` (codegen install / no `install-inputs` / no input files) falls
+        // back to commit-only matching.
+        depsHash: this.computeDepsHash(commands),
+      };
+      if (await this.installMarkerMatches(markerFile, stamp)) {
+        // docs/183 — a matching marker is only trustworthy if every declared dep
+        // dir actually holds content. The marker lives in the session state dir
+        // (docs/246, outside the clone); the deps live in the dep dir *inside*
+        // the clone (an overlay mount when OVERLAY_DEP_STORE is on,
+        // a plain dir in the clone otherwise), and the two can disagree:
+        //   • Flag newly ON: a container recreated with the flag enabled mounts an
+        //     EMPTY overlay over previously-installed deps — skipping would leave
+        //     the session dep-less AND let the publish hook capture the empty view
+        //     as the scope's shared base.
+        //   • Flag rolled OFF (the documented incident response, FINDINGS #3): a
+        //     session whose deps lived in the overlay gets its container recreated
+        //     with the flag off — no overlay mount, but the dep dir left behind in
+        //     the host clone is EMPTY. The marker still matches exactly, so the
+        //     old overlay-mount-only check skipped → dep-less session.
+        // Distrusting a matching marker over a present-but-EMPTY dep dir,
+        // regardless of mount type, closes both. An ABSENT dep dir is NOT a
+        // contradiction, so a legitimately dep-less repo (e.g. default
+        // node_modules on a non-Node repo) and the `agent.dep-dirs: []` opt-out
+        // keep the marker-skip — non-overlay/no-deps sessions stay unchanged.
+        // planning#480 — and neither is an empty dir npm hoisted away, which
+        // the overlay's mount point makes present-but-empty rather than absent.
+        // Reinstalling on every resume for a workspaces monorepo would defeat
+        // the marker-skip permanently, exactly as it would for an absent dir.
+        const { contradicting: contradicted } = classifyEmptyDepDirs(this.workspaceDir);
+        if (contradicted.length === 0) {
+          // planning#2315 — the skip is honored, but say so when it is likely to
+          // have dropped output no dep dir covers. Advisory only: never blocks,
+          // never re-runs the install.
+          this.warnOnSkippedInstallOutput(commands);
+          return { skipped: true, reason: "marker" };
+        }
         console.warn(
           `[install] marker matched but declared dep dir(s) are empty: ` +
-          `${decision.contradicting.map((c) => (c.overlay ? `${c.depDir} (overlay)` : c.depDir)).join(", ")} ` +
+          `${contradicted.map((c) => (c.overlay ? `${c.depDir} (overlay)` : c.depDir)).join(", ")} ` +
           `— treating as a miss and reinstalling`,
         );
       }
-      const markerDir = this.stateDir;
-      const { markerFile, stamp } = decision;
       // Stale / legacy / mismatched marker — whiteout it before reinstalling so
       // a partial reinstall can never leave an old stamp claiming success.
       await fsp.rm(markerFile, { force: true }).catch(() => {});
@@ -176,27 +225,6 @@ export class InstallController {
       running: this._installRunning,
       lastResult: this._lastInstallResult,
     }));
-
-    // planning#2503 — ask the marker gate what `POST /install` WOULD decide,
-    // without deciding it. Read-only: it neither removes a stale marker nor
-    // starts anything, so a caller may probe as often as it likes.
-    //
-    // It exists for the mid-session reinstall bracket
-    // (`ContainerSessionRunner.reinstallForDepChange`), which used to close the
-    // install gate — a `docker compose stop` costing ~11s of preview outage —
-    // before it could possibly know the install was a no-op. The answer has to
-    // come from HERE rather than from a second orchestrator-side hash
-    // comparison: docs/223 argues that a re-implementation has to get renames,
-    // `./` prefixes and a failed `git diff` right to avoid falling back into
-    // the silence it exists to remove.
-    app.post<{ Body: { commands: string[] } }>("/install/probe", async (request, reply) => {
-      const { commands } = request.body ?? {};
-      if (!Array.isArray(commands) || commands.length === 0) {
-        return reply.code(400).send({ error: "commands array is required" });
-      }
-      const { skip } = await this.evaluateMarkerGate(commands);
-      return { skipped: skip };
-    });
 
     // docs/183 — the merged-workspace HEAD commit. The overlay publish
     // path needs the source commit the install actually ran against to stamp the
@@ -505,79 +533,6 @@ export class InstallController {
   private writeMarker(markerDir: string, markerFile: string, stamp: InstallMarkerStamp): void {
     fs.mkdirSync(markerDir, { recursive: true });
     fs.writeFileSync(markerFile, serializeMarker(makeMarker(stamp, new Date().toISOString())));
-  }
-
-  /**
-   * The marker gate's decision for `commands` — the ONE implementation of
-   * "would this install be skipped", shared by `POST /install` (which acts on
-   * it) and `POST /install/probe` (which only reports it).
-   *
-   * Deliberately side-effect-free: it does not whiteout a stale marker, warn
-   * about dropped skip output, or start anything. Both of those belong to the
-   * caller that is actually installing, so a probe cannot change what the next
-   * `/install` decides.
-   */
-  private async evaluateMarkerGate(commands: string[]): Promise<{
-    skip: boolean;
-    markerFile: string;
-    stamp: InstallMarkerStamp;
-    contradicting: ReturnType<typeof classifyEmptyDepDirs>["contradicting"];
-  }> {
-    // docs/248 — wait for the repo's Node pin to be resolved BEFORE anything
-    // else. Two reasons, both load-bearing: the install itself must compile
-    // native addons against the Node the project targets, and `runtimeKey()`
-    // below reads the resolved version out of the environment — computing the
-    // stamp first would key the install to the image's Node and let a tree
-    // built under the old pin survive a pin change.
-    await whenNodeRuntimeReady();
-
-    // Skip only when the marker EXACTLY matches this session's install context
-    // (source commit + runtime fingerprint + install commands), per docs/183
-    // Phase 3. Presence alone is not enough: a session over a shared overlay
-    // base inherits the base's marker from the lowerdir, so the stamp is what
-    // proves the base's deps still fit this checkout/runtime/command. A
-    // mismatch (non-default checkout, force-push, edited install command,
-    // incompatible runtime) or a legacy bare-timestamp marker is a miss.
-    const markerFile = path.join(this.stateDir, INSTALL_MARKER_FILE);
-    const stamp: InstallMarkerStamp = {
-      sourceCommit: await this.readSourceCommit(),
-      runtimeKey: runtimeKey(),
-      installCommands: commands,
-      // docs/197 — content key over the dependency input files. Lets a
-      // different commit whose dep files are byte-identical skip the install.
-      // `null` (codegen install / no `install-inputs` / no input files) falls
-      // back to commit-only matching.
-      depsHash: this.computeDepsHash(commands),
-    };
-    if (!(await this.installMarkerMatches(markerFile, stamp))) {
-      return { skip: false, markerFile, stamp, contradicting: [] };
-    }
-
-    // docs/183 — a matching marker is only trustworthy if every declared dep
-    // dir actually holds content. The marker lives in the session state dir
-    // (docs/246, outside the clone); the deps live in the dep dir *inside*
-    // the clone (an overlay mount when OVERLAY_DEP_STORE is on,
-    // a plain dir in the clone otherwise), and the two can disagree:
-    //   • Flag newly ON: a container recreated with the flag enabled mounts an
-    //     EMPTY overlay over previously-installed deps — skipping would leave
-    //     the session dep-less AND let the publish hook capture the empty view
-    //     as the scope's shared base.
-    //   • Flag rolled OFF (the documented incident response, FINDINGS #3): a
-    //     session whose deps lived in the overlay gets its container recreated
-    //     with the flag off — no overlay mount, but the dep dir left behind in
-    //     the host clone is EMPTY. The marker still matches exactly, so the
-    //     old overlay-mount-only check skipped → dep-less session.
-    // Distrusting a matching marker over a present-but-EMPTY dep dir,
-    // regardless of mount type, closes both. An ABSENT dep dir is NOT a
-    // contradiction, so a legitimately dep-less repo (e.g. default
-    // node_modules on a non-Node repo) and the `agent.dep-dirs: []` opt-out
-    // keep the marker-skip — non-overlay/no-deps sessions stay unchanged.
-    // planning#480 — and neither is an empty dir npm hoisted away, which
-    // the overlay's mount point makes present-but-empty rather than absent.
-    // Reinstalling on every resume for a workspaces monorepo would defeat
-    // the marker-skip permanently, exactly as it would for an absent dir.
-    const { contradicting } = classifyEmptyDepDirs(this.workspaceDir);
-    return { skip: contradicting.length === 0, markerFile, stamp, contradicting };
   }
 
   /**

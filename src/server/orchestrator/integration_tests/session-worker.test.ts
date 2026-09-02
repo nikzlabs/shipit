@@ -1184,67 +1184,6 @@ describe("Integration: Session Worker install endpoint", () => {
     expect(body.lastResult.command).toBe("sh -c 'exit 7'");
   });
 
-  // planning#2503 — the read-only marker-gate probe. It exists so the
-  // mid-session reinstall bracket can learn an install is a no-op WITHOUT
-  // paying the ~11s gated-service teardown that closing the install gate costs.
-  describe("POST /install/probe", () => {
-    const probe = async (commands: string[] = ["true"]) =>
-      installWorker.getApp().inject({ method: "POST", url: "/install/probe", payload: { commands } });
-
-    it("reports skipped: false with no marker, and skipped: true once one matches", async () => {
-      const before = await probe();
-      expect(before.statusCode).toBe(200);
-      expect(before.json()).toEqual({ skipped: false });
-
-      await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
-      await waitFor(async () => {
-        const s = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
-        const body = s.json() as { running: boolean; lastResult: { ok: boolean } | null };
-        return !body.running && body.lastResult?.ok === true;
-      }, 3_000, "install completed");
-
-      expect((await probe()).json()).toEqual({ skipped: true });
-      // A different command list is a different install context, so the same
-      // marker must not answer for it.
-      expect((await probe(["echo other"])).json()).toEqual({ skipped: false });
-    });
-
-    it("is read-only — it neither starts an install nor disturbs the marker", async () => {
-      // A miss is the side-effecting branch inside `/install` (it whiteouts the
-      // stale marker before reinstalling), so probing a miss is what could
-      // wreck the next real call. Probe first, install second: if the probe had
-      // removed or written anything, `/install` would decide differently.
-      await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
-      await waitFor(async () => {
-        const s = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
-        return !(s.json() as { running: boolean }).running;
-      }, 3_000, "install completed");
-
-      // Several probes, of both a matching and a non-matching command list.
-      for (const cmds of [["true"], ["echo other"], ["true"]]) await probe(cmds);
-
-      // Nothing started: the recorded result is still the one install that ran.
-      const status = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
-      expect((status.json() as { running: boolean }).running).toBe(false);
-      // And the marker the probes looked at still makes `/install` skip.
-      const res = await installWorker.getApp().inject({
-        method: "POST",
-        url: "/install",
-        payload: { commands: ["true"] },
-      });
-      expect(res.json()).toEqual({ skipped: true, reason: "marker" });
-    });
-
-    it("rejects an empty command list", async () => {
-      const res = await installWorker.getApp().inject({
-        method: "POST",
-        url: "/install/probe",
-        payload: { commands: [] },
-      });
-      expect(res.statusCode).toBe(400);
-    });
-  });
-
   it("joins an in-flight install instead of failing the second caller", async () => {
     // The warm-pool pre-install and the on-activation install can race on the
     // same worker (standby claimed mid pre-install). The second POST must NOT

@@ -39,7 +39,7 @@ import { releaseQueuedTurn } from "./queue-drain.js";
 import type { PreparedDispatch } from "./prepared-dispatch.js";
 import type { TurnHandle } from "./turn-settlement.js";
 import type { SSEEvent } from "./sse-client.js";
-import { workerPost, workerGet, workerInstall, workerInstallProbe, workerPushAgentSecrets, workerPostMessage, PLACEHOLDER_WORKER_URL, WorkerUnavailableError } from "./worker-http.js";
+import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage, PLACEHOLDER_WORKER_URL, WorkerUnavailableError } from "./worker-http.js";
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
 import { adoptInFlightTurn } from "./turn-adoption.js";
@@ -125,13 +125,6 @@ export interface InstallCompletion {
   ok: boolean;
   /** True when `ok` was synthesized rather than observed. Never proof. */
   unverified?: boolean;
-  /**
-   * True when the worker's content-keyed marker matched and no install command
-   * ran. Lets a caller that decided NOT to bracket the install (see
-   * `reinstallForDepChange`) confirm the install really was the no-op its probe
-   * predicted, rather than assuming it.
-   */
-  skipped?: boolean;
 }
 
 export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> implements SessionRunnerInterface, ProxyAgentRunner {
@@ -1916,7 +1909,22 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (record(failures)) this.emitMessage({ type: "plugin_repos_updated", sessionId: this.sessionId });
   }
 
-  async runInstall(commands: string[]): Promise<InstallCompletion> {
+  /**
+   * Run `agent.install` in the session container.
+   *
+   * `opts.onWorkerDecision` fires exactly once, the moment the worker's
+   * `POST /install` answers and before the install's outcome is known:
+   * `"skipped"` when the content-keyed marker matched and no command will run,
+   * `"started"` when one will. It exists for a caller that must decide
+   * something the ANSWER makes pointless — see `reinstallForDepChange`, where
+   * that something is a `docker compose stop` costing ~11s of preview outage.
+   * It does NOT fire on the join, dispose or transport-failure paths, where no
+   * decision was observed; such a caller must fail closed on its own.
+   */
+  async runInstall(
+    commands: string[],
+    opts: { onWorkerDecision?: (decision: "skipped" | "started") => void } = {},
+  ): Promise<InstallCompletion> {
     if (commands.length === 0) return { ok: true };
 
     // Concurrent-call guard: if an install is already in flight (either we
@@ -1992,6 +2000,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         timeoutMs: INSTALL_POST_TIMEOUT_MS,
       }) as { skipped?: boolean; started?: boolean; ok?: boolean };
       this._installPostIssued = true;
+      // Reported before anything else acts on the answer, and inside the `try`
+      // so a throwing listener lands on the same failure path as a transport
+      // error rather than escaping as an unhandled rejection.
+      opts.onWorkerDecision?.(result.skipped ? "skipped" : "started");
       if (result.skipped) {
         // The worker's content-keyed marker matched, which IS the dependency
         // check — the installed tree provably matches this checkout, so any gap
@@ -2003,7 +2015,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           status: "skipped",
         });
         this.signalInstallComplete();
-        return { ok: true, skipped: true };
+        return { ok: true };
       }
       // Started — wait for SSE-delivered install_done / install_error to
       // resolve the completion promise with the success/failure outcome.
@@ -2042,39 +2054,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       });
       this.signalInstallComplete(false);
       return { ok: false };
-    }
-  }
-
-  /**
-   * planning#2503 — would `runInstall(commands)` be a no-op? Asks the worker's
-   * marker gate (`POST /install/probe`), which is the SAME comparison
-   * `POST /install` makes, without making it: no marker is removed and nothing
-   * starts. Reimplementing the comparison orchestrator-side was rejected in
-   * docs/223 for the reason it is rejected here — a second implementation has
-   * to get renames, `./` prefixes and a failed `git diff` right to avoid
-   * falling back into the silence it exists to remove.
-   *
-   * Fails closed: an unreachable, wedged or older worker answers `false`, so
-   * the caller brackets exactly as it did before this existed. The cost of
-   * being wrong that way is the old behaviour; the cost of the opposite is a
-   * skipped teardown for an install that really runs.
-   */
-  private async wouldInstallSkip(commands: string[]): Promise<boolean> {
-    if (commands.length === 0) return false;
-    try {
-      await this._workerReady;
-      if (this._disposed) return false;
-      this.assertWorkerReachable("/install/probe");
-      const res = await workerInstallProbe(this.workerUrl, commands, {
-        timeoutMs: INSTALL_POST_TIMEOUT_MS,
-      }) as { skipped?: boolean };
-      return res.skipped === true;
-    } catch (err) {
-      console.warn(
-        `[container-runner:${this.sessionId}] install probe failed, bracketing the reinstall:`,
-        err instanceof Error ? err.message : String(err),
-      );
-      return false;
     }
   }
 
@@ -2340,16 +2319,23 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * close the gate (which relaunches them against the fresh tree, or latches
    * them to `error` on failure). Mirrors the bracket in `setupServiceManager`.
    *
-   * The bracket is applied only when the install will REALLY run. Closing the
-   * gate is a `docker compose stop` — SIGTERM, 10s grace, SIGKILL — so bracketing
-   * an install that the marker gate then skips in milliseconds costs the preview
-   * an ~11s outage for nothing. Worse, it is self-sustaining for a repository
-   * whose service `command:` re-runs its own package manager over the same bind
-   * mount: the service's `npm install` rewrites the lockfile, the watcher fires,
-   * the cooldown paces it, and the session tears the preview down every 30s
-   * forever (planning#2503, five sessions observed looping in production). So
-   * `wouldInstallSkip` asks the worker's marker gate FIRST and the no-op path
-   * costs one HTTP round trip and touches no service.
+   * The bracket is applied only once the worker says the install will REALLY
+   * run. Closing the gate is a `docker compose stop` — SIGTERM, 10s grace,
+   * SIGKILL — so bracketing an install that the content-keyed marker then skips
+   * in milliseconds costs the preview an ~11s outage for nothing. Worse, it is
+   * self-sustaining for a repository whose service `command:` re-runs its own
+   * package manager over the same bind mount: the service's `npm install`
+   * rewrites the lockfile, the watcher fires, the cooldown paces it, and the
+   * session tears the preview down every 30s forever (planning#2503, five
+   * sessions observed looping in production at exactly 30.000s).
+   *
+   * The decision comes from the very call that starts the install
+   * (`onWorkerDecision`), NOT from a separate look at the marker beforehand. A
+   * probe would answer a question about a moment that has already passed: this
+   * bug's own repository rewrites its lockfile continuously, so between a probe
+   * and the POST the answer can change, and the install would then run
+   * unbracketed. Ordering it this way costs nothing — the teardown is
+   * asynchronous and already overlaps the install commands (docs/239).
    */
   private async reinstallForDepChange(): Promise<void> {
     const mgr = this._serviceManager;
@@ -2358,47 +2344,43 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // one must not inherit this rewrite as its cause.
     const rewrite = this._lastRewriteLabel;
     this._lastRewriteLabel = undefined;
-    // The install still runs even when the probe says it will skip: the skip
-    // path clears a recorded DependencyGap (a matching content-keyed marker IS
-    // positive evidence the tree fits) and reports `install_status: skipped`.
-    // Only the service bracket is conditional.
-    //
-    // Not probed at all without a ServiceManager: the bracket is already inert
-    // there (docs/223), so the probe would buy nothing and only delay the
-    // install by a round trip.
-    const noop = mgr ? await this.wouldInstallSkip(this._depReinstallCommands) : false;
-    if (noop) {
-      console.log(
-        `[container-runner:${this.sessionId}] install marker still matches — ` +
-        `skipping reinstall without holding gated services`,
-      );
-    }
-    if (!noop) mgr?.setInstallRunning(true);
+
+    let opened = false;
+    const openGate = (): void => {
+      if (opened) return;
+      opened = true;
+      mgr?.setInstallRunning(true);
+    };
+    // Read BEFORE anything can open the gate, which clears the latch it reports.
+    const wasLatchedFailed = mgr?.installGateFailed ?? false;
+
     let res: InstallCompletion = { ok: true };
     try {
-      res = await this.runInstall(this._depReinstallCommands);
+      res = await this.runInstall(this._depReinstallCommands, {
+        onWorkerDecision: (decision) => {
+          if (decision === "started") openGate();
+        },
+      });
     } catch {
       res = { ok: false };
     } finally {
-      // Symmetric with the open above: `setInstallRunning` is a transition, and
-      // closing a gate we never opened would start `dependsOnInstall` services
-      // the user had stopped, or latch them to `error` over an install that did
-      // not run.
-      if (!noop) mgr?.setInstallRunning(false, { failed: !res.ok });
-    }
-    // The probe and the install disagreed — a dependency input file changed in
-    // the millisecond window between them, so an install we chose not to
-    // bracket really ran and the gated services are still on the old tree.
-    // Bracket it after the fact: the hold→release pair is exactly "tear the
-    // gated services down and relaunch them against the current tree", which is
-    // what the bracket would have produced anyway, just later.
-    if (noop && res.skipped !== true) {
-      console.warn(
-        `[container-runner:${this.sessionId}] install ran despite a skip probe — ` +
-        `restarting gated services against the new tree`,
-      );
-      mgr?.setInstallRunning(true);
-      mgr?.setInstallRunning(false, { failed: !res.ok });
+      // Fail closed. Two states still need the bracket even though the worker
+      // never reported an install starting:
+      //
+      //  • The install FAILED, or never reached the worker at all. The bracket
+      //    is what latches `dependsOnInstall` services to `error`, and dropping
+      //    that would leave a broken tree looking healthy (nikzlabs/shipit#2429).
+      //  • The gate was ALREADY latched from an earlier failure. `_installFailed`
+      //    is cleared only by a false→true transition, and the docs/286 watchdog
+      //    deliberately refuses to recover a gate it can see failed — so a marker
+      //    skip that made no transition would strand those services in `error`
+      //    for the rest of the session. The skip is exactly the evidence that
+      //    they should come back: the installed tree provably matches the
+      //    checkout.
+      if (!res.ok || wasLatchedFailed) openGate();
+      // Never close a gate this call did not open: that would start services the
+      // user had stopped, or latch them over an install that never ran.
+      if (opened) mgr?.setInstallRunning(false, { failed: !res.ok });
     }
     // nikzlabs/shipit#2429 — a failed re-install leaves the tree and its dependencies
     // out of step just as surely as never running one. The gate latches

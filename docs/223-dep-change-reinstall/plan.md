@@ -78,7 +78,7 @@ loop would show it decaying, not keeping time.
 What makes such a repository harmless is the fix below — a no-op reinstall costs
 nothing — not the cooldown.
 
-### The bracket is applied only when the install will really run (planning#2503)
+### The bracket is applied only when the install really runs (planning#2503)
 
 `setInstallRunning(true)` is a `docker compose stop`: SIGTERM, a 10s grace
 period, then SIGKILL (docs/239). The bracket used to close *before* anything
@@ -88,35 +88,43 @@ skipped the install in milliseconds. Under the self-sustaining writer above that
 was the entire cost of the loop — the preview died every 30s and the install
 never once ran.
 
-So `reinstallForDepChange` asks first, via `POST /install/probe` on the worker —
-the marker gate's own decision (`InstallController.evaluateMarkerGate`, shared
-verbatim with `POST /install`), reported without being acted on: it removes no
-stale marker and starts nothing. Only a probe that says the install will run
-brackets it.
+So the bracket now hangs off the worker's own `POST /install` answer.
+`runInstall` takes an `onWorkerDecision` hook that fires once, the moment the
+worker replies and before the outcome is known: `"skipped"` when the
+content-keyed marker matched and no command will run, `"started"` when one will.
+`reinstallForDepChange` opens the gate on `"started"` and on nothing else.
 
-Four properties keep the change contained:
+**Why the decision is not taken beforehand.** A probe against the marker was the
+obvious shape and is wrong here: it answers a question about a moment that has
+already passed. This bug's own repository rewrites its lockfile continuously, so
+between the probe and the POST the answer can change and the install would run
+unbracketed — a TOCTOU window that then needs a reconciliation path, which needs
+its own tests, none of which exist if the decision comes from the call that
+starts the install. Reading the answer instead of predicting it also costs
+nothing: the teardown is asynchronous and already overlaps the install commands,
+so the hold lands a round trip later than it used to and no earlier than the
+install's first write.
 
-- **The answer comes from the worker, never from a second comparison here.** It
-  is the same reasoning as *It does not diff the changed paths* above: a
-  re-implementation has to get renames, `./` prefixes and a failed `git diff`
-  right to avoid falling back into the silence it exists to remove.
-- **It fails closed.** An unreachable, wedged or older worker (no such route)
-  answers "not a no-op", so the bracket happens exactly as it did before. Being
-  wrong that way costs the old behaviour; being wrong the other way leaves gated
-  services on a stale tree.
-- **The install still runs on the no-op path.** Its skip branch is what clears a
-  recorded `DependencyGap` — a matching content-keyed marker is positive
-  evidence — and what reports `install_status: skipped`. Only the service
-  bracket is conditional.
-- **A probe and an install that disagree are reconciled.** A dep input rewritten
-  in the millisecond between them means an unbracketed install really ran, so the
-  hold→release pair is applied afterwards: the same teardown-and-relaunch the
-  bracket would have produced, just later. `runInstall` reports `skipped` for
-  exactly this comparison.
+Three properties keep the change contained:
 
-Failure semantics are unchanged: a reinstall that runs and fails still latches
-gated services to `error` and still records the `DependencyGap`
-(nikzlabs/shipit#2429).
+- **The no-op path still runs the install.** Only the bracket is conditional.
+  The skip branch inside `runInstall` is what clears a recorded `DependencyGap`
+  — a matching content-keyed marker is positive evidence the tree fits — and
+  what reports `install_status: skipped`.
+- **It fails closed.** The hook does not fire on the join, dispose or transport
+  paths, where no decision was observed. A `runInstall` that returns `ok: false`,
+  or throws, therefore opens and closes the gate anyway, so the failure still
+  latches `dependsOnInstall` services to `error` and still records the
+  `DependencyGap` (nikzlabs/shipit#2429). "Nothing started" is never inferred
+  from silence.
+- **A gate already latched by an earlier failure is repaired, not inherited.**
+  `_installFailed` is cleared only by a false→true transition, and the docs/286
+  watchdog deliberately refuses to recover a gate it can see failed — so
+  "no install ran, therefore no transition" would strand those services in
+  `error` for the rest of the session, with nothing left that could release them.
+  `reinstallForDepChange` reads `ServiceManager.installGateFailed` before
+  anything can clear it, and brackets a skipped install when it is set. The skip
+  is exactly the evidence the services should come back.
 
 ## The watcher is not the only trigger (nikzlabs/shipit#2429)
 
@@ -298,13 +306,11 @@ step belongs in the service `command:` instead.
   renders it under *Parsed shipit.yaml*.
 - `src/server/orchestrator/container-session-runner.ts` — `setDepReinstallInputs`,
   `isDepInputChange`, `maybeReinstallForDepChange` (throttle), `reinstallForDepChange`
-  (the bracket), `wouldInstallSkip` (the planning#2503 probe); the `file_changes`
-  handler calls into them; dispose clears the timer.
+  (the bracket), `runInstall`'s `onWorkerDecision` hook (planning#2503); the
+  `file_changes` handler calls into them; dispose clears the timer.
   `notifyWorkspaceRewritten` is the #2429 entry point for an orchestrator-side rewrite.
-- `src/server/session/install-controller.ts` — `evaluateMarkerGate`, the one
-  implementation of "would this install be skipped", and the read-only
-  `POST /install/probe` that reports it. `src/server/orchestrator/worker-http.ts`
-  — `workerInstallProbe`.
+- `src/server/orchestrator/service-manager.ts` — `installGateFailed`, the
+  latched-failure reader a caller must consult before skipping the bracket.
 - `src/server/orchestrator/workspace-rewrite.ts` — `onWorkspaceRewritten`, the shared
   "the orchestrator rewrote this tree" call (config re-read + dependency re-check),
   passing the caller label through so a report can name the rewrite.

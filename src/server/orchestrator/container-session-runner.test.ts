@@ -132,7 +132,9 @@ describe("ContainerSessionRunner — dependency-change reinstall throttle (#1622
     // First change → fires immediately.
     priv(runner).maybeReinstallForDepChange();
     expect(install).toHaveBeenCalledTimes(1);
-    expect(install).toHaveBeenLastCalledWith(["npm ci"]);
+    // Positional: the second argument is the `onWorkerDecision` hook, which
+    // these tests are not about.
+    expect(install.mock.lastCall?.[0]).toEqual(["npm ci"]);
 
     // Second change within the cooldown → suppressed, one trailing pass armed.
     vi.advanceTimersByTime(5_000);
@@ -178,7 +180,9 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
     // comparison, so an unchanged lockfile is a millisecond skip inside
     // `runInstall` rather than a path diff reimplemented here.
     expect(install).toHaveBeenCalledTimes(1);
-    expect(install).toHaveBeenLastCalledWith(["npm ci"]);
+    // Positional: the second argument is the `onWorkerDecision` hook, which
+    // these tests are not about.
+    expect(install.mock.lastCall?.[0]).toEqual(["npm ci"]);
   });
 
   it("stays out of sessions whose install is not content-keyable — but says so", () => {
@@ -486,40 +490,41 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
 
 /**
  * planning#2503 — closing the install gate is a `docker compose stop`: SIGTERM,
- * 10s grace, SIGKILL. Paying it for an install the marker gate then skips in
- * milliseconds cost the preview an ~11s outage for nothing — and for a repo
- * whose service `command:` re-runs its own package manager over the same bind
- * mount, forever: the service's `npm install` rewrites the lockfile, the
+ * 10s grace, SIGKILL. Paying it for an install the content-keyed marker then
+ * skips in milliseconds cost the preview an ~11s outage for nothing — and for a
+ * repo whose service `command:` re-runs its own package manager over the same
+ * bind mount, forever: the service's `npm install` rewrites the lockfile, the
  * watcher fires, the 30s cooldown paces it, and five production sessions were
  * observed looping at exactly 30.000s with no drift.
  *
- * So the bracket is applied only when the install will really run, decided by
- * the worker's own marker gate rather than a second hash comparison here.
+ * So the bracket is applied only once the worker's own `POST /install` answer
+ * says an install is really starting.
  */
 describe("ContainerSessionRunner — the reinstall bracket skips a no-op install", () => {
   /**
-   * A worker that answers the probe with `probeSkipped` and `/install` with
-   * `installResponse`, recording every path it served.
+   * A worker whose `POST /install` answers `installResponse`, or fails with a
+   * 500 when it is `"error"`. `/install/status` reports `running: true` so the
+   * reconnect resync never synthesizes its own completion and each test drives
+   * the real one.
    */
   async function withWorker(
-    probeSkipped: boolean | "error",
-    installResponse: Record<string, unknown>,
+    installResponse: Record<string, unknown> | "error",
     body: (url: string, paths: string[]) => Promise<void>,
   ): Promise<void> {
     const paths: string[] = [];
     const server = http.createServer((req, res) => {
       paths.push(req.url ?? "");
       res.setHeader("content-type", "application/json");
-      if (req.url === "/install/probe") {
-        if (probeSkipped === "error") {
+      if (req.url === "/install") {
+        if (installResponse === "error") {
           res.statusCode = 500;
           res.end(JSON.stringify({ error: "boom" }));
           return;
         }
-        res.end(JSON.stringify({ skipped: probeSkipped }));
+        res.end(JSON.stringify(installResponse));
         return;
       }
-      res.end(JSON.stringify(req.url === "/install" ? installResponse : { running: true }));
+      res.end(JSON.stringify({ running: true }));
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const addr = server.address();
@@ -531,102 +536,162 @@ describe("ContainerSessionRunner — the reinstall bracket skips a no-op install
     }
   }
 
-  /** Records the gate transitions without wiring a whole ServiceManager. */
-  function attachGateRecorder(runner: ContainerSessionRunner): { running: boolean; failed?: boolean }[] {
+  /**
+   * A stand-in for `ServiceManager`'s install gate that models the REAL
+   * transition rules (`service-manager.ts` `setInstallRunning`): a same-value
+   * call is a no-op, opening clears the failure latch, closing sets it. A
+   * recorder that just appended every call could not fail on a bracket that
+   * closes a gate it never opened, which is half of what these tests check.
+   */
+  function attachGate(
+    runner: ContainerSessionRunner,
+    opts: { latchedFailed?: boolean } = {},
+  ): { calls: { running: boolean; failed?: boolean }[]; failed: () => boolean } {
     const calls: { running: boolean; failed?: boolean }[] = [];
+    let running = false;
+    let failed = opts.latchedFailed ?? false;
     (runner as unknown as { _serviceManager: unknown })._serviceManager = {
       composeFilePath: "docker-compose.yml",
-      setInstallRunning: (running: boolean, opts: { failed?: boolean } = {}) =>
-        calls.push({ running, ...opts }),
+      get installGateFailed() { return failed; },
+      setInstallRunning(next: boolean, o: { failed?: boolean } = {}) {
+        if (running === next) return;
+        running = next;
+        if (next) {
+          failed = false;
+          calls.push({ running: true });
+        } else {
+          failed = o.failed ?? false;
+          calls.push({ running: false, failed });
+        }
+      },
     };
-    return calls;
+    return { calls, failed: () => failed };
   }
 
-  it("does not touch the gate when the marker gate says the install is a no-op", async () => {
-    await withWorker(true, { skipped: true }, async (url, paths) => {
-      const runner = makeRunner();
-      runner.setWorkerUrl(url);
-      const gate = attachGateRecorder(runner);
-      runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+  const reinstall = (runner: ContainerSessionRunner): Promise<void> =>
+    (runner as unknown as { reinstallForDepChange(): Promise<void> }).reinstallForDepChange();
 
-      await (runner as unknown as { reinstallForDepChange(): Promise<void> }).reinstallForDepChange();
+  function makeDepRunner(url: string): ContainerSessionRunner {
+    const runner = makeRunner();
+    runner.setWorkerUrl(url);
+    runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+    return runner;
+  }
+
+  it("does not touch the gate when the worker reports a marker skip", async () => {
+    await withWorker({ skipped: true }, async (url, paths) => {
+      const runner = makeDepRunner(url);
+      const gate = attachGate(runner);
+
+      await reinstall(runner);
 
       // The whole point: no hold, so no teardown, so no ~11s outage.
-      expect(gate).toEqual([]);
+      expect(gate.calls).toEqual([]);
       // The install still ran — its skip branch is what clears a recorded
       // DependencyGap and reports `install_status: skipped`.
       expect(paths).toContain("/install");
     });
   });
 
-  it("brackets normally when the install will really run", async () => {
-    await withWorker(false, { started: true }, async (url) => {
-      const runner = makeRunner();
-      runner.setWorkerUrl(url);
-      const gate = attachGateRecorder(runner);
-      runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+  it("brackets as soon as the worker says an install is starting", async () => {
+    await withWorker({ started: true }, async (url) => {
+      const runner = makeDepRunner(url);
+      const gate = attachGate(runner);
 
-      const done = (runner as unknown as { reinstallForDepChange(): Promise<void> }).reinstallForDepChange();
-      await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
+      const done = reinstall(runner);
+      // The hold lands on the worker's ANSWER, not on the install's outcome:
+      // it must be in place while the install is still running, exactly as the
+      // unconditional bracket used to be.
+      await vi.waitFor(() => expect(gate.calls).toEqual([{ running: true }]));
       priv(runner).signalInstallComplete(true);
       await done;
 
-      expect(gate).toEqual([{ running: true }, { running: false, failed: false }]);
+      expect(gate.calls).toEqual([{ running: true }, { running: false, failed: false }]);
     });
   });
 
-  it("fails closed — an unreachable or older worker still gets the old bracket", async () => {
-    // A probe that 500s (an older worker has no such route at all) must not be
-    // read as "nothing to do": skipping the teardown for an install that then
-    // really runs leaves the gated services on the old dependency tree.
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    await withWorker("error", { started: true }, async (url) => {
-      const runner = makeRunner();
-      runner.setWorkerUrl(url);
-      const gate = attachGateRecorder(runner);
-      runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+  it("still latches gated services to error when the install runs and fails", async () => {
+    await withWorker({ started: true }, async (url) => {
+      const runner = makeDepRunner(url);
+      const gate = attachGate(runner);
 
-      const done = (runner as unknown as { reinstallForDepChange(): Promise<void> }).reinstallForDepChange();
+      const done = reinstall(runner);
       await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
       priv(runner).signalInstallComplete(false);
       await done;
 
-      expect(gate).toEqual([{ running: true }, { running: false, failed: true }]);
+      // nikzlabs/shipit#2429 — both halves of the report, unchanged by this fix.
+      expect(gate.calls).toEqual([{ running: true }, { running: false, failed: true }]);
+      expect(runner.dependencyGap).toMatchObject({ reason: "install-failed" });
     });
   });
 
-  it("brackets after the fact when the probe and the install disagree", async () => {
-    // A dependency input rewritten in the millisecond between the probe and the
-    // POST: the install we chose not to bracket really ran, so the gated
-    // services are still on the old tree and have to be relaunched.
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    await withWorker(true, { started: true }, async (url) => {
-      const runner = makeRunner();
-      runner.setWorkerUrl(url);
-      const gate = attachGateRecorder(runner);
-      runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+  it("fails closed when the worker never answers at all", async () => {
+    // No decision was observed, so "nothing started" is not a conclusion the
+    // caller may draw: an install may be running, and the services must be
+    // latched rather than left looking healthy over a tree nobody verified.
+    await withWorker("error", async (url) => {
+      const runner = makeDepRunner(url);
+      const gate = attachGate(runner);
 
-      const done = (runner as unknown as { reinstallForDepChange(): Promise<void> }).reinstallForDepChange();
-      await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
-      priv(runner).signalInstallComplete(true);
-      await done;
+      await reinstall(runner);
 
-      expect(gate).toEqual([{ running: true }, { running: false, failed: false }]);
+      expect(gate.calls).toEqual([{ running: true }, { running: false, failed: true }]);
+      expect(runner.dependencyGap).toMatchObject({ reason: "install-failed" });
     });
   });
 
-  it("does not probe at all when the session has no compose stack", async () => {
-    // The bracket is already inert without a ServiceManager, so the probe would
-    // buy nothing and only delay the install by a round trip.
-    await withWorker(true, { skipped: true }, async (url, paths) => {
+  /**
+   * The gate latch is cleared ONLY by a false→true transition, and the docs/286
+   * watchdog deliberately refuses to recover a gate it can see failed. So
+   * "no install ran, therefore no transition" would strand the services of a
+   * session whose earlier install failed — for the rest of the session, with
+   * nothing left that could release them.
+   */
+  it("still brackets a no-op install when the gate is latched from an earlier failure", async () => {
+    await withWorker({ skipped: true }, async (url) => {
+      const runner = makeDepRunner(url);
+      const gate = attachGate(runner, { latchedFailed: true });
+
+      await reinstall(runner);
+
+      expect(gate.calls).toEqual([{ running: true }, { running: false, failed: false }]);
+      // And the services come back: the marker skip is precisely the evidence
+      // that the installed tree matches the checkout.
+      expect(gate.failed()).toBe(false);
+    });
+  });
+
+  it("is inert for a session with no compose stack", async () => {
+    await withWorker({ skipped: true }, async (url, paths) => {
       const runner = makeRunner();
       runner.setWorkerUrl(url);
       runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
 
-      await (runner as unknown as { reinstallForDepChange(): Promise<void> }).reinstallForDepChange();
-
-      expect(paths).not.toContain("/install/probe");
+      // No ServiceManager: nothing to bracket, and nothing may throw for the
+      // want of one.
+      await expect(reinstall(runner)).resolves.toBeUndefined();
       expect(paths).toContain("/install");
+    });
+  });
+
+  it("leaves the bracket to the owner when it joins an install already in flight", async () => {
+    // A joiner never sees the worker's answer — `runInstall` returns the shared
+    // completion promise before the POST. Bracketing anyway would double the
+    // teardown of an install whose owner already holds the gate.
+    await withWorker({ started: true }, async (url) => {
+      const runner = makeDepRunner(url);
+      const owner = runner.runInstall(["npm ci"]);
+      await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
+      // Attached only now, so the owner's own (unrecorded) bracket is out of
+      // frame and every call below belongs to the joining reinstall.
+      const gate = attachGate(runner);
+
+      const done = reinstall(runner);
+      priv(runner).signalInstallComplete(true);
+      await Promise.all([owner, done]);
+
+      expect(gate.calls).toEqual([]);
     });
   });
 });

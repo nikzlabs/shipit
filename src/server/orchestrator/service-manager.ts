@@ -767,6 +767,20 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private _installFailed = false;
 
   /**
+   * planning#2503 — is the gate currently latched by a FAILED install?
+   *
+   * Read by a caller deciding whether it may skip the `setInstallRunning`
+   * bracket for an install that will not run. `_installFailed` is cleared only
+   * by a false→true transition, and `checkInstallGateLiveness` deliberately
+   * refuses to recover a gate it can see failed — so "no install ran, therefore
+   * no transition" would strand latched services in `error` for the rest of the
+   * session. Whoever skips the bracket has to ask first.
+   */
+  get installGateFailed(): boolean {
+    return this._installFailed;
+  }
+
+  /**
    * Names of `dependsOnInstall` services currently held by the gate (either
    * waiting for install to finish, or latched to `error` after install
    * failed). The poller skips these so its `docker compose ps` diff can't
