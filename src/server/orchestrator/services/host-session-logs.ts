@@ -144,8 +144,13 @@ export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[
     // operator has to tell apart and could not. Every variable part is a
     // ShipIt-controlled number; the branch, the remote and git's own summary
     // are deliberately not in the line at all.
+    //
+    // The wording separates the FACT (the push completed) from the ESTIMATE
+    // (the count, read from the local view of the remote before the push) —
+    // see `auto-push-scheduler.ts` `countPendingCommits` for why the count is
+    // not the network's answer.
     producer: "auto-push-scheduler: push completed",
-    pattern: /^Auto-push completed in \d+ms: (?:\d+ commit\(s\) pushed|nothing new to push — the remote branch was already up to date|pushed, but the commit count could not be measured)\.$/,
+    pattern: /^Auto-push completed in \d+ms: (?:\d+ commit\(s\) (?:was|were) ahead of the last known remote tip|nothing was ahead of the last known remote tip|the commit count could not be measured)\.$/,
   },
   {
     // The two skips, which are the other half of "did it push?": both are
@@ -178,11 +183,6 @@ export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[
     pattern: /^Auto-push failed: your GitHub token needs the `workflow` scope to push changes to GitHub Actions workflow files\. Update your token at https:\/\/github\.com\/settings\/tokens\.$/,
   },
   {
-    // The authored half of the split failure report. `classifyPushFailure`
-    // returns one of a fixed set of ShipIt words, matched as a bounded slug for
-    // the same reason the steer-rejected pattern is — a new class stays
-    // readable, and a space or a quote still fails the match. Git's own text
-    // never appears here: it is on the `Git said:` line, which is withheld.
     // Fully authored only since the split moved `Git said: ${errMsg}` off the
     // end of it — the whole reason splitting a producer is the recommended fix
     // rather than widening a pattern.
@@ -190,8 +190,18 @@ export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[
     pattern: /^Auto-push rejected: the remote refused the push because its Git LFS objects were not uploaded \(GH008\)\. The commit stays in this session's local history\. Run `git lfs push origin HEAD` in the terminal, then push again\.$/,
   },
   {
+    // The authored half of the split failure report; git's own text is on the
+    // `Git said:` line, which is withheld.
+    //
+    // The class is ENUMERATED rather than matched as a bounded slug. This table
+    // is the boundary itself, not a statement about who produced a line, so
+    // "the producer can only ever emit one of seven literals" is the wrong
+    // question — `[a-z0-9-]{1,32}` would admit `secret-token` from any future
+    // line that happened to fit the surrounding prose. `PushFailureClass`
+    // (`services/git.ts`) is a closed union; adding a member means adding it
+    // here, which is exactly the review that deserves.
     producer: "auto-push-scheduler: failure class",
-    pattern: /^Auto-push failed \([a-z0-9-]{1,32}\)\. The commit stays in this session's local history\.$/,
+    pattern: /^Auto-push failed \((?:non-fast-forward|invalid-refspec|auth|lfs|remote-rejected|network|unknown)\)\. The commit stays in this session's local history\.$/,
   },
   {
     // A push held back while ShipIt's own rebase is in flight — the commit is
@@ -217,6 +227,15 @@ export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[
   {
     producer: "app-lifecycle: container re-adopted",
     pattern: /^Recovered a session container that had lost its orchestrator tracking entry — no restart needed\.$/,
+  },
+  {
+    // startup-tasks.ts `health_monitor_resumed`. Fully authored: `gapLabel` is
+    // computed from `gapMs` as `Ns` or `Nms`, both ShipIt-controlled numbers.
+    // Worth returning because it is the one line that explains a container
+    // "vanishing" with no die event — an ops session chasing exactly that
+    // otherwise has no way to know the events stream had a hole in it.
+    producer: "startup-tasks: docker events gap",
+    pattern: /^Docker events stream resumed after \d+m?s gap — die\/oom events during this window may have been missed\.$/,
   },
   // startup-tasks.ts — the exit-code form only; the `: <error>` form is excluded.
   {
@@ -294,11 +313,20 @@ export function isOpsSafeLine(text: string): boolean {
  *  1. **The `shape` is a constant here, not a piece of the line.** It is the
  *     only thing that escapes, alongside a count. Never build a label out of a
  *     captured group.
- *  2. **The pattern is a ShipIt-authored PREFIX**, anchored at the start and
- *     stopping where the producer's interpolation begins. Unanchored at the end
- *     on purpose — the whole point is that the rest of the line is free text
- *     nobody may read. A `.*`/`.+` is still banned, so a pattern cannot drift
- *     into matching everything and reporting one label for the lot.
+ *  2. **The pattern is ShipIt-authored text**, anchored at the start.
+ *     Unanchored at the end on purpose — the rest of the line is free text
+ *     nobody may read. A `.*`/`.+`/`[\s\S]` is banned, so a pattern cannot
+ *     drift into matching everything and reporting one label for the lot.
+ *
+ *     One pattern (`compose: service exited`) reaches PAST an interpolated
+ *     value with a single `\S+`, to test the authored text on the far side of
+ *     a service name. That is the deliberate exception, and it is stated here
+ *     rather than left as a contradiction between this rule and the table: a
+ *     `[compose] ` prefix alone cannot tell "a service died" from "a compose
+ *     value was rejected", which is the distinction the breakdown exists to
+ *     draw. The meta-test bounds it — at most one `\S+` per pattern, and never
+ *     as the last thing in it, so the token can only ever be a bridge between
+ *     two pieces of ShipIt's own text and never the match itself.
  *  3. **Most specific first** — the first match wins, so a family's catch-all
  *     (`[compose] `) sits after its named members.
  *

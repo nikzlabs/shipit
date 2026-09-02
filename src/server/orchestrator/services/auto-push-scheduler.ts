@@ -443,16 +443,19 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
   };
 
   /**
-   * How many commits this push is about to publish, or null when that cannot be
-   * counted.
+   * How far HEAD is ahead of the last known remote tip, or null when that
+   * cannot be counted.
    *
-   * Measured BEFORE the push, because a push that lands fast-forwards the local
-   * `origin/<branch>` ref to the new tip — afterwards the answer is always 0.
-   * Against the LOCAL view of the remote, deliberately: this runs on the path to
-   * a network call that is about to happen anyway, and a second fetch to make
-   * the count exact would put a remote round-trip in front of every push. The
-   * count is therefore what ShipIt believed it was publishing, which is the
-   * question an operator reading a session's history is actually asking.
+   * **An estimate, and the line that reports it says so.** It is the local view
+   * (`@{upstream}`), taken BEFORE the push — a push that lands fast-forwards
+   * that ref, so afterwards the answer is always 0 — and a local view can be
+   * stale (someone else pushed) or point somewhere other than the ref
+   * `pushToOrigin` targets (a hand-configured upstream). Making it exact would
+   * put a fetch in front of every push, and `git push` does not report a count
+   * back either. So the reported wording is "N commit(s) were ahead of the last
+   * known remote tip", never "N commit(s) pushed": the push completing is the
+   * fact, the count is ShipIt's own measurement, and an operator must be able
+   * to tell which is which.
    *
    * Read through `@{upstream}` rather than through a branch name this function
    * resolves for itself. One git call instead of two, and — the reason it
@@ -720,28 +723,47 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
       // The positive confirmation (docs/264). Counts and a duration only — no
       // branch, no remote, no git output — which is what lets it be an OPS-SAFE
       // template (`services/host-session-logs.ts`) and therefore what makes
-      // "did the last five turns push?" answerable from an ops session. The
-      // "nothing new" wording is kept distinct from "0 commit(s) pushed"
-      // because that distinction is most of the value: a run of it says the
-      // turns produced no commits, not that the pushes failed.
+      // "did the last five turns push?" answerable from an ops session.
+      //
+      // The push COMPLETING is the fact; the count is ShipIt's own pre-push
+      // measurement against the last known remote tip, and the wording keeps
+      // those apart (see `countPendingCommits`). "nothing was ahead" is worth
+      // its own wording because a run of it is a different diagnosis from a run
+      // of rejections — but it means what it says, not "the turn committed
+      // nothing": this scheduler is also armed by an agent-driven HEAD move.
       const outcome = pending === null
-        ? "pushed, but the commit count could not be measured."
+        ? "the commit count could not be measured."
         : pending === 0
-          ? "nothing new to push — the remote branch was already up to date."
-          : `${pending} commit(s) pushed.`;
+          ? "nothing was ahead of the last known remote tip."
+          : `${pending} commit(s) ${pending === 1 ? "was" : "were"} ahead of the last known remote tip.`;
       report(sessionId, `Auto-push completed in ${Date.now() - startedAt}ms: ${outcome}`, "info");
-      deps.getRunner(sessionId)?.emitMessage({
-        type: "github_push_result",
-        success: true,
-        message: `Auto-pushed to origin/${branch}`,
-        branch,
-      });
-      // A push just landed → CI is about to register. Bump this session's repo
-      // to fast cadence for the post-push window so the first non-none check is
-      // observed quickly. The poller re-arms the supervisor if the gate was
-      // already open (a closed tab keeps the supervisor paused; the user will
-      // see fresh data on their next visit via forceRefreshSession).
-      deps.notifyAutoPush?.(sessionId);
+      // Post-push bookkeeping, OUTSIDE the push's own `catch`. A throw from a
+      // viewer transport or from the PR poller is not a git failure, and
+      // letting one land in that catch reported a push that HAD ALREADY
+      // SUCCEEDED as `Auto-push failed (…)` — and, if the thrown message
+      // carried an auth marker, invalidated the user's GitHub token on the
+      // strength of it. Isolated individually, for the same reason `report`
+      // isolates its surfaces: they fail independently.
+      try {
+        deps.getRunner(sessionId)?.emitMessage({
+          type: "github_push_result",
+          success: true,
+          message: `Auto-pushed to origin/${branch}`,
+          branch,
+        });
+      } catch (emitErr) {
+        console.error(`[auto-push] ${sessionId}: could not emit the push result to viewers:`, emitErr);
+      }
+      try {
+        // A push just landed → CI is about to register. Bump this session's repo
+        // to fast cadence for the post-push window so the first non-none check is
+        // observed quickly. The poller re-arms the supervisor if the gate was
+        // already open (a closed tab keeps the supervisor paused; the user will
+        // see fresh data on their next visit via forceRefreshSession).
+        deps.notifyAutoPush?.(sessionId);
+      } catch (notifyErr) {
+        console.error(`[auto-push] ${sessionId}: could not bump the PR poller's cadence:`, notifyErr);
+      }
     } catch (err) {
       // The raw failure, named and complete, BEFORE any branch decides what to
       // make of it. In the 2026-08-18 LFS incident the stderr git actually

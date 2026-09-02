@@ -112,24 +112,39 @@ bounded channel". The operator's question — did the last five turns produce an
 push commits? — is exactly the one that asymmetry cannot answer.
 
 `auto-push-scheduler.ts` now reports a landed push on the same three surfaces as
-every failure: `Auto-push completed in Nms: N commit(s) pushed.`, or
-`… nothing new to push — the remote branch was already up to date.`, or
-`… pushed, but the commit count could not be measured.` The distinction between
-the first two carries most of the value — a run of "nothing new" says the turns
-committed nothing, which is a different diagnosis from a run of rejections.
+every failure: `Auto-push completed in Nms: N commit(s) were ahead of the last
+known remote tip.`, or `… nothing was ahead of the last known remote tip.`, or
+`… the commit count could not be measured.` A run of "nothing was ahead" is a
+different diagnosis from a run of rejections, which is most of the value.
 
-The count is read from `@{upstream}` **before** the push (a landed push
-fast-forwards the local tracking ref, so afterwards the answer is always 0),
-through `GitManager.aheadBehind`, which returns null rather than throwing. Null
-is reported as unmeasured, never as `0 commit(s)` — a first push announcing zero
-is the misreport class this scheduler has a whole docstring about. It is the
-LOCAL view of the remote, deliberately: an exact count would need a fetch in
-front of every push, and what the line is for is what ShipIt believed it was
-publishing.
+**The wording separates the fact from the estimate, deliberately.** The push
+completing is a fact. The count is not: it is read from `@{upstream}` **before**
+the push (a landed push fast-forwards that ref, so afterwards the answer is
+always 0), and a local view can be stale — someone else pushed — or point at a
+ref other than the one `pushToOrigin` targets, if an upstream was configured by
+hand. Making it exact would put a fetch in front of every push, and `git push`
+reports no count back either. So the line says "were ahead of the last known
+remote tip", never "N commit(s) pushed", and the docs tell an operator to read
+the two halves differently. For the same reason "nothing was ahead" is not read
+as "the turn committed nothing": the scheduler is also armed by an agent-driven
+HEAD move, not only by the post-turn commit.
+
+`GitManager.aheadBehind` returns null rather than throwing, and the whole probe
+is inside a try/catch, so it degrades the LINE and never the push (post-turn
+invariant 2). Null is reported as unmeasured, never as `0 commit(s)` — a first
+push announcing zero is the misreport class this scheduler has a whole docstring
+about.
 
 The line is admissible on the table's own terms — every variable part is a
 ShipIt-controlled number, and the branch, the remote and git's summary are not
 in it at all.
+
+**The post-push bookkeeping moved out of the push's own `catch`.** The
+`github_push_result` emit and the PR-poller cadence bump sat inside it, so a
+throw from a wedged viewer transport reported a push that HAD SUCCEEDED as
+`Auto-push failed (…)` — and an auth-shaped message would have invalidated the
+user's GitHub token on the strength of it. They are now isolated individually,
+the same way `report` isolates its surfaces.
 
 **One producer was split, as req 12 prescribes.** A push failure used to read
 `Auto-push failed (${failure}): ${errMsg}` — an authored classification welded

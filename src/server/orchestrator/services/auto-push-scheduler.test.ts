@@ -178,7 +178,12 @@ describe("auto-push scheduler — the push does not depend on a runner", () => {
     const lines = deps.broadcastLog.mock.calls.filter((c) => c[1] === "server").map((c) => c[2] as string);
     const completed = lines.filter((t) => t.startsWith("Auto-push completed"));
     expect(completed).toHaveLength(1);
-    expect(completed[0]).toMatch(/^Auto-push completed in \d+ms: 3 commit\(s\) pushed\.$/);
+    // "were ahead of the last known remote tip", not "pushed": the push
+    // completing is the fact, the count is a local pre-push measurement, and
+    // the line must not sell the second as the first.
+    expect(completed[0]).toMatch(
+      /^Auto-push completed in \d+ms: 3 commit\(s\) were ahead of the last known remote tip\.$/,
+    );
     expect(completed[0]).not.toContain("shipit/feature");
     expect(isOpsSafeLine(completed[0])).toBe(true);
   });
@@ -194,13 +199,13 @@ describe("auto-push scheduler — the push does not depend on a runner", () => {
 
     const line = deps.broadcastLog.mock.calls.map((c) => c[2] as string)
       .find((t) => t.startsWith("Auto-push completed"));
-    expect(line).toContain("nothing new to push");
+    expect(line).toContain("nothing was ahead of the last known remote tip");
     expect(isOpsSafeLine(line ?? "")).toBe(true);
   });
 
   it("reports an unmeasurable count as unmeasured, never as zero commits", async () => {
     // A branch with no upstream yet — the first push of a session. Claiming
-    // "0 commit(s) pushed" there is the misreport class this module exists for.
+    // "0 commit(s)" there is the misreport class this module exists for.
     const deps = makeDeps();
     createAutoPushScheduler(deps).schedule(fakeGit({ aheadBehind: vi.fn(async () => null) }), "s1");
 
@@ -210,6 +215,49 @@ describe("auto-push scheduler — the push does not depend on a runner", () => {
       .find((t) => t.startsWith("Auto-push completed"));
     expect(line).toContain("the commit count could not be measured");
     expect(isOpsSafeLine(line ?? "")).toBe(true);
+  });
+
+  it("a probe that throws costs the count, never the push", async () => {
+    // Post-turn invariant 2: the auto-push may not gain a new way to fail. The
+    // count is a nicety bolted onto a path whose job is to get the commit to
+    // origin, so an unreadable `.git` — or a GitManager stub without the method
+    // at all — must degrade the LINE and nothing else.
+    const deps = makeDeps();
+    const git = fakeGit({ aheadBehind: vi.fn(async () => { throw new Error("unreadable .git"); }) });
+    createAutoPushScheduler(deps).schedule(git, "s1");
+
+    await fireDebounce();
+
+    expect(git.push).toHaveBeenCalledWith("origin", "shipit/feature");
+    const line = deps.broadcastLog.mock.calls.map((c) => c[2] as string)
+      .find((t) => t.startsWith("Auto-push completed"));
+    expect(line).toContain("the commit count could not be measured");
+  });
+
+  it("a throw from the post-push bookkeeping does not turn a landed push into a failure", async () => {
+    // A viewer transport or the PR poller failing is not a git failure. While
+    // both sat inside the push's own `try`, one throw reported a push that HAD
+    // SUCCEEDED as `Auto-push failed (…)` — and an auth-shaped message would
+    // have invalidated the user's token on the strength of it.
+    const runner = fakeRunner();
+    runner.emitMessage.mockImplementation((m: { type: string }) => {
+      if (m.type === "github_push_result") throw new Error("Authentication failed: viewer transport is wedged");
+    });
+    const deps = makeDeps({
+      getRunner: () => runner,
+      notifyAutoPush: vi.fn(() => { throw new Error("poller is wedged"); }),
+    });
+    const git = fakeGit();
+    createAutoPushScheduler(deps).schedule(git, "s1");
+
+    await fireDebounce();
+
+    const lines = deps.broadcastLog.mock.calls.map((c) => c[2] as string);
+    expect(lines.some((t) => t.startsWith("Auto-push completed"))).toBe(true);
+    expect(lines.some((t) => t.startsWith("Auto-push failed"))).toBe(false);
+    expect(lines.some((t) => t.startsWith("Git said: "))).toBe(false);
+    // And the credential is untouched: the push landed.
+    expect(deps.githubAuthManager.markTokenInvalid).not.toHaveBeenCalled();
   });
 
   it("splits a push failure into ShipIt's class and git's own words", async () => {
@@ -507,13 +555,38 @@ describe("auto-push scheduler — a push that cannot happen is never silent", ()
 
     await fireDebounce();
 
-    expect(deps.broadcastLog).toHaveBeenCalledWith(
-      "s1",
-      "server",
-      expect.stringContaining("Authentication failed"),
-    );
+    // The split applies to this branch too, and is asserted as a PAIR: the
+    // authored class line (which crosses the session boundary) and git's own
+    // words on their own line (which do not). Searching for the raw error
+    // anywhere would go green with either half reverted.
+    const lines = deps.broadcastLog.mock.calls.map((c) => c[2] as string);
+    expect(lines).toContain("Auto-push failed (auth). The commit stays in this session's local history.");
+    expect(lines).toContain("Git said: Authentication failed");
+    expect(lines.filter((t) => isOpsSafeLine(t))).toHaveLength(1);
     // ...and the lease is still released, so the session stays reclaimable.
     expect(runner.endPostTurnWork).toHaveBeenCalledTimes(1);
+  });
+
+  it("splits the GH008 report too, and its authored half is now a whole line", async () => {
+    // The LFS branch already ended in `Git said: ${errMsg}`, welded to the end
+    // of otherwise fully-authored prose. Moving it to its own line is what made
+    // the remedy sentence templatable at all.
+    const deps = makeDeps();
+    createAutoPushScheduler(deps).schedule(
+      fakeGit({
+        push: vi.fn(async () => { throw new Error("remote: GH008: unknown Git LFS object for /workspace/big.bin"); }),
+      }),
+      "s1",
+    );
+
+    await fireDebounce();
+
+    const lines = deps.broadcastLog.mock.calls.map((c) => c[2] as string);
+    const opsSafe = lines.filter((t) => isOpsSafeLine(t));
+    expect(opsSafe).toHaveLength(1);
+    expect(opsSafe[0]).toContain("Git LFS objects were not uploaded (GH008)");
+    expect(opsSafe[0]).not.toContain("/workspace/big.bin");
+    expect(lines.some((t) => t.startsWith("Git said: ") && t.includes("/workspace/big.bin"))).toBe(true);
   });
 
   it("releases the lease and logs when reporting the outcome itself throws", async () => {

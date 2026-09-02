@@ -140,12 +140,14 @@ dropped unless the session was created as an ops session.
   panel for that window.
 
   **Push outcomes are reported on both sides, so silence means something.** A
-  successful auto-push writes `Auto-push completed in Nms: N commit(s) pushed.`
-  — or `nothing new to push …` when the turn produced no commits — alongside the
-  existing rejection, deferral and failure lines. So "did the last five turns
-  produce and push commits?" is answerable from here: a run of completions with
-  commit counts, a run of `nothing new to push`, or an explicit failure. What
-  the failure lines do NOT carry is git's own message: a failure prints
+  successful auto-push writes `Auto-push completed in Nms: N commit(s) were
+  ahead of the last known remote tip.` — or `nothing was ahead …` — alongside
+  the existing rejection, deferral and failure lines. So "did the last five
+  turns push?" is answerable here: a run of completions, a run of `nothing was
+  ahead`, or an explicit failure. Read the two halves of that line differently:
+  the push **completing** is a fact, the **count** is ShipIt's own pre-push
+  measurement against its local view of the remote, which can be stale. What the
+  failure lines do NOT carry is git's own message: a failure prints
   `Auto-push failed (<class>). …` and puts git's words on a separate `Git said:`
   line that stays withheld.
 

@@ -435,12 +435,15 @@ journalctl -D /var/log/journal --since "6 hours ago" --no-pager | grep <session-
   likely hiding. Either way the remedy is the same: ask the operator to read the
   session's Logs panel for that window rather than concluding nothing happened.
   The same applies if the chat itself is what the question needs.
-- **A push that WORKED says so.** \`Auto-push completed in Nms: N commit(s)
-  pushed.\` — or \`nothing new to push …\` for a turn that committed nothing.
-  That is what makes "did the last five turns push?" answerable: you are reading
-  positive confirmations, not inferring success from an absence of failures. A
-  failure names its class (\`Auto-push failed (<class>). …\`) and puts git's own
-  message on a separate \`Git said:\` line, which is withheld.
+- **A push that WORKED says so.** \`Auto-push completed in Nms: N commit(s) were
+  ahead of the last known remote tip.\` — or \`nothing was ahead …\`. That is
+  what makes "did the last five turns push?" answerable: you are reading
+  positive confirmations, not inferring success from an absence of failures. The
+  push **completing** is a fact; the **count** is ShipIt's own pre-push
+  measurement against a local view of the remote that can be stale, so do not
+  quote it as what the remote received. A failure names its class
+  (\`Auto-push failed (<class>). …\`) and puts git's own message on a separate
+  \`Git said:\` line, which is withheld.
 - **Empty window vs pruned logs.** These look the same and mean opposite things,
   so the output states which one you got. A session's logs are removed when it is
   archived, deleted, or fully reset — for those, absence is not evidence.

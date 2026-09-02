@@ -146,7 +146,12 @@ describe("auto-push: success and failure", () => {
       .flatMap((m) => (m.type === "log_append" ? m.records : []))
       .map((r) => r.text)
       .find((t) => t.startsWith("Auto-push completed"));
-    expect(completed).toMatch(/^Auto-push completed in \d+ms: [1-9]\d* commit\(s\) pushed\.$/);
+    // Exactly ONE: the fixture pushed the branch, then this turn wrote one file
+    // and auto-committed once. A looser `[1-9]\d*` would go green on a
+    // measurement that counted the whole branch history.
+    expect(completed).toMatch(
+      /^Auto-push completed in \d+ms: 1 commit\(s\) was ahead of the last known remote tip\.$/,
+    );
 
     expect(messages.some((m) => m.type === "github_push_result" && m.success)).toBe(true);
   });
