@@ -37,7 +37,8 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 
 - [ ] Agents tab in `ProjectSettings.tsx` with the single toggle
 - [ ] Toggle help text: own pull request only, checks and branch protection still apply
-- [ ] `shipit-docs/github.md`: the grant, the flush, and the two-call `--auto` loop
+- [x] Draft the replacement `shipit-docs/github.md` section ([agent-docs.md](./agent-docs.md))
+- [ ] Move that draft into `shipit-docs/github.md`, with the `gh pr merge` table row
 
 ## Quality
 
