@@ -27,6 +27,7 @@ const FIXTURE: PluginReposSnapshot = {
       ref: null,
       commit: null,
       status: "self",
+      pinned: false,
       uses: [{ plugin: "probe", alias: "probe", found: true, credentials: [], hosts: [] }],
       issues: [],
     },
@@ -36,6 +37,7 @@ const FIXTURE: PluginReposSnapshot = {
       ref: "branch main",
       commit: null,
       status: "active",
+      pinned: false,
       uses: [{ plugin: "probe", alias: "remote-probe", found: null, credentials: [], hosts: [] }],
       issues: [],
     },
@@ -427,6 +429,127 @@ describe("PluginReposPanel", () => {
           restore();
         }
       });
+    });
+  });
+
+  // req 12 — "the user or the agent can request a plugin refresh". The agent's
+  // half has been a shim verb since the feature shipped; this is the user's.
+  describe("refreshing a repository from the card (req 12)", () => {
+    const card = (over: Partial<PluginReposSnapshot["repos"][number]> = {}) => ({
+      declared: true,
+      pending: false,
+      activating: false,
+      consumerRepoUrl: "https://github.com/x/y",
+      warnings: [],
+      repos: [
+        {
+          name: "tools",
+          source: "a/b",
+          ref: "branch main",
+          commit: "abcdef0123",
+          status: "active" as const,
+          pinned: false,
+          uses: [],
+          issues: [],
+          ...over,
+        },
+      ],
+    });
+
+    /** Answer the refresh with `row`, then every refetch with the same card. */
+    const stub = (
+      row: Record<string, unknown> | null,
+      snapshot: PluginReposSnapshot,
+    ): { calls: { url: string; body: unknown }[]; restore: () => void } => {
+      const calls: { url: string; body: unknown }[] = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = ((url: string, init?: RequestInit) => {
+        calls.push({ url, body: typeof init?.body === "string" ? JSON.parse(init.body) : null });
+        return url.endsWith("/plugin/refresh")
+          ? Promise.resolve({
+            ok: row !== null,
+            status: row === null ? 400 : 200,
+            json: async () => (row === null ? { error: "fetch denied" } : { rows: [row] }),
+          } as Response)
+          : Promise.resolve({ ok: true, status: 200, json: async () => snapshot } as Response);
+      }) as typeof fetch;
+      return { calls, restore: () => { globalThis.fetch = originalFetch; } };
+    };
+
+    it("offers Refresh on a branch-tracking repository and posts its name", async () => {
+      const snapshot = card();
+      setSnapshot(snapshot);
+      const { calls, restore } = stub({ status: "activated", before: "abcdef0123", after: "9876543210" }, snapshot);
+      try {
+        render(<PluginReposPanel />);
+        fireEvent.click(screen.getByText("Refresh"));
+        await waitFor(() => expect(screen.getByTestId("plugin-refresh-outcome")).toBeTruthy());
+        expect(calls[0].url).toBe("/api/sessions/sess/plugin/refresh");
+        expect(calls[0].body).toEqual({ repo: "tools" });
+      } finally {
+        restore();
+      }
+    });
+
+    // req 8 — a pinned project "stays at that exact revision until its
+    // declaration changes", so a Refresh here could only ever report "already
+    // at". The card says why instead of leaving a button-shaped hole.
+    it("offers no Refresh on a pinned repository, and says what does move it", () => {
+      setSnapshot(card({ pinned: true, ref: "pin v1.2.0" }));
+      render(<PluginReposPanel />);
+      expect(screen.queryByText("Refresh")).toBeNull();
+      expect(screen.getByText(/Pinned to an exact revision/)).toBeTruthy();
+    });
+
+    // req 27 — a self-declared repository IS the working tree; edits are live
+    // and there is no version to fetch. Ratified in the mockup before the tab
+    // was built ("No Refresh button: edits apply live").
+    it("offers no Refresh on a self-declared repository", () => {
+      setSnapshot(card({ source: "self", status: "self", ref: null, commit: null }));
+      render(<PluginReposPanel />);
+      expect(screen.queryByText("Refresh")).toBeNull();
+    });
+
+    // The one outcome that changes NOTHING on the card. Without a reported
+    // answer the button would look broken in exactly the case where it worked
+    // and there was simply nothing to do.
+    it("reports 'already at' when the tracked tip is what is already live", async () => {
+      const snapshot = card();
+      setSnapshot(snapshot);
+      const { restore } = stub({ status: "unchanged", before: "abcdef0123", after: "abcdef0123" }, snapshot);
+      try {
+        render(<PluginReposPanel />);
+        fireEvent.click(screen.getByText("Refresh"));
+        await waitFor(() => expect(screen.getByText(/nothing to update/)).toBeTruthy());
+        // Scoped to the row: the header chip carries the same commit, and the
+        // point here is that the ANSWER names it.
+        expect(screen.getByTestId("plugin-refresh-outcome").textContent).toContain("abcdef012");
+      } finally {
+        restore();
+      }
+    });
+
+    it("reports a failure with its reason, naming the commit still live (req 15)", async () => {
+      const snapshot = card();
+      setSnapshot(snapshot);
+      const { restore } = stub(null, snapshot);
+      try {
+        render(<PluginReposPanel />);
+        fireEvent.click(screen.getByText("Refresh"));
+        await waitFor(() => expect(screen.getByTestId("plugin-refresh-outcome")).toBeTruthy());
+        expect(screen.getByText(/Refresh failed/)).toBeTruthy();
+        expect(screen.getByText("fetch denied")).toBeTruthy();
+      } finally {
+        restore();
+      }
+    });
+
+    // Refresh IS the activation round, one serial queue per repository — a
+    // second press would queue behind the first and report on it.
+    it("disables the button while a round is already running", () => {
+      setSnapshot(card({ status: "activating" }));
+      render(<PluginReposPanel />);
+      expect(screen.getByText("Refresh").closest("button")?.disabled).toBe(true);
     });
   });
 });

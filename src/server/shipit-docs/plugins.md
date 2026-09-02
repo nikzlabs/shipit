@@ -247,6 +247,13 @@ non-zero exit: nothing is broken, but you are not running what you think.
 shipit plugin refresh --json     # the same rows, plus the last install
 ```
 
+The user has the same verb without asking you: each branch-tracking repository's
+card in the **Plugins tab** carries a **Refresh** button, on this route and this
+round. So a repository may move under you between turns — read the card's commit
+(or `shipit plugin status`) rather than remembering what you last activated. A
+**pinned** repository has no such button: a pin only moves when `shipit.yaml`
+changes, which is an edit, not a refresh.
+
 `--json` adds an `install` object per repository: the commit it was for, the
 outcome, and **the tail of what the install printed — on a successful install as
 well as a failed one**. That is the answer to "it says it installed, so what did

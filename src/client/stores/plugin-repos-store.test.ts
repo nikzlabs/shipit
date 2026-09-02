@@ -140,6 +140,7 @@ describe("tab gating and attention (plan §3)", () => {
     ref: "main",
     commit: null,
     status: "active" as const,
+    pinned: false,
     uses: [],
     issues: [] as string[],
   };
@@ -288,6 +289,113 @@ describe("allowHost", () => {
     await usePluginReposStore.getState().allowHost("fal.run", "session");
     usePluginReposStore.setState({ forSessionId: "sess-a" });
     await usePluginReposStore.getState().allowHost("   ", "global");
+    expect(impl).not.toHaveBeenCalled();
+  });
+});
+
+// req 12 — the USER's half of the refresh verb, on the same route and the same
+// round `shipit plugin refresh` runs. Every assertion here is about the answer
+// the button gets back: an act with no reported outcome is what this replaces.
+describe("refreshRepo", () => {
+  const REFRESH_URL = "/api/sessions/sess-a/plugin/refresh";
+
+  beforeEach(() => {
+    usePluginReposStore.setState({ snapshot: snapshot(), forSessionId: "sess-a" });
+    useSessionStore.setState({ sessionId: "sess-a" });
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  const captureFetch = (refreshResponse: Response): ReturnType<typeof vi.fn> => {
+    const impl = vi.fn(async (url: string) =>
+      url === REFRESH_URL
+        ? refreshResponse.clone()
+        : new Response(JSON.stringify(snapshot()), { status: 200 }),
+    );
+    globalThis.fetch = impl as unknown as typeof fetch;
+    return impl;
+  };
+
+  const rowResponse = (row: Record<string, unknown>): Response =>
+    new Response(JSON.stringify({ rows: [row] }), { status: 200 });
+
+  it("posts the one named repository, never a blanket refresh", async () => {
+    const impl = captureFetch(rowResponse({ repo: "tools", status: "unchanged", after: "abc" }));
+    await usePluginReposStore.getState().refreshRepo("tools");
+    expect(impl.mock.calls[0][0]).toBe(REFRESH_URL);
+    expect(JSON.parse(String(impl.mock.calls[0][1].body))).toEqual({ repo: "tools" });
+  });
+
+  it("reports the three successful shapes apart", async () => {
+    captureFetch(rowResponse({ status: "activated", before: "old", after: "new-commit" }));
+    expect(await usePluginReposStore.getState().refreshRepo("tools")).toEqual({
+      repo: "tools", kind: "activated", commit: "new-commit",
+    });
+
+    // docs/266 reqs 5, 6 — the commit did not move and the plugin was installed
+    // again anyway. Reporting `unchanged` would tell the user their press did
+    // nothing, which is the one thing it demonstrably did not do.
+    captureFetch(rowResponse({ status: "activated", reinstalled: true, after: "same" }));
+    expect(await usePluginReposStore.getState().refreshRepo("tools")).toMatchObject({
+      kind: "reinstalled", commit: "same",
+    });
+
+    captureFetch(rowResponse({ status: "unchanged", after: "same", detail: "tag moved" }));
+    expect(await usePluginReposStore.getState().refreshRepo("tools")).toEqual({
+      repo: "tools", kind: "unchanged", commit: "same", detail: "tag moved",
+    });
+  });
+
+  it("carries the failure and the commit that is STILL live (req 15)", async () => {
+    captureFetch(rowResponse({ status: "failed", after: "prior", detail: "fetch denied" }));
+    expect(await usePluginReposStore.getState().refreshRepo("tools")).toEqual({
+      repo: "tools", kind: "failed", commit: "prior", detail: "fetch denied",
+    });
+  });
+
+  it("turns a refused request into a reported failure rather than a throw", async () => {
+    // The route answers 400 for a name the declaration does not have, and 501
+    // where the runtime has no refresh hook at all. The caller is a button:
+    // every one of those has to arrive as something to show the user.
+    captureFetch(new Response(JSON.stringify({ error: "`x` is not declared." }), { status: 400 }));
+    expect(await usePluginReposStore.getState().refreshRepo("x")).toEqual({
+      repo: "x", kind: "failed", commit: null, detail: "`x` is not declared.",
+    });
+
+    captureFetch(new Response("not json", { status: 500 }));
+    expect(await usePluginReposStore.getState().refreshRepo("tools")).toMatchObject({
+      kind: "failed", detail: "HTTP 500",
+    });
+
+    // A 200 that reported on nothing is not a success either.
+    captureFetch(new Response(JSON.stringify({ rows: [] }), { status: 200 }));
+    expect(await usePluginReposStore.getState().refreshRepo("tools")).toMatchObject({ kind: "failed" });
+  });
+
+  it("refetches the snapshot on success AND on failure", async () => {
+    // A failed refresh still changes the card — the attempt's error becomes an
+    // issue row and the status becomes `degraded` — so the stale snapshot must
+    // not be what the user reads afterwards.
+    for (const response of [
+      rowResponse({ status: "activated", after: "new" }),
+      new Response(JSON.stringify({ error: "nope" }), { status: 400 }),
+    ]) {
+      const impl = captureFetch(response);
+      await usePluginReposStore.getState().refreshRepo("tools");
+      expect(impl.mock.calls.map((c) => c[0])).toEqual([
+        REFRESH_URL,
+        "/api/plugin-repos?sessionId=sess-a",
+      ]);
+    }
+  });
+
+  it("does nothing without a session", async () => {
+    const impl = captureFetch(rowResponse({ status: "unchanged", after: "x" }));
+    usePluginReposStore.setState({ forSessionId: null });
+    expect(await usePluginReposStore.getState().refreshRepo("tools")).toMatchObject({ kind: "failed" });
     expect(impl).not.toHaveBeenCalled();
   });
 });

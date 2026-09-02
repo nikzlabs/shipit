@@ -41,6 +41,25 @@ let fetchGeneration = 0;
 /** req 24 — where a granted host lands: this session only, or the whole instance. */
 export type PluginHostGrantScope = "session" | "global";
 
+/**
+ * req 12 — what one repository's refresh did, as the card reports it.
+ *
+ * A narrow re-statement of the route's row rather than the server type, the way
+ * `shipit plugin refresh` already re-states it in the shim: this is a wire
+ * shape, and both readers of it want only the four facts a person is told.
+ * `failed` also carries a request that never produced a row at all (a 400, a
+ * dropped connection) — from the user's side those are the same event, and
+ * silence is the one outcome the button must never have.
+ */
+export interface PluginRepoRefreshOutcome {
+  repo: string;
+  kind: "activated" | "reinstalled" | "unchanged" | "failed";
+  /** The exact commit live NOW — after a failure, still the prior one (req 15). */
+  commit: string | null;
+  /** Why it failed, or an advisory (a moved tag a durable pin overrode). */
+  detail?: string;
+}
+
 interface PluginReposState {
   /** The active session's snapshot; null until the first fetch lands. */
   snapshot: PluginReposSnapshot | null;
@@ -49,6 +68,8 @@ interface PluginReposState {
   fetchSnapshot: (sessionId: string) => Promise<void>;
   /** Resolves with what the add took effect on (planning#376), or null if the server said nothing. */
   allowHost: (host: string, scope: PluginHostGrantScope) => Promise<EgressHostGrantOutcome | null>;
+  /** req 12 — bring one declared repository to its tracked branch's tip, now. */
+  refreshRepo: (repoName: string) => Promise<PluginRepoRefreshOutcome>;
   reset: () => void;
 }
 
@@ -117,6 +138,66 @@ export const usePluginReposStore = create<PluginReposState>((set, get) => ({
     }
   },
 
+  /**
+   * req 12 — the USER's half of "the user or the agent can request a plugin
+   * refresh", on the same route `shipit plugin refresh` uses.
+   *
+   * One route, deliberately: refresh is generation activation, and the
+   * properties req 15 needs — install before publish, an atomic swap, a failure
+   * leaving the prior generation whole and live — belong to that round rather
+   * than to whoever asked for it. A browser-only second path would be a second
+   * mechanism to keep coherent with the first.
+   *
+   * Always resolves, never throws: the caller is a button, and every way this
+   * can end is something to tell the person who pressed it. The snapshot is
+   * refetched on EVERY outcome including a failed one, because a refresh that
+   * failed still changes the card (the activation attempt's error becomes an
+   * issue row, and the status becomes `degraded`) — the same reason `allowHost`
+   * refetches in a `finally`.
+   */
+  refreshRepo: async (repoName: string) => {
+    const sessionId = get().forSessionId;
+    if (!sessionId) {
+      return { repo: repoName, kind: "failed", commit: null, detail: "No active session." };
+    }
+    try {
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/plugin/refresh`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ repo: repoName }),
+        },
+      );
+      const body = (await res.json().catch(() => ({}))) as {
+        rows?: unknown;
+        error?: unknown;
+      };
+      if (!res.ok || typeof body.error === "string") {
+        const detail = typeof body.error === "string" ? body.error : `HTTP ${res.status}`;
+        return { repo: repoName, kind: "failed", commit: null, detail };
+      }
+      const row = Array.isArray(body.rows) ? (body.rows[0] as Record<string, unknown> | undefined) : undefined;
+      // A 200 with no row means the round ran nothing for this repository —
+      // which for a name the card itself printed is a server-side state the
+      // user cannot act on, so it is reported rather than rendered as success.
+      if (!row) {
+        return {
+          repo: repoName,
+          kind: "failed",
+          commit: null,
+          detail: "ShipIt reported nothing for this repository. Try again in a moment.",
+        };
+      }
+      return toOutcome(repoName, row);
+    } catch (err) {
+      console.warn("[plugin-repos] refresh failed:", err);
+      return { repo: repoName, kind: "failed", commit: null, detail: String(err) };
+    } finally {
+      await get().fetchSnapshot(sessionId);
+    }
+  },
+
   reset: () => {
     // Invalidate in-flight fetches: a response from before the reset would
     // otherwise repopulate the store for a session the user has left.
@@ -124,6 +205,26 @@ export const usePluginReposStore = create<PluginReposState>((set, get) => ({
     set({ snapshot: null, forSessionId: null });
   },
 }));
+
+/**
+ * One `PluginRefreshRow` off the wire, narrowed to what the card says.
+ *
+ * `reinstalled` is its own outcome rather than a flavour of `activated`
+ * (docs/266 reqs 5, 6): the commit did not move and the plugin was nevertheless
+ * installed again, so both "updated to X" and "already at X" would be wrong.
+ */
+function toOutcome(repo: string, row: Record<string, unknown>): PluginRepoRefreshOutcome {
+  const commit = typeof row.after === "string" ? row.after : null;
+  const detail = typeof row.detail === "string" ? row.detail : undefined;
+  const kind: PluginRepoRefreshOutcome["kind"] = row.status === "failed"
+    ? "failed"
+    : row.reinstalled === true
+      ? "reinstalled"
+      : row.status === "activated"
+        ? "activated"
+        : "unchanged";
+  return { repo, kind, commit, ...(detail ? { detail } : {}) };
+}
 
 type SetState = (partial: Partial<PluginReposState>) => void;
 

@@ -434,6 +434,55 @@ describe("buildPluginReposSnapshot", () => {
     expect(tools?.uses).toEqual([{ plugin: "probe", alias: "remote", found: null, credentials: [], hosts: [] }]);
   });
 
+  // req 8, req 12 — what the card's Refresh action is gated on. A pin is
+  // resolved once and deliberately frozen (`plugin-pins.ts`), so the only thing
+  // that moves it is an edit to this declaration; the tab must not offer an
+  // action that could never do anything.
+  it("marks a pinned repository pinned, and a branch-tracking or self one not", () => {
+    const warnings: string[] = [];
+    const plugins = parsePluginRepos(
+      {
+        repos: [
+          { repo: "self", name: "dev" },
+          { repo: "a/b", name: "tracked", branch: "main" },
+          { repo: "a/c", name: "tagged", pin: "v1.2.0" },
+          { repo: "a/d", name: "sha-pinned", pin: "0123456789abcdef0123456789abcdef01234567" },
+          // No `branch` and no `pin` — the repository's default branch, which
+          // is tracked just as much as a named one.
+          { repo: "a/e", name: "defaulted" },
+        ],
+        use: [],
+      },
+      NO_TRACKERS,
+      warnings,
+    );
+    const snapshot = buildPluginReposSnapshot(plugins, [], null, warnings);
+    const pinnedByName = Object.fromEntries(snapshot.repos.map((r) => [r.name, r.pinned]));
+    expect(pinnedByName).toEqual({
+      dev: false,
+      tracked: false,
+      tagged: true,
+      "sha-pinned": true,
+      defaulted: false,
+    });
+  });
+
+  // The declaration decides, not the generation: a project that pinned a
+  // repository AFTER a branch-built generation went live would otherwise keep
+  // being offered a refresh that cannot move it.
+  it("reads pinned off the declaration even when a live generation records a branch ref", () => {
+    const warnings: string[] = [];
+    const plugins = parsePluginRepos(
+      { repos: [{ repo: "a/b", name: "tools", pin: "v2.0.0" }], use: [] },
+      NO_TRACKERS,
+      warnings,
+    );
+    const card = buildPluginReposSnapshot(plugins, [], null, warnings, {
+      tools: { commit: "abc123def", ref: "branch main", exports: [] },
+    }).repos[0];
+    expect(card).toMatchObject({ status: "active", ref: "branch main", pinned: true });
+  });
+
   it("keeps only plugin/export-shaped warnings", () => {
     const snapshot = buildPluginReposSnapshot(
       { declared: true, repos: [], uses: [] },

@@ -104,7 +104,11 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     CLIs update, within seconds, without recreating the session and with no
     publish, deploy, or authentication step. This is the
     edit-a-plugin-and-test-it loop: push from a plugin-repo session, refresh
-    in the project session, test.
+    in the project session, test. The **user's** way to ask is the session's
+    Plugins tab, per declared repository. A **pinned** repository offers no
+    refresh there: its version moves only when the declaration changes
+    (req 8), so the tab says that instead of carrying an action that could
+    never move it.
 13. When a plugin repository, its selected ref, or a plugin's service
     definition cannot be loaded, the project session still opens and stays
     usable for project work. It clearly reports that plugins are unavailable
@@ -371,6 +375,18 @@ ever saying the second.
 answer's date and the words that settled it.
 
 ## Resolved questions
+
+- **2026-09-02 — Where does the USER refresh a plugin, and may a pinned one be
+  refreshed?** Stated directly by the user: *"I should be able to update
+  (refresh) a plugin from the UI, from the plugin tab, if the plugin is not
+  pinned."* Req 12 had said "the user or the agent can request a plugin
+  refresh" since 2026-08-11 and only the agent's half was ever built — a shim
+  verb (`shipit plugin refresh`) over `POST /api/sessions/:id/plugin/refresh`.
+  The user's half had no surface at all: the tab could report a version and
+  never move it. The pinned exclusion follows req 8 and is now written where a
+  reader will find it rather than left to be re-derived from two requirements.
+  → req 12 amended; the tab's card carries the action, and a pinned card says
+  what does move it.
 
 - **2026-08-19 — Are plugin skills user-callable?** Stated directly by the
   user, with a screenshot of the composer's `/` menu: *"plugin skills are not
