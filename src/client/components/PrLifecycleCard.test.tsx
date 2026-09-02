@@ -756,6 +756,33 @@ describe("PrLifecycleCard", () => {
       expect(screen.queryByTestId("auto-resolve-last-error")).toBeNull();
     });
 
+    // A viewer that reconnected across the intervening reset never renders the
+    // non-exhausted snapshots, so it sees `exhausted A -> exhausted B` directly.
+    // Keying the dismissal on the status alone would keep the new failure hidden.
+    it("re-opens when a different failure replaces the dismissed one directly", () => {
+      setCard("s1", exhausted("timeout"));
+
+      render(<PrLifecycleCard sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("auto-resolve-dismiss"));
+      expect(screen.queryByTestId("auto-resolve-last-error")).toBeNull();
+
+      act(() => setCard("s1", exhausted("error: could not apply abc1234")));
+      expect(screen.getByTestId("auto-resolve-last-error")).toHaveTextContent(
+        /could not apply abc1234/,
+      );
+    });
+
+    it("keeps the error scrollable by keyboard and names both controls", () => {
+      setCard("s1", exhausted("error: could not apply abc1234\n".repeat(200)));
+
+      render(<PrLifecycleCard sessionId="s1" />);
+
+      // Without a tab stop, a keyboard-only user cannot scroll the clipped text.
+      expect(screen.getByTestId("auto-resolve-last-error")).toHaveAttribute("tabindex", "0");
+      expect(screen.getByRole("button", { name: "Dismiss auto-resolve failure" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    });
+
     it("re-opens for a later failure, because the status leaves exhausted first", () => {
       setCard("s1", exhausted("timeout"));
 

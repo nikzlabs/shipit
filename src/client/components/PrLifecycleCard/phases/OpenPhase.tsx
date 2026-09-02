@@ -152,20 +152,26 @@ export function OpenPhase({
 function AutoResolveFailureBanner({ sessionId, card }: { sessionId: string; card: PrCardState }) {
   const enabled = useSettingsStore((s) => s.autoResolveConflicts);
   const setToast = useUiStore((s) => s.setToast);
-  const status = card.autoResolve?.status;
-  // Dismissal hides ONE failure, not the feature. "exhausted" is terminal until
-  // user activity or a new head SHA resets the manager, so any later failure is
-  // necessarily preceded by a non-exhausted status — re-arming on that
-  // transition means the next exhaustion shows the banner again.
-  // The re-arm is a render-phase adjustment rather than an effect: it is
-  // derived from the status this render already has, and it self-terminates
-  // (once cleared, the condition is false).
-  const [dismissed, setDismissed] = useState(false);
-  if (dismissed && status !== "exhausted") setDismissed(false);
+  // The failure on show, or null when there is none. Both re-arm conditions read
+  // off this one value.
+  const lastError =
+    card.autoResolve?.status === "exhausted" ? (card.autoResolve.lastError ?? "unknown error") : null;
+  // Dismissal hides ONE failure, not the feature, so it is keyed on the failure
+  // it dismissed. That re-arms the banner on BOTH transitions that mean "this is
+  // a different failure": the status leaving "exhausted" (lastError → null), and
+  // a fresh exhaustion carrying a different error. Keying on the status alone
+  // would miss `exhausted A → exhausted B` — which a viewer that reconnected
+  // across the intervening reset genuinely sees, since it never rendered the
+  // non-exhausted snapshots in between.
+  //
+  // The re-arm is a render-phase adjustment rather than an effect: it is derived
+  // from the state this render already has, and it self-terminates (once
+  // cleared, the condition is false).
+  const [dismissedError, setDismissedError] = useState<string | null>(null);
+  if (dismissedError !== null && dismissedError !== lastError) setDismissedError(null);
   if (!enabled) return null;
-  if (card.autoResolve?.status !== "exhausted") return null;
-  if (dismissed) return null;
-  const lastError = card.autoResolve.lastError ?? "unknown error";
+  if (lastError === null) return null;
+  if (dismissedError === lastError) return null;
 
   const handleRetry = async () => {
     try {
@@ -190,9 +196,13 @@ function AutoResolveFailureBanner({ sessionId, card }: { sessionId: string; card
       {/* `max-h-20` + `overflow-y-auto` bound the height at ~5 lines; a short
           error still renders as the single line it always was. `min-w-0` lets
           the box shrink inside the flex row so long tokens wrap instead of
-          widening the card. */}
+          widening the card. `tabIndex` puts the clipped text in the tab order,
+          which is what makes a keyboard-only user able to scroll it. */}
       <div
         className="min-w-0 flex-1 max-h-20 overflow-y-auto whitespace-pre-wrap wrap-break-word text-(--color-text-tertiary)"
+        tabIndex={0}
+        role="group"
+        aria-label="Auto-resolve failure detail"
         data-testid="auto-resolve-last-error"
       >
         Auto-resolve couldn&rsquo;t finish. Last error: {lastError}.
@@ -205,15 +215,17 @@ function AutoResolveFailureBanner({ sessionId, card }: { sessionId: string; card
       >
         Retry
       </button>
+      {/* `-my-1 p-1` widens the hit target to a comfortable tap size without
+          adding a row of height to the banner. */}
       <button
         type="button"
-        onClick={() => setDismissed(true)}
+        onClick={() => setDismissedError(lastError)}
         aria-label="Dismiss auto-resolve failure"
         title="Dismiss"
-        className="shrink-0 text-(--color-text-tertiary) hover:text-(--color-text-primary) cursor-pointer"
+        className="shrink-0 -my-1 p-1 text-(--color-text-tertiary) hover:text-(--color-text-primary) cursor-pointer"
         data-testid="auto-resolve-dismiss"
       >
-        <XIcon size={ICON_SIZE.XS} />
+        <XIcon size={ICON_SIZE.SM} />
       </button>
     </div>
   );
