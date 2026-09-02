@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: auth-blocked detection + iframe refresh (external system sync)
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useEventListener } from "../../hooks/useEventListener.js";
 import { WarningIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
@@ -171,7 +171,23 @@ export function PreviewFrame({
   // for it are renderer processes kept for a document whose containers are gone.
   // Release them; a later visit recreates the slot at its remembered path. The
   // active session is never touched — see the hook.
-  useReleaseStoppedPreviews(sessionId, dropSessionSlots);
+  //
+  // `slotCanGoBack` is component state keyed by slot, so it has to be forgotten
+  // alongside the slot: a rebuilt iframe has no history of its own, and a
+  // retained `true` would offer a Back button with nowhere to go — the same
+  // reason this is not persisted with `previewPaths` in the first place.
+  const releaseStoppedSession = useCallback((stoppedSessionId: string) => {
+    const dropped = dropSessionSlots(stoppedSessionId);
+    if (dropped.length > 0) {
+      setSlotCanGoBack((prev) => {
+        const next = new Map(prev);
+        for (const key of dropped) next.delete(key);
+        return next;
+      });
+    }
+    return dropped;
+  }, [dropSessionSlots]);
+  useReleaseStoppedPreviews(sessionId, releaseStoppedSession);
 
   const activeSlotKey = activePort ? `${sessionId ?? "_"}:${activePort}` : null;
   const activeSlot = activeSlotKey ? slots.get(activeSlotKey) ?? null : null;

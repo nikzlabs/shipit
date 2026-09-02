@@ -333,8 +333,13 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
           const mgr = serviceManagers.get(sessionId);
           if (!mgr) return;
           serviceManagers.delete(sessionId);
-          trackComposeStop(composeStopPromises, sessionId, mgr);
-          announcePreviewsStopped(sessionId);
+          // Announced when the stop SUCCEEDS, not when it starts: a viewer acts
+          // on this by dropping the session's iframes, and `compose down` is
+          // both asynchronous and allowed to fail. Broadcasting here would
+          // discard a document that is still being served.
+          trackComposeStop(composeStopPromises, sessionId, mgr, {
+            onStopped: () => announcePreviewsStopped(sessionId),
+          });
         },
       },
       sseBroadcast,

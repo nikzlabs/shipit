@@ -1930,6 +1930,18 @@ describe("destroyContainer — previewsStopped flag on container_destroyed", () 
     expect(events).toEqual([{ sessionId: "sess-x", previewsStopped: true }]);
   });
 
+  it("reports previews STILL RUNNING when a replacement teardown will rebuild them", async () => {
+    // Rescue and the create-retry path destroy fully and immediately rebuild,
+    // so the previews come back on the same origins. A viewer told "gone"
+    // discards a background document that could have reconnected — state loss,
+    // not an inevitable reload.
+    const { deps, events } = setup();
+
+    await destroyContainer(deps, "sess-x", { replacementFollows: true });
+
+    expect(events).toEqual([{ sessionId: "sess-x", previewsStopped: false }]);
+  });
+
   it("reports previews STILL RUNNING when child resources are preserved", async () => {
     // The agent-restart / image-rotation path and the idle enforcer's tier 1,
     // which stop the agent container precisely so the user's preview keeps

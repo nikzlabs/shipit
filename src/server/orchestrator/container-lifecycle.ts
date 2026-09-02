@@ -1782,7 +1782,7 @@ export async function cleanupSessionDockerResources(
 export async function destroyContainer(
   deps: LifecycleDeps,
   sessionId: string,
-  opts: { preserveChildResources?: boolean } = {},
+  opts: { preserveChildResources?: boolean; replacementFollows?: boolean } = {},
 ): Promise<void> {
   // Diagnostic: emit a stack trace at every destroy entry. Field reports
   // show session containers receiving SIGTERM with exit 0 (consistent
@@ -1886,10 +1886,21 @@ export async function destroyContainer(
 
   sc.status = "stopped";
   deps.containers.delete(sessionId);
-  // The second argument is whether the Compose stack went with it — the same
-  // condition the sweep above is gated on, read straight from it rather than
-  // re-derived, so the two can't drift.
-  deps.emitter.emit("container_destroyed", sessionId, !opts.preserveChildResources);
+  // planning#496 — does this teardown END the session's previews?
+  //
+  // Two conditions, and both are needed. The sweep must have been in scope
+  // (`preserveChildResources` keeps the Compose stack serving on purpose), AND
+  // no replacement may be following: Rescue and the create-retry path destroy
+  // fully and then immediately rebuild, so their previews come back on the same
+  // origins moments later. A viewer told "gone" drops the session's iframes,
+  // and for those two paths a retained background document could have survived
+  // and reconnected — dropping it there is real state loss, not an inevitable
+  // reload.
+  deps.emitter.emit(
+    "container_destroyed",
+    sessionId,
+    !opts.preserveChildResources && !opts.replacementFollows,
+  );
 }
 
 // ---------------------------------------------------------------------------

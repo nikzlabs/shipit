@@ -1252,9 +1252,17 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * Also cleans up Docker resources (containers, networks, volumes) created
    * by the session through the Docker API proxy.
    */
-  async destroy(sessionId: string): Promise<void> {
+  /**
+   * @param opts.replacementFollows This teardown is one half of a rebuild — a
+   * replacement container is about to be created for the same session (Rescue,
+   * the create-retry path). Suppresses the `previewsStopped` announcement on
+   * `container_destroyed`, because the previews return on the same origins
+   * moments later and a viewer would otherwise discard a retained document that
+   * could have reconnected (planning#496).
+   */
+  async destroy(sessionId: string, opts: { replacementFollows?: boolean } = {}): Promise<void> {
     this.lastCreateErrors.delete(sessionId);
-    return destroyContainer(this.lifecycleDeps(), sessionId);
+    return destroyContainer(this.lifecycleDeps(), sessionId, opts);
   }
 
   /**

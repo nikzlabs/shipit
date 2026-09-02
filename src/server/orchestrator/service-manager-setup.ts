@@ -446,12 +446,34 @@ export function trackComposeStop(
   composeStopPromises: Map<string, Promise<void>>,
   sessionId: string,
   mgr: { stop: (opts?: { removeVolumes?: boolean }) => Promise<void> },
-  opts: { removeVolumes?: boolean } = {},
+  opts: {
+    removeVolumes?: boolean;
+    /**
+     * Ran only when the stop actually SUCCEEDED — planning#496's announcement
+     * that the session's previews are gone, which a viewer acts on by dropping
+     * the session's iframes. Announcing when the stop was merely *started*
+     * would drop a live document while `compose down` was still running, and
+     * announcing on failure would drop one that is still being served.
+     */
+    onStopped?: () => void;
+  } = {},
 ): void {
+  // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form: the success and failure arms must stay separate, so `onStopped` cannot run on a failed stop and a throw inside it cannot be logged as one
   const stopPromise = mgr.stop(opts)
-    .catch((err: unknown) => {
-      console.error(`[compose:${sessionId}] Failed to stop compose stack:`, err);
-    })
+    .then(
+      () => {
+        // Guarded so a throwing callback cannot be mistaken below for the stop
+        // itself having failed.
+        try {
+          opts.onStopped?.();
+        } catch (err: unknown) {
+          console.error(`[compose:${sessionId}] onStopped callback threw:`, err);
+        }
+      },
+      (err: unknown) => {
+        console.error(`[compose:${sessionId}] Failed to stop compose stack:`, err);
+      },
+    )
     .finally(() => {
       // Only clear our entry — a fresh stop may have replaced it.
       if (composeStopPromises.get(sessionId) === stopPromise) {

@@ -325,8 +325,11 @@ both wrong.** Two were checked at the source and rejected before the third:
 - **Runner disposal is not it.** `ContainerSessionRunner.dispose()` says in as
   many words that it does *not* stop worker resources — "the container stays
   alive and a new runner may reconnect to it. Stopping the preview would force a
-  full restart on reconnect." A runner going away tells you nothing about the
-  preview.
+  full restart on reconnect." (Its *registered* `"disposed"` listener in
+  `service-manager-setup.ts` does stop the ServiceManager unless preservation
+  was armed, so disposal sometimes coincides with previews stopping — but not
+  reliably enough to key on. An unexpected container exit takes that path and
+  goes unannounced: a missed reclaim, which is the benign direction.)
 - **`container_destroyed` alone is not it either.** It fires on both teardown
   shapes, including `destroyAgentContainer()` (`preserveChildResources`), which
   exists precisely so a worker refresh does not interrupt the preview stack.
@@ -338,12 +341,33 @@ both wrong.** Two were checked at the source and rejected before the third:
   than that issue assumed, and a listener that fired on tier 1 would destroy
   exactly the preview tier 1 exists to preserve.
 
-So the signal is the narrow one: `container_destroyed` gained a
-`previewsStopped` flag, read straight off the same `!preserveChildResources`
-condition that gates the Compose sweep so the two cannot drift, and the SSE
-event **`session_previews_stopped`** is broadcast from the two places where
-previews genuinely stop — a full container teardown, and tier 2's
-`services.stop`.
+So the signal is the narrow one. `container_destroyed` gained a
+`previewsStopped` flag, true only when the teardown both had the Compose sweep
+in scope (`!preserveChildResources`, read straight off the condition that gates
+the sweep so the two cannot drift) **and** has no replacement following it.
+That second term matters: Rescue and the create-retry path destroy fully and
+immediately rebuild, so their previews return on the same origins moments
+later, and a background document could have survived and reconnected — dropping
+it there is real state loss rather than an inevitable reload. Both pass
+`replacementFollows: true`.
+
+The SSE event **`session_previews_stopped`** is then broadcast from the two
+places previews genuinely stop: such a teardown, and tier 2's `services.stop` —
+the latter **only once `compose down` has actually resolved**. Announcing when
+the stop was merely *started* would drop a live document mid-teardown, and
+announcing on failure would drop one that is still being served; `compose down`
+is asynchronous and allowed to fail, so `trackComposeStop` gained an `onStopped`
+callback that runs on the success arm alone.
+
+**What the flag does not promise.** `cleanupSessionDockerResources` is
+deliberately best-effort — it swallows a failed list and continues past
+individual stop/remove failures — so `previewsStopped: true` asserts the shape
+of the teardown, not a verified outcome. That is the right predicate for the
+decision anyway: the paths it covers (archive, repo delete, disk-tier
+escalation, standby cleanup) are terminal for the session, so a retained
+document is not worth keeping even if some orphan survived the sweep. What it
+is not is a guarantee that no container is still listening, and no caller should
+read it as one.
 
 On the client, `notifyPreviewsStopped` → `useReleaseStoppedPreviews` →
 `IframePool.dropSessionSlots`, which routes every removal through `dropSlot` so
@@ -353,7 +377,13 @@ load-bearing and both are pinned by tests:
 - **The active session is never touched.** Its preview dying is already handled
   where the user can see it (the planning#478 waiting overlay), and pulling the
   iframe out from under the user is the failure mode the pool exists to prevent.
-  This can only ever reclaim background slots.
+  The guard compares against the same `sessionId` prop the rendered slot uses,
+  so it cannot disagree with what is on screen for any committed render. (Under
+  concurrent rendering there is a pre-commit window where the handler ref
+  already holds the next session's closure while the DOM still shows the
+  previous one. That is inherent to the latest-callback pattern the client uses
+  everywhere — `useEventListener` documents the same shape — and the cost here
+  is one background slot reloading, so it is accepted rather than special-cased.)
 - **A miss is benign.** A viewer that misses the event (an SSE interruption)
   keeps the slot until LRU evicts it, which is the behaviour that shipped
   before. That is why this is transition-keyed with no reconciling snapshot,
