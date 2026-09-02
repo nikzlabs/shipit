@@ -239,6 +239,31 @@ describe("SessionHealthStrip", () => {
     });
   });
 
+  // `lastCreateError` carries `getErrorMessage(err)` straight from a failed
+  // Docker create, so it is unbounded and routinely multi-line. The strip is a
+  // `flex: 0 1 auto` child of TerminalPanel's column and the log view is
+  // `flex-1 min-h-0`, so an unbounded error box takes its content height first
+  // and the log gets only what is left — measured in a browser at 316px of a
+  // 420px panel, leaving the log with no visible rows at all.
+  describe("a long creation error cannot squeeze out the log view", () => {
+    it("bounds the error box's height and scrolls the overflow", async () => {
+      defaultPolls({
+        ...healthMissing,
+        lastCreateError: "OCI runtime create failed: no such file or directory\n".repeat(24),
+        lastCreateErrorAt: Date.now(),
+      });
+
+      render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
+
+      const box = await screen.findByTestId("container-create-error");
+      expect(box.className).toContain("max-h-20");
+      expect(box.className).toContain("overflow-y-auto");
+      // The clipped text has to be reachable without a mouse.
+      expect(box.getAttribute("tabindex")).toBe("0");
+      expect(box.getAttribute("aria-label")).toBe("Container creation error detail");
+    });
+  });
+
   describe("button click sets rescueState with startedAt", () => {
     it("sets rescueState with startedAt when Restart agent is clicked", async () => {
       // First call: GET /container/health → missing

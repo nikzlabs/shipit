@@ -202,6 +202,49 @@ describe("PreviewServicesDrawer", () => {
     fireEvent.click(screen.getByRole("button", { name: /Ask the agent to fix/ }));
     expect(props.onSendToAgent).toHaveBeenCalledWith("db", "error", "exit 137 (OOM)");
   });
+
+  // `svc.error` is raw Compose stderr, so it is unbounded. The crash banner is
+  // `shrink-0` in the same column as the log below it, so an unbounded message
+  // pushes the log clean out of the card (measured in a browser: a 24-line
+  // stderr left zero log visible in a 420px drawer, and clipped the banner's
+  // own "Ask the agent to fix" link along with it). Both halves of the remedy
+  // are asserted here: the message is size-bounded and scrollable, and the log
+  // takes the leftover space instead of overflowing.
+  describe("a long crash error cannot squeeze out the log", () => {
+    const LONG_STDERR = "Error response from daemon: OCI runtime create failed\n".repeat(24);
+
+    it("bounds the error message's height and scrolls the overflow", () => {
+      const services = [svc({ name: "db", status: "error", error: LONG_STDERR })];
+      render(<PreviewServicesDrawer services={services} {...baseProps()} />);
+      fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
+
+      const box = screen.getByTestId("service-error-detail");
+      expect(box.className).toContain("max-h-20");
+      expect(box.className).toContain("overflow-y-auto");
+      // The clipped text has to be reachable without a mouse.
+      expect(box.getAttribute("tabindex")).toBe("0");
+      expect(box.getAttribute("aria-label")).toBe("db error detail");
+    });
+
+    it("gives the log view a flex-1 min-h-0 slot so it takes the leftover space", () => {
+      const services = [svc({ name: "db", status: "error", error: LONG_STDERR })];
+      render(<PreviewServicesDrawer services={services} {...baseProps()} />);
+      fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
+
+      // `<LogView>`'s own root is `h-full`, whose min-content height it cannot
+      // shrink past; as a bare flex child it overflowed the card instead of
+      // sharing the column. The wrapper is what makes it flex: 1 1 0%.
+      //
+      // Asserted through the slot's own testid, not through
+      // `logView.parentElement` — without the wrapper that parent is the CARD,
+      // which carries `flex-1 min-h-0` itself, so a class check on it passes
+      // whether or not the wrapper exists.
+      const slot = screen.getByTestId("service-log-slot");
+      expect(slot.className).toContain("flex-1");
+      expect(slot.className).toContain("min-h-0");
+      expect(slot).toContainElement(screen.getByTestId("log-view"));
+    });
+  });
 });
 
 describe("PreviewServicesDrawer — opens itself while no preview runs", () => {
