@@ -168,7 +168,9 @@ describe("setupServiceManager — overlay publish gate", () => {
    * so the tar race measured on 2026-09-02 (18 of 46 live containers) was invisible
    * to an ops session reading `shipit session logs`.
    */
-  async function logsForOutcomes(outcomes: DepDirPublishOutcome[]): Promise<string[]> {
+  async function logsForOutcomes(outcomes: DepDirPublishOutcome[]): Promise<
+    { sessionId: string; source: string; text: string }[]
+  > {
     repoStore.add(REMOTE);
     repoStore.setTrusted(REMOTE, true);
     const runner = runnerWithInstall();
@@ -180,8 +182,8 @@ describe("setupServiceManager — overlay publish gate", () => {
     await vi.waitFor(() => expect(publishOverlayBases).toHaveBeenCalled());
     await new Promise((r) => setImmediate(r));
     return broadcastLog.mock.calls
-      .map((c) => String(c[2]))
-      .filter((t) => t.startsWith("Dependency cache:"));
+      .map((c) => ({ sessionId: String(c[0]), source: String(c[1]), text: String(c[2]) }))
+      .filter((e) => e.text.startsWith("Dependency cache:"));
   }
 
   it("reports a failed dep-dir publish on a line an ops session may read", async () => {
@@ -190,16 +192,21 @@ describe("setupServiceManager — overlay publish gate", () => {
       { depDir: "tools/debug/node_modules", outcome: "error", error: "tar exited with code 1" },
       { depDir: "game/node_modules", outcome: "advanced", depth: 2, generation: 5 },
     ]);
-    expect(lines).toEqual([
-      "Dependency cache: 2 of 3 dependency directories could not be snapshotted as a shared base."
-      + " Later sessions of this repository reinstall instead of reusing it.",
-    ]);
+    expect(lines).toEqual([{
+      sessionId: "s1",
+      // `SERVER_LOG_SOURCES` is the cheap first cut in `queryHostSessionLogs`: any
+      // other source is dropped before the template is even consulted, so a source
+      // regression would make this invisible to ops with the text still perfect.
+      source: "server",
+      text: "Dependency cache: 2 of 3 dependency directories could not be snapshotted as a shared base."
+        + " Later sessions of this repository reinstall instead of reusing it.",
+    }]);
     // The producer's real string must match the docs/264 template, or the line is
     // withheld from `shipit session logs` and the failure stays invisible anyway.
-    expect(isOpsSafeLine(lines[0] ?? "")).toBe(true);
+    expect(isOpsSafeLine(lines[0]?.text ?? "")).toBe(true);
     // Counts only — a repo-declared `agent.dep-dirs` name must never reach the
     // ops-readable channel.
-    expect(lines[0]).not.toMatch(/node_modules/);
+    expect(lines[0]?.text).not.toMatch(/node_modules/);
   });
 
   it("stays quiet when every dep dir published or skipped for an ordinary reason", async () => {

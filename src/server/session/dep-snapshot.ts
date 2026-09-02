@@ -25,11 +25,16 @@
  * and passes it as `PublishCandidate.snapshotDir` to `publishBase`. This module owns
  * only the producer side; nothing here is wired into a live publish until that
  * consumer exists.
+ *
+ * **The dep dir is not quiescent while we read it** — see
+ * {@link createDepSnapshotTar} for the production measurement that disproved the
+ * original assumption, and for the two things that make a failed tar actually reach
+ * the consumer.
  */
 
 import { spawn } from "node:child_process";
 import path from "node:path";
-import type { Readable } from "node:stream";
+import { PassThrough, type Readable } from "node:stream";
 
 /**
  * Validate a dep-dir relpath is a safe subpath of the workspace — relative, no
@@ -55,97 +60,59 @@ export function depSnapshotTarArgs(workspaceRoot: string, depDir: string): strin
   return ["-c", "-f", "-", "-C", path.join(workspaceRoot, depDir), "."];
 }
 
-/** A running snapshot export: its tar stdout stream plus a completion promise. */
+/** A running snapshot export: its tar stream plus a completion promise. */
 export interface DepSnapshotStream {
-  /** tar's stdout — pipe this to the HTTP response (or any sink). */
+  /** The archive bytes — pipe this to the HTTP response (or any sink). */
   stream: Readable;
   /**
-   * Resolves when tar exits 0, or on the one tolerated exit-1 shape (see
-   * {@link isTolerableTarRace}); rejects on any other non-zero exit / spawn error
-   * (with captured stderr). A rejected `done` means the piped tar is truncated or
-   * of unknown consistency and must not be trusted as a base.
+   * Resolves when tar exits 0; rejects on a non-zero exit / spawn error (with
+   * captured stderr). A rejected `done` means the archive must not be trusted as a
+   * base — and `stream` is destroyed with that error rather than ending cleanly,
+   * so a consumer that only watches the stream cannot miss it.
    */
   done: Promise<void>;
 }
 
 /**
- * GNU tar's per-member warning, emitted when a member's stat differs between the
- * stat taken before the read and the one taken after. Capture group 1 is the
- * member path exactly as tar printed it, relative to `-C` (so the dep-dir root
- * itself is the literal `.`).
- */
-const FILE_CHANGED_RE = /^tar: (.+): file changed as we read it$/;
-
-/** Some tar builds append this after a warning that set the exit status. */
-const TAR_FAILURE_STATUS_LINE = "tar: Exiting with failure status due to previous errors";
-
-/**
- * Whether an exit-1 tar run is the ONE race we tolerate: every warning it printed
- * is `file changed as we read it` naming the dep-dir ROOT (`.`) and nothing else.
- *
- * The production workspace is NOT quiescent (see {@link createDepSnapshotTar}), and
- * GNU tar's exit 1 means "the archive is not an exact copy of the file set" — for a
- * base SHARED by every future session of the repo, that is normally a reason to
- * decline. The root-only case is the exception, and the distinction is what tar
- * itself reports:
- *
- *   - `tar: .: file changed as we read it` — the dep dir's own directory entry
- *     changed while tar read its listing: a top-level entry was created or removed
- *     (a dev server dropping `node_modules/.vite`, npm rewriting
- *     `node_modules/.package-lock.json`). tar stores no content for a directory, so
- *     no member's bytes are affected; at worst a transient top-level entry is
- *     absent from — or present in — the archive. Every stable member is intact.
- *   - `tar: ./pkg/index.js: file changed as we read it` — a member's own bytes moved
- *     under the read, so that member may be torn (tar writes exactly the stat'd
- *     size, zero-padding a shrink and truncating a growth). It also means something
- *     is structurally rewriting the tree — a concurrent install — which is precisely
- *     the state that must never become a shared base. Stays fatal.
- *
- * tar reports each changed member separately, so a stderr carrying only the root
- * warning is the evidence that no member's content was seen to change. The match is
- * deliberately whole-line and exact: an unrecognised line, a warning naming any path
- * inside the dep dir, or a stderr truncated mid-line by the 8 KiB cap all fail the
- * test and keep the run fatal.
- */
-export function isTolerableTarRace(stderr: string): boolean {
-  let sawRootRace = false;
-  for (const raw of stderr.split("\n")) {
-    const line = raw.trim();
-    if (line.length === 0) continue;
-    if (line === TAR_FAILURE_STATUS_LINE) continue;
-    const m = FILE_CHANGED_RE.exec(line);
-    if (m?.[1] !== ".") return false;
-    sawRootRace = true;
-  }
-  return sawRootRace;
-}
-
-/**
- * Spawn `tar` to stream the dep dir's contents as a tar archive on stdout.
+ * Spawn `tar` to stream the dep dir's contents as a tar archive.
  *
  * This used to assume the post-install / pre-agent workspace was quiescent, so that
- * tar's "file changed as we read it" race could not apply and any non-zero exit was
- * a real failure. **That assumption is false in production**: compose dev services
- * start in PARALLEL with `agent.install` (`service-manager-setup.ts` — the install
- * gate retries services that race it, it does not hold them back), and a running
- * Node dev server writes inside the dep dir it is served from — a Vite server keeps
- * its optimizer cache at `node_modules/.vite`. Measured on the production host
- * 2026-09-02, this failed the snapshot in 18 of 46 live containers (~39%), losing
- * the docs/183 rolling base for those dep dirs.
+ * tar's "file changed as we read it" race could not apply. **That assumption is
+ * false in production**: compose services start in PARALLEL with `agent.install`
+ * (`service-manager-setup.ts` — the install gate retries a service that races the
+ * install, it never defers starting one), and a running Node dev server writes
+ * inside the dep dir it is served from (a Vite server keeps its optimizer cache at
+ * `node_modules/.vite`). Creating or removing a top-level entry moves the dep dir's
+ * own mtime, so tar's final stat of `.` differs and it exits **1**. Measured on the
+ * production host 2026-09-02, this failed the snapshot in 18 of 46 live containers
+ * (~39%), losing the docs/183 rolling base for those dep dirs.
  *
- * So exit 1 is now decided on tar's own stderr: the dep-dir-root-only race resolves
- * (see {@link isTolerableTarRace}), everything else — any other warning, any exit
- * code other than 0 or 1 — still rejects.
+ * The rule here is UNCHANGED by that — a non-zero exit still rejects, because GNU
+ * tar's exit 1 means the archive is not an exact copy of the file set and this base
+ * is shared by every future session of the repo. What changed is that the race is
+ * now treated as **transient and retryable**: the orchestrator re-pulls once
+ * (`overlay-publish.ts`), so a one-shot write during the read costs a second pull
+ * instead of the whole optimization, and only an archive tar itself called clean is
+ * ever published.
+ *
+ * Two things make that rejection actually reach the consumer:
+ *
+ *  - **The stream does not EOF before the exit code is known.** `'close'` fires
+ *    AFTER stdout's `'end'` (verified), so piping tar's stdout straight to the HTTP
+ *    reply let a FAILED tar complete the response successfully — and both exit-1
+ *    shapes produce a structurally COMPLETE archive, so the orchestrator's `tar -x`
+ *    succeeded and published it. The `PassThrough` below withholds end-of-stream
+ *    until `done` settles, and destroys with the error when it rejects.
+ *  - **tar's behavioural environment is sanitized.** `TAR_OPTIONS` is read from the
+ *    environment by GNU tar and can add arbitrary flags — an `--exclude` there would
+ *    silently drop files from a repo-wide shared base. `LC_ALL=C` keeps the captured
+ *    stderr readable in logs whatever locale the image later grows.
  */
 export function createDepSnapshotTar(workspaceRoot: string, depDir: string): DepSnapshotStream {
+  const { TAR_OPTIONS: _dropped, ...env } = process.env;
   const proc = spawn("tar", depSnapshotTarArgs(workspaceRoot, depDir), {
     stdio: ["ignore", "pipe", "pipe"],
-    // The exit-1 decision below parses tar's stderr, and GNU tar translates its
-    // diagnostics under a non-C locale. Nothing sets one in the session image
-    // today, so this changes no behaviour — it pins the one input that decision
-    // reads, so a session env var or an image change can't silently turn every
-    // tolerable race back into a failed publish.
-    env: { ...process.env, LC_ALL: "C" },
+    env: { ...env, LC_ALL: "C" },
   });
 
   let stderr = "";
@@ -157,13 +124,6 @@ export function createDepSnapshotTar(workspaceRoot: string, depDir: string): Dep
     proc.on("error", reject);
     proc.on("close", (code) => {
       if (code === 0) {
-        resolve();
-      } else if (code === 1 && isTolerableTarRace(stderr)) {
-        // Kept as a log line rather than swallowed: a dep dir whose root churns on
-        // every snapshot is still worth seeing, even though the archive is sound.
-        console.warn(
-          `[dep-snapshot] tolerated a dep-dir root race while snapshotting ${path.join(workspaceRoot, depDir)}: ${stderr.trim()}`,
-        );
         resolve();
       } else {
         const detail = stderr.trim() ? `: ${stderr.trim()}` : "";
@@ -178,5 +138,25 @@ export function createDepSnapshotTar(workspaceRoot: string, depDir: string): Dep
     throw new Error("tar did not provide a stdout stream");
   }
 
-  return { stream: proc.stdout, done };
+  // `{ end: false }` is the whole point: WE decide when the consumer sees EOF, and
+  // that is only once tar's exit code is in. Errors on tar's own stdout are carried
+  // through the same gate rather than emitted on a stream nobody may be listening to.
+  const out = new PassThrough();
+  // Latched no-op `'error'` listener, for the same reason `overlay-snapshot.ts`
+  // latches one on the fetched body: we destroy this stream ourselves on a failed
+  // tar, and an `'error'` emitted on a listener-less stream is an
+  // `uncaughtException` — here, in the session worker. The consumer still sees the
+  // error through its own listener and through `done`.
+  out.on("error", () => {});
+  proc.stdout.on("error", (err: Error) => out.destroy(err));
+  proc.stdout.pipe(out, { end: false });
+  // Two-arg `.then` on purpose: this is the fire-and-forget gate release from a
+  // synchronous factory, and the rejection is ALSO reported through `done` itself.
+  // eslint-disable-next-line no-restricted-syntax
+  done.then(
+    () => out.end(),
+    (err: unknown) => out.destroy(err instanceof Error ? err : new Error(String(err))),
+  );
+
+  return { stream: out, done };
 }

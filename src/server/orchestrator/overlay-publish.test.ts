@@ -407,6 +407,104 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
     expect(pointerFor("node_modules")).toBeNull();
   });
 
+  it("retries a raced snapshot once, and publishes the clean attempt", async () => {
+    // The 2026-09-02 production degradation: a compose dev server writes inside the
+    // dep dir it is served from (`node_modules/.vite`) while the worker tars it, so
+    // tar exits 1 and refuses the archive — measured in 18 of 46 live containers
+    // (~39%), losing the rolling base each time. The write is one-shot, so the
+    // second pull no longer sees it. Publishing THAT is what keeps the guarantee
+    // that a shared base is only ever an archive tar itself called exact.
+    const attempts: string[] = [];
+    const out = await publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
+      depsWith({
+        fetchSnapshot: (_url, depDir) => {
+          attempts.push(depDir);
+          if (attempts.length === 1) {
+            return Promise.reject(new Error(
+              "tar exited with code 1 while snapshotting /workspace/node_modules: tar: .: file changed as we read it",
+            ));
+          }
+          return Promise.resolve(Readable.from([Buffer.from(depDir)]));
+        },
+      }),
+    );
+    expect(attempts).toEqual(["node_modules", "node_modules"]);
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    expect(baseContentFor("node_modules")).toBe("node_modules");
+  });
+
+  it("gives up after the retry rather than publishing a dep dir that never read clean", async () => {
+    // A dep dir being written CONTINUOUSLY is not a safe base at any attempt count.
+    const attempts: string[] = [];
+    const out = await publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
+      depsWith({
+        fetchSnapshot: (_url, depDir) => {
+          attempts.push(depDir);
+          return Promise.reject(new Error("tar exited with code 1: tar: .: file changed as we read it"));
+        },
+      }),
+    );
+    expect(attempts).toHaveLength(2);
+    expect(out).toEqual([
+      { depDir: "node_modules", outcome: "error", error: expect.stringContaining("file changed as we read it") },
+    ]);
+    expect(pointerFor("node_modules")).toBeNull();
+  });
+
+  it("does NOT retry a pull the session's disposal aborted", async () => {
+    // The worker is being SIGKILLed; a second pull would only stream from a socket
+    // that is already going away. `signal.aborted` is the tell.
+    const controller = new AbortController();
+    const attempts: string[] = [];
+    const out = await publishDepDirOverlayBases(
+      {
+        session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir },
+        workerUrl: "http://w",
+        installOk: true,
+        signal: controller.signal,
+      },
+      depsWith({
+        fetchSnapshot: () => {
+          attempts.push("pull");
+          controller.abort(new Error("session runner disposed"));
+          return Promise.reject(new Error("terminated"));
+        },
+      }),
+    );
+    expect(attempts).toHaveLength(1);
+    expect(out).toEqual([
+      { depDir: "node_modules", outcome: "error", error: expect.stringContaining("terminated") },
+    ]);
+  });
+
+  it("does not mix a failed attempt's partial tree into the retry's", async () => {
+    // `extractTarStream` recreates the dest dir, it does not clear it, so a retry
+    // over the same temp dir would otherwise publish the union of both attempts.
+    let call = 0;
+    const out = await publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
+      depsWith({
+        extract: async (stream, destDir) => {
+          for await (const _ of stream) { /* drain */ }
+          fs.mkdirSync(destDir, { recursive: true });
+          if (++call === 1) {
+            fs.writeFileSync(path.join(destDir, "half-written"), "from the raced attempt");
+            throw new Error("tar -x exited with code 1");
+          }
+          fs.writeFileSync(path.join(destDir, "content"), "clean");
+        },
+      }),
+    );
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    const ptr = pointerFor("node_modules");
+    expect(ptr).not.toBeNull();
+    // The base holds the clean attempt ALONE — no leftover from the raced one.
+    expect(fs.readdirSync(ptr?.baseDir ?? "").sort()).toEqual(["content"]);
+    expect(baseContentFor("node_modules")).toBe("clean");
+  });
+
   it("stops pulling remaining dep dirs once the signal aborts", async () => {
     workspaceDir = makeWorkspace(["node_modules", "packages/app/node_modules"], {
       shipitDepDirs: ["node_modules", "packages/app/node_modules"],

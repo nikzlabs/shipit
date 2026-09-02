@@ -1,16 +1,11 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
-import { spawn } from "node:child_process";
+import { describe, it, expect, afterEach } from "vitest";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import {
-  safeDepDirRelpath,
-  depSnapshotTarArgs,
-  createDepSnapshotTar,
-  isTolerableTarRace,
-} from "./dep-snapshot.js";
+import { safeDepDirRelpath, depSnapshotTarArgs, createDepSnapshotTar } from "./dep-snapshot.js";
 
 describe("safeDepDirRelpath", () => {
   it("accepts and normalizes safe relative subpaths", () => {
@@ -86,97 +81,130 @@ describe("createDepSnapshotTar", () => {
   });
 
   /**
-   * Build a dep dir whose payload is far larger than the 64 KiB OS pipe buffer +
-   * Node's 64 KiB stream buffer, so tar BLOCKS on stdout until the test drains it.
-   * That is what makes the concurrent-write regression tests deterministic rather
-   * than timing-dependent: we mutate the tree while tar is provably mid-read.
+   * A dep dir whose only bulk member is `big.bin`, far larger than the 64 KiB OS
+   * pipe buffer plus Node's 64 KiB stream buffer. Nothing drains the snapshot until
+   * the test says so, so tar BLOCKS partway through that member — which is what
+   * makes the concurrent-write tests below deterministic rather than timing
+   * dependent: the tree is mutated while tar is provably still reading it.
    */
   function bigDepDir(): { root: string; nm: string; big: string } {
     const root = tmp();
     const nm = path.join(root, "node_modules");
-    fs.mkdirSync(path.join(nm, "pkg"), { recursive: true });
-    fs.writeFileSync(path.join(nm, "pkg", "index.js"), "module.exports = 1;");
+    fs.mkdirSync(nm, { recursive: true });
     const big = path.join(nm, "big.bin");
     fs.writeFileSync(big, Buffer.alloc(4 * 1024 * 1024, 7));
     return { root, nm, big };
   }
 
-  it("resolves — with every stable member intact — when the dep-dir ROOT changes mid-read", async () => {
+  /**
+   * Both races below are GNU tar's post-read stat check. libarchive's bsdtar
+   * (macOS) has no equivalent on its write path, so it exits 0 and the race is
+   * simply unobservable there — skip rather than assert a contract that tar does
+   * not offer. Production and CI are Debian/GNU.
+   */
+  const gnuTar = (() => {
+    try {
+      return spawnSync("tar", ["--version"], { encoding: "utf8" }).stdout.includes("GNU tar");
+    } catch {
+      return false;
+    }
+  })();
+
+  it.runIf(gnuTar)("rejects, and does NOT end the stream cleanly, when the dep-dir ROOT changes mid-read", async () => {
     // The production symptom (2026-09-02, 18 of 46 live containers): a compose dev
-    // server creates/removes a top-level entry inside the dep dir it is served from
+    // server creates a top-level entry inside the dep dir it is served from
     // (`node_modules/.vite`) while the snapshot streams, so tar's final stat of the
     // dep-dir root differs and it exits 1 with `tar: .: file changed as we read it`.
-    // Before the fix this rejected `done`, the endpoint destroyed the stream, and
-    // the dep dir's shared rolling base was never advanced.
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      const { root, nm } = bigDepDir();
-      const dest = tmp();
-      const x = spawn("tar", ["-x", "-f", "-", "-C", dest], { stdio: ["pipe", "ignore", "ignore"] });
-      const xin = x.stdin;
-      if (!xin) throw new Error("tar -x has no stdin");
-      const extracted = new Promise<void>((resolve, reject) => {
-        x.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`extract exited ${code}`))));
-        x.on("error", reject);
-      });
+    //
+    // The archive tar produced is structurally COMPLETE, so the consumer's `tar -x`
+    // would succeed on it — the ONLY thing that stops it being published as a shared
+    // base is this stream erroring instead of ending. It used to end cleanly first
+    // (`'close'` fires after stdout's `'end'`), which is the hole the PassThrough
+    // gate closes. The orchestrator retries the pull; see `overlay-publish.ts`.
+    const { root, nm } = bigDepDir();
+    const { stream, done } = createDepSnapshotTar(root, "node_modules");
+    // First readable byte ⇒ tar has read the root's listing, written its headers and
+    // is inside `big.bin` (the only member with any bulk), blocked on an undrained
+    // stdout.
+    await once(stream, "readable");
+    fs.mkdirSync(path.join(nm, ".vite"));
 
-      const { stream, done } = createDepSnapshotTar(root, "node_modules");
-      // First readable byte ⇒ tar has already read the root's directory listing and
-      // is now streaming members, blocked on a stdout nobody is draining yet.
-      await once(stream, "readable");
-      fs.mkdirSync(path.join(nm, ".vite"));
-      stream.pipe(xin);
+    let endedCleanly = false;
+    stream.on("end", () => { endedCleanly = true; });
+    const streamErr = once(stream, "error");
+    stream.resume();
 
-      await Promise.all([done, extracted]); // `done` RESOLVES — this is the fix
-      // The archive is sound: only the transient top-level entry is absent.
-      expect(fs.readFileSync(path.join(dest, "pkg", "index.js"), "utf8")).toBe("module.exports = 1;");
-      expect(fs.statSync(path.join(dest, "big.bin")).size).toBe(4 * 1024 * 1024);
-      expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).toMatch(/tolerated a dep-dir root race/);
-    } finally {
-      warn.mockRestore();
-    }
+    await expect(done).rejects.toThrow(/file changed as we read it/);
+    const [err] = await streamErr;
+    expect(String(err)).toMatch(/file changed as we read it/);
+    expect(endedCleanly).toBe(false);
   });
 
-  it("still rejects when a MEMBER's own bytes change mid-read", async () => {
-    // The boundary of the tolerance: a member rewritten under the read may be torn
-    // in the archive (tar writes exactly the stat'd size), and this base is SHARED
-    // by every future session of the repo. Declining is the correct outcome.
+  it.runIf(gnuTar)("rejects when a MEMBER's own bytes change mid-read", async () => {
+    // The other stderr variant observed in production (`./deep-eql/index.js`). This
+    // one can genuinely tear a member — tar writes exactly the stat'd size, padding a
+    // shrink and truncating a growth — and the archive is still complete, so the
+    // rejection is the only thing between it and a repo-wide shared base.
     const { root, big } = bigDepDir();
     const { stream, done } = createDepSnapshotTar(root, "node_modules");
-    await once(stream, "readable"); // tar is inside `big.bin` — it is the only bulk
+    await once(stream, "readable"); // tar is inside `big.bin`
     const fd = fs.openSync(big, "r+");
     fs.writeSync(fd, Buffer.from([9]), 0, 1, 0);
     fs.closeSync(fd);
     stream.resume();
     await expect(done).rejects.toThrow(/big\.bin: file changed as we read it/);
   });
-});
 
-describe("isTolerableTarRace", () => {
-  it("tolerates the dep-dir root race — the dominant production stderr", () => {
-    expect(isTolerableTarRace("tar: .: file changed as we read it\n")).toBe(true);
-    expect(isTolerableTarRace(
-      "tar: .: file changed as we read it\ntar: Exiting with failure status due to previous errors\n",
-    )).toBe(true);
+  it("does not crash the worker when a failed tar's stream has no listener", async () => {
+    // The stream is destroyed with the error on a failed tar, and an `'error'`
+    // emitted on a listener-less stream is an `uncaughtException` — in the session
+    // worker process. Same hazard `overlay-snapshot.ts` latches against.
+    const root = tmp();
+    const uncaught: unknown[] = [];
+    const onUncaught = (err: unknown): void => { uncaught.push(err); };
+    process.on("uncaughtException", onUncaught);
+    try {
+      const { done } = createDepSnapshotTar(root, "does-not-exist"); // `stream` deliberately untouched
+      await expect(done).rejects.toThrow(/tar exited/);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off("uncaughtException", onUncaught);
+    }
   });
 
-  it("stays fatal for a warning naming a member INSIDE the dep dir", () => {
-    // The other stderr variant observed in production. A package file rewritten
-    // mid-read means a concurrent install is restructuring the tree — never a base.
-    expect(isTolerableTarRace("tar: ./deep-eql/index.js: file changed as we read it\n")).toBe(false);
-    expect(isTolerableTarRace("tar: ./.vite: file changed as we read it\n")).toBe(false);
-    // One tolerable line does not launder an intolerable one beside it.
-    expect(isTolerableTarRace(
-      "tar: .: file changed as we read it\ntar: ./deep-eql/index.js: file changed as we read it\n",
-    )).toBe(false);
-  });
-
-  it("stays fatal for anything that is not that warning", () => {
-    expect(isTolerableTarRace("")).toBe(false);
-    expect(isTolerableTarRace("tar: Exiting with failure status due to previous errors\n")).toBe(false);
-    expect(isTolerableTarRace("tar: /workspace/node_modules: Cannot open: No such file or directory\n")).toBe(false);
-    expect(isTolerableTarRace("tar: ./x: File removed before we read it\n")).toBe(false);
-    // A stderr truncated mid-line by the 8 KiB cap must not squeak through.
-    expect(isTolerableTarRace("tar: .: file changed as we re")).toBe(false);
+  it("does not inherit TAR_OPTIONS, which could silently drop files from a shared base", async () => {
+    // GNU tar reads TAR_OPTIONS from the environment and applies it as extra flags.
+    // An `--exclude` there would remove members from a base every future session of
+    // the repo mounts, with nothing in the archive to show for it.
+    const root = tmp();
+    const nm = path.join(root, "node_modules");
+    fs.mkdirSync(path.join(nm, "pkg"), { recursive: true });
+    fs.writeFileSync(path.join(nm, "pkg", "index.js"), "module.exports = 1;");
+    const dest = tmp();
+    const prev = process.env.TAR_OPTIONS;
+    process.env.TAR_OPTIONS = "--exclude=pkg";
+    try {
+      // The EXTRACTOR is spawned with TAR_OPTIONS stripped by hand, so the only
+      // thing this asserts is whether the PRODUCER honoured it.
+      const { TAR_OPTIONS: _ignored, ...cleanEnv } = process.env;
+      const x = spawn("tar", ["-x", "-f", "-", "-C", dest], {
+        stdio: ["pipe", "ignore", "ignore"],
+        env: cleanEnv,
+      });
+      const xin = x.stdin;
+      if (!xin) throw new Error("tar -x has no stdin");
+      const extracted = new Promise<void>((resolve, reject) => {
+        x.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`extract exited ${code}`))));
+        x.on("error", reject);
+      });
+      const { stream, done } = createDepSnapshotTar(root, "node_modules");
+      stream.pipe(xin);
+      await Promise.all([done, extracted]);
+      expect(fs.existsSync(path.join(dest, "pkg", "index.js"))).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.TAR_OPTIONS;
+      else process.env.TAR_OPTIONS = prev;
+    }
   });
 });
