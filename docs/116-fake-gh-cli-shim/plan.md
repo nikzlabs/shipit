@@ -175,6 +175,27 @@ Two changes, mirroring how `--json` field names are already handled:
   `mergedAt` is what distinguishes it. `mergedAt` is a `--json` field, and the
   plain-text row prints `merged` rather than REST's `closed`.
 
+#### A failed list is not an empty one (added later)
+
+Reviewing the `--state` fix surfaced the same shape a third time, on the same
+read. `listPullRequests` ended `if (!res.ok) return []`, so a 403 on a private
+repository, a rate-limit response and a GitHub 5xx all reached the shim as
+`{ prs: [] }` and printed **"No pull requests found."** — an unreadable
+repository and an empty one were the same answer, for every `--state`.
+
+The read now carries its outcome (`ListPullRequestsResult`: `{ ok: true, prs }`
+or `{ ok: false, error }`), and `ok: true` with an empty `prs` is the only way
+to say "none". `services/github.ts` raises `ServiceError(502, …)` on a failure
+and the route's existing `ServiceError` handler answers non-2xx, which the
+shim already renders through `formatError`. The merged path needs its own
+guard: GraphQL reports a permission failure as an `errors` array in a **200**,
+so `res.ok` is not enough there.
+
+This is the same fix `viewPullRequestResult` applies to the single-PR read
+(docs/255), and it is deliberately shaped the same way — except that a list has
+no analogue of that read's 404, where absence is a genuine answer. No status on
+this path means "there are none".
+
 ### Auth and identity
 
 The shim never sees the GitHub token. The orchestrator owns it. If GitHub auth is not configured for the session, the worker rejects the request with a clear error: *"GitHub is not connected for this ShipIt session. Ask the user to connect GitHub in the UI."* The shim prints this verbatim.

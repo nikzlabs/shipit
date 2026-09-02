@@ -274,6 +274,14 @@ describe("listPullRequests", () => {
     mergedAt: "2026-08-02T00:00:00Z", baseRefName: "main", headRefName: "feat",
   };
 
+  /** Unwrap a successful read, failing the test rather than the type checker. */
+  async function prsOf(state: Parameters<typeof listPullRequests>[3]) {
+    const res = await listPullRequests("tok", "o", "r", state);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error(res.error);
+    return res.prs;
+  }
+
   it("selects merged PRs server-side rather than filtering a page of closed ones", async () => {
     const { urls, bodies } = mockFetchRecording(graphqlNodes([NODE]));
     await listPullRequests("tok", "o", "r", "merged");
@@ -289,8 +297,7 @@ describe("listPullRequests", () => {
     const { bodies } = mockFetchRecording(
       graphqlNodes([{ ...NODE, number: 4, mergedAt: "2024-01-01T00:00:00Z" }]),
     );
-    const prs = await listPullRequests("tok", "o", "r", "merged");
-    expect(prs.map((p) => p.number)).toEqual([4]);
+    expect((await prsOf("merged")).map((p) => p.number)).toEqual([4]);
     expect(bodies[0]).toContain('"first":30');
   });
 
@@ -298,19 +305,14 @@ describe("listPullRequests", () => {
     mockFetchRecording(graphqlNodes([NODE]));
     // `state` stays "closed" because that is how GitHub models a merged PR;
     // `mergedAt` is the field that distinguishes it.
-    expect(await listPullRequests("tok", "o", "r", "merged")).toEqual([
+    expect(await prsOf("merged")).toEqual([
       { url: "u", number: 8, base: "main", head: "feat", title: "T", state: "closed", isDraft: false, mergedAt: "2026-08-02T00:00:00Z" },
     ]);
   });
 
-  it("returns nothing on a GraphQL error rather than a half-mapped row", async () => {
-    mockFetch({ errors: [{ message: "Resource not accessible" }] });
-    expect(await listPullRequests("tok", "o", "r", "merged")).toEqual([]);
-  });
-
   it("passes the REST states through untouched and carries mergedAt", async () => {
     const { urls } = mockFetchRecording([restPr({ number: 3, state: "open", merged_at: null })]);
-    const prs = await listPullRequests("tok", "o", "r", "open");
+    const prs = await prsOf("open");
     expect(urls[0]).toContain("state=open");
     expect(urls[0]).toContain("per_page=30");
     expect(prs).toEqual([
@@ -322,7 +324,76 @@ describe("listPullRequests", () => {
     // `all` stays on REST, so mergedAt has to survive that mapping too —
     // otherwise the two paths disagree about the same pull request.
     mockFetchRecording([restPr({ number: 8, state: "closed", merged_at: "2026-08-02T00:00:00Z" })]);
-    const prs = await listPullRequests("tok", "o", "r", "all");
-    expect(prs[0]).toMatchObject({ state: "closed", mergedAt: "2026-08-02T00:00:00Z" });
+    expect((await prsOf("all"))[0]).toMatchObject({ state: "closed", mergedAt: "2026-08-02T00:00:00Z" });
+  });
+
+  /**
+   * A read that failed and a repository with no pull requests must never look
+   * alike. `if (!res.ok) return []` made every one of these render as `gh pr
+   * list`'s "No pull requests found." — so an ops investigation could conclude
+   * a repository was empty when it merely lacked permission to read it.
+   */
+  describe("a failed read is not an empty one", () => {
+    it("reports a 403 on a private repo, carrying GitHub's own message", async () => {
+      mockFetch({ message: "Resource not accessible by integration" }, 403);
+      expect(await listPullRequests("tok", "o", "r", "open")).toEqual({
+        ok: false, error: "Resource not accessible by integration",
+      });
+    });
+
+    it("reports a rate-limit response rather than an empty repository", async () => {
+      mockFetch({ message: "API rate limit exceeded" }, 429);
+      const res = await listPullRequests("tok", "o", "r", "open");
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.error).toContain("rate limit");
+    });
+
+    it("reports a 5xx, falling back to the status when the body isn't JSON", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response("<html>502 Bad Gateway</html>", { status: 502, statusText: "Bad Gateway" }),
+      );
+      const res = await listPullRequests("tok", "o", "r", "open");
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.error).toContain("502");
+    });
+
+    it("reports a GraphQL error on the merged path, which answers 200", async () => {
+      // GraphQL signals a permission failure in the body, not the status, so
+      // the merged path needs its own guard — `res.ok` is true here.
+      mockFetch({ errors: [{ message: "Resource not accessible" }] });
+      expect(await listPullRequests("tok", "o", "r", "merged")).toEqual({
+        ok: false, error: "Resource not accessible",
+      });
+    });
+
+    it("reports a non-2xx on the merged path too", async () => {
+      mockFetch({ message: "Bad credentials" }, 401);
+      expect(await listPullRequests("tok", "o", "r", "merged")).toEqual({
+        ok: false, error: "Bad credentials",
+      });
+    });
+
+    it.each([
+      ["an empty body", {}],
+      ["a null data", { data: null }],
+      ["a null repository", { data: { repository: null } }],
+    ])("reports a malformed GraphQL 200 (%s) rather than 'none'", async (_label, payload) => {
+      // GitHub can answer 200 with no `errors` and no node list. Defaulting the
+      // missing path to [] would smuggle the original bug back in through the
+      // last gap: "did not answer" is not "there are none".
+      mockFetch(payload);
+      expect((await listPullRequests("tok", "o", "r", "merged")).ok).toBe(false);
+    });
+
+    it("still says 'none' with ok:true, so absence keeps its own answer", async () => {
+      // The other half of the contract, on both paths: an empty repository
+      // must not start reading as an error either.
+      mockFetchRecording([]);
+      expect(await listPullRequests("tok", "o", "r", "open")).toEqual({ ok: true, prs: [] });
+      mockFetch(graphqlNodes([]));
+      expect(await listPullRequests("tok", "o", "r", "merged")).toEqual({ ok: true, prs: [] });
+    });
   });
 });

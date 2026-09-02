@@ -1082,6 +1082,35 @@ describe("gh pr list", () => {
     expect(out.stdout).not.toContain("closed");
   });
 
+  it("prints the broker's error instead of 'No pull requests found'", async () => {
+    // An unreadable repository and an empty one must not look alike: a 403 on
+    // a private repo used to arrive as `{ prs: [] }` and print the same line a
+    // genuinely empty repository does.
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "list"],
+      {
+        "GET /agent-ops/pr/list": {
+          status: 502,
+          body: { error: "Failed to list pull requests: Resource not accessible by integration" },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("Resource not accessible by integration");
+    expect(out.stdout).not.toContain("No pull requests found");
+  });
+
+  it("still says 'No pull requests found' for a successful empty read", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "list"],
+      { "GET /agent-ops/pr/list": { status: 200, body: { prs: [] } } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("No pull requests found");
+  });
+
   it("can return mergedAt via --json", async () => {
     const { run } = makeRunner();
     const out = await run(

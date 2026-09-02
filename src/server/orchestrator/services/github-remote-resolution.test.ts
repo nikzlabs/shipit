@@ -34,7 +34,9 @@ function makeGit(remotes: { name: string; url: string }[]) {
 function makeGitHub(): GitHubAuthManager {
   return {
     authenticated: true,
-    listPullRequests: vi.fn(async () => []),
+    // `{ ok: true, prs: [] }` is the shape that means "no pull requests"; a
+    // bare `[]` would now read as a failed request and make the service throw.
+    listPullRequests: vi.fn(async () => ({ ok: true as const, prs: [] })),
   } as unknown as GitHubAuthManager;
 }
 
