@@ -301,6 +301,16 @@ export type PrepareReleaseResult =
       releaseBranch: string;
       prNumber: number;
       prUrl: string;
+      /**
+       * True iff an OPEN release PR was updated rather than a new one opened —
+       * which is exactly what the shim prints ("updated release PR #N").
+       *
+       * `agentCreatePr` also hands back MERGED/CLOSED pull requests (its
+       * not-progressed short-circuit, docs/202) under the same `alreadyExisted`
+       * flag; forwarding one here would report a dead pull request as an
+       * in-flight release. `prepareFinalRelease` refuses that case outright, so
+       * this flag can only ever mean "open" — see the guard at its return.
+       */
       alreadyExisted: boolean;
       /**
        * docs/214 cold-start guard — set when merging this PR into the
@@ -549,6 +559,35 @@ async function prepareFinalRelease(
     ...(args.cancelAutoPush ? { cancelAutoPush: args.cancelAutoPush } : {}),
     ...(args.chatHistory ? { chatHistory: args.chatHistory } : {}),
   });
+
+  // A release result may only ever carry an OPEN pull request: the shim renders
+  // `alreadyExisted` as "updated release PR #N", so a MERGED/CLOSED one would
+  // announce a release that is in flight when nothing was opened at all.
+  // `agentCreatePr` returns exactly that from its not-progressed short-circuit
+  // (docs/202), under the same flag.
+  //
+  // The ordinary flow can't reach it — `release/<version>` was just rebuilt off
+  // `origin/<releaseBranch>` and carries the bump commit, so the progress gate
+  // reads "progressed" and opens a NEW pull request. It becomes reachable when
+  // the dead pull request targeted a DIFFERENT base than this run's release
+  // branch (a changed `--release-branch` / `release.branch`, or a base that no
+  // longer exists on the remote): the gate then measures against that other
+  // base and refuses. Nothing can be merged in that state, so fail loudly.
+  //
+  // Testing for `!== "open"` rather than for the two dead values is deliberate:
+  // the reason is optional on the return type, and a reason we can't read is a
+  // pull request we can't prove is live. Refusing is the safe answer.
+  if (pr.alreadyExisted && pr.alreadyExistedReason !== "open") {
+    const state = pr.alreadyExistedReason === "closed-not-progressed" ? "closed" : "merged";
+    throw new ServiceError(
+      409,
+      `The branch "${headBranch}" already has a ${state} pull request (#${pr.number}, into "${pr.baseBranch}"), ` +
+        `and GitHub cannot reopen it. The version bump was pushed to "${headBranch}" but has no pull request to ` +
+        `carry it, so nothing would publish. This usually means this run targets a different release branch ` +
+        `("${releaseBranch}") than that pull request did — re-run against "${pr.baseBranch}", or release a ` +
+        `different version.`,
+    );
+  }
 
   return {
     kind: "pr-opened",

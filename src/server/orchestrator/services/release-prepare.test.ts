@@ -179,6 +179,73 @@ describe("prepareRelease — content-free guard (docs/214)", () => {
   });
 });
 
+/**
+ * `alreadyExisted` is rendered by the shim as "updated release PR #N", so it may
+ * only ever describe an OPEN pull request. `agentCreatePr` hands back MERGED and
+ * CLOSED ones under the same flag from its not-progressed short-circuit
+ * (docs/202), and forwarding one would announce a release that was never opened.
+ */
+describe("prepareRelease — only an OPEN release PR may be reported", () => {
+  const deadPr = (reason: string, notProgressedBecause: string) => ({
+    number: 12,
+    url: "https://github.com/o/r/pull/12",
+    title: "Release v0.2.0",
+    baseBranch: "stable",
+    headBranch: "release/0.2.1",
+    insertions: 1,
+    deletions: 1,
+    alreadyExisted: true,
+    alreadyExistedReason: reason,
+    notProgressedBecause,
+  });
+
+  it("forwards an updated OPEN PR as alreadyExisted", async () => {
+    agentCreatePrMock.mockResolvedValue({
+      number: 7,
+      url: "https://github.com/o/r/pull/7",
+      title: "Release v0.2.1",
+      baseBranch: "stable",
+      headBranch: "release/0.2.1",
+      insertions: 1,
+      deletions: 1,
+      alreadyExisted: true,
+      alreadyExistedReason: "open",
+    });
+    const { git } = makeGit({ diffFiles: 4 });
+    const res = await prepareRelease(git, githubAuth, {
+      dir,
+      bump: "patch",
+      releaseBranch: "stable",
+      from: "main",
+    });
+    expect(res).toMatchObject({ kind: "pr-opened", prNumber: 7, alreadyExisted: true });
+  });
+
+  it("refuses a MERGED PR instead of reporting it as an updated release", async () => {
+    agentCreatePrMock.mockResolvedValue(deadPr("merged-not-progressed", "base-not-contained"));
+    const { git } = makeGit({ diffFiles: 4, remoteBranches: ["main", "stable", "stable-2"] });
+    await expect(
+      prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable-2", from: "main" }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("names the dead PR, its base and the remedy in the error", async () => {
+    agentCreatePrMock.mockResolvedValue(deadPr("merged-not-progressed", "base-not-contained"));
+    const { git } = makeGit({ diffFiles: 4, remoteBranches: ["main", "stable", "stable-2"] });
+    await expect(
+      prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable-2", from: "main" }),
+    ).rejects.toThrow(/merged pull request \(#12, into "stable"\).*re-run against "stable"/s);
+  });
+
+  it("refuses a CLOSED PR too, and says closed rather than merged", async () => {
+    agentCreatePrMock.mockResolvedValue(deadPr("closed-not-progressed", "no-new-work"));
+    const { git } = makeGit({ diffFiles: 4, remoteBranches: ["main", "stable", "stable-2"] });
+    await expect(
+      prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable-2", from: "main" }),
+    ).rejects.toThrow(/closed pull request \(#12/);
+  });
+});
+
 describe("prepareRelease — prerelease path is unaffected by the guard (docs/214)", () => {
   it("proposes an rc without --confirm and never consults the guard", async () => {
     const { git, calls } = makeGit({ commitsAhead: 0 });
