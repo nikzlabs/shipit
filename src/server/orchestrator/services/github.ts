@@ -1078,6 +1078,10 @@ export async function agentCreatePr(
   //     open a NEW PR rather than pointing the agent back at a dead PR (#1357).
   const existingPr = await findBranchPr(githubAuthManager, resolved.owner, resolved.repo, head);
   let reArmBase: string | undefined;
+  // True whenever we are opening a NEW PR on a branch whose previous one is dead,
+  // with or without a usable prior base. The surviving remote branch (repos with
+  // auto-delete off) has diverged in both shapes, so both must force-with-lease.
+  let reArmedPastDeadPr = false;
   if (existingPr) {
     // Build the "return the existing PR" response (used for both the open and
     // the not-progressed-merged short-circuits).
@@ -1141,13 +1145,24 @@ export async function agentCreatePr(
     // has a dead one, it has just made two GitHub API calls to learn that, and
     // the shape the short-circuit would catch — HEAD still at the merged tip — is
     // exactly where a stale ref does the most damage.
-    const baseRefIsFresh = await freshenBaseRef(git, `pr-create ${options.sessionId ?? head}`);
+    const baseRefIsFresh = await freshenBaseRef(
+      git, existingPr.base, `pr-create ${options.sessionId ?? head}`,
+    );
     const progress = baseRefIsFresh
       ? await git.mergedBaseProgress(existingPr.base)
       // Fail-safe: decline to decide rather than decide off a ref we know may be
       // stale. "Not progressed" is the direction that cannot invent a duplicate.
       : ("fetch-failed" as const);
-    if (progress !== "progressed") {
+    // A base that does not resolve on a REACHABLE remote is a base that is gone —
+    // a deleted release branch, most often. Blocking there would be a permanent
+    // dead end: the gate can never be satisfied, so the branch could never open
+    // another PR however much real work it carries (review finding). It is also
+    // the one refusal with nothing behind it — duplicate prevention asks "is this
+    // work already merged into the prior base", and a base that no longer exists
+    // cannot receive a duplicate. So fall through and create, deliberately WITHOUT
+    // setting `reArmBase`: the new PR then targets the caller's `--base` or the
+    // repo's detected default rather than the dead branch.
+    if (progress !== "progressed" && progress !== "base-unknown") {
       return await returnExistingPr(
         existingPr.merged ? "merged-not-progressed" : "closed-not-progressed",
         progress,
@@ -1156,13 +1171,14 @@ export async function agentCreatePr(
     // Progressed: open a NEW PR targeting the prior PR's base. The old remote
     // branch often survives the merge (repos with auto-delete off) pointing at
     // the pre-rebase commits, so the create-path push below must force-with-lease.
-    reArmBase = existingPr.base;
+    if (progress === "progressed") reArmBase = existingPr.base;
+    reArmedPastDeadPr = true;
   }
 
   // Push the branch (same flow as quickCreatePr). When re-arming past a merged
   // PR the surviving remote branch has diverged, so force-with-lease instead.
   try {
-    if (reArmBase !== undefined) {
+    if (reArmedPastDeadPr) {
       await git.forcePush("origin", head);
     } else {
       await git.push("origin", head);

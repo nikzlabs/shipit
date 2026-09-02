@@ -50,6 +50,7 @@ function fakeGit(overrides: Record<string, unknown> = {}) {
     push: vi.fn(async () => {}),
     forcePush: vi.fn(async () => {}),
     fetch: vi.fn(async () => {}),
+    fetchBranch: vi.fn(async () => {}),
     diffStatVsBranch: vi.fn(async () => ({ insertions: 1, deletions: 0 })),
     mergedBaseProgress: vi.fn(async () => "progressed" as string),
     advancedBeyondMergedBase: vi.fn(async () => true),
@@ -68,7 +69,7 @@ function authManager(openPr: unknown, anyStatePr: unknown) {
     findPullRequest: vi.fn(async () => openPr),
     findPullRequestAnyState: vi.fn(async () => anyStatePr),
     addLabelsToPullRequest: vi.fn(async () => ({ success: true })),
-    createPullRequest: vi.fn(async () => ({
+    createPullRequest: vi.fn(async (_args: { base: string }) => ({
       success: true, number: 200, url: "https://github.com/o/r/pull/200",
     })),
   };
@@ -88,9 +89,12 @@ describe("agentCreatePr — the base ref is freshened before the progress gate",
     const git = fakeGit();
     await call(git, authManager(null, MERGED_PR));
 
-    expect(git.fetch).toHaveBeenCalledWith("origin");
+    // The ONE ref, not the remote: a bare `git fetch origin` can succeed without
+    // moving `origin/<base>` on a clone with a narrowed refspec.
+    expect(git.fetchBranch).toHaveBeenCalledWith("origin", "main");
+    expect(git.fetch).not.toHaveBeenCalled();
     // Order is the whole point: a fetch after the gate reads is no fetch at all.
-    expect(git.fetch.mock.invocationCallOrder[0])
+    expect(git.fetchBranch.mock.invocationCallOrder[0])
       .toBeLessThan(git.mergedBaseProgress.mock.invocationCallOrder[0]);
   });
 
@@ -98,7 +102,10 @@ describe("agentCreatePr — the base ref is freshened before the progress gate",
     // The stale-ref shape: the gate WOULD say "progressed" (it is stubbed to),
     // so anything other than a hard refusal here creates a second PR for work
     // that already shipped under #177.
-    const git = fakeGit({ fetch: vi.fn(async () => { throw new Error("network is unreachable"); }) });
+    const git = fakeGit({
+      fetchBranch: vi.fn(async () => { throw new Error("couldn't find remote ref"); }),
+      fetch: vi.fn(async () => { throw new Error("network is unreachable"); }),
+    });
     const auth = authManager(null, MERGED_PR);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
@@ -135,6 +142,7 @@ describe("agentCreatePr — the base ref is freshened before the progress gate",
 
     await call(git, authManager(openPr, null));
 
+    expect(git.fetchBranch).not.toHaveBeenCalled();
     expect(git.fetch).not.toHaveBeenCalled();
   });
 
@@ -143,6 +151,41 @@ describe("agentCreatePr — the base ref is freshened before the progress gate",
 
     await call(git, authManager(null, null));
 
+    expect(git.fetchBranch).not.toHaveBeenCalled();
     expect(git.fetch).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a broad fetch when the base branch is absent from the remote", async () => {
+    // `fetchBranch` throws for a deleted base. That must not read as "the remote
+    // is unreachable" — the broad fetch proves it answered, and the gate then
+    // gets to say `base-unknown` rather than the service refusing outright.
+    const git = fakeGit({
+      fetchBranch: vi.fn(async () => { throw new Error("couldn't find remote ref release/v1"); }),
+      mergedBaseProgress: vi.fn(async () => "base-unknown" as string),
+    });
+
+    const res = await call(git, authManager(null, MERGED_PR));
+
+    expect(git.fetch).toHaveBeenCalledWith("origin");
+    expect(res.notProgressedBecause).not.toBe("fetch-failed");
+  });
+
+  it("opens a NEW PR when the prior base no longer exists, instead of blocking forever", async () => {
+    // A deleted release branch used to be a permanent dead end: the gate can
+    // never be satisfied against a base that is gone, so the branch could never
+    // open another PR however much real work it carried. Nothing can be
+    // duplicated into a base that does not exist, so this falls through.
+    const git = fakeGit({ mergedBaseProgress: vi.fn(async () => "base-unknown" as string) });
+    const auth = authManager(null, { ...MERGED_PR, base: "release/v1" });
+
+    const res = await call(git, auth);
+
+    expect(res.alreadyExisted).toBe(false);
+    expect(auth.createPullRequest).toHaveBeenCalledTimes(1);
+    // NOT the dead branch: the new PR targets the detected default instead.
+    expect(auth.createPullRequest.mock.calls[0]?.[0].base).toBe("main");
+    // The surviving remote branch has diverged either way, so the push forces.
+    expect(git.forcePush).toHaveBeenCalledTimes(1);
+    expect(git.push).not.toHaveBeenCalled();
   });
 });

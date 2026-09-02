@@ -328,8 +328,9 @@ function existingPrNotice(body: Record<string, unknown>): string {
   // one of them is a no-op. Absent the clause (an older orchestrator), assume
   // the containment failure: it is the shape that loses work.
   if (body.notProgressedBecause === "no-new-work") {
-    return `${head}This branch carries no commits beyond \`origin/${base}\`, so there is nothing to `
-      + `open a PR for. If you expected new work here, check that your edits were committed.\n`;
+    return `${head}This branch's tree is identical to \`origin/${base}\`, so there is nothing to open `
+      + `a PR for. If you expected new work here, check that your edits were committed — and note `
+      + `that commits which change nothing still count as no work.\n`;
   }
   if (body.notProgressedBecause === "base-unknown") {
     return `${head}ShipIt could not resolve \`origin/${base}\` in this clone, so it could not tell `

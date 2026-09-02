@@ -147,7 +147,7 @@ export async function detectAndReArmMergedSession(args: {
     if (await unmovedSinceMerge(session, git)) return false;
     // `advancedBeyondMergedBase` is base-relative, so the base ref must be
     // current or it false-positives (see `freshenBaseRef`).
-    if (!(await freshenBaseRef(git, sessionId))) return false;
+    if (!(await freshenBaseRef(git, baseBranch, sessionId))) return false;
     progressed = await git.advancedBeyondMergedBase(baseBranch);
   } catch {
     return false; // workspace evicted / git error — fail safe, stay merged
@@ -229,7 +229,7 @@ export async function detectAndReArmResetSession(args: {
     if (await unmovedSinceMerge(session, git)) return false;
     // `headIsAtBase` compares against `origin/<base>`, so a stale ref would read
     // a branch reset onto an OLD base tip as "at base" (see `freshenBaseRef`).
-    if (!args.skipFetch && !(await freshenBaseRef(git, sessionId))) return false;
+    if (!args.skipFetch && !(await freshenBaseRef(git, baseBranch, sessionId))) return false;
     atBase = await git.headIsAtBase(baseBranch);
   } catch {
     return false; // workspace evicted / git error — fail safe, stay merged

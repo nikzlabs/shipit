@@ -37,20 +37,45 @@ import type { GitManager } from "../../shared/git.js";
  * - `gh pr create`: the same false positive opens a genuinely NEW pull request
  *   whose diff is work that already shipped under the merged one.
  *
- * **Fail-safe.** A fetch failure (offline, bad credentials, evicted workspace)
- * returns false, and the caller must then decline to decide rather than decide
- * off a ref it knows may be stale. Both callers treat that as "not progressed",
- * which is the direction that cannot invent a duplicate pull request.
+ * **Fetch the ONE ref, not the remote.** `fetchBranch` uses an explicit forced
+ * refspec; a bare `git fetch origin` updates `origin/<base>` only if the clone's
+ * configured fetch refspec happens to match, which holds for ShipIt's own clones
+ * but not for a repo the user brought themselves (docs/211 Sandbox clones). A
+ * broad fetch can therefore *succeed* while leaving the very ref we are about to
+ * decide on stale — a true return that means nothing, which is worse than no
+ * fetch at all because it looks like diligence.
+ *
+ * The broad fetch survives only as a FALLBACK, for the case `fetchBranch`
+ * refuses: it throws when the branch is absent from the remote (a deleted
+ * release branch), and that must not read as "the remote is unreachable". If the
+ * broad fetch then succeeds, the remote answered — the caller goes on to the
+ * gate, which reports `base-unknown` for a base that really is gone.
+ *
+ * **Fail-safe.** Both fetches failing (offline, bad credentials, evicted
+ * workspace) returns false, and the caller must then decline to decide rather
+ * than decide off a ref it knows may be stale. Both callers treat that as "not
+ * progressed", the direction that cannot invent a duplicate pull request.
  */
-export async function freshenBaseRef(git: GitManager, context: string): Promise<boolean> {
+export async function freshenBaseRef(
+  git: GitManager,
+  baseBranch: string,
+  context: string,
+): Promise<boolean> {
   try {
-    await git.fetch("origin");
+    await git.fetchBranch("origin", baseBranch);
     return true;
-  } catch (err) {
-    console.warn(
-      `[base-ref] fetch failed for ${context} (declining to decide off a possibly-stale origin/<base>):`,
-      err,
-    );
-    return false;
+  } catch (branchErr) {
+    try {
+      await git.fetch("origin");
+      return true;
+    } catch (remoteErr) {
+      console.warn(
+        `[base-ref] could not refresh origin/${baseBranch} for ${context} `
+          + `(declining to decide off a possibly-stale ref):`,
+        branchErr,
+        remoteErr,
+      );
+      return false;
+    }
   }
 }
