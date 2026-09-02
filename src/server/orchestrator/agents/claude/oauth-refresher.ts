@@ -229,18 +229,22 @@ export function summarizeRefreshFailure(combinedOutput: string): string {
  *   - **`unreadable`** — a file that is neither: truncated, foreign, or a
  *     shape this reader does not know. Never assumed to be empty.
  *
- * Diagnosis only *here*: a blanked source is never repaired or DELETED on this
- * path. A delete that is wrong destroys a live credential, `expiresAt: 0` is a
- * claim in the file rather than proof about the account, and there is no
- * compare-and-delete — so the log line is the whole feature of this function.
+ * Diagnosis only. Nothing acts on the classification — in particular a blanked
+ * SOURCE is neither repaired nor deleted, here or anywhere. A file this reader
+ * believes is empty may be a partial write or a credential shape it has not
+ * been taught, `expiresAt: 0` is a claim in the file rather than proof about
+ * the account, and there is no compare-and-swap — a repair that loses a race
+ * with a completing sign-in destroys a live credential, while the account is
+ * already unusable either way. So the log line is the whole feature, and the
+ * user reconnects once.
  *
- * What did change (planning#495) is elsewhere and is not a delete: the sync
- * guards classify a blanked file as `absent` rather than `unorderable`
- * ({@link isBlankedClaudeCredential}), so a live token may be COPIED over one.
- * That destroys nothing — a blanked file holds neither bearer — and it is what
- * lets a session wedged with a blanked copy take the account's live token on
- * its next turn, and a harvest heal a blanked account root from a session that
- * still holds a working token.
+ * A session's own copy is judged differently, and only there:
+ * {@link isBlankedClaudeCredential} lets the sync guards read a blanked REPLICA
+ * as "nothing to protect", so a session the CLI blanked can take the account's
+ * live token on its next turn instead of being wedged forever (planning#495).
+ * The predicate is shared with this function so that a probe and a reader
+ * cannot come to disagree about one file; the asymmetry is in who consults it,
+ * not in what it says.
  */
 interface UnusableSource {
   kind: "missing" | "blanked" | "unreadable";

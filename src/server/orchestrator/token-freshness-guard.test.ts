@@ -56,6 +56,7 @@ import {
   sessionTokenIsAheadOfSource,
   syncAgentTokenIn,
   syncAgentTokenBack,
+  syncSubAgentSpawnHomeTokenBack,
 } from "./token-sync-manager.js";
 import { perSessionCredentialsDir } from "./session-credentials.js";
 
@@ -340,16 +341,25 @@ describe("planning#495 — a blanked Claude credential holds nothing to protect"
   });
 
   /**
-   * The direction docs/153 left open, now closed: a blanked ACCOUNT root is not
-   * a credential either, so a session still holding a working token heals it
-   * instead of the user being made to reconnect. Non-destructive by
-   * construction — the file being overwritten holds neither bearer.
+   * The scope line, and the half of this that must NOT move. docs/153 weighed
+   * repairing a blanked ACCOUNT root so a session's rotation could be harvested
+   * over it, and rejected it: there is no compare-and-swap, so a repair losing a
+   * race with a completing sign-in destroys a live credential. The probe is
+   * therefore applied to a session's `replica` and never to a `source` — a
+   * blanked account root stays `unorderable`, the harvest still declines, and
+   * that human decision is left where it was.
    */
-  it("lets a session's live token heal a blanked source, and reports it as ahead", () => {
+  it("does not treat a blanked SOURCE as overwritable", () => {
     const { src } = seedPair(BLANKED, LIVE);
-    expect(sessionTokenIsAheadOfSource(root, sid, "claude")).toBe(true);
-    syncAgentTokenBack(root, sid, "claude");
-    for (const file of src) expect(fs.readFileSync(file, "utf-8")).toBe(LIVE);
+    expect(sessionTokenIsAheadOfSource(root, sid, "claude")).toBe(false);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      syncAgentTokenBack(root, sid, "claude");
+      for (const file of src) expect(fs.readFileSync(file, "utf-8")).toBe(BLANKED);
+      expect(unorderableLines(warn)[0]).toContain("outcome=refused-publish");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   /**
@@ -384,19 +394,73 @@ describe("planning#495 — a blanked Claude credential holds nothing to protect"
   });
 
   /**
-   * Defensive, not observed: every captured Claude credential writes epoch ms.
-   * The branch exists because a numbers-only reader meeting a string expiry is
-   * the exact shape variant that broke grok's first reader on every real file.
+   * The predicate's callers hand it whatever `JSON.parse` returned, and
+   * `JSON.parse("null")` is a valid parse. In the refresher it is called OUTSIDE
+   * the parse `try`, so a throw there is an unhandled error on a scheduled tick
+   * — the account never reaches its `missing_credentials` state and the
+   * schedule does not re-arm.
    */
-  it("orders an ISO-8601 string expiry, the shape variant that broke grok's reader", () => {
-    const file = path.join(root, "iso.json");
-    fs.writeFileSync(file, JSON.stringify({
+  it("survives every non-object JSON its callers can hand it", () => {
+    for (const value of [null, undefined, 42, "string", true, [], [{ claudeAiOauth: {} }]]) {
+      expect(isBlankedClaudeCredential(value)).toBe(false);
+    }
+  });
+
+  /**
+   * Claude's schema has varied across CLI versions: `extractAccessToken`
+   * (`agents/claude/auth-manager.ts`) probes both aliases at the top level as
+   * well as inside `claudeAiOauth`, taking the first non-empty hit. Any
+   * non-empty token in any of those places is a bearer this probe must not
+   * declare missing — a wrongly-declared blank licenses an overwrite, and on
+   * the spawn-home and borrow cleanup paths it skips the quarantine before the
+   * caller deletes the only copy.
+   *
+   * The `""`-beside-a-live-alias case is the one an `a ?? b` gets wrong: the
+   * empty string is not nullish, so it short-circuits to the empty side.
+   */
+  it.each([
+    ["a live top-level access token", { accessToken: "sk-ant-oat01-LIVE gitleaks:allow" }],
+    ["a live top-level snake_case alias", { access_token: "sk-ant-oat01-LIVE gitleaks:allow" }],
+    ["a live top-level refresh token", { refreshToken: "sk-ant-ort01-LIVE gitleaks:allow" }],
+  ])("is not fooled by %s beside a blanked oauth block", (_label, extra) => {
+    expect(isBlankedClaudeCredential({
+      ...extra,
+      claudeAiOauth: { accessToken: "", refreshToken: "", expiresAt: 0 },
+    })).toBe(false);
+  });
+
+  it("is not fooled by an empty alias sitting beside a live one", () => {
+    expect(isBlankedClaudeCredential({
       claudeAiOauth: {
-        accessToken: "sk-ant-oat01-ISO gitleaks:allow",
-        refreshToken: "sk-ant-ort01-ISO gitleaks:allow",
-        expiresAt: "2026-09-02T09:06:11.000Z",
+        accessToken: "",
+        access_token: "sk-ant-oat01-LIVE gitleaks:allow",
+        refreshToken: "",
+        expiresAt: 0,
       },
-    }));
-    expect(TOKEN_FRESHNESS.claude!(file)).toBe(Date.parse("2026-09-02T09:06:11.000Z"));
+    })).toBe(false);
+  });
+
+  /**
+   * The cleanup paths are where a wrong `absent` costs a rotation outright:
+   * `syncSubAgentSpawnHomeTokenBack` returns "safe to delete" and the caller
+   * removes the only copy. A genuinely blanked spawn home is safe to drop —
+   * there is nothing in it — but it must be for the right reason, so this pins
+   * that the return is true and no quarantine artifact was written.
+   */
+  it("declares a blanked spawn home safe to delete without quarantining an empty file", () => {
+    const spawnHome = path.join(root, "spawn-home");
+    for (const rel of AGENT_TOKEN_FILES.claude ?? []) {
+      const file = path.join(spawnHome, rel);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, BLANKED);
+      const target = path.join(root, rel);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, LIVE);
+    }
+    expect(syncSubAgentSpawnHomeTokenBack(root, sid, spawnHome, "claude")).toBe(true);
+    for (const rel of AGENT_TOKEN_FILES.claude ?? []) {
+      expect(fs.readFileSync(path.join(root, rel), "utf-8")).toBe(LIVE);
+    }
+    expect(fs.existsSync(path.join(root, ".shipit-stranded-tokens"))).toBe(false);
   });
 });

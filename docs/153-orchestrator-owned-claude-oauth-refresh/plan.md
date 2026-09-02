@@ -392,40 +392,44 @@ Three changes, no new subsystem:
    `source=missing|blanked|unreadable`, because "the user signed out" and "we
    just destroyed a live account's credentials" were previously the same line.
 
-**A blanked source is never DELETED.** Deleting it to let a harvest through was
-built and then removed: there is no compare-and-delete, so a delete that loses a
-race with a completing sign-in destroys a live credential, to avoid a reconnect
-the user is already doing. That stands.
+**A blanked source is diagnosed, not repaired.** It parses as a credential, so
+the write-back's `unorderable` guard (planning#449) refuses to overwrite it, and
+the account needs one reconnect. Deleting it to let a harvest through was built
+and then removed: a file this reader believes is empty may be a partial write or
+a shape it has not been taught, `expiresAt: 0` is a claim in the file rather
+than proof about the account, and there is no compare-and-swap — a repair that
+loses a race with a completing sign-in destroys a live credential, to avoid a
+reconnect the user is already doing. With harvest-before-spend in place the
+blanking has no known trigger left, so the trade is a destructive path against a
+state that should not recur.
 
-**But it is now overwritable, and that is not the same trade** (planning#495).
-The original wording here said a blanked source "is diagnosed, not repaired" —
-it parses as a credential, so the write-back's `unorderable` guard
-(planning#449) refused to overwrite it and the account needed one reconnect.
-That guard separates "the reader broke" from "there is nothing to protect", and
-a blanked file is emphatically the second: both token fields are the empty
-string. So `isBlankedClaudeCredential` (`token-sync-manager.ts`, shared with
-`describeUnusableSource` so the two cannot disagree) classifies it `absent`, and
-a session that still holds a working token heals the account root through the
-ordinary harvest. Nothing is destroyed — the file being overwritten holds
-neither bearer — and the sign-in race that ruled out the delete does not apply
-in the same way: a completed sign-in leaves an ORDERABLE source, which the
-freshness compare then protects exactly as it always has.
+**A session's own copy is judged differently — and only a session's copy**
+(planning#495). The CLI blanks a session's `.claude/.credentials.json` too: it
+is what it writes when its refresh is rejected because a sibling spent the
+shared single-use grant first. The same `unorderable` reading then refused the
+per-turn **sync-in**, so the session was pinned to an empty credential that the
+account's live token was forbidden to replace — permanently, since every
+ordinary path back runs through the sync-in that had just refused. Only the
+unconditional `repushAgentToken` escape hatch (a manual re-auth, or the docs/179
+runtime-401 recovery) could still reach it. Observed in production 2026-09-02 as
+a `refused-copy` and a `stranded-rotation` two seconds apart on one session
+whose CLI had 401'd two minutes earlier.
 
-**The session copy is why this had to change at all.** The same classification
-runs on a session's own `.claude/.credentials.json`, and the CLI blanks that
-file too — it is what it writes when its refresh is rejected because a sibling
-spent the shared single-use grant first. `unorderable` then refused the sync-in
-as well, so the session was pinned to an empty credential the account's live
-token was forbidden to replace, permanently: every ordinary path back runs
-through the sync-in that just refused, leaving only the unconditional
-`repushAgentToken` escape hatch (a manual re-auth, or the docs/179 runtime-401
-recovery) to reach it. Observed in production 2026-09-02 as a `refused-copy` and
-a `stranded-rotation` two seconds apart on one session whose CLI had 401'd two
-minutes earlier. Guarded by `token-freshness-guard.test.ts`.
+So `classifyTokenFreshness` carries a `TokenFileRole`: a `replica` (a session
+copy, or a sub-agent spawn home) that `isBlankedClaudeCredential` recognises is
+`absent` and gets overwritten; a `source` is classified exactly as before. The
+asymmetry is the risk, not the shape — a replica is rebuildable from the source
+at any time, while the source is the only copy there is and the one a completing
+sign-in writes. The predicate itself is shared with `describeUnusableSource`, so
+a probe and a reader cannot come to disagree about one file.
 
-Emptiness is judged on the TOKENS, never on `expiresAt` alone. A credential with
-a live bearer and an expiry shape the reader cannot parse is the planning#449
-state, stays `unorderable`, and stays protected.
+Emptiness is judged on the TOKENS, never on `expiresAt` alone, and across both
+levels and both aliases (via `probeNestedString`, the same helper
+`extractAccessToken` uses). A credential holding a live bearer anywhere with an
+expiry the reader cannot parse is the planning#449 state, stays `unorderable`,
+and stays protected — which also matters on the cleanup paths, where an `absent`
+reading skips the quarantine and the caller deletes the only copy. Guarded by
+`token-freshness-guard.test.ts`.
 
 ### Known limits (not addressed here)
 
