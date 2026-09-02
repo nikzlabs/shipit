@@ -94,8 +94,6 @@ export interface ProjectTemplate {
  *       agent: true
  *       source: platform:claude_oauth
  */
-export type SecretEntry = string | SecretRequirement;
-
 export interface SecretRequirement {
   /**
    * Env var name to inject into the service. Must match

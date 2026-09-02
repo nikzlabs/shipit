@@ -5,7 +5,6 @@
 
 import type { SessionManager } from "../sessions.js";
 import type { GitManager } from "../../shared/git.js";
-import type { RebaseConflictFile } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { FileDiff } from "../../shared/types.js";
 import { scanFileTree } from "../../shared/file-tree.js";
@@ -163,23 +162,11 @@ async function lfsMediaSide(
   return mime ? `data:${mime};base64,${bytes.toString("base64")}` : bytes.toString("utf-8");
 }
 
-// ---- Rebase types ----
-
-export type RebaseFlowResult =
-  | { status: "up_to_date" }
-  | { status: "rebased"; baseRef: string }
-  | { status: "conflicts"; conflicts: RebaseConflictFile[]; baseRef: string };
-
 // ---- Read operations ----
 
 /** Get git log for a session. */
 export async function getGitLog(git: GitManager) {
   return git.log();
-}
-
-/** Get git diff between two commits (file list with name/status). */
-export async function getGitDiffNameStatus(git: GitManager, from: string, to: string) {
-  return git.diffNameStatus(from, to);
 }
 
 /** Get git remotes. */
@@ -505,54 +492,6 @@ export async function gitPull(
 }
 
 // ---- Rebase operations ----
-
-/**
- * Rebase the session's branch onto the latest base branch.
- * Fetches upstream, attempts rebase. On clean rebase, returns "rebased".
- * On conflicts, returns them for agent resolution.
- */
-export async function rebaseOntoBase(
-  git: GitManager,
-  baseBranch: string,
-): Promise<RebaseFlowResult> {
-  // 1. Fetch latest from remote
-  await git.fetch("origin");
-
-  // 2. Resolve the base branch ref
-  const baseRef = await git.resolveBaseBranchRef(baseBranch);
-  if (!baseRef) throw new ServiceError(400, `Cannot resolve base branch: ${baseBranch}`);
-
-  // 3. Check if rebase is needed
-  const isUpToDate = await git.isAncestor(baseRef, "HEAD");
-  if (isUpToDate) {
-    return { status: "up_to_date" };
-  }
-
-  // 4. Attempt rebase
-  const result = await git.rebase(baseRef);
-
-  if (result.status === "clean") {
-    return { status: "rebased", baseRef };
-  }
-
-  // 5. Conflicts — return them (caller will delegate to agent, then continue)
-  return {
-    status: "conflicts",
-    conflicts: result.conflicts,
-    baseRef,
-  };
-}
-
-/** Force push after a successful rebase. Requires GitHub auth. */
-export async function forcePushAfterRebase(
-  git: GitManager,
-  githubAuthManager: GitHubAuthManager,
-): Promise<{ success: boolean; message: string; branch: string }> {
-  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
-  const message = await git.forcePush();
-  const branch = await git.getCurrentBranch();
-  return { success: true, message, branch };
-}
 
 /** Abort an in-progress rebase. */
 export async function rebaseAbort(git: GitManager): Promise<void> {

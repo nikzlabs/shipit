@@ -27,7 +27,7 @@
 - [x] Tests: version writer, marker parse, poller transition, shim handler, card persistence round-trip
 
 ## Phase 3 — Scaffold into any repo
-- [x] `templates-release.ts`: `renderReleaseWorkflow(...)` + `renderReleaseNotesConfig()` (not in `TEMPLATES`)
+- [x] `templates-release.ts`: `renderReleaseWorkflow(...)` + `renderReleaseNotesConfig()` (not in `TEMPLATES`) (module since removed — see plan.md note)
 - [x] Scaffolded CI reuses the shared Node version-read helper (same logic as `release-version.ts`) via `setup-node` (even in non-Node repos), not ad-hoc bash
 - [x] Agent detect-missing-workflow → offer → write files → open PR
 - [x] Docs: scaffold offer in `shipit-docs/release.md`
@@ -132,10 +132,10 @@ opens a chore PR that forward-ports the released version onto `main`.
   job (default branch resolved at runtime via `gh repo view`; skipped when it equals the maintenance
   branch) + a new generic write helper `shipit-write-version.mjs` (mirrors `writeVersionToSource` so the
   sync works for package.json / Cargo.toml / pyproject.toml / VERSION, not just `npm version`). Best-effort
-  `ignore-for-release` label (may not exist in a fresh repo). Scaffold now ships **four** files.
+  `ignore-for-release` label (may not exist in a fresh repo). Scaffold now ships **four** files. (module since removed — see plan.md note)
 - [x] Tests: `templates-release.test.ts` — sync job present in the rendered workflow; write helper ⇔
   `writeVersionToSource` byte-identity across all four ecosystems + lockfile bump + non-zero on missing field;
-  scaffold returns four artifacts
+  scaffold returns four artifacts (module since removed — see plan.md note)
 - [x] Dead-PR guard: `prepareFinalRelease` refuses a non-`open` `alreadyExistedReason` with a 409
   instead of forwarding it as `alreadyExisted` — the shim printed a MERGED release PR as
   "updated release PR #N", announcing a release nothing would publish

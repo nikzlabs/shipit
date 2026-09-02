@@ -379,11 +379,6 @@ export default tseslint.config(
     ignores: [
       "dist/",
       "node_modules/",
-      // Scaffold artifact (docs/214): a standalone Node helper shipped verbatim
-      // into other repos' CI, not part of this project's TS program — so it's
-      // outside the typed-lint project service. Its logic is exercised by
-      // templates-release.test.ts (the consistency round-trip).
-      "src/server/orchestrator/templates-release-files/",
       // Static PWA assets served verbatim from the client (manifest, icons, and
       // the service worker). The service worker is plain browser JS copied as-is
       // into dist/client — it's not part of the TS program, so the typed-lint

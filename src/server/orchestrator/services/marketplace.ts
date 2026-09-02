@@ -88,10 +88,6 @@ export function getCatalogCacheRoot(stateDir: string): string {
   return path.join(stateDir, "marketplace-cache");
 }
 
-export function getCatalogCacheDir(stateDir: string, marketplaceId: string): string {
-  return path.join(getCatalogCacheRoot(stateDir), marketplaceId);
-}
-
 // ---- Catalog fetch ----
 
 /**

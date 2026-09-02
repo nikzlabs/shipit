@@ -223,20 +223,3 @@ export interface LimitsRefreshResult {
   /** Short human-readable detail for the button tooltip (HTTP status, error text). */
   detail?: string;
 }
-
-/**
- * Flatten the nested map to a list — what most consumers actually want (render
- * each pill, find the worst window, ask whether anything is exhausted). Each
- * entry carries its own `serviceId`/`billingMode`/`routeId`, so nothing has to
- * be re-derived from the nesting.
- */
-export function listSubscriptionLimits(map: SubscriptionLimitsMap): SubscriptionLimits[] {
-  const out: SubscriptionLimits[] = [];
-  for (const byRoute of Object.values(map)) {
-    if (!byRoute) continue;
-    // Defensive: this map arrives over the wire, and a hole here would
-    // otherwise throw inside every consumer that reads `.serviceId`.
-    for (const snap of Object.values(byRoute)) if (snap) out.push(snap);
-  }
-  return out;
-}

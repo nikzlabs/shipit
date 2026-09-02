@@ -395,6 +395,12 @@ This is a required part of Phase 2, not an afterthought.
 
 ## Any repo — scaffold the workflow
 
+> **2026-09-02 — render module removed.** `src/server/orchestrator/templates-release.ts`,
+> its test, and `templates-release-files/` were deleted: the scaffold is written
+> by the agent from `src/server/shipit-docs/release.md`, and nothing ever called
+> `renderReleaseWorkflow` / `renderReleaseNotesConfig`. The bullets below
+> describe the original design for reference.
+
 When a repo has no release workflow, the agent scaffolds one and opens a PR (CI
 still does the publish). This is a chat-driven file write + the existing auto-PR
 flow — **not** the project-template grid (docs/171 Phase 3).

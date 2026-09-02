@@ -39,11 +39,6 @@ function getAudioCtx(): AudioContext | null {
   return audioCtx;
 }
 
-/** True once autoplay has been unlocked by a user gesture this page load. */
-export function isAutoplayUnlocked(): boolean {
-  return unlocked;
-}
-
 /**
  * Prime autoplay on a user gesture (the hands-free toggle, or a tap-to-play
  * click). Resumes the shared AudioContext so later chimes + autoplay are

@@ -96,18 +96,14 @@ don't apply):
   whether it writes JSON, mutates `config.toml`, or returns `runtimeEnv` is
   the adapter's call.
 
-- **`tool-map.ts`** — exports the per-agent slice that `../tool-map.ts`
-  merges into `AGENT_TOOL_MAPS`. Add one new entry to that file:
-
-  ```ts
-  import { CURSOR_TOOL_MAP } from "./cursor/tool-map.js";
-
-  const AGENT_TOOL_MAPS: Record<AgentId, Record<string, CanonicalTool>> = {
-    claude: CLAUDE_TOOL_MAP,
-    codex: CODEX_TOOL_MAP,
-    cursor: CURSOR_TOOL_MAP,
-  };
-  ```
+- **`cursor-tool-normalizer.ts`** *(only if the CLI's tool names differ
+  from Claude's)* — a `CURSOR_TRANSCRIPT_TOOL_NAMES` table mapping the
+  CLI's tool names onto the Claude names the transcript registries read,
+  plus a guard test that checks it against `CURSOR_TOOL_NAMES` in
+  `shared/agent-tool-names.ts`. `opencode/opencode-tool-normalizer.ts` and
+  `grok/grok-tool-normalizer.ts` are the templates. (The earlier
+  `tool-map.ts` / `AGENT_TOOL_MAPS` slice was removed on 2026-09-02 — it had
+  no runtime caller.)
 
 - **`adapter.test.ts`** + any other unit tests, colocated.
 

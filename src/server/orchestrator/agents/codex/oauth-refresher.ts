@@ -81,7 +81,7 @@ export interface CodexOAuthRefresherDeps {
   safetyMarginMs?: number;
 }
 
-export class CodexOAuthRefresher extends EventEmitter {
+export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents> {
   private readonly deps: Required<Omit<CodexOAuthRefresherDeps, "safetyMarginMs">> & { safetyMarginMs: number };
   private readonly accounts = new Map<string, AccountState>();
   private stopped = false;

@@ -98,17 +98,6 @@ export function selectionOfEntry(entry: EligibleModel): ModelSelection {
   };
 }
 
-/** Same service, same mode, same model. */
-export function sameSelectionTriple(
-  a: ModelSelection | undefined,
-  b: ModelSelection | undefined,
-): boolean {
-  if (!a || !b) return a === b;
-  return (
-    a.serviceId === b.serviceId && a.billingMode === b.billingMode && a.modelId === b.modelId
-  );
-}
-
 // ---- Rule 1: an explicit triple from the picker --------------------------
 
 export type ExplicitSelectionVerdict =

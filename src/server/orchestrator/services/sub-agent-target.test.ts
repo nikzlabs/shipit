@@ -851,7 +851,7 @@ describe("resolveSpawnTargetForChild (req 11)", () => {
       isHarnessInstalled: () => true,
       readInstalledHarnesses: () => ["claude", "codex"],
     }));
-    const { resolveSpawnTarget, resolveSpawnTargetForChild } = await import("./sub-agent-target.js");
+    const { resolveSubAgentSpawnTarget, resolveSpawnTargetForChild } = await import("./sub-agent-target.js");
     const args = [
       { kind: "role" as const, role: "reviewer", overrides: {} },
       {
@@ -861,7 +861,7 @@ describe("resolveSpawnTargetForChild (req 11)", () => {
       { credentialStore: storeWith([OPENAI_KEY, ANTHROPIC_KEY]), env: {} },
     ] as const;
 
-    const oneShot = resolveSpawnTarget(...args);
+    const oneShot = resolveSubAgentSpawnTarget(...args);
     const child = resolveSpawnTargetForChild(...args);
 
     expect(oneShot.route).toBeDefined();

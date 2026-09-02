@@ -227,11 +227,6 @@ export function chordToKeys(chord: string): string[] {
     .map((p) => KEY_DISPLAY[p] ?? (p.length === 1 ? p.toUpperCase() : p.charAt(0).toUpperCase() + p.slice(1)));
 }
 
-/** Human-readable chord, e.g. "⌘ + ⇧ + O". */
-export function formatChord(chord: string): string {
-  return chordToKeys(chord).join(" + ");
-}
-
 /**
  * Canonical form for equality checks (conflict detection). Collapses
  * ctrl/cmd/meta → "mod" and sorts modifiers, so `ctrl+shift+o` and

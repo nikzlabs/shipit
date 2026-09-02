@@ -265,8 +265,8 @@ describe("the flow's terminal states", () => {
     vi.useFakeTimers();
     const { proc, spawnFn } = makeSpawn();
     const mgr = new XaiAuthManager({ spawn: spawnFn, checkAuthFile: () => false, timeoutMs: 1_000 });
-    const failures: { reason?: string }[] = [];
-    mgr.on("failed", (payload: { reason?: string }) => failures.push(payload));
+    const failures: ({ reason?: string } | undefined)[] = [];
+    mgr.on("failed", (payload) => { failures.push(payload); });
 
     mgr.start({ accountId: "acct_1", credentialDir: tempRoot() });
     vi.advanceTimersByTime(1_000);

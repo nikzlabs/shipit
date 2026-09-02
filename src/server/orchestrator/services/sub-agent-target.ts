@@ -432,7 +432,7 @@ export type ResolveSpawnTargetDeps = RoleDeps & ReviewerModelDeps;
  * `inherit` never reaches here — a parent base is completed by
  * `child-sessions.ts`, whose rules are deliberately not a role's.
  */
-export function resolveSpawnTarget(
+function resolveSpawnTarget(
   target: SubAgentSpawnTarget,
   implementer: ImplementerContext,
   deps: ResolveSpawnTargetDeps,

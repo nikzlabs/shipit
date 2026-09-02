@@ -209,11 +209,6 @@ export function orderCredentialRoutes<T extends { priority?: number; isPrimary: 
  */
 export const CREDENTIAL_ROUTE_ENV_PREFIX = "SHIPIT_CREDENTIAL_";
 
-/** True for a route id the credential store owns (as opposed to a legacy env route). */
-export function isStoredCredentialRouteId(routeId: string): boolean {
-  return routeId.startsWith("cred_");
-}
-
 export function credentialRouteEnvName(routeId: string): string {
   return CREDENTIAL_ROUTE_ENV_PREFIX + routeId.toUpperCase().replace(/[^A-Z0-9_]/g, "_");
 }

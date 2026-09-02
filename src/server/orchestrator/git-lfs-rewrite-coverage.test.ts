@@ -65,7 +65,7 @@ const RESTORE_CALL = /restoreLfsAfterTreeRewrite|materializeLfsWithWarning/;
  */
 const ALLOWED: Record<string, string> = {
   "services/git.ts":
-    "Pure service layer: `gitRollback` / `rebaseOntoBase` / `rebaseAbort` take a "
+    "Pure service layer: `gitRollback` / `rebaseAbort` take a "
     + "GitManager and no workspace path, so they CANNOT restore — there is nothing to "
     + "hand `git lfs pull` a cwd. The duty sits with their callers in "
     + "api-routes-git.ts, which this scan covers.",

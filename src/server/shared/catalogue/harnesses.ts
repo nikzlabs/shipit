@@ -491,4 +491,3 @@ export const HARNESSES = [
  * each. A capability with one possible value is noise; `AgentCapabilities` gains
  * the flag if and when a candidate turns up that fixes its model at process start.
  */
-export type ShippedHarness = (typeof HARNESSES)[number];

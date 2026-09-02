@@ -25,9 +25,7 @@
  *     branch, not the incremental `TaskCreate` model.
  *   - `task` → `Agent`: carries `description`/`prompt`/`subagent_type`,
  *     already the subagent key set. `Agent` rather than `Task` because `Agent`
- *     is in the Claude tool map, which lets the guard test hold every mapping
- *     to canonical coherence: canonicalizeTool("opencode", raw) must equal
- *     canonicalizeTool("claude", transcript).
+ *     is the name the subagent registries recognize.
  *   - `edit`/`write`/`read`: the name plus the camelCase→snake_case key
  *     renames make `diffStatsFor` (`DIFF_BODY_KEYS`) and the `file_path`
  *     summary work unchanged.

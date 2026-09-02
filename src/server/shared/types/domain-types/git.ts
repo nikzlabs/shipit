@@ -19,13 +19,6 @@ export interface FileTreeNode {
 
 // ---- Diff types ----
 
-export interface DiffFileStat {
-  path: string;
-  insertions: number;
-  deletions: number;
-  binary: boolean;
-}
-
 export interface FileDiff {
   path: string;
   oldPath?: string;

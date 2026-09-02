@@ -13,8 +13,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { OPENCODE_TOOL_NAMES } from "../../../shared/agent-tool-names.js";
-import { canonicalizeTool } from "../tool-map.js";
+import { CLAUDE_TOOL_NAMES, OPENCODE_TOOL_NAMES } from "../../../shared/agent-tool-names.js";
 import { isTaskListTool } from "../../../shared/task-list-tools.js";
 import { inputKeyTreatment } from "../../../shared/transcript-input-policy.js";
 import {
@@ -35,17 +34,26 @@ describe("OPENCODE_TRANSCRIPT_TOOL_NAMES", () => {
     }
   });
 
-  it("preserves canonical meaning: the mapped name means the same thing in the Claude vocabulary", () => {
-    // The canonical tool map as the semantic oracle: a mapping that renames a
-    // shell tool into a file tool (or maps onto a name Claude's map doesn't
-    // know) fails here, whatever the registries think of the spelling.
+  it("maps each tool onto the Claude tool with the same meaning", () => {
+    // The semantic oracle, spelled out: a mapping that renames a shell tool
+    // into a file tool (or onto a name Claude's registry doesn't know) passes
+    // every treatment guard below and still puts the wrong card on screen.
+    expect(OPENCODE_TRANSCRIPT_TOOL_NAMES).toEqual({
+      bash: "Bash",
+      edit: "Edit",
+      glob: "Glob",
+      grep: "Grep",
+      read: "Read",
+      skill: "Skill",
+      task: "Agent",
+      todowrite: "TodoWrite",
+      webfetch: "WebFetch",
+      write: "Write",
+    });
     for (const [raw, transcript] of Object.entries(OPENCODE_TRANSCRIPT_TOOL_NAMES)) {
-      const rawCanonical = canonicalizeTool("opencode", raw);
-      expect(rawCanonical, `opencode tool ${raw} missing from OPENCODE_TOOL_MAP`).not.toBeNull();
-      expect(
-        canonicalizeTool("claude", transcript),
-        `${raw} → ${transcript}: transcript name not in the Claude vocabulary`,
-      ).toBe(rawCanonical);
+      expect(CLAUDE_TOOL_NAMES, `${raw} → ${transcript}: not in the Claude vocabulary`).toContain(
+        transcript,
+      );
     }
   });
 });

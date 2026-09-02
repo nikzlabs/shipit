@@ -22,6 +22,7 @@ import {
 import { ensureClaudeUserConfigDefaults } from "./user-config.js";
 import type {
   AgentAuthManager,
+  AgentAuthManagerEvents,
   AgentAuthStartOptions,
   AgentAuthScopeOptions,
 } from "../../agent-auth-manager.js";
@@ -226,7 +227,13 @@ function ensureOnboardingComplete(userConfig: string, configDir: string): void {
   }
 }
 
-export class AuthManager extends EventEmitter implements AgentAuthManager {
+export interface ClaudeAuthManagerEvents extends AgentAuthManagerEvents {
+  auth_url: [url: string];
+  auth_complete: [];
+  auth_failed: [];
+}
+
+export class AuthManager extends EventEmitter<ClaudeAuthManagerEvents> implements AgentAuthManager {
   readonly loginId: LoginIntegrationId = "anthropic-oauth";
 
   private proc: IPty | null = null;

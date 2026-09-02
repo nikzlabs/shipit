@@ -1,49 +1,5 @@
 import type { GitHubDeploymentStatus } from "./deployment-types.js";
 
-// ---- GitHub auth client messages ----
-
-export interface WsGitHubSetToken {
-  type: "github_set_token";
-  token: string;
-}
-
-export interface WsGitHubPush {
-  type: "github_push";
-  remote?: string;
-  branch?: string;
-}
-
-export interface WsGitHubPull {
-  type: "github_pull";
-  remote?: string;
-  branch?: string;
-}
-
-export interface WsGitHubSetRemote {
-  type: "github_set_remote";
-  name: string;
-  url: string;
-}
-
-export interface WsGitHubLogout {
-  type: "github_logout";
-}
-
-export interface WsGitHubCreatePR {
-  type: "github_create_pr";
-  title: string;
-  body: string;
-  base: string;
-  draft?: boolean;
-}
-
-// ---- PR status & merge messages ----
-
-export interface WsMergePr {
-  type: "merge_pr";
-  method?: "merge" | "squash" | "rebase";
-}
-
 // ---- GitHub auth server messages ----
 
 export interface WsGitHubStatus {
@@ -68,23 +24,9 @@ export interface WsGitHubPushResult {
   branch?: string;
 }
 
-export interface WsGitHubPullResult {
-  type: "github_pull_result";
-  success: boolean;
-  message: string;
-}
-
 export interface WsGitHubRemotes {
   type: "github_remotes";
   remotes: { name: string; url: string }[];
-}
-
-export interface WsGitHubPRCreated {
-  type: "github_pr_created";
-  success: boolean;
-  url?: string;
-  number?: number;
-  message?: string;
 }
 
 export interface WsGitHubBranches {
@@ -189,13 +131,6 @@ export interface BranchSyncStatus {
   behind: number;
 }
 
-export interface WsMergePrResult {
-  type: "merge_pr_result";
-  success: boolean;
-  message: string;
-  autoMergeEnabled?: boolean;
-}
-
 // ---- PR lifecycle types ----
 
 /** CI failure log for a single check run — used by the fix-ci flow. */
@@ -235,23 +170,6 @@ export interface PrAutoMergeError {
   code: "auto_merge_not_enabled" | "no_branch_protection";
   message: string;
   settingsUrl: string;
-}
-
-/**
- * Auto-resolve-conflicts state for a session's PR, managed by the poller via
- * `AutoConflictResolveManager`. Present only when the global
- * `autoResolveConflicts` setting is on and the session has run through at
- * least one auto-resolve transition. (docs/146)
- */
-export interface AutoConflictResolveState {
-  /** Idle = ready / between attempts. Running = attempt in flight. Deferred = wanted to fire but blocked (agent busy, dirty tree, etc.). Exhausted = terminal until user activity or head SHA change. */
-  status: "idle" | "running" | "deferred" | "exhausted";
-  /** 1-indexed count of attempts that did real work. Reset on head SHA change or user activity. */
-  attemptCount: number;
-  /** Last failure / defer reason — surfaced in the exhausted banner. */
-  lastError?: string;
-  /** Epoch ms; the next eligible attempt time after a failure cooldown. */
-  nextEligibleAt?: number;
 }
 
 /**
