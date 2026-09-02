@@ -48,13 +48,14 @@ but cannot land it. This feature moves the permission to the **repository**.
     agent is told why, and the pull request stays open.
 16. The checks in req 7 apply to the code that the merge lands. If the push in
     req 14 adds new commits, the checks for those new commits decide the merge.
+17. When the checks for those new commits are not complete, the merge command
+    refuses. The refusal says that the push started the checks again, and that
+    the agent can merge when the checks pass. The command does not wait by
+    itself.
 
 ## Open questions
 
-- After the push in req 14, the checks for the new commits start again, so a
-  direct merge is nearly always refused for pending checks (req 16). Should the
-  merge command then wait for green by itself, or refuse and let the agent
-  decide? See the question put to the user on 2026-09-02.
+None.
 
 ## Resolved questions
 
@@ -77,3 +78,9 @@ but cannot land it. This feature moves the permission to the **repository**.
   Without it the merge lands the state from before the turn, and the agent
   believes its work shipped. `agentCreatePr()` already flushes this way through
   `flushPendingTurnCommit()`; the merge must do the same. (req 14, 15, 16)
+- 2026-09-02 — The push in req 14 starts the checks again, so a direct merge is
+  refused nearly every time. Must the command then wait for green by itself?
+  **Answer: no. It refuses and says so.** The agent then merges when the checks
+  pass. A command that waits would report success while nothing merged, and it
+  would turn every merge into the auto-merge behaviour that was already
+  rejected. (req 17)
