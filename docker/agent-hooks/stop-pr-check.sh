@@ -3,22 +3,28 @@
 #
 # When the agent tries to stop a turn:
 #   - if the branch has commits ahead of its base, a non-empty net diff vs
-#     base, AND no PR exists in any state, block the stop and tell the agent
-#     to call `gh pr create`.
-#   - in any other state (no commits, empty net diff, a PR already exists in
-#     ANY state — open/merged/closed, GitHub not connected, no remote, hook
-#     already retried once, OR the working tree is mid-rebase/merge/etc so HEAD
-#     isn't on a branch), exit 0 silently.
+#     base, and no PR that those commits could have shipped through, block the
+#     stop and tell the agent to call `gh pr create`.
+#   - in any other state (no commits, empty net diff, an OPEN PR already
+#     exists, a merged/closed PR that `gh pr create` would refuse to replace,
+#     GitHub not connected, no remote, hook already retried once, OR the
+#     working tree is mid-rebase/merge/etc so HEAD isn't on a branch), exit 0
+#     silently.
 #
-# Two guards keep this from re-prompting after a PR has already merged — the
+# Three guards keep this from re-prompting after a PR has already merged — the
 # duplicate-PR bug where a long-running session opened a fresh PR every turn
 # (#1302 → #1312 → #1314 → …):
 #   1. Net-diff gate: a commits-ahead count > 0 with an *empty* net diff vs
 #      base (a revert, or a branch that merged then rebased onto the updated
 #      base so its content is already there) does NOT force a PR.
-#   2. Any-state PR check: `gh pr view` now resolves a branch's PR by name
-#      even after it merged/closed, so an already-PR'd branch is recognized
-#      instead of looking PR-less.
+#   2. Any-state PR check: `gh pr view` resolves a branch's PR by name even
+#      after it merged/closed, so an already-PR'd branch is recognized instead
+#      of looking PR-less.
+#   3. Progress gate: a merged/closed PR only silences the hook while
+#      `gh pr create` would refuse to open a replacement. Once the branch sits
+#      on the current base tip with new work on top — the state in which the
+#      shim WILL open a fresh PR — the hook speaks again, because a merged PR
+#      from an earlier turn is no proof that this turn's commits shipped.
 #
 # Exit codes (Claude Code Stop-hook semantics):
 #   0  - allow stop
@@ -122,23 +128,102 @@ if git diff --quiet "$BASE...HEAD" 2>/dev/null; then
   exit 0
 fi
 
-# Does a PR already exist?  gh pr view exits 0 on hit, non-zero on miss/error.
-# It now resolves a branch's PR in ANY state (open/merged/closed), so a branch
-# whose PR already merged is recognized as having one and we do NOT re-prompt.
-# We capture stderr to distinguish "no PR" from "auth failure / not connected"
-# so the hook fails open on configuration problems.
-GH_STDERR=$(gh pr view --json url 2>&1 >/dev/null || true)
-[ -z "$GH_STDERR" ] && exit 0  # PR exists
-case "$GH_STDERR" in
-  *"No pull request found"*) ;;   # legitimate miss → block below
-  *) exit 0 ;;                    # auth/network/config error → fail open
+# Does a PR already exist, and does it prove this work shipped?
+#
+# `gh pr view` resolves the branch's PR in ANY state, so a merged/closed PR
+# answers here too — and the two answers mean very different things:
+#
+#   OPEN            → the work is shipped. Nothing to do.
+#   MERGED / CLOSED → that PR cannot take new commits. Whether the hook should
+#                     speak depends on whether `gh pr create` would in fact
+#                     open a replacement, and that is decided by the same gate
+#                     the orchestrator applies (`GitManager.mergedBaseProgress`,
+#                     docs/202): the branch must CONTAIN the current base tip
+#                     AND carry a non-empty diff on top. Only then do we block.
+#                     A branch still sitting at the merged tip, or one whose
+#                     base has moved on under it, is refused by the shim — so
+#                     blocking there would demand an action that cannot
+#                     succeed, which is the duplicate-PR nag guard 2 exists to
+#                     prevent.
+#
+# `state` is GitHub's REST spelling, so a MERGED PR reads as "closed"; the
+# `merged` boolean tells a merge from an abandon. Stdout and stderr are read
+# together and told apart by content — the JSON we asked for always carries
+# `"state":`, while a miss or an auth/config failure carries only prose — so
+# the hook still fails open on configuration problems.
+GH_OUT=$(gh pr view --json state,merged,baseRefName 2>&1 || true)
+
+PR_STATE=""
+case "$GH_OUT" in
+  *'"state":"open"'*)        PR_STATE=open ;;
+  *'"state":"closed"'*)      PR_STATE=closed ;;
+  *"No pull request found"*) PR_STATE=none ;;   # legitimate miss → block below
+  *) exit 0 ;;                                  # auth/network/unreadable → fail open
 esac
+[ "$PR_STATE" != "open" ] || exit 0  # an open PR is proof the turn shipped
+
+DEAD_PR=""
+PR_BASE=""
+if [ "$PR_STATE" = "closed" ]; then
+  case "$GH_OUT" in
+    *'"merged":true'*) DEAD_PR=merged ;;
+    *) DEAD_PR=closed ;;
+  esac
+
+  # Compare against the PR's OWN base, which need not be the base resolved
+  # above (a release PR targets `stable`). A ref name outside the ordinary
+  # alphabet is not something we hand to git — fall back to the local base.
+  PR_BASE=$(printf '%s' "$GH_OUT" | sed -n 's/.*"baseRefName":"\([^"]*\)".*/\1/p')
+  case "$PR_BASE" in
+    ""|*[!A-Za-z0-9._/-]*) PR_BASE="$BASE_LOCAL" ;;
+  esac
+
+  # The containment check reads `origin/<base>`, and that ref only moves when
+  # this clone fetches — the documented precondition of `mergedBaseProgress`.
+  # Against a STALE ref the check is trivially satisfied (the merge-base of a
+  # branch and its own fork point IS that fork point), so an un-rebased branch
+  # reads as "progressed" and the hook nags about work that already shipped.
+  #
+  # So a fetch that fails or times out is NOT something to shrug off and decide
+  # around: it leaves us with a ref we know we cannot trust, and every other
+  # unknown in this hook exits 0. Time-boxed because a Stop hook must never
+  # hang the turn — and a timeout is just another way of not knowing.
+  FETCH_SPEC="+refs/heads/$PR_BASE:refs/remotes/origin/$PR_BASE"
+  FETCHED=no
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 20 git fetch --quiet origin "$FETCH_SPEC" >/dev/null 2>&1 && FETCHED=yes || true
+  else
+    git fetch --quiet origin "$FETCH_SPEC" >/dev/null 2>&1 && FETCHED=yes || true
+  fi
+  [ "$FETCHED" = yes ] || exit 0  # can't freshen origin/<base> → fail open
+
+  # A successful fetch of that refspec created the ref, so an empty read here is
+  # a git-level surprise rather than a reachable state — treat it as one more
+  # thing we don't know.
+  BASE_TIP=$(git rev-parse --verify --quiet "refs/remotes/origin/$PR_BASE" 2>/dev/null || echo "")
+  [ -n "$BASE_TIP" ] || exit 0
+  MERGE_BASE=$(git merge-base "$BASE_TIP" HEAD 2>/dev/null || echo "")
+  [ "$MERGE_BASE" = "$BASE_TIP" ] || exit 0  # base-not-contained → fail open
+  # Two-dot: what HEAD's tree changes relative to the base tip it now contains.
+  if git diff --quiet "$BASE_TIP..HEAD" 2>/dev/null; then
+    exit 0  # no-new-work → fail open
+  fi
+fi
 
 # Block the stop. stderr is fed back to the model as a system message,
 # which forces it to continue the turn — so the next thing it does is
 # call `gh pr create`. The `stop_hook_active` guard above prevents loops.
+if [ -n "$DEAD_PR" ]; then
+  cat >&2 <<EOF
+The last PR on this branch is $DEAD_PR, and a $DEAD_PR PR cannot take new commits — so
+the work now on this branch is NOT shipped. The branch does contain the current tip of
+origin/$PR_BASE and carries new commits on top, so a fresh PR can be opened for it.
+EOF
+else
+  echo "You changed files on this branch but no PR exists yet." >&2
+fi
 cat >&2 <<'EOF'
-You changed files on this branch but no PR exists yet. Before stopping, open one:
+Before stopping, open one:
 
   gh pr create -t "<short descriptive title>" -b "<markdown body>"
 
