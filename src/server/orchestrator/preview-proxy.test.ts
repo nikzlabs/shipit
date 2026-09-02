@@ -11,7 +11,7 @@
 import { describe, it, expect } from "vitest";
 import vm from "node:vm";
 import { AGENT_INTERFACE_SDK_MARKER } from "../shared/agent-interface-sdk/bootstrap.js";
-import { allowPreviewBootstrapInCsp, buildUpstreamHeaders, injectPreviewBootstrap } from "./preview-proxy.js";
+import { allowPreviewBootstrapInCsp, buildUpstreamHeaders, injectPreviewBootstrap, withOriginIsolation } from "./preview-proxy.js";
 
 describe("buildUpstreamHeaders", () => {
   it("rewrites Host to loopback for the upstream", () => {
@@ -66,6 +66,51 @@ describe("buildUpstreamHeaders", () => {
     );
     expect(out["user-agent"]).toBe("test");
     expect(out.cookie).toBe("a=b");
+  });
+});
+
+describe("withOriginIsolation", () => {
+  it("asks for an origin-keyed agent cluster", () => {
+    expect(withOriginIsolation({ "Content-Type": "text/html" })).toEqual({
+      "Content-Type": "text/html",
+      "origin-agent-cluster": "?1",
+    });
+  });
+
+  it("does not mutate the headers it was handed", () => {
+    // The pass-through path writes `proxyRes.headers` straight out; a mutating
+    // helper would be editing the upstream response object in place.
+    const upstream = { "content-type": "text/css" };
+    withOriginIsolation(upstream);
+    expect(upstream).toEqual({ "content-type": "text/css" });
+  });
+
+  it("replaces an upstream opt-out, whatever case it was written in", () => {
+    // Renderer allocation across sessions is the platform's decision. One `?0`
+    // from an arbitrary dev server would put every open session back in a
+    // single renderer, and the blank canvas would then appear in a *different*
+    // session from the app that caused it.
+    //
+    // Ours is written in the mixed case the literal call sites use; node
+    // lowercases the ones it parses off an upstream response. A case-sensitive
+    // replace would leave the upstream field in place beside ours.
+    expect(withOriginIsolation({ "Origin-Agent-Cluster": "?0" })).toEqual({
+      "origin-agent-cluster": "?1",
+    });
+    expect(withOriginIsolation({ "origin-agent-cluster": "?0" })).toEqual({
+      "origin-agent-cluster": "?1",
+    });
+  });
+
+  it("leaves exactly one field for a value that arrived duplicated or malformed", () => {
+    // Node represents a repeated header as an array. Emitting two fields — or
+    // passing a list value through — is a structured-header parse failure, and
+    // a browser reads that as no request for isolation at all: precisely the
+    // outcome this exists to prevent.
+    const out = withOriginIsolation({ "origin-agent-cluster": ["?0", "?1"], "Content-Type": "text/html" });
+
+    expect(out).toEqual({ "origin-agent-cluster": "?1", "Content-Type": "text/html" });
+    expect(Object.keys(out).filter((k) => k.toLowerCase() === "origin-agent-cluster")).toHaveLength(1);
   });
 });
 
