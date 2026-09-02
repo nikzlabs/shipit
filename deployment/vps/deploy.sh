@@ -9,6 +9,13 @@ COMPOSE_FILE="$SHIPIT_DIR/deployment/vps/docker-compose.yml"
 
 cd "$SHIPIT_DIR"
 
+# Bounded retry around each `docker compose build` for transient registry
+# faults. This script runs unattended from update.sh, whose EXIT trap rolls the
+# checkout back — so one bad HEAD to ghcr.io must not cost an entire update.
+# See the header of that file for the incident this exists for.
+# shellcheck source=../lib/docker-build-retry.sh
+. "$SHIPIT_DIR/deployment/lib/docker-build-retry.sh"
+
 # Load persisted operator env (e.g. SESSION_EGRESS_ENFORCE=0 written by the
 # egress preflight in setup.sh). Exported here so the `docker compose up`
 # ${VAR:-} substitutions below see it on every deploy — setup.sh and update.sh
@@ -190,7 +197,7 @@ case "${FORCE_REBUILD:-0}" in
     BUILD_ARGS+=("--no-cache")
     ;;
 esac
-docker compose -f "$COMPOSE_FILE" build "${BUILD_ARGS[@]}" session-worker shipit egress-sidecar
+shipit_docker_build_with_retry docker compose -f "$COMPOSE_FILE" build "${BUILD_ARGS[@]}" session-worker shipit egress-sidecar
 
 # docs/128 — build the docker-capable session image (Docker CLI + journalctl) on
 # top of the :prod image we just built. It does `FROM shipit-session-worker:prod`,
@@ -205,7 +212,7 @@ case "${FORCE_REBUILD:-0}" in
     DOCKER_IMG_BUILD_ARGS+=("--no-cache")
     ;;
 esac
-docker compose -f "$COMPOSE_FILE" build "${DOCKER_IMG_BUILD_ARGS[@]}" session-worker-docker
+shipit_docker_build_with_retry docker compose -f "$COMPOSE_FILE" build "${DOCKER_IMG_BUILD_ARGS[@]}" session-worker-docker
 
 # Start orchestrator (session-worker containers are spawned on demand)
 docker compose -f "$COMPOSE_FILE" up -d --no-build shipit
