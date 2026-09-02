@@ -226,6 +226,29 @@ shim handler → worker relay → orchestrator service) wraps the deterministic 
   to the base yields `no-new-work` on that same base, since the content-free
   guard above runs BEFORE the bump.
 
+  **Wrong-base guard:** the same short-circuit has a second, quieter failure.
+  `findPullRequest` resolves by HEAD BRANCH alone — it takes no base — and the
+  open-PR branch accepts whatever it finds, so an open `release/<version>` →
+  `stable` PR is handed back verbatim to a run passing `--release-branch
+  stable-2`. The result would then pair that PR's number with the *requested*
+  branch, and both the shim and the lifecycle poller would name a maintenance
+  branch the PR does not target; merging it publishes through the wrong one.
+  Worse than the dead-PR case, because it succeeds. `prepareFinalRelease`
+  therefore also requires `pr.baseBranch === releaseBranch`. The create path
+  cannot trip it: `agentCreatePr` opens against `base: releaseBranch` and echoes
+  that value back.
+
+  **Both guards throw AFTER the worktree was rewritten**, which is why the route
+  fires `onWorkspaceRewritten` in a `finally` rather than after a successful
+  return. `prepareRelease` rewrites the tree before most of the ways it can fail
+  — the content-free guard, the no-op-bump 500, the force-push, `agentCreatePr`'s
+  own errors, and these two guards all throw once `createBranchFrom` has checked
+  the release branch out — so notifying only on success left exactly the
+  routinely-hit failures with the container still on its pre-prepare
+  `shipit.yaml`, compose file and `node_modules`. Over-notifying is the safe
+  direction: the helper is best-effort and idempotent, and the route already
+  fired it for the prerelease path, which rewrites nothing.
+
   **`--from` takes the incoming tree WHOLESALE (conflict-proof), it does NOT
   three-way merge.** A `--from main` release should ship exactly main's tree at the
   new version. A plain `git merge main` into `release/<version>` (built off

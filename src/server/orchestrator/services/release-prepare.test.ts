@@ -301,6 +301,86 @@ describe("prepareRelease — only an OPEN release PR may be reported", () => {
   });
 });
 
+/**
+ * `agentCreatePr` resolves an existing PR by HEAD BRANCH alone (`findPullRequest`
+ * takes no base) and its open-PR short-circuit accepts whatever it finds. So an
+ * open `release/<version>` → `stable` PR is handed to a run targeting
+ * `stable-2`, and the result would pair that PR's number with the requested
+ * branch — the shim and the lifecycle poller then both name a maintenance branch
+ * the PR does not target, and merging publishes through the wrong one.
+ */
+describe("prepareRelease — the release PR must target the requested release branch", () => {
+  const openPrInto = (baseBranch: string) => ({
+    number: 7,
+    url: "https://github.com/o/r/pull/7",
+    title: "Release v0.2.1",
+    baseBranch,
+    headBranch: "release/0.2.1",
+    insertions: 1,
+    deletions: 1,
+    alreadyExisted: true,
+    alreadyExistedReason: "open",
+  });
+
+  const prepareInto = (releaseBranch: string) =>
+    prepareRelease(makeGit({ diffFiles: 4, remoteBranches: ["main", "stable", "stable-2"] }).git, githubAuth, {
+      dir,
+      bump: "patch",
+      releaseBranch,
+      from: "main",
+    });
+
+  it("refuses an OPEN PR whose base is not the requested release branch", async () => {
+    agentCreatePrMock.mockResolvedValue(openPrInto("stable"));
+    await expect(prepareInto("stable-2")).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("names both branches, the wrong-branch consequence, and that the bump is already pushed", async () => {
+    agentCreatePrMock.mockResolvedValue(openPrInto("stable"));
+    let message = "";
+    try {
+      await prepareInto("stable-2");
+    } catch (err: unknown) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toMatch(/open pull request \(#7\) into "stable", but this release targets "stable-2"/);
+    expect(message).toMatch(/wrong maintenance branch/);
+    expect(message).toMatch(/--release-branch stable\b/);
+    expect(message).toMatch(/already been pushed/);
+  });
+
+  it("accepts an OPEN PR that does target the requested release branch", async () => {
+    agentCreatePrMock.mockResolvedValue(openPrInto("stable"));
+    await expect(prepareInto("stable")).resolves.toMatchObject({
+      kind: "pr-opened",
+      prNumber: 7,
+      releaseBranch: "stable",
+      alreadyExisted: true,
+    });
+  });
+
+  // The create path echoes back the `base` it was given, so a freshly opened PR
+  // can never trip the guard. Pinning it keeps the guard from turning an
+  // ordinary first release into a 409.
+  it("lets a newly opened PR through", async () => {
+    agentCreatePrMock.mockResolvedValue({
+      number: 9,
+      url: "https://github.com/o/r/pull/9",
+      title: "Release v0.2.1",
+      baseBranch: "stable",
+      headBranch: "release/0.2.1",
+      insertions: 1,
+      deletions: 1,
+      alreadyExisted: false,
+    });
+    await expect(prepareInto("stable")).resolves.toMatchObject({
+      kind: "pr-opened",
+      prNumber: 9,
+      alreadyExisted: false,
+    });
+  });
+});
+
 describe("prepareRelease — prerelease path is unaffected by the guard (docs/214)", () => {
   it("proposes an rc without --confirm and never consults the guard", async () => {
     const { git, calls } = makeGit({ commitsAhead: 0 });

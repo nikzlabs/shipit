@@ -82,6 +82,14 @@ below** (those are kept only to explain what the command does and as a fallback)
       release a different version (a fresh `release/<version>` branch) when the
       old base is gone. The version bump has already been pushed to
       `release/<version>` at that point; nothing publishes until a PR carries it.
+    - **Wrong-base guard:** ShipIt matches an existing pull request by branch
+      name alone, so an OPEN `release/<version>` PR into one maintenance branch
+      would otherwise be reused by a run targeting a different one — reporting
+      your requested branch beside a PR that does not target it, and publishing
+      through the wrong branch on merge. `prepare` **refuses** when the PR's base
+      isn't the release branch this run asked for. Re-run with
+      `--release-branch <the branch that PR targets>` to continue that PR, or
+      retarget/close it and re-run.
 
     **Cold-start caveat — the merge-trigger workflow must be on the branch.**
     GitHub Actions evaluates a workflow as it exists *on the branch that was

@@ -145,3 +145,15 @@ opens a chore PR that forward-ports the released version onto `main`.
 - [x] Tests: `release-prepare.test.ts` — OPEN still forwarded, merged/closed/absent-reason refused,
   one per-reason remedy assertion; all refusal guards verified red with the guard deleted
 - [x] Docs: `shipit-docs/release.md` dead-PR guard bullet, plan.md above
+- [x] Wrong-base guard: `prepareFinalRelease` requires `pr.baseBranch === releaseBranch`. An OPEN
+  `release/<version>` PR into one maintenance branch was reused by a run targeting another
+  (`findPullRequest` resolves by head branch, no base filter), pairing that PR with the requested
+  branch in both the shim line and the lifecycle poller — merging published through the wrong branch
+- [x] `onWorkspaceRewritten` moved into a `finally` in the prepare route: `prepareRelease` rewrites the
+  tree before most of its failure paths (content-free guard, no-op-bump 500, force-push,
+  `agentCreatePr` errors, both release-PR guards), so notifying only on success left the container on
+  a stale `shipit.yaml` / compose file / `node_modules`
+- [x] Tests: `release-prepare.test.ts` wrong-base refusal + message + two acceptance guards against
+  over-rejection; `integration_tests/release-prepare-rewrite-notify.test.ts` drives the real route to a
+  post-rewrite failure and asserts the notification. Both verified red without their fix
+- [x] Docs: `shipit-docs/release.md` wrong-base guard bullet, plan.md above

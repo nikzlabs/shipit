@@ -575,6 +575,28 @@ async function prepareFinalRelease(
     throw new ServiceError(409, deadReleasePrMessage(headBranch, releaseBranch, pr));
   }
 
+  // …and it must target the branch THIS run is releasing into. `agentCreatePr`
+  // resolves an existing PR by head branch alone (`findPullRequest` takes no
+  // base), and its open-PR short-circuit accepts whatever it finds — so an open
+  // `release/<version>` → `stable` PR is handed back verbatim to a run passing
+  // `--release-branch stable-2`. We would then return `releaseBranch: "stable-2"`
+  // beside that PR's number, and both the shim and the lifecycle poller would
+  // name a maintenance branch the PR does not target. Merging it publishes
+  // through the wrong one — silently, which is worse than the dead-PR case this
+  // sits next to. The create path can't trip this: `base: releaseBranch` is what
+  // `agentCreatePr` opens against, so it echoes the same value back.
+  if (pr.baseBranch !== releaseBranch) {
+    throw new ServiceError(
+      409,
+      `The branch "${headBranch}" already has an open pull request (#${pr.number}) into ` +
+        `"${pr.baseBranch}", but this release targets "${releaseBranch}". Merging it would publish ` +
+        `through the wrong maintenance branch. ShipIt matches an existing pull request by branch ` +
+        `name alone and won't retarget one for you — re-run with --release-branch ${pr.baseBranch} ` +
+        `to continue that pull request, or retarget/close #${pr.number} and re-run. Note the version ` +
+        `bump has already been pushed to "${headBranch}", so #${pr.number} now carries it.`,
+    );
+  }
+
   return {
     kind: "pr-opened",
     version,
