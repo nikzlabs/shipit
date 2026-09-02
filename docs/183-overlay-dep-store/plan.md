@@ -190,6 +190,44 @@ and then destroys the TCP socket mid-archive, asserting a clean rejection and an
 `uncaughtException` log; `overlay-publish.test.ts` asserts the signal is threaded, a mid-stream death
 becomes an `"error"` outcome, and an abort stops the remaining dirs.
 
+### The dep dir is NOT quiescent while it is snapshotted (prod degradation, 2026-09-02)
+
+The producer's first design assumed the post-install / pre-agent workspace was still, so tar's
+`file changed as we read it` race could not apply and any non-zero exit was a real failure. It is not
+still: compose services start in a **parallel** async IIFE beside `agent.install`
+(`service-manager-setup.ts` — the install gate *retries* a service that fails during install, it never
+defers starting one), and a running Node dev server writes inside the dep dir it is served from (Vite's
+optimizer cache is `node_modules/.vite`). Creating or removing a top-level entry moves the dep dir's own
+mtime, so tar's final stat of `.` differs and it exits **1**. Measured on the production host: 18 of 46
+live agent containers, across multiple repositories — ~39% of publishes silently declined, so those dep
+dirs' rolling bases never advanced and later sessions paid a cold install.
+
+`createDepSnapshotTar` now decides exit 1 on tar's own stderr, and the split is by **what tar named**:
+
+- `tar: .: file changed as we read it` — the dep dir's directory entry. tar stores no content for a
+  directory, so no member's bytes are affected; at worst a transient top-level entry is absent from (or
+  present in) the archive. Tolerated: `done` resolves, one `console.warn` records it.
+- `tar: ./pkg/index.js: file changed as we read it` — a member's own bytes moved under the read, so that
+  member may be torn (tar writes exactly the stat'd size). It also says something is structurally
+  rewriting the tree — a concurrent install — which is precisely the state that must never become a base
+  **shared by every future session of the repo**. Still fatal, as is any other stderr line and any exit
+  code other than 0 or 1.
+
+Excluding the volatile cache dirs instead was ruled out **empirically**: with GNU tar 1.34,
+`--exclude=./.vite` still exits 1 with `tar: .: file changed as we read it`, because excluding a child
+does not stop tar noticing that the parent directory's mtime moved.
+
+The failure was also invisible orchestrator-side — the only signal anywhere on the host was the
+`console.warn` inside each session container. A dep dir whose publish returns `"error"` now emits a
+session log line (`service-manager-setup.ts`) carrying **counts only**; the dep dir names stay off it
+because `agent.dep-dirs` is repo-declared text and the line is on the docs/264 ops-readable channel
+(its `OPS_SAFE_TEMPLATES` entry is what lets `shipit session logs` show it at all).
+
+Regression coverage: `dep-snapshot.test.ts` blocks tar on an undrained stdout, mutates the tree while it
+is provably mid-read, and asserts the root race resolves with every stable member intact while a member
+race still rejects; `service-manager-setup.test.ts` asserts the log line's real string matches the
+ops-safe template and names no dep dir.
+
 ### Reused vs dropped vs changed (relative to the whole-workspace implementation already on the branch)
 
 - **Reused as-is:** the rolling-base publish CAS + depth-cap flatten + force-push lineage reset
