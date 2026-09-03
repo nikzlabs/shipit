@@ -52,15 +52,16 @@ but cannot land it. This feature moves the permission to the **repository**.
     refuses. The refusal says that the push started the checks again, and that
     the agent can ask for the merge to happen when the checks pass. The command
     does not wait by itself.
-18. The agent can ask for the merge to happen when the checks pass. ShipIt then
-    performs that merge itself, and only at the commit that was current when the
-    agent asked.
+18. In a repo-bound session, the agent can ask for the merge to happen when the
+    checks pass. ShipIt then performs that merge itself, and only at the commit
+    that was current when the agent asked. Sandbox sessions keep the behaviour
+    they have today (req 12).
 19. If the branch moves after the agent asked, ShipIt does not merge. It cancels
     the request and says so in the transcript.
 20. When the user withdraws the permission (req 1), every request that has not
     merged is cancelled. A merge the user armed from the pull request card is
     not affected.
-21. A request survives a restart of ShipIt.
+21. A request survives a restart of ShipIt, and is still carried out after one.
 
 ## Open questions
 

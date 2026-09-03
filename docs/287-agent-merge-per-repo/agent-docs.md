@@ -84,7 +84,7 @@ commits and pushes nothing for you. Push your own work before you merge.
   rejected.
 - A draft PR is refused (run `gh pr ready` first).
 
-#### `--auto` merges one exact commit
+#### `--auto` merges one exact commit (repo-bound sessions)
 
 `--auto` records the commit that is current when you call it. ShipIt merges that
 commit, and nothing else:
@@ -94,7 +94,8 @@ commit, and nothing else:
   code. Call `gh pr merge --auto` again if you still want it merged.
 - If the user turns the permission off, every request that has not merged is
   cancelled.
-- The merge happens after your turn ends, never while you are still working.
+- The merge happens after your turn ends. ShipIt holds it while your session is
+  working, so in practice it lands just after the turn that armed it.
 
 #### After your PR merges
 

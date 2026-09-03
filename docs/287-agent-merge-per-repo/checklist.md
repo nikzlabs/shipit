@@ -43,8 +43,8 @@ Revision 2 (2026-09-02), after two review rounds.
       zero checks only in an error-free response
 - [ ] Zero-check grace via a new `PrStatusPoller.awaitCiGraceDecision()` facade
       that awaits `ensureWorkflowsLoaded()` (the tracker is private and needs it)
-- [ ] Merge grace keyed by repository + PR + head SHA, and an unknown CI history
-      starts the grace instead of skipping it
+- [ ] `CiGraceTracker` gains a merge entry point keyed by repository + PR + head
+      SHA, where an unknown CI history starts the grace; its tests cover both modes
 - [ ] Query asks only for what the gate reads; a null rollup means zero checks
 - [ ] Gate table implemented in full: failed read, rollup-SHA mismatch,
       local-HEAD mismatch, draft/closed, failing, pending, both zero-check cases
@@ -53,19 +53,28 @@ Revision 2 (2026-09-02), after two review rounds.
 ## `--auto` — the ShipIt arming (req 18–21)
 
 - [ ] Migration: `agent_merge_armings` (session, repo key, PR number, expected
-      SHA, method, armed_at, last_error) + repo index
+      SHA, method, last_error) + repo index + `ON DELETE CASCADE` from sessions
+- [ ] Repo-bound only; a sandbox `--auto` keeps today's behaviour (req 12)
 - [ ] `--auto` writes an arming; a second `--auto` replaces the first
 - [ ] No GitHub-native arming on the agent path at all
-- [ ] Executor runs in the poller's existing tick, behind the docs/266 busy gate
-- [ ] Executor runs the **same** merge-gate read as the direct path
+- [ ] Executor runs in the poller's existing tick
+- [ ] Armings feed the polling supervisor and the global gate: loaded at startup,
+      `ensure()`d on arm, ticked with no viewer and no tracked session (req 21)
+- [ ] Executor shares the remote gate but has its own predicate: `expected_sha`,
+      not local HEAD (it may have no worktree)
+- [ ] Executor holds the post-turn lease across the final re-reads and the REST
+      call, and one in-flight flag makes it exclusive with managed auto-merge
 - [ ] Head no longer equal to `expected_sha` ⇒ delete the arming + persisted
       notice; never re-point it at the new head (req 19)
 - [ ] Merge sends `expected_sha` as the REST expected `sha` (req 18)
 - [ ] Revocation deletes armings by `canonicalRepoKey`, in the same transaction
       as the flag; executor re-reads arming **and** grant immediately before merging (req 20)
 - [ ] Armings survive a restart (req 21)
-- [ ] Cleared on merge, head change, PR close, untrack, docs/202 re-arm, reset,
-      unarchive, repository removal
+- [ ] Cleared on merge, head change, PR close, **archive**, hard delete / full
+      reset, docs/202 re-arm, reset, unarchive, repository removal
+- [ ] Notices use the unattached path when there is no runner
+- [ ] Terminal reconciliation: an arming whose `expected_sha` already merged
+      records the merge (req 9) before the row is deleted
 - [ ] A refused merge keeps the arming and records `last_error`, surfaced once
 - [ ] A user's card-armed auto-merge is untouched by any of this
 

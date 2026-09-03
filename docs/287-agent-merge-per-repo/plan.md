@@ -9,13 +9,14 @@ description: Widen the docs/224 merge gate from a per-sandbox grant to a per-rep
 Implements [requirements.md](./requirements.md). Extends
 `docs/224-sandbox-merge-capability` (the shim, the route, the guardrails).
 
-> **Revision 6, 2026-09-03.** Five independent review rounds; every finding
+> **Revision 7, 2026-09-03.** Six independent review rounds; every finding
 > verified at the source before it was accepted. Round 1 rebuilt the ownership
 > check, round 2 replaced the status gate and caught a `cwd` rule that would have
 > broken every merge, round 3 replaced the query and the grace window, round 4
 > bound provenance to the repository, and round 5 closed a partial-response hole
 > and refuted GitHub-native arming — which the user then answered by scoping in a
-> ShipIt arming bound to one commit (req 18–21). See
+> ShipIt arming bound to one commit (req 18–21) — which round 6 then scoped to
+> repo-bound sessions and made reachable after a restart. See
 > [What the reviews changed](#what-the-reviews-changed).
 
 ## What changes, in one line
@@ -217,10 +218,13 @@ Two rows deserve their reason.
 `agentMergePullRequest()` treats `"none"` as permission to merge — a fail-open
 defect for **sandbox** merges today. Requirement 7 says the guardrails apply to
 every agent merge, so this read replaces `getCheckStatus()` on both paths.
-The grace is the one ShipIt already has, `CiGraceTracker` — keyed by session
-**and head SHA**, started when a head is first seen with no checks, reset on a
-new push, and informed by the repo's parsed workflows and by whether any check
-was ever observed there. An earlier revision derived the window from the head
+The grace **extends** `CiGraceTracker` rather than calling it as it stands —
+round 6 was right that the previous wording claimed reuse for what is really a
+second mode. The tracker keys its timer by session and head SHA and returns
+`false` immediately when the repository's CI history is unknown, which is correct
+for the poller (it will see that repository again) and wrong for a one-shot merge
+decision. It gains a merge-specific entry point: keyed by repository, pull
+request and head SHA, and treating an unknown history as *start the grace*. An earlier revision derived the window from the head
 commit's `committedDate`; round 3 rejected that correctly, since commit time is
 not check-registration time.
 
@@ -234,17 +238,9 @@ tracker constructed fresh for the merge route would have none of the sticky
 which does the preload and then the existing call. One grace implementation, one
 caller-visible answer.
 
-Two corrections round 5 made to that reuse, both accepted:
-
-- **The merge grace is keyed by repository, pull request *and* head SHA**, not by
-  session and SHA as the tracker keys its own. Two pull requests can legitimately
-  share a commit SHA, so "that cannot really happen" was wrong; a sandbox session
-  merging in several repositories would otherwise share one timer.
-- **An unknown CI history starts the grace, it does not skip it.**
-  `shouldForcePending()` returns false immediately when it has no prior CI
-  signal — right for the poller, which will see the repository again, and wrong
-  for a one-shot merge decision in an arbitrary sandbox clone that has neither a
-  workflow parse nor poll history. For the merge gate, unknown means wait.
+Both differences come from round 5 and stand: two pull requests can legitimately
+share a commit SHA, so a session+SHA key is not enough; and for an irreversible
+decision, "no CI history" means wait rather than proceed.
 
 **The local-HEAD row** is the half `guardMergeSync()` cannot cover. That guard
 compares local HEAD with the remote-*tracking* ref and, by design, **proceeds
@@ -297,58 +293,87 @@ existing ShipIt-managed loop is no better on its own: `AutoMergeState` holds
 neither a pull-request number nor a SHA, and it selects through the poller's
 branch-keyed map.
 
-So the agent's arming is its own record, and what makes it safe is that it names
-exactly what was authorised:
+**Repo-bound sessions only.** Round 6 found the arming cannot describe a sandbox
+at all — a sandbox has no `session.remoteUrl`, may target several repositories,
+is not tracked by the repository poller, and is governed by `dangerousGitHubOps`
+rather than the repository grant. Requirement 12 already settles what to do:
+sandbox behaviour does not change, so a sandbox `--auto` keeps today's native
+arming and none of this section applies to it.
 
 ```sql
 CREATE TABLE agent_merge_armings (
   session_id   TEXT PRIMARY KEY,   -- one arming per session; a session has one PR
-  repo_key     TEXT NOT NULL,      -- canonicalRepoKey(session.remoteUrl)
+  repo_key     TEXT NOT NULL,      -- canonicalRepoKey of the repo-bound session's remote
   pr_number    INTEGER NOT NULL,
   expected_sha TEXT NOT NULL,      -- the head the live read returned
   method       TEXT NOT NULL,      -- merge | squash | rebase
-  armed_at     TEXT NOT NULL,
   last_error   TEXT                -- surfaced once, not every tick
 );
 CREATE INDEX idx_agent_merge_armings_repo ON agent_merge_armings(repo_key);
 ```
 
-Durable, so it survives a restart (req 21). Keyed by session, so a second `--auto`
-replaces the first rather than accumulating.
+Keyed by session, so a second `--auto` replaces the first rather than
+accumulating. There is deliberately no `armed_at`: nothing times an arming out,
+and a column no code reads is a column that will drift.
 
-**One gate, two callers.** The executor runs the *same* merge-gate read as the
-direct path — same query, same table of refusals — and adds one row of its own:
-`headRefOid` must still equal `expected_sha`. If the branch has moved, the
-arming is **deleted** and a persisted notice says so (req 19); it is not
-re-pointed at the new head, because nothing authorised that commit. The merge
-then goes out with that SHA as the REST merge's expected `sha`, so even a race
-inside the call cannot land anything else (req 18).
+**One remote gate, two callers with their own predicates.** The GraphQL read and
+the refusal table are shared; the caller-specific part is not, and round 6 was
+right that calling it "the same gate" hid that. The direct path runs mid-turn
+with a worktree and compares the live head with **local HEAD**. The executor runs
+post-turn, may have no worktree at all after a restart, and compares the live
+head with its durable **`expected_sha`**. Same remote read, one predicate each.
 
-**Where it runs.** In the PR status poller's existing tick, beside the managed
-auto-merge loop — not a second timer. It obeys the same docs/266 busy gate: an
-arming does not merge while the session's agent is running, so a merge cannot
-land under a live turn. In practice it fires just after the turn that armed it.
+If the head no longer matches, the arming is **deleted** and a persisted notice
+says so (req 19). It is never re-pointed at the new head, because nothing
+authorised that commit. Otherwise the merge goes out with that SHA as the REST
+merge's expected `sha` (req 18).
+
+**Keeping the executor reachable (req 21).** Durability is not enough on its own:
+the polling supervisor iterates `tracker.sessionRepos`, and the global gate opens
+only for in-memory automation, so after a restart with no viewer a persisted
+arming would never receive a tick. So armings are a **first-class input to the
+supervisor and the global gate** — loaded at startup, `ensure()`d when one is
+written, and their repository ticked even when no ordinarily tracked session
+would keep polling alive.
+
+**Serialisation, stated honestly.** The executor takes the session's post-turn
+lease (`post-turn-hold.ts`) and holds it across the final arming re-read, the
+grant re-read and the REST call, and one in-flight flag per session makes the
+agent executor and the managed auto-merge loop mutually exclusive. That is what
+the design can promise. It is **not** an absolute "never while working": the
+existing managed performer documents that a turn can begin after the busy check
+while a merge request is in flight, and the same is true here. The SHA
+precondition protects the *commit*; the lease narrows, but does not eliminate,
+the overlap with a turn.
 
 **Revocation is local, which is the point (req 20).** Turning
 `allow_agent_merge` off deletes every arming whose `repo_key` matches — one
-SQLite statement in the same transaction as the flag, resolved by
-`canonicalRepoKey`, not by exact URL equality. There is no network call that can
-fail and leave GitHub armed while ShipIt reports the permission off, which is
-exactly the failure the native path could not avoid. The executor re-reads both
-the arming row and the grant immediately before it merges, so a revocation that
-lands first always wins.
+statement in the same transaction as the flag, resolved by `canonicalRepoKey`, so
+every URL spelling of that repository is covered. No network call can fail and
+leave GitHub armed while ShipIt reports the permission off, which is exactly what
+the native path could not avoid. The executor re-reads both the arming row and
+the grant immediately before merging, so a revocation that lands first wins. The
+residual window is one HTTP call wide, and what lands in it is still the commit
+the agent was authorised to merge.
 
-The residual window is one HTTP call wide: a grant revoked *while* a merge
-request is in flight cannot recall it. That is stated rather than papered over —
-and the merge that lands is still exactly the commit the agent was authorised to
-merge.
+**Clearing.** On a successful merge; on a head that no longer matches; when the
+pull request closes; on **archive** and on hard delete or full reset (a foreign
+key with `ON DELETE CASCADE`, plus the explicit archive hook — round 6 correctly
+rejected `untrackSession()`, which has no production lifecycle caller); on the
+docs/202 re-arm and the reset and unarchive clears that also drop `pr_number`;
+on repository removal; and on revocation.
 
-**Clearing.** The row is deleted on a successful merge, on a head that no longer
-matches, when the pull request closes, when the poller stops tracking the
-session, on the docs/202 re-arm and the reset and unarchive clears that also drop
-`pr_number`, on repository removal, and on revocation. A merge attempt that
-GitHub refuses (a conflict, branch protection) keeps the arming and records
-`last_error`, surfaced once rather than on every tick.
+**Two failure modes the executor must handle**, both round 6's:
+
+- **No runner to emit through.** `emitNoticeInTurn()` needs one, and a post-turn
+  or post-restart executor may have none. Its notices go through the unattached
+  path (`emitNoticePostTurn`, which takes the `append` and an emit that may
+  broadcast to nobody), so the record persists either way.
+- **A crash between GitHub accepting the merge and the row being deleted.** On
+  the next tick the pull request reads as closed/merged, and naively deleting the
+  arming would destroy the only evidence — requirement 9 asks for a record of
+  that merge. So a terminal reconciliation runs first: an arming whose
+  `expected_sha` is the merged head records the merge notice, *then* deletes.
 
 **A user's own auto-merge is untouched** — different record, different loop, and
 the repository grant does not govern it (req 20).
@@ -410,13 +435,21 @@ repo-scoped agent permission exists.
 | 5 | `expectedHeadOid` binds the arming, not the merge | `--auto` is a ShipIt arming bound to one commit (user decision, req 18–21) |
 | 5 | a partial GraphQL response reads as "no CI" | any `errors` refuses, before the gate table applies |
 | 5 | the CI grace was keyed by session + SHA | keyed by repository + PR + SHA; unknown CI starts the grace |
+| 6 | a persisted arming would never get a tick | armings feed the polling supervisor and global gate |
+| 6 | the arming cannot describe a sandbox | armings are repo-bound only; sandbox keeps today's behaviour (req 12) |
+| 6 | "never while working" was absolute | a lease and a per-session in-flight flag, with the residual overlap stated |
+| 6 | `untrackSession()` is not a lifecycle hook | clear on archive, delete and full reset instead |
+| 6 | a crash could erase the merge record | terminal reconciliation records, then deletes |
+| 6 | `armed_at` had no consumer | dropped from the schema |
 
 ## Key files
 
 | File | Change |
 |---|---|
 | `src/server/shared/database.ts` | migrations: `repos.allow_agent_merge`, `sessions.pr_number`, `agent_merge_armings` |
-| `src/server/orchestrator/agent-merge-armings.ts` | the arming store: arm, read, delete-by-session, delete-by-repo |
+| `src/server/orchestrator/agent-merge-armings.ts` | the arming store: arm, read, delete by session / repo / cascade |
+| `src/server/orchestrator/ci-grace-tracker.ts` | a merge-specific entry point (repo + PR + SHA; unknown history waits) |
+| `src/server/orchestrator/pr-polling-supervisor.ts`, `polling-global-gate.ts` | armings as a polling input, so a restart still executes them |
 | `src/server/orchestrator/repo-store.ts` | grant read/write, `canonicalRepoKey`-matched |
 | `src/server/orchestrator/api-routes-session-repos.ts` | grant on the existing `PATCH /api/repos/:url` |
 | `src/server/orchestrator/pr-target.ts` | `mergeDisposition()`; `--repo` refused, `cwd` ignored |
