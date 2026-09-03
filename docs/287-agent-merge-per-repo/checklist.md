@@ -12,7 +12,7 @@ Revision 2 (2026-09-02), after two review rounds.
 
 ## Ownership
 
-- [ ] Migration: `sessions.pr_number`
+- [ ] Migration: `sessions.pr_number` + `sessions.pr_repo_key`
 - [ ] `mergeDisposition()`: sandbox / ops (`not-sandbox`, unchanged) / repo-bound
 - [ ] `--repo` refused on a repo-bound merge; `cwd` **ignored, not refused**
 - [ ] An ordinary `gh pr merge` (which always sends `cwd`) is allowed
@@ -28,6 +28,9 @@ Revision 2 (2026-09-02), after two review rounds.
 - [ ] Written only when the created PR's canonical repo matches the session's
 - [ ] Cleared by the docs/202 re-arm, by `pr-rearm.ts`, and by unarchive's clearing
 - [ ] Never backfilled from `pr_status`
+- [ ] `pr_repo_key` stored with the number, and the merge gate requires it to match
+      `canonicalRepoKey(session.remoteUrl)` at merge time
+- [ ] Changing the session's `origin` clears `pr_number`, `pr_repo_key` and any arming
 
 ## Merge sequence
 
@@ -55,7 +58,7 @@ Revision 2 (2026-09-02), after two review rounds.
 ## `--auto` — the ShipIt arming (req 18–21)
 
 - [ ] Migration: `agent_merge_armings` (session, repo key, PR number, expected
-      SHA, method, last_error) + repo index + `ON DELETE CASCADE` from sessions
+      SHA, method, **state**, last_error) + repo index + `ON DELETE CASCADE`
 - [ ] Repo-bound only; a sandbox `--auto` keeps today's behaviour (req 12)
 - [ ] `--auto` writes an arming; a second `--auto` replaces the first
 - [ ] No GitHub-native arming on the agent path at all
@@ -72,8 +75,11 @@ Revision 2 (2026-09-02), after two review rounds.
 - [ ] Head no longer equal to `expected_sha` ⇒ delete the arming + persisted
       notice; never re-point it at the new head (req 19)
 - [ ] Merge sends `expected_sha` as the REST expected `sha` (req 18)
-- [ ] Revocation deletes armings by `canonicalRepoKey`, in the same transaction
-      as the flag; executor re-reads arming **and** grant immediately before merging (req 20)
+- [ ] Revocation deletes **pending** armings by `canonicalRepoKey`, in the same
+      transaction as the flag; executor re-reads arming **and** grant immediately
+      before merging (req 20)
+- [ ] A REST success writes `settling` even if the row was deleted meanwhile, so a
+      revocation racing the call cannot strand settlement or the merge record
 - [ ] Armings survive a restart (req 21)
 - [ ] Cleared on merge, head change, PR close, **archive**, hard delete / full
       reset, docs/202 re-arm, reset, unarchive, repository removal

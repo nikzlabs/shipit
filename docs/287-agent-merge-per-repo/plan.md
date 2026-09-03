@@ -9,7 +9,7 @@ description: Widen the docs/224 merge gate from a per-sandbox grant to a per-rep
 Implements [requirements.md](./requirements.md). Extends
 `docs/224-sandbox-merge-capability` (the shim, the route, the guardrails).
 
-> **Revision 8, 2026-09-03.** Seven independent review rounds; every finding
+> **Revision 9, 2026-09-03.** Eight independent review rounds; every finding
 > verified at the source before it was accepted. Round 1 rebuilt the ownership
 > check, round 2 replaced the status gate and caught a `cwd` rule that would have
 > broken every merge, round 3 replaced the query and the grace window, round 4
@@ -107,6 +107,7 @@ which requirement 5 excludes by name.
 | docs/202 re-arm clears `pr_status` | clear it too |
 | explicit reset (`pr-rearm.ts`) | clear it |
 | unarchive's "old PR no longer applies" clearing | clear it |
+| the session's `origin` is changed | clear it — see below |
 | sessions predating the column | `NULL` — refuse, and **never backfill from `pr_status`**, which also holds person-opened PRs |
 
 `quickCreatePr()` cannot tell the creation cases apart today: it returns the **same
@@ -123,6 +124,18 @@ A — a number that then matches a *different* pull request at merge time. So th
 write happens only when
 `canonicalRepoKey(created.repoUrl) === canonicalRepoKey(session.remoteUrl)`.
 `alreadyExisted: false` alone is not provenance.
+
+**And the number is stored with the repository it came from.** Round 8 found that
+`session.remoteUrl` is not fixed: replacing `origin` updates `sessions.remote_url`
+in place. A pull-request number, a branch name and even a SHA can coincide across
+forks, so a number recorded against repository A would then authorise a
+same-numbered pull request in repository B. Two defences, because a missed clear
+must not become an authorisation:
+
+- `sessions.pr_repo_key` is stored beside `pr_number`, and the merge gate requires
+  it to equal `canonicalRepoKey(session.remoteUrl)` **at merge time**.
+- A canonical repository-identity change clears `pr_number`, `pr_repo_key` and any
+  arming for that session.
 
 ## 3. The merge sequence (req 7, 8, 14, 15, 16, 17)
 
@@ -309,6 +322,7 @@ CREATE TABLE agent_merge_armings (
   pr_number    INTEGER NOT NULL,
   expected_sha TEXT NOT NULL,      -- the head the live read returned
   method       TEXT NOT NULL,      -- merge | squash | rebase
+  state        TEXT NOT NULL,      -- 'pending' | 'settling' (durable, see below)
   last_error   TEXT                -- surfaced once, not every tick
 );
 CREATE INDEX idx_agent_merge_armings_repo ON agent_merge_armings(repo_key);
@@ -365,9 +379,9 @@ precondition protects the *commit*; the precheck and lease narrow, but do not
 eliminate, the overlap with a turn.
 
 **Revocation is local, which is the point (req 20).** Turning
-`allow_agent_merge` off deletes every arming whose `repo_key` matches — one
-statement in the same transaction as the flag, resolved by `canonicalRepoKey`, so
-every URL spelling of that repository is covered. No network call can fail and
+`allow_agent_merge` off deletes every **pending** arming whose `repo_key` matches
+— one statement in the same transaction as the flag, resolved by
+`canonicalRepoKey`, so every URL spelling of that repository is covered. No network call can fail and
 leave GitHub armed while ShipIt reports the permission off, which is exactly what
 the native path could not avoid. The executor re-reads both the arming row and
 the grant immediately before merging, so a revocation that lands first wins. The
@@ -377,11 +391,26 @@ the agent was authorised to merge.
 **Deleting the row on success — after settlement, not at the response.** The
 arming may be the only thing holding the global polling gate open, and the
 managed loop deliberately keeps a `completed` marker until the terminal PR state
-is observed for exactly this reason. So a successful REST response marks the
-arming **settling**, and it is deleted only once `forceVerifySessionPrState()`
-has seen the terminal state and `awaitMergeHandling()` has settled — otherwise
-the gate can close before the card, `mergedAt` and the reset eligibility do
-(req 10, 11).
+is observed for exactly this reason. So a successful REST response moves the
+arming to **`settling`**, and it is deleted only once
+`forceVerifySessionPrState()` has seen the terminal state and
+`awaitMergeHandling()` has settled — otherwise the gate can close before the
+card, `mergedAt` and the reset eligibility do (req 10, 11).
+
+**`settling` is a durable column, not an in-memory flag**, and that is what makes
+revocation safe to race. Round 8's case: revocation arriving during or just after
+the REST call would otherwise delete the only record that a merge is in flight —
+and neither of the alternatives can recover it, since a forced verification is
+one-shot and may still read the pull request as open under eventual consistency,
+while the attribution memory is deliberately not persisted. So:
+
+- **revocation deletes `pending` armings only** (req 20 — nothing more will be
+  merged), and
+- a REST success **writes `settling` even if the row was deleted in the
+  meantime**, so settlement and the merge record always have somewhere to live.
+
+A `settling` row authorises no further merge; it exists only until the merge it
+already performed is fully recorded.
 
 **Clearing.** On a settled merge; on a head that no longer matches; when the
 pull request closes; on **archive** and on hard delete or full reset (a foreign
@@ -480,12 +509,15 @@ repo-scoped agent permission exists.
 | 7 | recovery could not honestly claim who merged | recovery records the authorisation, not the performance |
 | 7 | deleting on the REST response could close the polling gate | a settling state, deleted after settlement |
 | 7 | the grace facade omitted the PR number | `prNumber` passed explicitly |
+| 8 | `origin` can be replaced under a recorded PR number | store `pr_repo_key`, match at merge time, clear on identity change |
+| 8 | revocation could delete a settling arming | durable `state`; revocation deletes `pending` only |
 
 ## Key files
 
 | File | Change |
 |---|---|
-| `src/server/shared/database.ts` | migrations: `repos.allow_agent_merge`, `sessions.pr_number`, `agent_merge_armings` |
+| `src/server/shared/database.ts` | migrations: `repos.allow_agent_merge`, `sessions.pr_number` + `pr_repo_key`, `agent_merge_armings` |
+| `src/server/orchestrator/services/git.ts`, `sessions.ts` | clear provenance and armings when `origin` changes |
 | `src/server/orchestrator/agent-merge-armings.ts` | the arming store: arm, read, delete by session / repo / cascade |
 | `src/server/orchestrator/ci-grace-tracker.ts` | a merge-specific entry point (repo + PR + SHA; unknown history waits) |
 | `src/server/orchestrator/pr-polling-supervisor.ts`, `polling-global-gate.ts` | armings as a polling input, so a restart still executes them |
