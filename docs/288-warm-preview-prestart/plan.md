@@ -77,16 +77,51 @@ standing cost.
 **Why a cutoff does not punish a break (req 9).** Two properties of where the
 gate sits, both of which have to stay true if the number is ever changed:
 
-- **It is evaluated when ShipIt WARMS, not when the user claims.** The warm
-  paths are the boot re-warm (`scheduleStartupTasks`), a repo being added, the
-  claim re-warm, and graduation. So an overnight deploy — which retires the warm
-  tier and re-warms every ready repo — evaluates the gate at 3am against
-  yesterday's `lastUsedAt` and pre-starts the preview before the user arrives.
-  Nothing is decided at the moment the user shows up.
+- **It is evaluated when ShipIt WARMS, not when the user claims.** Yesterday's
+  claim re-warmed the next session and pre-started its preview; that stack is
+  what the morning's claim adopts. Nothing about it is decided at the moment the
+  user arrives.
 - **Every claim re-stamps `lastUsedAt`.** An absence longer than the cutoff
   therefore costs exactly ONE cold preview: the first session back warms the
   next one, and the repo is recent again. The failure mode degrades by one
   session, not by a mode change.
+
+## The warm tier must heal itself (req 10)
+
+The cutoff is not what threatens the morning. This is, and it is broken today,
+before this feature exists:
+
+1. Overnight the instance goes over its memory budget. The idle enforcer's tier
+   0 destroys standby containers FIRST — correctly, since they are speculative
+   (`idle-enforcer.ts:200-218`).
+2. Nothing rebuilds one. `warmSessionForRepo` declines because the warm session
+   ROW still exists — only its container was destroyed
+   (`warm-pool-manager.ts:86-89`).
+3. `warmSessionForRepo` is called only from the boot re-warm, a repo being
+   added, a repo being trusted, the claim re-warm, and graduation. **There is no
+   periodic sweep** (verified across the call sites in `api-routes-*.ts` and
+   `startup-tasks.ts`).
+
+So one night of pressure leaves the repo with a warm session that has no
+container, and the morning's claim pays the full cold cost: container create,
+`agent.install`, `compose up`, dev-server boot. With this feature the same night
+also takes the pre-started preview, so it would remove the whole benefit
+precisely when the user most expects it.
+
+**Fix: a periodic warm sweep that compares state.** Every few minutes, for each
+repo inside the recency window: if its warm session has no running container and
+there is memory headroom (`isUnderEvictionPressure` is false), rebuild the
+standby, pre-install, and pre-start the preview.
+
+Deliberately **not** keyed on the pressure-release transition, though
+`startup-monitors.ts` already computes one. A transition is observed once, by
+one observer; a sweep that missed it — because it started later, or because the
+process restarted mid-window — never heals. Comparing "what should exist" with
+"what does exist" gives the same answer however the system got there.
+
+The sweep is also what makes req 4 safe to be aggressive about: tier 0 can drop
+warm previews the moment memory is tight precisely because they come back on
+their own when it is not.
 
 7 days is the smallest window that clears a long weekend plus a public holiday
 with room to spare. It sits between the two windows that already exist: a repo

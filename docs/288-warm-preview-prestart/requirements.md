@@ -50,7 +50,13 @@ The trace behind that report:
    nobody has touched carries no standing preview cost.
 9. An ordinary break away from work — a night, a weekend, a holiday — does not
    change warming behaviour. Coming back on Monday is the same as coming back
-   after lunch.
+   after lunch. Concretely: a user who starts in the morning and opens a new
+   session gets a warm one, already prepared, without knowing or caring what
+   ShipIt did overnight.
+10. A warm session that loses its container or its preview to reclaim is
+    rebuilt while nobody is watching. ShipIt does not wait for the next claim to
+    notice that its warm tier is empty — the claim is the moment the user needs
+    it, which is the one moment it is too late to start.
 
 ## Open questions
 
@@ -58,6 +64,19 @@ _None._
 
 ## Resolved questions
 
+- 2026-09-03 — *"If I start working in the morning and open a new session, it
+  should be warmed up already."* Stated to correct an answer that had explained
+  the overnight-deploy path instead. The requirement is about the ordinary
+  morning, with nothing unusual happening overnight — so it is written as req 9
+  and req 10 rather than as a property of the deploy path. The gap it exposes is
+  real and exists TODAY, before this feature: the idle enforcer's tier 0
+  destroys standby containers first under memory pressure
+  (`idle-enforcer.ts:200-218`), nothing rebuilds one, and `warmSessionForRepo`
+  declines to act because the warm session ROW still exists
+  (`warm-pool-manager.ts:86-89`). Verified: `warmSessionForRepo` is called only
+  from boot, repo add, repo trust, the claim re-warm and graduation — there is
+  no periodic sweep. So a night of memory pressure leaves a warm session with no
+  container, and the morning's claim pays the full cold cost. → req 10.
 - 2026-09-03 — *What is the recency cutoff, and does a break break it?* The
   requirement was written without a number, which the human caught. The cutoff
   is **7 days**, and the rule it has to satisfy is req 9: no ordinary absence

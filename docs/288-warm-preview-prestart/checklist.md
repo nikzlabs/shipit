@@ -11,6 +11,9 @@
       restart, no gate re-hold on a marker-skip install.
 - [ ] Idle enforcer tier 0: stop the warm stack before destroying the container,
       and credit `serviceBytes` as well as `agentBytes` (req 4).
+- [ ] Periodic warm sweep that rebuilds a warm session whose container was
+      reclaimed, state-compared rather than keyed on a pressure transition
+      (req 10). Fixes a gap that exists today, without this feature.
 - [ ] Warm-tier retirement at boot removes the pre-started compose containers,
       not just the standby agent container (req 6).
 - [ ] Measure a warm claim before and after: `preview.first-connect` should stop
