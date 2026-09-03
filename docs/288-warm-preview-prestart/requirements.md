@@ -33,31 +33,41 @@ The trace behind that report:
    trusted that remote.
 3. Pre-starting a preview never delays the claim, the session opening, or the
    user's first turn.
-4. A pre-started preview is speculative work and yields to real sessions: ShipIt
-   stops creating and keeping them when it reaches its memory budget.
+4. A pre-started preview is speculative work and yields to real sessions: when
+   ShipIt reaches its memory budget, warm previews are the FIRST thing stopped —
+   before any real session's preview or container.
 5. The preview a claimed session shows serves that session's workspace as it is
    *after* the claim brings it up to date — never the state it was warmed at.
+   The running dev server's own file watcher is what reconciles it; the stack is
+   not restarted for this.
 6. A pre-started preview never outlives the process that made it, in any form
    that could serve a user stale code or a stale worker image.
 7. An operator can see, from the logs alone, which phase of
    activation→preview-ready dominated a given session: container acquisition,
    the install gate, the `docker compose up` (build vs create), and the dev
    server's own boot.
+8. Only repos the user has opened recently get a pre-started preview. A repo
+   nobody has touched carries no standing preview cost.
 
 ## Open questions
 
-- Which repos get a pre-started warm preview — every warmed repo, or a narrower
-  set? One preview per warmed repo is one running dev server per repo, all the
-  time.
-- When the claim brings the clone up to fresh `origin/main`, what happens to the
-  already-running stack (req 5)? Leaving it up keeps the saving and leans on the
-  dev server's own file watcher; restarting it is certainly correct and costs
-  most of the saving back.
-- Where does a warm preview sit in the memory eviction order (req 4) — ahead of
-  every real session's preview, or level with an idle one?
+_None._
 
 ## Resolved questions
 
+- 2026-09-03 — *Which repos get a pre-started warm preview?* Recently used repos
+  only. `repoStore.touch(url)` already stamps `lastUsedAt` on every claim, so
+  the set exists; the standing cost is then a few dev servers, not one per
+  imported repo. → req 8.
+- 2026-09-03 — *What happens to the running preview when the claim brings the
+  clone up to fresh `origin/main`?* Leave it running. The dev server's own file
+  watcher is what reconciles it — the same mechanism that already serves every
+  agent edit — and restarting the stack would cost back most of what this
+  feature buys. → req 5.
+- 2026-09-03 — *Where does a warm preview sit in the memory eviction order?*
+  First, ahead of every real session. It is speculative work for a session
+  nobody has opened, so the feature can never cost a live session its preview or
+  its container. → req 4.
 - 2026-09-03 — Req 7 is already implemented, ahead of the rest of this feature:
   the `[timing]` lines for container acquisition, the install gate, the
   `compose up` build/create split, and compose-up→first-answered-request ship in
