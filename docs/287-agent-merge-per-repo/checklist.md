@@ -5,24 +5,32 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 ## Storage and grant
 
 - [ ] Migration: `repos.allow_agent_merge INTEGER NOT NULL DEFAULT 0`, no backfill
-- [ ] `RepoStore` read/write, matched on `canonicalRepoKey`
+- [ ] `repoId()` in `git-utils.ts`: parsed, case-normalised `github:<owner>/<repo>`,
+      collapsing https / SSH / casing spellings that `canonicalRepoKey()` does not
+- [ ] `RepoStore` read/write keyed by that identity — never `canonicalRepoKey()`,
+      which leaves path casing alone and sends SCP URLs down a different branch
 - [ ] Grant on the existing `PATCH /api/repos/:url` and the `RepoInfo` projection
 - [ ] No new endpoint; the container-route snapshot does not gain one
 
 ## Ownership and provenance
 
-- [ ] Migration: `sessions.pr_number` + `sessions.pr_repo_key`
+- [ ] Migration: `sessions.pr_number` + `sessions.pr_repo_id`
 - [ ] `mergeDisposition()`: sandbox / ops (`not-sandbox`, unchanged) / repo-bound
 - [ ] `--repo` refused on a repo-bound merge; `cwd` **ignored, not refused**
 - [ ] An ordinary `gh pr merge` (which always sends `cwd`) is allowed
 - [ ] Branch check uses `currentBranchOrNull()` against `session.branch`
 - [ ] Requested number must equal `session.pr_number`, and `pr_repo_key` must
-      equal `canonicalRepoKey(session.remoteUrl)` at merge time; absent refuses
+      equal `repoId(session.remoteUrl)` at merge time; absent refuses
 - [ ] `quickCreatePr()` gains an `alreadyExisted` discriminator
-- [ ] `pr_create_intents` written before the GitHub create and cleared when
-      provenance is recorded; an existing pull request may be adopted **only**
-      against a matching intent (repo + branch), so a crash mid-create cannot
-      orphan the session's own PR and a person's PR still cannot be claimed
+- [ ] `pr_create_intents(session_id, repo_id, branch, nonce)` written before the
+      GitHub create; the nonce goes into the created PR's body
+- [ ] A discovered PR is adopted **only** when its body carries a matching intent
+      nonce — an intent alone proves intent, not authorship, and a person can open
+      a PR from that branch in the window
+- [ ] The intent is cleared on provenance and on a **definitive** create failure,
+      and kept on an indeterminate one
+- [ ] One provenance reconciliation path used by every discovery route, including
+      `pr-lifecycle.ts`, which can return an existing PR straight from the poller
 - [ ] Written by `agentCreatePr()`, `POST /pr`, `/pr/quick` and `pr-lifecycle.ts`,
       only on `alreadyExisted: false` **and** a matching canonical repository
 - [ ] Cleared by the docs/202 re-arm, `pr-rearm.ts`, unarchive, and an `origin`
@@ -33,11 +41,11 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 - [ ] Merge-only GraphQL query by PR number (`state`, `isDraft`, `reviewDecision`,
       `headRefOid`, rollup state + its `oid`)
 - [ ] Any GraphQL `errors` refuses before anything else applies
-- [ ] The read returns a structured **observation**; the caller's mode decides
+- [ ] The read returns a structured **observation**, and the observation decides
 - [ ] A repo-bound `--auto` is refused with a message naming
       `docs/288-agent-merge-arming`; sandbox `--auto` is unchanged
-- [ ] Observation table implemented for **both** modes, including: pending checks
-      refuse a direct merge but arm `--auto`; the zero-check grace refuses both
+- [ ] Observation table implemented in full; pending checks and the zero-check
+      grace both refuse
 - [ ] Any non-passing reported check refuses, required or not (req 7)
 - [ ] The read replaces `getCheckStatus()` on the **sandbox** path too
 - [ ] `CiGraceTracker` gains a merge entry point keyed by repository + PR + head
@@ -57,13 +65,17 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 
 ## The durable claim and settlement (req 9, 10, 11)
 
-- [ ] Migration: `agent_merge_claims` (session PK with `ON DELETE CASCADE`, repo
-      key, PR number, expected SHA, method, `state` = merging | settling)
+- [ ] Migration: `agent_merge_claims` (session PK with `ON DELETE CASCADE`,
+      repo id, PR number, expected SHA, method, `state` = merging | settling)
 - [ ] Three merge outcomes: witnessed success → `settling`; definitive GitHub
       refusal → deleted, reason reaches the agent; indeterminate (transport
       error, timeout, unparseable body) → stays `merging`
+- [ ] The merge and create adapters return a **typed three-way outcome**; today
+      every non-2xx and every transport error collapse into one `success: false`
 - [ ] A `merging` row is resolved from its own tuple, never from the shape of the
       error: merged → `settling`; still open → deleted
+- [ ] A startup reconciliation pass resolves every surviving `merging` /
+      `settling` row, after `reattachInFlightTurns()` completes
 
 - [ ] Neither `forceVerifySessionPrState()` nor `awaitMergeHandling()` is used
 - [ ] One canonical terminal-promotion operation, addressed by PR number and given
@@ -77,12 +89,12 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 - [ ] A test crashes between the snapshot and those writes, and proves the
       restart still lands `merged_at`, `mergedHeadSha` and reset eligibility
 - [ ] Merge record carries a stable natural identity built only from durable row
-      values (`agent-merge:<repo_key>#<pr>@<expected_sha>`); settlement is
+      values (`agent-merge:<repo_id>#<pr>@<expected_sha>`); settlement is
       idempotent on it
 - [ ] Notices go through `persistNoticeUnattached()` when there is no runner
 - [ ] Recovery records only what it can prove: "the agent asked for this commit
       and it is now merged"; "the agent merged it" needs a witnessed REST success
-- [ ] Session-state writes require the current `pr_repo_key` **and** `pr_number`
+- [ ] Session-state writes require the current `pr_repo_id` **and** `pr_number`
       to equal the row's
 - [ ] The row is deleted only after settlement is written
 - [ ] Success is reported only after settlement, so the agent's next

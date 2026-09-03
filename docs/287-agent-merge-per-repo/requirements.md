@@ -93,13 +93,6 @@ None.
   pass. A command that waits would report success while nothing merged, and it
   would turn every merge into the auto-merge behaviour that was already
   rejected. (req 17)
-- 2026-09-03 — Review round 5 showed that "merge when the checks pass" cannot be
-  GitHub's own arming: it binds to the pull request, not to the commit it was
-  granted for, so a later push by anyone with write access lands code the agent
-  never authorised, and withdrawing the permission does not cancel it. The
-  choice was to drop the capability, to build a ShipIt arming bound to the exact
-  commit, or to accept the gap. **Answer: build the safe arming now.** (req 18,
-  19, 20, 21)
 - 2026-09-03 — Requirement 7 said "required checks must pass", but a live read
   returns GitHub's combined status for the commit and cannot say which checks are
   required; the per-check flag needs paging every check run, and the

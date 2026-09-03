@@ -6,6 +6,37 @@ description: A durable, commit-bound merge request that ShipIt performs itself, 
 
 # Merge it when the checks pass — design
 
+> **Parked, 2026-09-03, until `docs/287-agent-merge-per-repo` is implemented and
+> merged.** This feature's foundation — the durable claim, the pull-request
+> provenance, the live observation and settlement — is 287's, and reviewing this
+> design against *that design* rather than against shipped code produced repeated
+> rework: three consecutive reviews returned blockers here while 287's half stayed
+> stable. Nothing below is abandoned; it waits for something real to sit on.
+>
+> **Re-verify these against the implementation when this is picked up**, because
+> each is written against a foundation that does not exist yet:
+>
+> - **The claim table's extension.** This adds `pending`, `origin` and `revoked`
+>   to 287's `agent_merge_claims`. Check the shipped columns and states first.
+> - **The admission gate.** A background merge must exclude turns, and turn starts
+>   are not confined to the two obvious entry points — the queue drain and
+>   `runDispatchedTurn` also start work. Confirm the shipped set.
+> - **Queue release.** Every background-claim exit must call the shared
+>   `releaseQueuedTurn()`; a background merge has no owning turn whose completion
+>   would drain the queue.
+> - **Revocation semantics.** "Cancel every request at any time" cannot be met
+>   literally for a request already in flight. The in-flight contract here —
+>   re-check the grant at `pending → merging`, mark rather than delete, never
+>   return a revoked row to `pending` — needs stating in requirement terms rather
+>   than as a mechanism.
+> - **Turn ownership.** A turn-owned claim assumes the caller is inside a live
+>   turn, and the route checks no turn identity today. Bind it to a turn identity,
+>   not to a mutable boolean.
+> - **The immediate-green case.** A review argued `--auto` should merge at once
+>   when the observed commit is already green, rather than always deferring —
+>   requirement 1 says "once the checks pass", which an immediate merge satisfies.
+>   Settle that against the shipped observation.
+
 Implements [requirements.md](./requirements.md). Builds directly on
 [`docs/287-agent-merge-per-repo`](../287-agent-merge-per-repo/plan.md) and changes
 nothing it decided: the repository grant, the ownership tuple, the flush, the live

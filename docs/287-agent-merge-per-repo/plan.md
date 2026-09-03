@@ -27,9 +27,28 @@ ALTER TABLE repos ADD COLUMN allow_agent_merge INTEGER NOT NULL DEFAULT 0
 
 Appended migration, and unlike `trusted` there is **no backfill**: every
 repository starts off (req 2). Reads and writes live on `RepoStore`
-(`orchestrator/repo-store.ts`) beside `isTrusted()` / `setTrusted()`, matched on
-`canonicalRepoKey(url)` for the same reason those are — two spellings of one
-remote must share one decision.
+(`orchestrator/repo-store.ts`) beside `isTrusted()` / `setTrusted()`.
+
+**Matched on a GitHub repository identity, not on `canonicalRepoKey()`.** That
+helper exists to spot a near-duplicate row in the repo list, and it is not strong
+enough to carry a permission: it lowercases only the scheme and host, leaves the
+*path* casing alone, and sends anything that is not a parseable URL — every
+SCP-style `git@github.com:owner/repo.git` — down a lowercase-the-whole-string
+fallback (`git-utils.ts:139`). So these three spellings of one repository produce
+three different keys:
+
+```
+https://github.com/Owner/Repo
+https://github.com/owner/repo
+git@github.com:owner/repo.git
+```
+
+A grant stored under one and read under another silently does nothing — and the
+same split would reach provenance and the durable claim. This feature therefore
+resolves a remote to a parsed **`owner/repo`**, case-normalised (GitHub treats
+both parts case-insensitively), and uses `github:<owner>/<repo>` as the key
+everywhere the permission is written, read, or compared. `canonicalRepoKey()`
+keeps its existing job and is not touched.
 
 **No new endpoint.** The flag joins the existing browser-only
 `PATCH /api/repos/:url` (which already takes `hidden` and `colorIndex` and
@@ -73,8 +92,8 @@ inside a repository. Ownership is decided from state the agent cannot write:
   the route requires `git.currentBranchOrNull() === session.branch` —
   `currentBranchOrNull`, never `getCurrentBranch`, which returns `"main"` on a
   detached HEAD (`shared/git.ts:670`).
-- **Pull request** — `session.prNumber` with `session.prRepoKey`. The requested
-  number must equal it, the key must equal `canonicalRepoKey(session.remoteUrl)`
+- **Pull request** — `session.prNumber` with `session.prRepoId`. The requested
+  number must equal it, the identity must equal `repoId(session.remoteUrl)`
   at merge time, and an absent value **refuses**.
 
 Failing closed is deliberate, and is the opposite of `guardMergeSync`, where
@@ -87,7 +106,7 @@ A recorded number is a **provenance claim**, so only a pull request ShipIt itsel
 opened may write it — otherwise it grants ownership of a person's pull request,
 which requirement 5 excludes by name.
 
-| Event | Effect on `sessions.pr_number` / `pr_repo_key` |
+| Event | Effect on `sessions.pr_number` / `pr_repo_id` |
 |---|---|
 | `agentCreatePr()` returns `alreadyExisted: false` | write, if the created repo matches |
 | `POST /api/sessions/:id/pr` opens a PR | write, if the created repo matches |
@@ -106,16 +125,34 @@ opened (`:721`). It gains an `alreadyExisted` discriminator, as `agentCreatePr()
 already has, and both of its callers pass the result through. Without that the
 implementation must either record nothing or claim a person's pull request.
 
-**A create that crashes must not lose the pull request it made.** GitHub creates
-the pull request before `agentCreatePr()` returns, so a crash in between leaves a
-real pull request and no provenance — and the retry then takes the
-already-exists path, which this design forbids recording. The session could never
-merge its own work. So a create writes a durable **intent** first —
-`pr_create_intents(session_id, repo_key, branch)` — and clears it when provenance
-is recorded. A create path that finds an existing pull request may adopt it as
-provenance **only** when an intent row exists for that exact repository and
-branch, and the found pull request's head branch matches it. No intent, no
-adoption: a person's pull request on the same branch still cannot be claimed.
+**A create that crashes must not lose the pull request it made — and recovery
+must be able to prove which one it made.** GitHub creates the pull request before
+`agentCreatePr()` returns, so a crash in between leaves a real pull request and no
+provenance; the retry then takes the already-exists path, which this design
+forbids recording, and the session could never merge its own work.
+
+An *intent* alone does not fix that, because it proves only that ShipIt meant to
+open one: between the existing-pull-request read and the create call a person can
+open one from the same branch, and adopting it would be precisely the failure
+requirement 5 exists to prevent. So the create **carries its own proof**:
+
+- Before calling GitHub, ShipIt writes
+  `pr_create_intents(session_id, repo_id, branch, nonce)` and puts that
+  server-generated `nonce` into the created pull request's body, as a marker
+  comment.
+- A discovered pull request may be adopted as provenance **only** when its body
+  carries the nonce of an intent for that repository and branch. No nonce, no
+  adoption — a person's pull request on the same branch is not claimable, however
+  the timing falls.
+- The intent is cleared when provenance is recorded, and on a **definitive**
+  create failure. An **indeterminate** failure (a transport error, an unparseable
+  response) keeps it, because the pull request may exist.
+
+**One reconciliation path, not four.** Every route that can discover an existing
+pull request goes through the same provenance reconciliation — including
+`pr-lifecycle.ts`, which can return one straight from the poller without touching
+the create paths at all, and which would otherwise leave `pr_number` unset for a
+pull request ShipIt did open.
 
 **"If the created repo matches" is load-bearing twice over.** `agentCreatePr()`
 accepts `--repo` and passes the retargeted remote through
@@ -125,8 +162,8 @@ otherwise be recorded as the ownership number for repository A. And
 in place — while numbers, branch names and even SHAs can coincide across forks.
 Hence two defences, so that a missed clear can never become an authorisation:
 the write requires
-`canonicalRepoKey(created.repoUrl) === canonicalRepoKey(session.remoteUrl)`, and
-`pr_repo_key` is stored with the number and re-checked at merge time.
+`repoId(created.repoUrl) === repoId(session.remoteUrl)`, and
+`pr_repo_id` is stored with the number and re-checked at merge time.
 
 ## 3. The merge sequence (req 7, 8, 14, 15, 16, 17)
 
@@ -274,7 +311,7 @@ its record is written:
 ```sql
 CREATE TABLE agent_merge_claims (
   session_id   TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
-  repo_key     TEXT NOT NULL,      -- canonicalRepoKey of the session's remote
+  repo_id      TEXT NOT NULL,      -- github:<owner>/<repo>, case-normalised
   pr_number    INTEGER NOT NULL,
   expected_sha TEXT NOT NULL,      -- the head the live read observed
   method       TEXT NOT NULL,      -- merge | squash | rebase
@@ -298,10 +335,26 @@ record of a merge that already happened:
 | **definitive refusal** | GitHub answered no — conflict, protection, moved head | deleted; the reason reaches the agent |
 | **indeterminate** | a transport error, a timeout, an unparseable body | stays `merging` |
 
+**The adapter has to be able to say which.** Today it cannot: the merge wrapper
+collapses every non-2xx response *and* every thrown transport error into one
+`success: false`, so "GitHub refused" and "we never heard back" are the same
+value. It gains a typed three-way result, and the same treatment applies to the
+create adapter, where the distinction decides whether a create intent is cleared
+or kept.
+
 A `merging` row — an indeterminate outcome, or a crash — is resolved from its own
 tuple: read that pull request in that repository and ask whether `expected_sha`
 merged. Merged ⇒ `settling`; still open ⇒ deleted. Nothing is decided from the
 shape of the error.
+
+**Recovery is part of this feature, not a later one.** A claim written just
+before a crash has no live turn to resume it, so 287 carries its own driver: a
+**startup reconciliation pass** resolves every surviving `merging` and `settling`
+row once, after `reattachInFlightTurns()` completes and before any of it can race
+an adopted turn. That is all this feature needs, because a direct claim is only
+ever created inside a live turn — there is no waiting work to keep polling for.
+(`docs/288-agent-merge-arming` adds rows that *do* wait, and with them the
+polling-supervisor and global-gate integration that keeps them reachable.)
 
 ### Settlement
 
@@ -341,7 +394,7 @@ way to notice. So a durable `settling` row **re-enters** terminal promotion even
 when `pr_status` already reads terminal, and each required effect is idempotent
 or durably checkpointed before the row is deleted. So
 the merge record carries a **stable natural identity** —
-`agent-merge:<repo_key>#<pr_number>@<merge_sha>` — and settlement is idempotent
+`agent-merge:<repo_id>#<pr_number>@<expected_sha>` — and settlement is idempotent
 on it; the promotion, the lifecycle callbacks and the notification keep their
 existing fire-once behaviour. Only after settlement is written is the row
 deleted; until then it is also what holds the polling gate open, which is why
@@ -384,13 +437,14 @@ justify an otherwise empty navigation category.
 
 | File | Change |
 |---|---|
-| `src/server/shared/database.ts` | migrations: `repos.allow_agent_merge`, `sessions.pr_number` + `pr_repo_key`, `pr_create_intents`, `agent_merge_claims` |
+| `src/server/shared/database.ts` | migrations: `repos.allow_agent_merge`, `sessions.pr_number` + `pr_repo_id`, `pr_create_intents`, `agent_merge_claims` |
 | `src/server/orchestrator/agent-merge-claims.ts` | the claim store: claim, state transitions, reconciliation |
-| `src/server/orchestrator/repo-store.ts` | grant read/write, `canonicalRepoKey`-matched |
+| `src/server/orchestrator/repo-store.ts` | grant read/write, keyed by the GitHub repository identity |
+| `src/server/orchestrator/git-utils.ts` | `repoId()` — parsed, case-normalised `github:<owner>/<repo>` |
 | `src/server/orchestrator/api-routes-session-repos.ts` | grant on the existing `PATCH /api/repos/:url` |
 | `src/server/orchestrator/pr-target.ts` | `mergeDisposition()`; `--repo` refused, `cwd` ignored |
 | `src/server/orchestrator/services/github.ts` | flush outcome; the merge-gate read and observation; both merge paths; `quickCreatePr()` gains `alreadyExisted` |
-| `src/server/orchestrator/github-auth-prs.ts` | expected `sha` on the REST merge |
+| `src/server/orchestrator/github-auth-prs.ts` | expected `sha` on the REST merge; typed three-way merge and create outcomes |
 | `src/server/orchestrator/pr-status-poller.ts` | `awaitCiGraceDecision()`; the canonical, re-enterable terminal promotion |
 | `src/server/orchestrator/ci-grace-tracker.ts` | a merge entry point (repo + PR + SHA; unknown history waits) |
 | `src/server/orchestrator/services/branch-sync.ts` | `pushed` on the hold verdict |
@@ -418,6 +472,11 @@ justify an otherwise empty navigation category.
   matching repository, cleared by each clearing path, never backfilled.
 - `integration_tests/agent-driven-pr.test.ts` — granted / not granted / foreign
   pull request; the notice surviving a history reload.
+- `git-utils.test.ts` — `repoId()` collapses the https/SSH/casing spellings that
+  `canonicalRepoKey()` does not.
+- Provenance recovery — a pull request carrying the intent's nonce is adopted, one
+  without it is not, and a person's pull request on the same branch never is.
+- Startup reconciliation resolves a surviving `merging` / `settling` row.
 - The container-route snapshot must not gain the grant route.
 - Each new guard proved red on its own before the fix.
 
