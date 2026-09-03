@@ -498,8 +498,16 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
       resolveRemoteCredential: async (remote) =>
         (await remoteCredentialResolver.resolve?.(remote)) ?? null,
     }));
+  // docs/288-preemptive-github-auth req 1 — the same box feeds `RepoGit`, so a
+  // bare-cache fetch/clone authenticates its first request instead of spending
+  // the host's shared anonymous budget. An explicitly-passed credential (the
+  // plugin-repo path) still wins over the resolver.
   const createRepoGit = deps.createRepoGit
-    ?? ((dir: string, credential?: GitRemoteCredential) => new RepoGit(dir, credential));
+    ?? ((dir: string, credential?: GitRemoteCredential) => new RepoGit(
+      dir,
+      credential,
+      async (remote) => (await remoteCredentialResolver.resolve?.(remote)) ?? null,
+    ));
 
   // ---- Database manager (SQLite) ----
   const databaseManager = deps.databaseManager ?? new DatabaseManager(

@@ -3,7 +3,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import type { GitTreeUidDeps } from "./git-tree-uid.js";
 import {
   gitCredentialConfig,
   gitCredentialEnv,
@@ -11,22 +10,6 @@ import {
   parseRemoteOrigin,
   resolveTreeRemoteCredential,
 } from "./git-remote-credential.js";
-
-/**
- * The dropped-uid state, faked. `resolveGitTreeUid` answers "no drop" for any
- * process that is not root, and this container has no root and refuses
- * `unshare -r` — so the branch docs/266-orchestrator-git-trust-boundary E3 exists for is only reachable
- * through this seam. What it can NOT prove is stated in `plan.md` §4.
- */
-const AS_ROOT_ON_WORKER_TREE: GitTreeUidDeps = {
-  getuid: () => 0,
-  statOwner: () => ({ uid: 1000, gid: 1000 }),
-};
-
-const NOT_ROOT: GitTreeUidDeps = {
-  getuid: () => 1000,
-  statOwner: () => ({ uid: 1000, gid: 1000 }),
-};
 
 describe("parseRemoteOrigin", () => {
   it("splits an https GitHub remote into origin, host, owner and repo", () => {
@@ -93,7 +76,7 @@ describe("parseRemoteOrigin", () => {
 describe("resolveTreeRemoteCredential", () => {
   const url = async (): Promise<string> => "https://github.com/acme/widgets.git";
 
-  it("mints for a dropped-uid git on an https remote", async () => {
+  it("mints on an https remote, whatever uid the git would run as", async () => {
     const seen: string[] = [];
     const credential = await resolveTreeRemoteCredential(
       "/workspace/sessions/s1/workspace",
@@ -103,7 +86,6 @@ describe("resolveTreeRemoteCredential", () => {
         return { username: "x-access-token", password: "ghs_installation" };
       },
       url,
-      AS_ROOT_ON_WORKER_TREE,
     );
     expect(seen).toEqual(["github.com:acme/widgets"]);
     expect(credential).toEqual({
@@ -112,25 +94,29 @@ describe("resolveTreeRemoteCredential", () => {
     });
   });
 
-  it("does NOT mint when the tree needs no uid drop", async () => {
-    // The bare cache, /opt/shipit, local mode, the session worker, every test.
-    // Those keep reading the orchestrator's own global helper, which reads the
-    // root-only PAT file — handing them a second credential would be churn.
+  it("mints for a tree that needs no uid drop — the bare cache", async () => {
+    // docs/288-preemptive-github-auth req 1 inverted this. It used to decline
+    // here, on the argument that a root-side git reads the global helper anyway
+    // — but git consults that helper only after a 401, so declining meant the
+    // ~280 bare-cache fetches an hour all went out anonymous. What still bounds
+    // the credential is the resolver (github.com only), not the uid.
     let called = false;
     const credential = await resolveTreeRemoteCredential(
       "/workspace/repo-cache/abc",
       "origin",
       async () => { called = true; return { username: "u", password: "p" }; },
       url,
-      NOT_ROOT,
     );
-    expect(called).toBe(false);
-    expect(credential).toBeNull();
+    expect(called).toBe(true);
+    expect(credential).toEqual({
+      origin: "https://github.com",
+      token: { username: "u", password: "p" },
+    });
   });
 
   it("does NOT mint without a resolver", async () => {
     expect(
-      await resolveTreeRemoteCredential("/w", "origin", undefined, url, AS_ROOT_ON_WORKER_TREE),
+      await resolveTreeRemoteCredential("/w", "origin", undefined, url),
     ).toBeNull();
   });
 
@@ -141,7 +127,6 @@ describe("resolveTreeRemoteCredential", () => {
       "origin",
       async () => { called = true; return { username: "u", password: "p" }; },
       async () => "/workspace/sessions/other/workspace",
-      AS_ROOT_ON_WORKER_TREE,
     );
     expect(called).toBe(false);
     expect(credential).toBeNull();
@@ -152,14 +137,13 @@ describe("resolveTreeRemoteCredential", () => {
     // way to fail. A credential that cannot be minted falls back to the
     // behaviour that shipped with E1; it never aborts the operation.
     expect(
-      await resolveTreeRemoteCredential("/w", "origin", async () => null, url, AS_ROOT_ON_WORKER_TREE),
+      await resolveTreeRemoteCredential("/w", "origin", async () => null, url),
     ).toBeNull();
     expect(
       await resolveTreeRemoteCredential(
         "/w", "origin",
         () => { throw new Error("mint exploded"); },
         url,
-        AS_ROOT_ON_WORKER_TREE,
       ),
     ).toBeNull();
     expect(
@@ -167,7 +151,6 @@ describe("resolveTreeRemoteCredential", () => {
         "/w", "origin",
         async () => ({ username: "u", password: "p" }),
         () => { throw new Error("no such remote"); },
-        AS_ROOT_ON_WORKER_TREE,
       ),
     ).toBeNull();
   });

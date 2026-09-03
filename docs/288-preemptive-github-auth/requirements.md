@@ -1,4 +1,5 @@
 ---
+issue: planning#503
 title: Preemptive GitHub auth for orchestrator git
 description: Orchestrator-side git sends a held GitHub credential on the first HTTP request instead of waiting for a 401.
 ---
@@ -32,17 +33,25 @@ unauthenticated traffic per source IP and authenticated traffic per token.
 
 ## Open questions
 
-- **Does requirement 1's "pushes" include the deployments where orchestrator git
-  does *not* drop uid?** On production, a push from a session workspace already
-  carries a ShipIt-held credential (docs/266-orchestrator-git-trust-boundary E3),
-  so making it preemptive costs nothing. But where the workspace is root-owned —
-  local/dogfood mode (`RUNTIME_MODE=local`), and any deployment predating
-  per-session uids — the push authenticates today through whatever git
-  credential helper the operator configured, which need not be ShipIt's. Making
-  those preemptive means ShipIt substitutes its own token for the operator's
-  helper on those operations.
+- None.
 
 ## Resolved questions
+
+- 2026-09-03 — *Does requirement 1's "pushes" include deployments where
+  orchestrator git does not drop uid, i.e. a root-owned session workspace?*
+  **There is no such deployment.** Verified: for a path inside a session,
+  `resolveGitTreeUid` delegates to `identityForPath`, which returns the
+  configured `fallbackIdentity` when the session directory is root-owned
+  (`shared/session-identity.ts:173`) — never "no drop". That fallback is
+  configured whenever `SHIPIT_SESSION_WORKER_UID` is set
+  (`orchestrator/index.ts:154`), and every shipped deployment sets it to 1000
+  (`deployment/vps/docker-compose.yml:46`, `docker/local/prod/compose.yml:45`,
+  `docker/local/dev/compose.yml:26`). The only orchestrator that does not drop is
+  one that is not root at all — local/dogfood mode, which returns null at
+  `resolveGitTreeUid`'s `getuid() !== 0` guard. The human's constraint for that
+  mode is "it just has to keep working", so requirement 1 is taken whole: a
+  non-dropping orchestrator gets the credential too when ShipIt holds one, and
+  requirement 4's fallback is what keeps "keep working" true.
 
 - 2026-09-03 — *Does a preemptive credential that GitHub rejects have to keep a
   public-repo fetch working?* Yes; requirement 4 already decides it. Measured

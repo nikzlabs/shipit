@@ -1,6 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { runGit, repoDeclaresLfs, isGitLfsAvailable, PROBE_TIMEOUT_MS } from "./git-lfs.js";
+import {
+  type GitRemoteCredentialResolver,
+  gitCredentialSpawnOverrides,
+  looksLikeAuthRejection,
+  resolveTreeRemoteCredential,
+  sanitizeGitEnv,
+  withPreemptiveAuthFallback,
+} from "../shared/git-remote-credential.js";
 
 /**
  * Cross-session Git LFS object sharing via the bare repo cache (docs/232, planning#238).
@@ -159,7 +167,16 @@ export async function resolveCacheFetchRef(bareRepoDir: string): Promise<string 
  */
 export async function fetchLfsIntoCache(
   bareRepoDir: string,
-  opts?: { isAvailable?: () => Promise<boolean> },
+  opts?: {
+    isAvailable?: () => Promise<boolean>;
+    /**
+     * docs/288-preemptive-github-auth req 1 — the credential this fetch carries
+     * on its first request. Optional: with none, the transfer authenticates the
+     * way it did before docs/288 (anonymously, then via the global helper if the
+     * server asks), so every existing caller and test is unchanged.
+     */
+    resolveCredential?: GitRemoteCredentialResolver;
+  },
 ): Promise<boolean> {
   if (!lfsSharedStoreEnabled()) return false;
   try {
@@ -181,7 +198,26 @@ export async function fetchLfsIntoCache(
     // fetches the objects for what a session clone actually checks out — and,
     // unlike the no-ref form, doesn't fall over on an unresolvable `HEAD` (see
     // `resolveCacheFetchRef`).
-    const res = await runGit(["lfs", "fetch", "origin", ref], bareRepoDir, cacheFetchTimeoutMs());
+    // docs/288-preemptive-github-auth req 1 — the LFS batch API and the object
+    // transfers go to github.com too, so they carry the credential from the first
+    // request rather than after a 401. Wrapped in the req-4 fallback because a
+    // public repo's LFS objects are fetchable anonymously, so a stale credential
+    // must not turn a working transfer into a failure.
+    const credential = await resolveTreeRemoteCredential(bareRepoDir, "origin", opts?.resolveCredential);
+    const res = await withPreemptiveAuthFallback(credential, "cache LFS fetch", (cred) => {
+      const overrides = gitCredentialSpawnOverrides(cred);
+      return runGit(
+        [...overrides.args, "lfs", "fetch", "origin", ref],
+        bareRepoDir,
+        cacheFetchTimeoutMs(),
+        // Sanitized only when a credential is in play — the same split
+        // `git-lfs.ts` documents at its own `lfs pull`: an inherited
+        // `GIT_CONFIG_COUNT` outranks anything `-c` can say, and dropping
+        // `PAGER`/`GIT_SSH_COMMAND` on a path that has no credential to protect
+        // would change an operation that works today for no gain.
+        cred ? { ...sanitizeGitEnv(process.env), ...overrides.env } : undefined,
+      );
+    }, (r) => r.code !== 0 && looksLikeAuthRejection(r.stderr || r.stdout));
     const durationMs = Date.now() - startedAt;
     if (res.code !== 0) {
       const detail = (res.stderr || res.stdout).trim().split("\n").slice(-2).join(" ").slice(0, 200);

@@ -9,7 +9,7 @@ import {
   credentialledGit,
   resolveTreeRemoteCredential,
 } from "./git-remote-credential.js";
-import { type GitTreeUidDeps, gitSpawnOverridesForTree } from "./git-tree-uid.js";
+import { gitSpawnOverridesForTree } from "./git-tree-uid.js";
 import { pushLfsObjects } from "./git-lfs-push.js";
 
 /** Construction-time wiring for {@link GitManager}. */
@@ -21,14 +21,6 @@ export interface GitManagerOptions {
    * this existed.
    */
   resolveRemoteCredential?: GitRemoteCredentialResolver;
-  /**
-   * Injection seam for the uid-drop decision, so a test can exercise the
-   * dropped-uid branch. `resolveGitTreeUid` answers "no drop" for any process
-   * that is not root, and a session container has no root and refuses
-   * `unshare -r` — so without this the branch this whole feature exists for is
-   * unreachable from a test.
-   */
-  gitTreeUidDeps?: GitTreeUidDeps;
 }
 
 const DEFAULT_WORKSPACE_DIR = "/workspace";
@@ -331,9 +323,6 @@ export class GitManager {
    */
   private readonly resolveRemoteCredential: GitRemoteCredentialResolver | undefined;
 
-  /** Test seam — see {@link GitManagerOptions.gitTreeUidDeps}. */
-  private readonly gitTreeUidDeps: GitTreeUidDeps | undefined;
-
   /**
    * @param workspaceDir - Git working directory. Defaults to `/workspace`.
    *   Override in tests to use a temp directory.
@@ -342,7 +331,6 @@ export class GitManager {
    */
   constructor(workspaceDir?: string, options?: GitManagerOptions) {
     this.resolveRemoteCredential = options?.resolveRemoteCredential;
-    this.gitTreeUidDeps = options?.gitTreeUidDeps;
     this.workspaceDir = workspaceDir ?? DEFAULT_WORKSPACE_DIR;
     // planning#384 — `safeSimpleGit`, never bare `simpleGit`: this class drives
     // commit/merge/rebase/checkout/push against a tree that untrusted plugin
@@ -376,20 +364,23 @@ export class GitManager {
    * The git instance a **remote** operation on `remote` should run through
    * (docs/266-orchestrator-git-trust-boundary E3, planning#404).
    *
-   * Everything below the first two guards is the dropped-uid path and nothing
-   * else. A root-side git — the bare cache, `/opt/shipit`, local mode, the
-   * session worker, every test — gets `this.git` back and is byte-for-byte
-   * unchanged: it reads the orchestrator's global helper, which reads the
-   * root-only PAT file (`git-config.ts`).
-   *
-   * A dropped-uid git cannot read that file. It is handed its own credential
-   * here instead — a short-lived, single-repo installation token when a GitHub
-   * App is configured, and the PAT when one is not, which is precisely what the
-   * session container's own broker would give the agent
+   * The credential is a short-lived, single-repo installation token when a
+   * GitHub App is configured, and the PAT when one is not, which is precisely
+   * what the session container's own broker would give the agent
    * (`getRepoScopedGitCredential`, docs/172 Gap 2-R). So a payload that
    * executes during a git op and steals it gains nothing the session did not
    * already have — requirement 11's argument, now true of the credential and
-   * not only of the uid.
+   * not only of the uid. A dropped-uid git additionally *needs* it: it cannot
+   * read the root-only PAT file the global helper `cat`s (`git-config.ts`).
+   *
+   * **docs/288-preemptive-github-auth — this is no longer only the dropped-uid
+   * path.** It used to be: a root-side git got `this.git` back, on the argument
+   * that it reads the global helper anyway. It does, but only after a 401, so
+   * "reads the global helper" meant "asks anonymously first". Every remote op
+   * that ShipIt holds a github.com credential for now carries it, and
+   * {@link resolveTreeRemoteCredential} still answers `null` for every other
+   * host — so a fork's local-path origin, another session's directory and any
+   * third-party remote are unchanged.
    *
    * **Availability is the constraint that shapes the fallbacks** (req 6, and
    * `CLAUDE.md` invariant 2: the post-turn auto-push is not optional). Every
@@ -411,7 +402,6 @@ export class GitManager {
         const match = remotes.find((r) => r.name === remote);
         return match?.refs.push || match?.refs.fetch || undefined;
       },
-      this.gitTreeUidDeps,
     );
     if (!credential) return this.git;
     return credentialledGit(this.workspaceDir, credential);
