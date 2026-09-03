@@ -1,10 +1,12 @@
 import crypto from "node:crypto";
+import type { SimpleGit } from "simple-git";
 import { safeSimpleGit } from "../shared/git-hooks-guard.js";
 import {
   type GitRemoteCredentialResolver,
   credentialledGit,
   resolveTreeRemoteCredential,
   sanitizeGitEnv,
+  withPreemptiveAuthFallback,
 } from "../shared/git-remote-credential.js";
 import type { GitManager } from "../shared/git.js";
 
@@ -308,17 +310,18 @@ export async function fetchAndResolveDefaultBranch(
   // orchestrator's PAT. Without a credential of its own it degrades to an
   // anonymous fetch, which is invisible on a public repo and an auth failure on
   // a private one — a failure this function reports as `authError`, i.e. as a
-  // possibly-revoked token. `null` when the drop does not apply (local mode,
-  // tests, a root-owned tree), leaving this path byte-for-byte as it was.
+  // possibly-revoked token. docs/288 removed the uid gate this comment used to
+  // describe, so a credential resolves wherever the remote is github.com and
+  // ShipIt holds one; `null` is now every non-GitHub remote and every install
+  // with no token.
   const credential = opts?.skipFetch
     ? null
     : await resolveTreeRemoteCredential(workspaceDir, "origin", opts?.resolveRemoteCredential);
-  const sg = credential
-    ? credentialledGit(workspaceDir, credential, gitOptions)
-    : safeSimpleGit(workspaceDir, gitOptions).env({
-      ...sanitizeGitEnv(process.env),
-      GIT_TERMINAL_PROMPT: "0",
-    });
+  const plainGit = (): SimpleGit => safeSimpleGit(workspaceDir, gitOptions).env({
+    ...sanitizeGitEnv(process.env),
+    GIT_TERMINAL_PROMPT: "0",
+  });
+  const sg = credential ? credentialledGit(workspaceDir, credential, gitOptions) : plainGit();
   let fetched = false;
   let authError = false;
   try {
@@ -326,7 +329,12 @@ export async function fetchAndResolveDefaultBranch(
       // Deliberate skip — the bare cache was pre-fetched in the background,
       // so the clone's local refs are already current (docs/145).
     } else {
-      await sg.fetch("origin");
+      // docs/288 req 4 — preemptive now, so a stale credential must not fail a
+      // fetch a public origin would answer anonymously. `null` rebuilds the very
+      // instance this function used before the credential existed.
+      await withPreemptiveAuthFallback(credential, "default-branch fetch", (cred) => (
+        cred ? credentialledGit(workspaceDir, cred, gitOptions) : plainGit()
+      ).fetch("origin"));
       fetched = true;
     }
   } catch (err) {

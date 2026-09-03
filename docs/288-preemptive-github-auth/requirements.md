@@ -37,6 +37,17 @@ unauthenticated traffic per source IP and authenticated traffic per token.
 
 ## Resolved questions
 
+- 2026-09-03 — *Does requirement 1 cover the orchestrator's OTHER GitHub git
+  traffic — the in-container self-update fetch of `/opt/shipit`
+  (`services/updates.ts`) and the marketplace catalog fetch
+  (`services/marketplace.ts`)?* **Not in this change, and stated rather than
+  assumed.** Requirement 1 enumerates four families and those are not among
+  them; the requirement's own preamble describes the self-updater as anonymous
+  *by design*. Neither service can reach `GitHubAuthManager` today, so covering
+  them needs new boot-time plumbing of its own, and their volume is a rounding
+  error beside the ~280 bare-cache fetches an hour this change does cover.
+  Recorded as a follow-up on `planning#503` rather than done silently.
+
 - 2026-09-03 — *Does requirement 1's "pushes" include deployments where
   orchestrator git does not drop uid, i.e. a root-owned session workspace?*
   **There is no such deployment.** Verified: for a path inside a session,

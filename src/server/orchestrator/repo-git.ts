@@ -158,7 +158,13 @@ export class RepoGit {
     this.repoDir = repoDir;
     this.explicitCredential = credential;
     this.resolveRemoteCredential = resolveRemoteCredential;
-    this.git = this.gitFor(credential ?? null);
+    // Plain, even when a credential was supplied: every remaining user of
+    // `this.git` is LOCAL (`rev-parse`, `config`, `log`, `gc`), and a remote op
+    // builds its own credentialled instance in `withRemote`. Before docs/288 the
+    // persistent instance carried the secret because it was also the one doing
+    // the fetching; keeping it that way now would put the token in the
+    // environment of every `gc --auto` child for no reason. Review finding.
+    this.git = safeSimpleGit(repoDir);
   }
 
   /**
@@ -228,6 +234,16 @@ export class RepoGit {
     run: (git: SimpleGit) => Promise<T>,
   ): Promise<T> {
     const credential = await this.remoteCredential(remote, url);
+    // An EXPLICIT credential never falls back, and this is the one place the
+    // distinction matters. The fallback runs the git this class would have run
+    // anyway, which for a root-side op means the global helper — i.e. the host
+    // PAT. That is right for a credential ShipIt resolved (the PAT is what the
+    // op used before docs/288 anyway) and wrong for one the CALLER chose: a
+    // plugin repository is handed its own repo-scoped installation token
+    // precisely so it cannot reach further (docs/262 req 10), so silently
+    // retrying it under the host PAT would widen exactly the scope that
+    // credential exists to narrow. Review finding.
+    if (this.explicitCredential) return run(this.gitFor(credential));
     return withPreemptiveAuthFallback(credential, what, (cred) => run(this.gitFor(cred)));
   }
 

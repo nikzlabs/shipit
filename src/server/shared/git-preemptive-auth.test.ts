@@ -6,6 +6,8 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { credentialledGit, gitCredentialConfig, gitCredentialEnv } from "./git-remote-credential.js";
 import { RepoGit } from "../orchestrator/repo-git.js";
+import { GitManager } from "./git.js";
+import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
 /**
  * docs/288-preemptive-github-auth — the credential has to be on the FIRST
@@ -77,6 +79,10 @@ describe("preemptive auth: what reaches the wire", () => {
     process.env.GIT_ALLOW_PROTOCOL = "file:http";
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-preemptive-"));
     execFileSync("git", ["init", "-q", tmpDir]);
+    // A `GitManager` commit needs an identity, and the suite's global config is
+    // a temp file per run.
+    initGlobalGitConfig(tmpDir);
+    setGitIdentity("Test", "test@test.com");
   });
 
   afterEach(async () => {
@@ -130,6 +136,62 @@ describe("preemptive auth: what reaches the wire", () => {
     expect(server.log[0].authenticated).toBe(true);
     const anonymousRetry = server.log.slice(1).some((r) => !r.authenticated);
     expect(anonymousRetry).toBe(true);
+  });
+
+  it("retries a GitManager READ unauthenticated when the credential is refused (req 4)", async () => {
+    // The same regression as above, on the other half of the surface docs/288
+    // made preemptive. `GitManager.fetch`/`pull`/`remoteBranchSha` run against a
+    // session workspace, where a public origin answers anonymously today.
+    server = await startRecordingServer((_req, res, authenticated) => {
+      if (authenticated) { res.writeHead(401); res.end(); return; }
+      res.writeHead(404); res.end();
+    });
+    const manager = new GitManager(tmpDir, { resolveRemoteCredential: async () => TOKEN });
+    execFileSync("git", ["-C", tmpDir, "remote", "add", "origin", `${server.origin}/acme/widgets`]);
+
+    await expect(manager.fetch("origin")).rejects.toThrow();
+
+    expect(server.log[0].authenticated).toBe(true);
+    expect(server.log.slice(1).some((r) => !r.authenticated)).toBe(true);
+  });
+
+  it("does NOT retry a push — an anonymous receive-pack cannot succeed (req 4)", async () => {
+    // Retrying here would trade a precise `Authentication failed` for a vaguer
+    // `could not read Username`, which is the "worse than today" req 4 forbids.
+    server = await startRecordingServer((_req, res, authenticated) => {
+      if (authenticated) { res.writeHead(401); res.end(); return; }
+      res.writeHead(404); res.end();
+    });
+    const manager = new GitManager(tmpDir, { resolveRemoteCredential: async () => TOKEN });
+    execFileSync("git", ["-C", tmpDir, "remote", "add", "origin", `${server.origin}/acme/widgets`]);
+    fs.writeFileSync(path.join(tmpDir, "f.txt"), "x\n");
+    await manager.autoCommit("a turn");
+
+    await expect(manager.push("origin")).rejects.toThrow();
+
+    expect(server.log.length).toBeGreaterThan(0);
+    expect(server.log.every((r) => r.authenticated)).toBe(true);
+  });
+
+  it("does NOT widen an EXPLICIT credential to the global helper on refusal", async () => {
+    // A plugin repository is handed its own repo-scoped installation token so it
+    // cannot reach further (docs/262 req 10). Falling back would re-run the op
+    // through the inherited global helper — the host PAT — which is a broader
+    // credential than the caller chose. Asserted as "no second attempt at all",
+    // since the retry is what would introduce the widening.
+    server = await startRecordingServer((_req, res, authenticated) => {
+      if (authenticated) { res.writeHead(401); res.end(); return; }
+      res.writeHead(404); res.end();
+    });
+    const bare = path.join(tmpDir, "plugin.git");
+    execFileSync("git", ["init", "-q", "--bare", bare]);
+    execFileSync("git", ["-C", bare, "remote", "add", "origin", `${server.origin}/acme/plugin`]);
+
+    const repo = new RepoGit(bare, { origin: server.origin, token: TOKEN }, async () => TOKEN);
+    await expect(repo.fetchCache(0)).rejects.toThrow();
+
+    expect(server.log.length).toBeGreaterThan(0);
+    expect(server.log.every((r) => r.authenticated)).toBe(true);
   });
 
   it("offers nothing to a remote the resolver declines", async () => {

@@ -10,6 +10,8 @@ import {
   type GitRemoteCredentialResolver,
   gitCredentialSpawnOverrides,
   resolveTreeRemoteCredential,
+  sanitizeGitEnv,
+  withPreemptiveAuthFallback,
 } from "../shared/git-remote-credential.js";
 
 /**
@@ -169,11 +171,23 @@ function smudgeLfsObject(
       // fill`, so a dropped-uid smudge needs a credential of its own for exactly
       // the same reason a push does: it can no longer read the orchestrator's
       // PAT. Without this an LFS asset in a PRIVATE repo silently renders as its
-      // pointer text in the diff viewer. Empty when no drop applies.
+      // pointer text in the diff viewer. Since docs/288 this is no longer
+      // gated on the uid drop: empty only when the remote is not one ShipIt
+      // holds a credential for.
       const cred = gitCredentialSpawnOverrides(credential);
       proc = spawn("git", gitArgsWithHooksDisabled([...cred.args, "lfs", "smudge", "--", filePath]), {
         cwd: workspaceDir,
-        env: { ...process.env, ...cred.env, GIT_TERMINAL_PROMPT: "0" },
+        // docs/288 — sanitized when a credential is in play, matching every
+        // other credentialled site. The plain `process.env` spread here was the
+        // odd one out: a spread can only ADD, so an inherited `GIT_CONFIG_COUNT`
+        // outranked the `-c` reset, `GIT_ASKPASS` was reached instead of the
+        // helper we supply, and `GIT_TRACE_REDACT=0` would have written the
+        // Authorization header this now sends into whatever trace was enabled.
+        // Left as the bare environment when there is no credential to protect —
+        // the same trade `git-lfs.ts` documents at its own pull.
+        env: credential
+          ? { ...sanitizeGitEnv(process.env), ...cred.env, GIT_TERMINAL_PROMPT: "0" }
+          : { ...process.env, GIT_TERMINAL_PROMPT: "0" },
         stdio: ["pipe", "pipe", "ignore"],
         // Spread inline, not via a local: `git-hooks-guard-coverage.test.ts`
         // reads the call site itself, and a name it cannot follow reads to it
@@ -259,7 +273,16 @@ export function createLfsBlobResolver(
     const credential = await resolveTreeRemoteCredential(
       workspaceDir, "origin", opts?.resolveRemoteCredential,
     );
-    const fetched = await smudgeLfsObject(workspaceDir, text, filePath, credential);
+    // docs/288 req 4 — a public repo's LFS content smudges fine anonymously, so
+    // a stale credential must not turn a rendered image in the diff viewer into
+    // a pointer stub. `smudgeLfsObject` reports failure as `null` rather than a
+    // throw, hence the predicate rather than a catch.
+    const fetched = await withPreemptiveAuthFallback(
+      credential,
+      "LFS smudge",
+      (cred) => smudgeLfsObject(workspaceDir, text, filePath, cred),
+      (result) => result === null,
+    );
     if (!fetched) {
       console.warn(`[git-lfs-blob] Could not fetch LFS content for ${filePath} (oid ${pointer.oid.slice(0, 12)})`);
       return null;

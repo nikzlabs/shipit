@@ -1538,11 +1538,15 @@ describe("git spawn coverage: nobody re-grants safe.directory (docs/266-orchestr
     // than a key-shaped one, which is exactly the widening this rule exists to
     // prevent.
     expect(isBoundedExtraHeaderPair('    GIT_CONFIG_COUNT: "1",')).toBe(true);
-    expect(isBoundedExtraHeaderPair("    GIT_CONFIG_KEY_0: `http.${origin}.extraHeader`,")).toBe(true);
-    expect(isBoundedExtraHeaderPair("    GIT_CONFIG_VALUE_0: `Authorization: Basic ${basic}`,")).toBe(true);
+    // `D` builds the interpolation marker at runtime, so none of these strings
+    // contains a literal `${`. The shape under test is a LINE OF SOURCE, and
+    // `no-template-curly-in-string` reads a literal one as a mistake.
+    const D = "$";
+    expect(isBoundedExtraHeaderPair(`    GIT_CONFIG_KEY_0: \`http.${D}{origin}.extraHeader\`,`)).toBe(true);
+    expect(isBoundedExtraHeaderPair(`    GIT_CONFIG_VALUE_0: \`Authorization: Basic ${D}{basic}\`,`)).toBe(true);
 
     expect(isBoundedExtraHeaderPair('    GIT_CONFIG_KEY_0: "safe.directory",')).toBe(false);
-    expect(isBoundedExtraHeaderPair("    GIT_CONFIG_KEY_0: `${anything}`,")).toBe(false);
+    expect(isBoundedExtraHeaderPair(`    GIT_CONFIG_KEY_0: \`${D}{anything}\`,`)).toBe(false);
     expect(isBoundedExtraHeaderPair('    GIT_CONFIG_KEY_1: "credential.helper",')).toBe(false);
     // A count other than the single frozen pair means more keys than the two
     // lines above can account for.

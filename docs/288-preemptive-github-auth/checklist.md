@@ -16,4 +16,13 @@
 - [x] Each new guard proven to fail with the fix reverted
 - [x] `npm run lint:dev`, `npm run typecheck`, full `npm test`
 - [x] Independent review via `shipit agent run --role reviewer`
+- [x] Review round 2: req-4 fallback extended to every inherited consumer (GitManager reads, claim fetch, session LFS pull, diff-viewer smudge, fork refresh)
+- [x] Review round 2: an explicit credential never falls back to the global helper
+- [x] Review round 2: `GIT_TRACE_REDACT` pinned; the diff-viewer smudge stops spreading a raw `process.env`
+- [x] Review round 2: `GIT_CONFIG_*` census rule reconciled by key shape, and stale uid-gate comments corrected
+- [x] Review round 2: dead `extraEnv` parameter removed; `RepoGit`'s persistent instance no longer carries the secret
 - [x] PR opened
+
+Follow-up, deliberately not in this change (see `requirements.md`):
+
+- [ ] Cover `services/updates.ts`'s self-update fetch and `services/marketplace.ts`'s catalog fetch — both need `GitHubAuthManager` plumbing of their own

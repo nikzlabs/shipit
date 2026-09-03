@@ -120,6 +120,17 @@ is mostly widening resolution, not writing headers.
 3. **`fetchLfsIntoCache`** (`git-lfs-store.ts`) runs against the bare cache and
    resolves nothing today; it takes the same resolver.
 
+**The inherited consumers.** Removing the gate at (2) does not only affect
+`GitManager.push` — every existing caller of `resolveTreeRemoteCredential`
+becomes preemptive with it, and each of those is a **read** that a public
+repository answers anonymously today. So each one takes the req-4 fallback:
+`GitManager.fetch` / `fetchBranch` / `pull` / `remoteBranchSha` (via a shared
+`withRemoteRead`), the claim-path default-branch fetch (`git-utils.ts`), the
+session `git lfs pull` (`git-lfs.ts`), the diff-viewer LFS smudge
+(`git-lfs-blob.ts`), and the fork's remote-ref refresh
+(`session-fork-merge.ts`). Missing any of them would have left exactly the
+regression req 4 forbids on a surface the plan had not named — found in review.
+
 ### Rejected credential (req 4)
 
 Measured above: a public-repo fetch that succeeds anonymously today **fails**
@@ -146,6 +157,23 @@ without the credential when the first attempt fails auth-shaped.
 - `fetchCache` still throws on a failure that survives the retry, so the failure
   surfaces exactly where it does today — the stale-cache warning path in
   `repo-prefetch.ts` / `claim-session.ts` / `session.ts` (req 4).
+
+Two narrower rules the fallback needs, both from review:
+
+- **An EXPLICIT credential never falls back.** `null` means "the git this call
+  site would have built anyway", which for a root-side op is the global helper —
+  i.e. the host PAT. That is right for a credential ShipIt resolved and wrong for
+  one the caller chose: a plugin repository gets its own repo-scoped installation
+  token precisely so it cannot reach further (docs/262 req 10), so retrying it
+  under the PAT would widen the scope that credential exists to narrow.
+- **`GIT_TRACE_REDACT` is pinned on** in the credentialled environment. git
+  redacts `Authorization` in a curl trace by default and `GIT_TRACE_REDACT=0`
+  turns that off — measured on git 2.39.5 — while `GIT_TRACE_CURL` can point the
+  trace at a file, and `sanitizeGitEnv` strips neither. Pinned rather than
+  stripped: an operator keeps the diagnostic and loses only the leak. The
+  diff-viewer smudge (`git-lfs-blob.ts`) also stopped spreading a raw
+  `process.env` into its credentialled child, which was the one credentialled
+  site not sanitizing.
 
 ### Scope questions the brief raised, answered
 

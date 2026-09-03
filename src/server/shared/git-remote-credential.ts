@@ -294,6 +294,19 @@ export function gitCredentialEnv(credential: GitRemoteCredential): Record<string
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: `http.${credential.origin}.extraHeader`,
     GIT_CONFIG_VALUE_0: `Authorization: Basic ${basic}`,
+    // Requirement 3, against the one route that defeats it. git redacts
+    // `Authorization` in a curl trace by DEFAULT, and `GIT_TRACE_REDACT=0` turns
+    // that redaction off — measured on git 2.39.5, where the same trace prints
+    // the header verbatim. `GIT_TRACE_CURL` can point that trace at a file. So an
+    // operator debugging a transport would write the credential to disk, and
+    // `sanitizeGitEnv` does not strip either variable.
+    //
+    // PINNED rather than stripped, deliberately: dropping `GIT_TRACE_CURL` would
+    // take away a diagnostic that is genuinely useful here (it is how docs/288's
+    // premise was established), while pinning the redaction keeps the trace and
+    // removes only the leak. An operator cannot opt out for a ShipIt-supplied
+    // credential, which is the intended asymmetry. Review finding.
+    GIT_TRACE_REDACT: "1",
   };
 }
 
@@ -546,7 +559,6 @@ export function credentialledGit(
   dir: string,
   credential: GitRemoteCredential,
   options?: Partial<SimpleGitOptions>,
-  extraEnv?: Record<string, string>,
 ): SimpleGit {
   return safeSimpleGit(dir, {
     ...options,
@@ -573,6 +585,5 @@ export function credentialledGit(
     // The inherited helpers are reset, so a credential that fails must fail
     // fast rather than block on a prompt nothing will ever answer.
     GIT_TERMINAL_PROMPT: "0",
-    ...extraEnv,
   });
 }

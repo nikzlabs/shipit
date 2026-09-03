@@ -5,9 +5,11 @@ import path from "node:path";
 import { scanDiffForSecrets, redactSecretsInText, type SecretFinding } from "./secret-scan.js";
 import { safeSimpleGit, gitArgsWithHooksDisabled } from "./git-hooks-guard.js";
 import {
+  type GitRemoteCredential,
   type GitRemoteCredentialResolver,
   credentialledGit,
   resolveTreeRemoteCredential,
+  withPreemptiveAuthFallback,
 } from "./git-remote-credential.js";
 import { gitSpawnOverridesForTree } from "./git-tree-uid.js";
 import { pushLfsObjects } from "./git-lfs-push.js";
@@ -393,7 +395,14 @@ export class GitManager {
    * local, so it acquires no network dependency from this change.
    */
   private async remoteGit(remote: string): Promise<SimpleGit> {
-    const credential = await resolveTreeRemoteCredential(
+    const credential = await this.remoteCredential(remote);
+    if (!credential) return this.git;
+    return credentialledGit(this.workspaceDir, credential);
+  }
+
+  /** The credential {@link GitManager.remoteGit} would carry, or null. */
+  private remoteCredential(remote: string): Promise<GitRemoteCredential | null> {
+    return resolveTreeRemoteCredential(
       this.workspaceDir,
       remote,
       this.resolveRemoteCredential,
@@ -403,8 +412,35 @@ export class GitManager {
         return match?.refs.push || match?.refs.fetch || undefined;
       },
     );
-    if (!credential) return this.git;
-    return credentialledGit(this.workspaceDir, credential);
+  }
+
+  /**
+   * A remote **read** — fetch, pull, ls-remote — run with the credential on the
+   * first request, and re-run WITHOUT one if that credential is refused
+   * (docs/288-preemptive-github-auth req 4).
+   *
+   * The retry is what keeps the change from being a regression rather than a
+   * feature. Before docs/288 these reads went out anonymous and were answered by
+   * a public repository whatever state ShipIt's token was in; sending a stale
+   * token first turns that success into `fatal: Authentication failed`, which is
+   * the "worse than today's failure" req 4 forbids. `this.git` is the retry
+   * target because it is precisely what this method would have returned before
+   * the feature existed.
+   *
+   * **Reads only.** `push` and `forcePush` deliberately keep the bare
+   * {@link GitManager.remoteGit}: GitHub answers `git-receive-pack` 401 to
+   * everyone, so an unauthenticated retry cannot succeed and would replace a
+   * precise `Authentication failed` with a vaguer `could not read Username`.
+   */
+  private async withRemoteRead<T>(
+    remote: string,
+    what: string,
+    run: (git: SimpleGit) => Promise<T>,
+  ): Promise<T> {
+    const credential = await this.remoteCredential(remote);
+    return withPreemptiveAuthFallback(credential, what, (cred) => run(
+      cred ? credentialledGit(this.workspaceDir, cred) : this.git,
+    ));
   }
 
   /** Get the current HEAD commit hash. Returns null if no commits exist. */
@@ -721,7 +757,7 @@ export class GitManager {
   /** Pull from a remote. Returns a summary string. */
   async pull(remote = "origin", branch?: string): Promise<string> {
     const currentBranch = branch ?? (await this.getCurrentBranch());
-    await (await this.remoteGit(remote)).pull(remote, currentBranch);
+    await this.withRemoteRead(remote, "pull", (git) => git.pull(remote, currentBranch));
     const msg = `Pulled from ${remote}/${currentBranch}`;
     console.log("[git]", msg);
     return msg;
@@ -1176,7 +1212,7 @@ export class GitManager {
 
   /** Fetch from a remote. */
   async fetch(remote = "origin"): Promise<void> {
-    await (await this.remoteGit(remote)).fetch(remote);
+    await this.withRemoteRead(remote, "fetch", (git) => git.fetch(remote));
     console.log("[git] Fetched from", remote);
   }
 
@@ -1198,8 +1234,9 @@ export class GitManager {
    * treats that as "cannot tell", never as a sync verdict.
    */
   async fetchBranch(remote: string, branch: string): Promise<void> {
-    const git = await this.remoteGit(remote);
-    await git.fetch(remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`);
+    await this.withRemoteRead(remote, "fetchBranch", (git) => git.fetch(
+      remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`,
+    ));
   }
 
   /**
@@ -1378,7 +1415,9 @@ export class GitManager {
   async remoteBranchSha(remote = "origin", branch?: string): Promise<string | null> {
     const currentBranch = branch ?? (await this.getCurrentBranch());
     try {
-      const out = await (await this.remoteGit(remote)).listRemote(["--heads", remote, currentBranch]);
+      const out = await this.withRemoteRead(
+        remote, "remoteBranchSha", (git) => git.listRemote(["--heads", remote, currentBranch]),
+      );
       // `<sha>\trefs/heads/<branch>` per matching ref; empty when absent.
       const line = out
         .split("\n")
