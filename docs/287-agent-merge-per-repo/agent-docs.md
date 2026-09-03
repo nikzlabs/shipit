@@ -23,7 +23,7 @@ The `gh pr merge` row of the subcommand table (line 159) changes with it:
 > PRs", or in a repository whose owner turned on "Allow agents to merge their own
 > pull requests". Merges **your own session's** PR. Commits and pushes your
 > pending work first, which restarts CI — so the first call usually reports
-> checks pending. Pass `--auto` to merge when they pass. `--admin` is not
+> checks pending; wait for them and call again. `--auto` and `--admin` are not
 > available. See "Merging PRs" below.
 
 ---
@@ -56,10 +56,10 @@ ends, so the shim does that work itself, in this order:
 Two consequences, both normal:
 
 - **The push restarts CI, so the first call usually refuses with checks pending.**
-  That is not a failure and not a reason to stop or to ask the user. Either wait
-  for green and call it again, or call `gh pr merge --auto`, which asks ShipIt to
-  merge when the checks pass and lets your turn end. The command never waits by
-  itself.
+  That is not a failure and not a reason to stop or to ask the user. Wait for the
+  checks to report and call it again. The command never waits by itself, and
+  `--auto` is **not** available in a repo-bound session yet — it is refused with a
+  message saying so.
 - **In the first seconds after the push, GitHub may not have registered the new
   checks at all.** Both forms then refuse with *"Waiting for CI checks to
   start"*, because an empty check set means "not yet", not "nothing gates this
@@ -84,20 +84,6 @@ commits and pushes nothing for you. Push your own work before you merge.
   merge, its reason is surfaced — the shim never forces past it. `--admin` is
   rejected.
 - A draft PR is refused (run `gh pr ready` first).
-
-#### `--auto` merges one exact commit (repo-bound sessions)
-
-`--auto` records the commit that is current when you call it. ShipIt merges that
-commit, and nothing else:
-
-- If the branch moves afterwards — you push again, or someone else does — the
-  request is **cancelled**, not moved to the new commit. Nothing authorised that
-  code. Call `gh pr merge --auto` again if you still want it merged.
-- If the user turns the permission off, every request that has not merged is
-  cancelled.
-- The merge happens after your turn ends, never while a turn is running: while
-  the merge is in progress a new turn waits, and while a turn runs the merge
-  waits. In practice it lands just after the turn that asked for it.
 
 #### After your PR merges
 

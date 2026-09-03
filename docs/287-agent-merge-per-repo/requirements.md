@@ -21,7 +21,10 @@ but cannot land it. This feature moves the permission to the **repository**.
    file inside the repository grants it, so an agent cannot give itself the
    permission by writing to the repository.
 4. When the permission is on, an agent in a repo-bound session can merge the
-   pull request that its own session opened.
+   pull request that its own session opened. A pull request opened **before this
+   feature shipped** is excluded: ShipIt has no record that it opened it. Such a
+   session merges from the pull-request card as it does today, and works normally
+   again as soon as it opens its next pull request.
 5. An agent cannot merge any other pull request. This includes a pull request
    opened by a different session, by another agent, or by a person.
 6. When the permission is off, an agent that tries to merge gets a refusal that
@@ -53,30 +56,15 @@ but cannot land it. This feature moves the permission to the **repository**.
     req 14 adds new commits, the checks for those new commits decide the merge.
 17. When the checks for those new commits are not complete, the merge command
     refuses. The refusal says that the push started the checks again, and that
-    the agent can ask for the merge to happen when the checks pass. The command
-    does not wait by itself.
-18. In a repo-bound session, the agent can ask for the merge to happen when the
-    checks pass. ShipIt then performs that merge itself, and only at the commit
-    that was current when the agent asked. Sandbox sessions keep the behaviour
-    they have today (req 12).
-19. If the branch moves after the agent asked, ShipIt does not merge. It cancels
-    the request and says so in the transcript.
-20. When the user withdraws the permission (req 1), every request that has not
-    merged is cancelled. A merge the user armed from the pull request card is
-    not affected.
-21. A request survives a restart of ShipIt, and is still carried out after one.
+    the agent can merge once they pass. The command does not wait by itself.
+
+**"Merge it when the checks pass" is a separate feature**, in
+`docs/288-agent-merge-arming`. Until it ships, a repo-bound `--auto` is refused
+with a message saying so; sandbox `--auto` is unchanged (req 12).
 
 ## Open questions
 
-- **Sessions whose pull request predates this feature.** Requirement 4 says an
-  agent can merge the pull request its own session opened, with no exception for
-  time. But ShipIt only starts recording which pull request it opened when this
-  ships, so for a session that already has one there is no proof — and a lookup
-  by branch cannot tell ShipIt's pull request from one a person opened on the
-  same branch, which requirement 5 forbids claiming. Either requirement 4 gains
-  an explicit exception for pull requests opened before the feature (the session
-  merges normally again as soon as it opens its next one), or the design needs a
-  proof for historical pull requests that requirement 5 can live with.
+None.
 
 ## Resolved questions
 
@@ -125,3 +113,13 @@ but cannot land it. This feature moves the permission to the **repository**.
   the commit is now merged; a user, the card or GitHub's own auto-merge could
   have landed it. **Answer: say what is provable.** A witnessed merge keeps the
   full claim; a recovered record uses the narrower wording. (req 9)
+- 2026-09-03 — A session whose pull request predates this feature has no proof
+  that ShipIt opened it, and a branch lookup cannot tell it from a person's.
+  **Answer: exclude those pull requests.** The gap is self-healing — the session
+  works normally again as soon as it opens its next one — and no heuristic gets
+  near the failure requirement 5 exists to prevent. (req 4)
+- 2026-09-03 — Three unprimed reviews in a row returned blockers, every one of
+  them inside the "merge when the checks pass" arming, while the direct-merge
+  half had been stable for many rounds. **Answer: ship the direct merge first.**
+  Requirements 18–21 moved to `docs/288-agent-merge-arming` with their own plan
+  and pull request. (req 17, and the removal of 18–21)

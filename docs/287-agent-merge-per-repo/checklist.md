@@ -34,8 +34,8 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
       `headRefOid`, rollup state + its `oid`)
 - [ ] Any GraphQL `errors` refuses before anything else applies
 - [ ] The read returns a structured **observation**; the caller's mode decides
-- [ ] `--auto` **always** arms and never merges inline, including when the checks
-      are already green
+- [ ] A repo-bound `--auto` is refused with a message naming
+      `docs/288-agent-merge-arming`; sandbox `--auto` is unchanged
 - [ ] Observation table implemented for **both** modes, including: pending checks
       refuse a direct merge but arm `--auto`; the zero-check grace refuses both
 - [ ] Any non-passing reported check refuses, required or not (req 7)
@@ -55,65 +55,15 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 - [ ] `cancelAutoPush(sessionId)` only when the push landed
 - [ ] Merge sends the observed `headRefOid` as the REST expected `sha`
 
-## The arming (req 18–21)
+## The durable claim and settlement (req 9, 10, 11)
 
-- [ ] Migration: `agent_merge_armings` (session PK with `ON DELETE CASCADE`, repo
-      key, PR number, expected SHA, method, `state`, `origin`, last_error) + index
-- [ ] Repo-bound only; a sandbox `--auto` keeps today's behaviour (req 12)
-- [ ] Durable claim written **before** the REST call, by both merge paths
-- [ ] A second `--auto` is refused while a row is `merging` or `settling`
-- [ ] `merging` / `settling` are monotonic: origin change, archive, re-arm, reset,
-      unarchive, repository removal, revocation and a second `--auto` act on
-      `pending` rows only
-- [ ] Three merge outcomes: witnessed success → `settling`; **definitive GitHub
-      refusal** → row deleted, reason surfaced once, whatever the origin;
-      **indeterminate** (transport error, timeout, unparseable body) → stays `merging`
-- [ ] A `merging` row (indeterminate outcome or crash) is resolved from its own
-      tuple, never from the shape of the error: merged → `settling`; still open →
-      `pending` for an arming, deleted for a direct claim, terminated if `revoked`
-- [ ] Terminal handling for `pending` rows, so one cannot wait for ever on a pull
-      request somebody else merged or closed: merged at `expected_sha` → settle
-      with the narrow attribution; terminal at another head → cancel as
-      moved-head; closed unmerged → delete with a notice
-- [ ] Executor runs in the poller's existing tick
-- [ ] Armings feed the polling supervisor and the global gate: loaded at startup,
-      `ensure()`d on arm, ticked with no viewer and no tracked session (req 21)
-- [ ] Armings are activated only after `reattachInFlightTurns()` completes
-- [ ] Executor's predicate is `expected_sha`, not local HEAD (it may have no
-      worktree); a head that no longer matches deletes the arming with a notice (req 19)
-
-## Merge and turn are mutually exclusive (docs/266 req 2)
-
-- [ ] Two claim kinds: **turn-owned** (the direct merge, which runs inside the
-      active turn) and **background** (the executor: idle session, empty queue)
-- [ ] One authoritative admission gate consulted by **every** turn start:
-      interactive send (`ws-handlers/send-message.ts`), dispatched turns
-      (`session-runner.ts` → `dispatched-turn.ts`) and the queue drain
-      (`ws-handlers/agent-execution.ts`)
-- [ ] Adoption after a restart is **not** gated — it resumes an existing turn,
-      and gating it could block the turn that owns a persisted direct claim
-- [ ] A background claim makes a turn wait; released when the merge has settled
-- [ ] **Every** background-claim exit — settlement, cancellation, refusal,
-      recovery — calls the shared `releaseQueuedTurn()` (`queue-drain.ts`) after
-      the durable state change; a background merge has no turn whose completion
-      would otherwise drain the queue
-- [ ] One in-flight claim makes the executor exclusive with managed auto-merge
-- [ ] A full lifecycle test: a turn queues, waits, is released, and **starts** —
-      for both the interactive and the dispatched path, and through the drain
-
-## Revocation (req 20)
-
-- [ ] Deletes **pending** armings by `canonicalRepoKey`, in the same transaction
-      as the flag
-- [ ] The grant is re-checked atomically at `pending → merging`
-- [ ] In-flight rows are marked `revoked` durably, not deleted; a revoked row
-      never returns to `pending` — it settles an already-merged `expected_sha` or
-      terminates with a notice
-- [ ] Revocation reports the permission withdrawn once no row can merge again,
-      not once every network call has returned; covered by a timeout + restart test
-- [ ] A user's card-armed auto-merge is untouched
-
-## Settlement (req 9, 10, 11)
+- [ ] Migration: `agent_merge_claims` (session PK with `ON DELETE CASCADE`, repo
+      key, PR number, expected SHA, method, `state` = merging | settling)
+- [ ] Three merge outcomes: witnessed success → `settling`; definitive GitHub
+      refusal → deleted, reason reaches the agent; indeterminate (transport
+      error, timeout, unparseable body) → stays `merging`
+- [ ] A `merging` row is resolved from its own tuple, never from the shape of the
+      error: merged → `settling`; still open → deleted
 
 - [ ] Neither `forceVerifySessionPrState()` nor `awaitMergeHandling()` is used
 - [ ] One canonical terminal-promotion operation, addressed by PR number and given
@@ -130,8 +80,8 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
       values (`agent-merge:<repo_key>#<pr>@<expected_sha>`); settlement is
       idempotent on it
 - [ ] Notices go through `persistNoticeUnattached()` when there is no runner
-- [ ] Recovery records only what it can prove: "the agent armed this commit and it
-      is now merged"; "the agent merged it" needs a witnessed REST success
+- [ ] Recovery records only what it can prove: "the agent asked for this commit
+      and it is now merged"; "the agent merged it" needs a witnessed REST success
 - [ ] Session-state writes require the current `pr_repo_key` **and** `pr_number`
       to equal the row's
 - [ ] The row is deleted only after settlement is written
