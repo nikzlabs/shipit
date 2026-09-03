@@ -37,7 +37,7 @@ Zombies are skipped throughout: a zombie holds no CPU, cannot be signalled, and 
 
 Moving a signal off the `ChildProcess` object and onto a raw `process.kill(pid)` sharpens the hazard `killChild` exists to prevent — no fake intercepts it, no libuv bookkeeping bounds it. Two guards:
 
-- **the tree is walked only when `/proc` says the root's parent is us.** A pid that is not our own child is not a tree we may tear down; a fabricated pid (adapter tests carry `4242`, `12345`) is exactly that, and gets its signal through `killChild` alone. The sweep's re-walk re-checks the same thing, so a root pid recycled during the grace cannot make us enumerate a stranger's children;
+- **the tree is walked only when the handle is still live by Node's own reckoning (`exitCode` and `signalCode` both `null`) AND `/proc` says the root's parent is us.** Both halves are needed, and the `ppid` check alone is genuinely unsafe: pids are allocated from the bottom up, so the fabricated pids adapter tests pass (`4242`, `12345`) are exactly the numbers a busy container reaches, and if one of them happens to name a live child of the same process at that moment then `ppid` matches and the helper tears down a stranger's tree — immediately, and again on a five-second fuse. A stand-in object has neither field; an exited handle names a pid the kernel may already have reassigned, possibly to this session's next agent CLI. Either way the root still gets its signal through `killChild`. The sweep's re-walk re-checks root identity for the same reason;
 - **every delayed signal re-checks `starttime`** (field 22 of `/proc/<pid>/stat`), so a pid reaped and recycled during the grace is skipped rather than shot.
 
 **The residual window, stated exactly.** The check reads `/proc/<pid>/stat` and then calls `kill(2)`; those are two syscalls, not one, so a target that exits, is reaped, and has its pid handed to a new process *between them* would still receive the signal. Closing that completely needs a handle-based API — `pidfd_open` + `pidfd_send_signal` — which Node exposes no binding for, so the guarantee here is a narrowing rather than an elimination: the dangerous interval drops from the 5-second grace (where recycling is entirely plausible) to the microseconds between two adjacent syscalls, during which the kernel would have to allocate its way around the whole pid space (`pid_max`, 32768 or 4194304) to land on that one number. Worth knowing before anyone reads req 5 as absolute; not worth native code today.
@@ -56,6 +56,10 @@ Every ShipIt-initiated termination of an agent CLI:
 | Codex | `CodexAdapter.kill` — runs at the end of **every** turn (one app-server per turn) |
 | OpenCode | `kill`, the post-final-step stop-kill, the post-error kill, the stall deadline, the interrupt escalation, and the transient compaction server |
 | Grok | `kill`, the post-result kill, the interrupt escalation |
+
+### The cost of a `/proc` scan, and why the tests pace themselves
+
+One scan reads `/proc/<pid>/stat` for every process on the box — measured at **~22ms** in a container carrying a few hundred entries, not the sub-millisecond it looks like. That is fine on a kill path, which runs twice per teardown. It is not fine in a poll loop: the helper's own tests once polled a scan-based condition every 25ms, which saturates a core for the length of the wait while the rest of a 964-file suite competes for the same CPU. Scan-based waits there now poll at 100ms.
 
 ## What this does not cover
 

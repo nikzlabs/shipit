@@ -61,12 +61,20 @@ function alive(pid: number): boolean {
   }
 }
 
-/** Poll `predicate` every 25ms until it holds or `timeoutMs` elapses. */
-async function until(predicate: () => boolean, timeoutMs = 5_000): Promise<boolean> {
+/**
+ * Poll `predicate` until it holds or `timeoutMs` elapses.
+ *
+ * `everyMs` is not decoration: a predicate that calls `collectDescendants`
+ * re-reads every `/proc/<pid>/stat` on the box, measured at ~22ms in a busy
+ * container, so polling one of those at the 25ms default would burn a whole core
+ * for the length of the wait — inside a suite whose other workers are competing
+ * for the same CPU. Scan-based waits pass a slower interval.
+ */
+async function until(predicate: () => boolean, timeoutMs = 5_000, everyMs = 25): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) return true;
-    await new Promise((r) => setTimeout(r, 25));
+    await new Promise((r) => setTimeout(r, everyMs));
   }
   return predicate();
 }
@@ -99,11 +107,41 @@ describe.skipIf(!existsSync("/proc/1/stat"))("killProcessTree", () => {
     const pid = proc.pid;
     if (pid === undefined) throw new Error("spawn produced no pid");
     strays.push(pid);
-    const appeared = await until(() => collectDescendants(pid).length >= count);
+    // 100ms, not the default: each check re-reads the whole process table.
+    const appeared = await until(() => collectDescendants(pid).length >= count, 5_000, 100);
     expect(appeared).toBe(true);
     for (const d of collectDescendants(pid)) strays.push(d.pid);
     return proc;
   }
+
+  /**
+   * A pid is only ours while Node still holds a live handle for it. Once the
+   * process has exited, the kernel may have handed that number to anybody —
+   * including this session's next agent CLI — so an exited handle must never
+   * lead to a walk. A stand-in object (`{ pid: 4242, kill }`, which is what
+   * every adapter test passes) fails the same check, which is what stops a
+   * fabricated pid from reaching a real tree: pids are allocated bottom-up, so
+   * `4242` and `12345` are exactly the numbers a busy container reaches, and a
+   * `ppid` check alone would match whenever one of them happened to be a live
+   * child of the same process.
+   */
+  it("refuses to walk a tree behind a handle that has already exited", async () => {
+    const proc = await spawnTree("sleep 300 & sleep 300", 2);
+    const descendants = collectDescendants(proc.pid ?? 0);
+    expect(descendants.length).toBeGreaterThanOrEqual(2);
+
+    // A handle that has EXITED, naming a pid that is right now a live child of
+    // ours — the shape a recycled pid produces, and the shape an adapter test's
+    // stand-in produces by accident. `ppid` matches, so only the liveness check
+    // can refuse it.
+    const kill = vi.fn(() => true);
+    const stale = { pid: proc.pid, kill, exitCode: 0, signalCode: null } as unknown as ChildProcess;
+    killProcessTree(stale, "SIGTERM", { graceMs: 50 });
+
+    await new Promise((r) => setTimeout(r, 300));
+    expect(kill).toHaveBeenCalledWith("SIGTERM");
+    expect(descendants.every((d) => alive(d.pid))).toBe(true);
+  });
 
   it("keeps the killChild guarantee on a spawn that never exec'd", async () => {
     const proc = spawn("definitely-not-a-real-binary-xyzzy", ["--nope"]);
@@ -175,7 +213,7 @@ describe.skipIf(!existsSync("/proc/1/stat"))("killProcessTree", () => {
     const spawned = await until(() => {
       late = collectDescendants(survivorPid).find((d) => !snapshotPids.has(d.pid));
       return late !== undefined;
-    }, 2_500);
+    }, 2_500, 100);
     expect(spawned).toBe(true);
     const latePid = late?.pid ?? 0;
     strays.push(latePid);
@@ -200,8 +238,10 @@ describe.skipIf(!existsSync("/proc/1/stat"))("killProcessTree", () => {
     const notOurs = grandchild ?? 0;
     const itsChildren = collectDescendants(notOurs);
 
+    // `exitCode`/`signalCode` are what a LIVE handle reads, so the ownership
+    // check is the one on trial here rather than the liveness check below.
     const kill = vi.fn(() => true);
-    const impostor = { pid: notOurs, kill } as unknown as ChildProcess;
+    const impostor = { pid: notOurs, kill, exitCode: null, signalCode: null } as unknown as ChildProcess;
     expect(killProcessTree(impostor, "SIGTERM", { graceMs: 50 })).toBe(true);
 
     // The root got its signal through the ChildProcess (here, the fake) and its

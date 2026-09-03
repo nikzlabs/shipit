@@ -215,10 +215,17 @@ function signalIdentity(identity: ProcessIdentity, signal: NodeJS.Signals): bool
  * `process.kill(pid)` is not intercepted by a test's fake or bounded by libuv's
  * bookkeeping. So:
  *
- *   - the tree is walked ONLY when `/proc` says the root's parent is us. A pid
- *     that is not our own child is not a tree we may tear down — and a fabricated
- *     pid (adapter tests carry `4242`, `12345`) is exactly that. The root itself
- *     still gets its signal through `killChild`, as before;
+ *   - the tree is walked ONLY when the `ChildProcess` handle is still live by
+ *     Node's own reckoning (`exitCode` and `signalCode` both `null`) AND `/proc`
+ *     says the root's parent is us. Both halves are load-bearing, and `ppid`
+ *     alone is emphatically not enough: pids are allocated from the bottom up,
+ *     so the fabricated pids adapter tests carry — `4242`, `12345` — are exactly
+ *     the numbers a busy container reaches, and if one of them happens to name a
+ *     live child of the same process at that moment, `ppid` matches and we would
+ *     tear down a stranger's tree on a five-second fuse. A stand-in object has
+ *     neither field, and a handle whose process already exited names a pid the
+ *     kernel may have reassigned — possibly to this session's NEXT agent CLI. The
+ *     root itself still gets its signal through `killChild`, as before;
  *   - every delayed signal re-checks the pid's `starttime`
  *     ({@link signalIdentity}), so a pid reaped and recycled during the grace
  *     cannot be shot.
@@ -240,7 +247,16 @@ export function killProcessTree(
   const graceMs = opts.graceMs ?? TREE_KILL_GRACE_MS;
 
   // BEFORE the signal — see the docstring.
-  const rootStat = readProcStat(rootPid);
+  //
+  // `exitCode`/`signalCode` are Node's own answer to "is this handle still a
+  // running process": both `null` only while it is. A handle whose process has
+  // exited names a pid the kernel may already have given to somebody else, and
+  // a plain object standing in for a child (`{ pid: 4242, kill }`, which is what
+  // every adapter test passes) has them `undefined` — so this rules out walking
+  // a tree that was never ours in the first place, before `ppid` is consulted at
+  // all. See the docstring for why `ppid` alone is not enough.
+  const live = child.exitCode === null && child.signalCode === null;
+  const rootStat = live ? readProcStat(rootPid) : null;
   const ours = rootStat !== null && rootStat.ppid === process.pid;
   if (rootStat && !ours) {
     console.warn(
