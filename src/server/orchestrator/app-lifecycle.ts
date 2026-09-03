@@ -832,6 +832,14 @@ export function buildRunnerFactory(
           await new Promise((r) => setTimeout(r, 500));
         }
         // Standby creation failed or timed out — fall back to a fresh container.
+        // Timed for its own sake: this branch can burn the whole 30s poll and
+        // THEN pay a cold create, and until it was logged no phase owned that
+        // wait — the exact warm-session failure this instrumentation is for
+        // (review finding).
+        console.log(
+          `[timing] container.acquire for ${o.sessionId} path=standby-abandoned ` +
+            `took=${Date.now() - acquireStart}ms (a cold create follows, timed separately)`,
+        );
         console.log(`[container] Standby not ready, creating fresh container for ${o.sessionId}...`);
         await createContainerForRunner({
           mgr, runner,

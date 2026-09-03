@@ -422,6 +422,57 @@ describe("ComposeCli — compose up phase timings", () => {
     expect(seen[0]).toMatch(/create=\d+ms/);
   });
 
+  it("classifies a phase marker split across two chunks", async () => {
+    // The runner delivers arbitrary slices of the stream, not lines. Splitting
+    // each chunk on its own lost any marker that straddled a boundary.
+    const runner = vi.fn(async (_args: string[], _cwd: string, onOutput?: (c: string) => void) => {
+      onOutput?.("#1 [internal] load build definition\n Contai");
+      onOutput?.("ner shipit-abc-web-1  Creating\n");
+    });
+    const cli = new ComposeCli({
+      sessionId: SID,
+      workspaceDir: "/workspace",
+      composeFile: "docker-compose.yml",
+      overrideFile: "/state/compose.override.yml",
+      composeQuery: vi.fn(async () => ""),
+      composeRunner: runner,
+    });
+    const seen: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((msg: unknown) => {
+      if (typeof msg === "string" && msg.startsWith("[timing]")) seen.push(msg);
+    });
+
+    await cli.up(["web"]);
+    spy.mockRestore();
+
+    expect(seen[0]).toMatch(/build=\d+ms/);
+    expect(seen[0]).toMatch(/create=\d+ms/);
+  });
+
+  it("classifies a final line the command never terminated", async () => {
+    // A process that exits mid-line: only the flush can resolve the held tail.
+    const runner = vi.fn(async (_args: string[], _cwd: string, onOutput?: (c: string) => void) => {
+      onOutput?.(" Container shipit-abc-web-1  Creating");
+    });
+    const cli = new ComposeCli({
+      sessionId: SID,
+      workspaceDir: "/workspace",
+      composeFile: "docker-compose.yml",
+      overrideFile: "/state/compose.override.yml",
+      composeQuery: vi.fn(async () => ""),
+      composeRunner: runner,
+    });
+    const seen: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((msg: unknown) => {
+      if (typeof msg === "string" && msg.startsWith("[timing]")) seen.push(msg);
+    });
+
+    await cli.up(["web"]);
+    spy.mockRestore();
+
+    expect(seen[0]).toMatch(/create=\d+ms/);
+  });
+
   it("omits build for a stack whose images are already present", async () => {
     const seen = await timingLines(
       [" Container shipit-abc-web-1  Created", " Container shipit-abc-web-1  Started"],

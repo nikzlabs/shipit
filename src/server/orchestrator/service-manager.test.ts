@@ -21,6 +21,7 @@ import { DEFAULT_STOP_GRACE_PERIOD_MS } from "./compose-generator.js";
 import { SESSION_WORKSPACE_SUBDIR, SESSION_STATE_SUBDIR } from "./session-state-dir.js";
 import { serializeStackOp } from "./stack-op-queue.js";
 import type { PluginCredentialDeclaration } from "../shared/plugin-credentials.js";
+import { markPreviewReachable, forgetStackUp } from "./preview-timing.js";
 
 /**
  * Create a real session layout in a temp dir: the clone at
@@ -2677,6 +2678,33 @@ describe("ServiceManager install gate (x-shipit-depends-on-install)", () => {
     expect(gate[0]).toContain("install-gate for test-session-gate-timing");
     expect(gate[0]).toMatch(/held=\d+ms/);
     expect(gate[0]).toContain("services=1 outcome=started");
+  });
+
+  it("starts the preview-ready clock for the port the gated service serves", async () => {
+    // The other half of the cross-module measurement: the timing module's own
+    // tests call `markStackUp` directly, so they would still pass with this
+    // call deleted. Reaching the port through `markPreviewReachable` is what
+    // proves the manager marked it — and marked the right port.
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const sessionId = "test-session-gate-clock";
+    const { mgr, setPsResponse } = makeManager(dir, sessionId);
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+
+    const seen = await timingLines(async () => {
+      mgr.setInstallRunning(false);
+      await flushMicrotasks();
+      markPreviewReachable(sessionId, 5173);
+    });
+    forgetStackUp(sessionId);
+
+    const first = seen.filter(l => l.includes("preview.first-connect"));
+    expect(first).toHaveLength(1);
+    expect(first[0]).toContain(`port=5173`);
+    expect(first[0]).toContain("service=web");
   });
 
   it("reports the gate wait as install-failed when the install fails", async () => {

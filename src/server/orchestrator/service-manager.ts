@@ -1955,8 +1955,10 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         startNow.push(svc);
       }
     }
-    // The gate set was just rebuilt, so the hold starts now (or there is none).
-    this._gateHeldSince = this.gatedServices.size > 0 ? Date.now() : null;
+    // The gate set was just rebuilt, so the hold starts now. Not after a FAILED
+    // install: those services were latched to `error` above and are waiting for
+    // nothing, so there is no duration to measure (review finding).
+    this._gateHeldSince = this.gatedServices.size > 0 && !this._installFailed ? Date.now() : null;
 
     try {
       // 1. Start non-gated auto services (named explicitly so manual and
@@ -1976,11 +1978,11 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
           await this.prepareContainedStartFn?.(autoNames);
           this.armLogFollowerSince(autoNames);
           await this.compose.up(autoNames, this.composeLogSink(autoNames));
+          // Before the containment below: from here the dev server is booting,
+          // and the proxy's first answered request stops this clock.
+          markStackUp(this.sessionId, startNow);
           await this.containServicesFn?.([...this.services.keys()]);
         });
-        // Starts the clock the preview proxy stops on its first answered
-        // request — everything after this point is the dev server's own boot.
-        markStackUp(this.sessionId, autoNames);
       }
       this._started = true;
 
@@ -3251,6 +3253,9 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         `[compose:${this.sessionId}] install finished — all ${held} gated service(s) were stopped by the user; ` +
         `clearing the gate and starting nothing`,
       );
+      // The gate is resolved, so its clock stops here too — nothing started, so
+      // there is no wait worth reporting.
+      this._gateHeldSince = null;
       return;
     }
     const heldNote = held > 0 ? ` (${held} left stopped at the user's request)` : "";
@@ -3331,9 +3336,9 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         await this.prepareContainedStartFn?.(names);
         this.armLogFollowerSince(names);
         await this.compose.up(names, this.composeLogSink(names));
+        markStackUp(this.sessionId, names.flatMap(n => this.services.get(n) ?? []));
         await this.containServicesFn?.([...this.services.keys()]);
       });
-      markStackUp(this.sessionId, names);
       // First `up` for an otherwise all-gated/all-manual stack is the moment
       // the compose network materializes — attach the orchestrator + agent.
       await this.joinSessionNetwork();

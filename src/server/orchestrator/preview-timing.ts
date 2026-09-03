@@ -5,54 +5,78 @@
  * `app-lifecycle.ts`, the install gate and the `docker compose up` in
  * `service-manager.ts` / `compose-cli.ts`. This module carries the ONE fact
  * that spans two modules: `docker compose up` returned in the ServiceManager,
- * and the first request that the preview proxy got an answer for arrives later,
- * in `preview-proxy.ts`. Neither side can time that gap alone.
+ * and the first request the upstream answered arrives later, in
+ * `preview-proxy.ts`. Neither side can time that gap alone.
+ *
+ * Marks are per PORT, not per session. A session's stack does not come up in
+ * one `up`: the non-gated services start first and the install-gated ones
+ * follow, sometimes minutes later. A session-wide mark let the second `up`
+ * re-open the first batch's ports and then report their boot against the wrong
+ * clock (review finding).
  *
  * Every line is `console.log` in the shared `[timing]` shape used by
- * `claim-session.ts` and `app-lifecycle.ts`, so one grep collects the whole
- * path.
+ * `claim-session.ts` and `app-lifecycle.ts`, so one grep collects the path.
  */
 
-/** What a session's last `docker compose up` settled at, and for which services. */
-interface StackUpMark {
+/** What one service's last `docker compose up` settled at. */
+interface PortMark {
   at: number;
-  services: string[];
-  /** Ports already reported, so a busy preview logs once per boot, not per request. */
-  reported: Set<number>;
+  service: string;
+  reported: boolean;
 }
 
-const stackUpMarks = new Map<string, StackUpMark>();
+/** sessionId → port → mark. Nested so a session's marks drop in one step. */
+const marks = new Map<string, Map<number, PortMark>>();
+
+/** A service whose `docker compose up` has just returned. */
+export interface StartedService {
+  name: string;
+  /** Container port the preview proxy addresses. Portless services are skipped. */
+  port?: number;
+}
 
 /**
- * Record that the auto-preview services' `docker compose up` has returned.
+ * Record that `docker compose up` returned for these services. Call it as soon
+ * as the command settles — anything done afterwards (containment, network
+ * joins) runs while the dev server is already booting, and would otherwise be
+ * charged to the dev server instead of to us.
  *
- * Resets the reported-ports set: a restart, a reconcile or a gate release is a
- * new boot of those services, and its first-connect is a new measurement.
+ * Re-marking a port resets it: a restart or a reconcile is a new boot of that
+ * service, and its first connect is a new measurement.
  */
-export function markStackUp(sessionId: string, services: string[]): void {
-  stackUpMarks.set(sessionId, { at: Date.now(), services: [...services], reported: new Set() });
+export function markStackUp(sessionId: string, services: StartedService[]): void {
+  let byPort = marks.get(sessionId);
+  if (!byPort) {
+    byPort = new Map();
+    marks.set(sessionId, byPort);
+  }
+  const at = Date.now();
+  for (const svc of services) {
+    if (svc.port === undefined) continue;
+    byPort.set(svc.port, { at, service: svc.name, reported: false });
+  }
 }
 
 /**
- * Record that a preview request reached the upstream. Logs the gap since the
- * `compose up` returned — the dev server's own boot plus its first compile,
- * which is the part of the wait no pre-warming currently covers.
+ * Record that a preview request reached the upstream. Logs the gap since that
+ * port's `compose up` returned — the dev server's own boot plus its first
+ * compile, which is the part of the wait no pre-warming currently covers.
  *
- * A no-op when the session has no mark (a preview reached before any `up` this
- * process ran, e.g. a container adopted across a restart) — there is no honest
- * number to report there.
+ * A no-op when the port has no mark (a preview reached before any `up` this
+ * process ran, e.g. a container adopted across a restart) or when it has
+ * already been reported — a live preview serves hundreds of requests.
  */
 export function markPreviewReachable(sessionId: string, port: number): void {
-  const mark = stackUpMarks.get(sessionId);
-  if (!mark || mark.reported.has(port)) return;
-  mark.reported.add(port);
+  const mark = marks.get(sessionId)?.get(port);
+  if (!mark || mark.reported) return;
+  mark.reported = true;
   console.log(
     `[timing] preview.first-connect for ${sessionId} port=${port} ` +
-      `afterComposeUp=${Date.now() - mark.at}ms services=${mark.services.join(",") || "none"}`,
+      `afterComposeUp=${Date.now() - mark.at}ms service=${mark.service}`,
   );
 }
 
-/** Drop a session's mark — its stack is going away (dispose / stop). */
+/** Drop a session's marks — its stack is going away (dispose / stop). */
 export function forgetStackUp(sessionId: string): void {
-  stackUpMarks.delete(sessionId);
+  marks.delete(sessionId);
 }

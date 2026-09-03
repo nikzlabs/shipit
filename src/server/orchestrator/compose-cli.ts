@@ -183,16 +183,33 @@ export class ComposeCli {
     const start = Date.now();
     let buildAt: number | undefined;
     let createAt: number | undefined;
+    // A chunk is an arbitrary slice of the stream, not a line — `" Contai"` and
+    // `"ner … Creating\n"` arrive separately often enough to matter. Hold the
+    // unterminated tail until the rest of it lands.
+    let partial = "";
     const observe: ComposeOutputSink = Object.assign(
       (chunk: string) => {
-        for (const line of chunk.split("\n")) {
+        const lines = (partial + chunk).split("\n");
+        partial = lines.pop() ?? "";
+        for (const line of lines) {
           const phase = composeUpPhaseOf(line);
           if (phase === "build") buildAt ??= Date.now();
           else if (phase === "create") createAt ??= Date.now();
         }
         onOutput?.(chunk);
       },
-      { flush: () => onOutput?.flush?.() },
+      {
+        flush: () => {
+          // The process ended, so the held tail is a complete line after all.
+          if (partial) {
+            const phase = composeUpPhaseOf(partial);
+            if (phase === "build") buildAt ??= Date.now();
+            else if (phase === "create") createAt ??= Date.now();
+            partial = "";
+          }
+          onOutput?.flush?.();
+        },
+      },
     );
     try {
       await this.upWithConflictRecovery(observe, ...subArgs);
