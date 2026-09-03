@@ -94,8 +94,9 @@ commit, and nothing else:
   code. Call `gh pr merge --auto` again if you still want it merged.
 - If the user turns the permission off, every request that has not merged is
   cancelled.
-- The merge happens after your turn ends. ShipIt holds it while your session is
-  working, so in practice it lands just after the turn that armed it.
+- The merge happens after your turn ends, never while a turn is running: while
+  the merge is in progress a new turn waits, and while a turn runs the merge
+  waits. In practice it lands just after the turn that asked for it.
 
 #### After your PR merges
 

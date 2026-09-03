@@ -1,7 +1,7 @@
 ---
 issue: planning#499
 title: Agent merge, granted per repository — design
-description: Widen the docs/224 merge gate from a per-sandbox grant to a per-repository one, flush the turn's work before merging, and decide the merge from one live read.
+description: Widen the docs/224 merge gate from a per-sandbox grant to a per-repository one, flush the turn's work before merging, and decide every merge from one live read at an exact commit.
 ---
 
 # Agent merge, granted per repository — design
@@ -9,22 +9,12 @@ description: Widen the docs/224 merge gate from a per-sandbox grant to a per-rep
 Implements [requirements.md](./requirements.md). Extends
 `docs/224-sandbox-merge-capability` (the shim, the route, the guardrails).
 
-> **Revision 11, 2026-09-03.** Ten independent review rounds; every finding
-> verified at the source before it was accepted. Round 1 rebuilt the ownership
-> check, round 2 replaced the status gate and caught a `cwd` rule that would have
-> broken every merge, round 3 replaced the query and the grace window, round 4
-> bound provenance to the repository, and round 5 closed a partial-response hole
-> and refuted GitHub-native arming — which the user then answered by scoping in a
-> ShipIt arming bound to one commit (req 18–21) — which round 6 then scoped to
-> repo-bound sessions and made reachable after a restart. See
-> [What the reviews changed](#what-the-reviews-changed).
-
 ## What changes, in one line
 
 `mergeDisposition()` stops asking "is this a sandbox?" and starts asking "may an
-agent merge here?" — the repo-bound path flushes the turn's work first, and both
-paths decide from **one live read of the pull request**, then merge at the exact
-SHA that read described.
+agent merge here?" — the repo-bound path flushes the turn's work first, every
+merge is decided by one live read of the pull request, and it lands at the exact
+commit that read described.
 
 ## 1. Storage — the grant (req 1, 2, 3)
 
@@ -45,17 +35,17 @@ remote must share one decision.
 `PATCH /api/repos/:url` (which already takes `hidden` and `colorIndex` and
 broadcasts `repo_list`) and rides the `RepoInfo` projection to the client. It is
 **server-authoritative and container-inaccessible**: the browser reads it to
-render the toggle, the container never sees or sets it. Round 2 confirmed that
-route carries no `containerAccessible` opt-in, so the golden container-route
-table is the guard (req 3).
+render the toggle, the container never sees or sets it. That route carries no
+`containerAccessible` opt-in, so the golden container-route table is the guard
+(req 3).
 
 **Rejected: `shipit.yaml`.** The agent can write that file, so a permission
 declared there is one it can grant itself. Receipt in requirements.md.
 
 ## 2. The gate (req 4, 5, 6, 12, 13)
 
-`mergeDisposition()` gains one branch and **keeps `not-sandbox` for ops
-sessions** — requirement 13 says their behaviour does not change:
+`mergeDisposition()` gains one branch and keeps `not-sandbox` for ops sessions —
+requirement 13 says their behaviour does not change:
 
 | Session | Decision |
 |---|---|
@@ -68,8 +58,8 @@ repository. The user turns this on in Project Settings."* (req 6)
 
 ### Ownership: a server-derived tuple (req 5)
 
-Comparing PR numbers proves nothing, because a number is only unique inside a
-repository. Ownership is decided from state the agent cannot write:
+Comparing pull-request numbers proves nothing, because a number is only unique
+inside a repository. Ownership is decided from state the agent cannot write:
 
 - **Repository** — `session.remoteUrl`. A repo-bound merge **refuses `--repo`**,
   which otherwise retargets the whole operation (`resolvePrTarget()` returns
@@ -77,15 +67,15 @@ repository. Ownership is decided from state the agent cannot write:
 - **Working tree** — the session root. `cwd` is **ignored, not refused**: the
   shim sends it on *every* call (`targetBody()` includes `deps.cwd`, which
   `runShim` defaults to `process.cwd()`), so refusing it would reject the
-  feature's happy path — round 2's first blocker. `resolvePrTarget()` already
-  ignores it when no `--repo` is given.
+  feature's own happy path. `resolvePrTarget()` already ignores it when no
+  `--repo` is given.
 - **Branch** — `session.branch`, the server-side record. Before any git mutation
   the route requires `git.currentBranchOrNull() === session.branch` —
   `currentBranchOrNull`, never `getCurrentBranch`, which returns `"main"` on a
   detached HEAD (`shared/git.ts:670`).
-- **Pull request** — `session.prNumber`, the number ShipIt recorded when it
-  opened this session's pull request. The requested number must equal it, and an
-  absent value **refuses**.
+- **Pull request** — `session.prNumber` with `session.prRepoKey`. The requested
+  number must equal it, the key must equal `canonicalRepoKey(session.remoteUrl)`
+  at merge time, and an absent value **refuses**.
 
 Failing closed is deliberate, and is the opposite of `guardMergeSync`, where
 "cannot tell" correctly proceeds: there the fallback is the status quo, here it
@@ -97,45 +87,35 @@ A recorded number is a **provenance claim**, so only a pull request ShipIt itsel
 opened may write it — otherwise it grants ownership of a person's pull request,
 which requirement 5 excludes by name.
 
-| Event | Effect on `sessions.pr_number` |
+| Event | Effect on `sessions.pr_number` / `pr_repo_key` |
 |---|---|
-| `agentCreatePr()` returns `alreadyExisted: false` | write the number |
-| `POST /api/sessions/:id/pr` opens a PR | write the number |
-| `POST /api/sessions/:id/pr/quick` opens a PR | write the number |
-| `pr-lifecycle.ts` → `quickCreatePr()` opens a PR | write the number |
+| `agentCreatePr()` returns `alreadyExisted: false` | write, if the created repo matches |
+| `POST /api/sessions/:id/pr` opens a PR | write, if the created repo matches |
+| `POST /api/sessions/:id/pr/quick` opens a PR | write, if the created repo matches |
+| `pr-lifecycle.ts` → `quickCreatePr()` opens a PR | write, if the created repo matches |
 | any of those returns a **pre-existing** PR | leave unchanged — it may be a person's |
-| docs/202 re-arm clears `pr_status` | clear it too |
-| explicit reset (`pr-rearm.ts`) | clear it |
-| unarchive's "old PR no longer applies" clearing | clear it |
-| the session's `origin` is changed | clear it — see below |
-| sessions predating the column | `NULL` — refuse, and **never backfill from `pr_status`**, which also holds person-opened PRs |
+| docs/202 re-arm clears `pr_status` | clear both |
+| explicit reset (`pr-rearm.ts`) | clear both |
+| unarchive's "old PR no longer applies" clearing | clear both |
+| the session's `origin` is changed | clear both, and any arming |
+| sessions predating the columns | `NULL` — refuse, and **never backfill from `pr_status`**, which also holds person-opened PRs |
 
-`quickCreatePr()` cannot tell the creation cases apart today: it returns the **same
-shape** for a pull request it found (`services/github.ts:656`) and one it opened
-(`:721`). It gains an `alreadyExisted` discriminator, as `agentCreatePr()`
+`quickCreatePr()` cannot tell the creation cases apart today: it returns the
+**same shape** for a pull request it found (`services/github.ts:656`) and one it
+opened (`:721`). It gains an `alreadyExisted` discriminator, as `agentCreatePr()`
 already has, and both of its callers pass the result through. Without that the
 implementation must either record nothing or claim a person's pull request.
 
-**And a write is repository-bound, not just creation-bound.** `agentCreatePr()`
+**"If the created repo matches" is load-bearing twice over.** `agentCreatePr()`
 accepts `--repo` and passes the retargeted remote through
-(`api-routes-github.ts:320`), so an agent could open a pull request in
-repository B and have its number recorded as the ownership number for repository
-A — a number that then matches a *different* pull request at merge time. So the
-write happens only when
-`canonicalRepoKey(created.repoUrl) === canonicalRepoKey(session.remoteUrl)`.
-`alreadyExisted: false` alone is not provenance.
-
-**And the number is stored with the repository it came from.** Round 8 found that
-`session.remoteUrl` is not fixed: replacing `origin` updates `sessions.remote_url`
-in place. A pull-request number, a branch name and even a SHA can coincide across
-forks, so a number recorded against repository A would then authorise a
-same-numbered pull request in repository B. Two defences, because a missed clear
-must not become an authorisation:
-
-- `sessions.pr_repo_key` is stored beside `pr_number`, and the merge gate requires
-  it to equal `canonicalRepoKey(session.remoteUrl)` **at merge time**.
-- A canonical repository-identity change clears `pr_number`, `pr_repo_key` and any
-  arming for that session.
+(`api-routes-github.ts:320`), so a pull request opened in repository B could
+otherwise be recorded as the ownership number for repository A. And
+`session.remoteUrl` is not fixed — replacing `origin` updates `sessions.remote_url`
+in place — while numbers, branch names and even SHAs can coincide across forks.
+Hence two defences, so that a missed clear can never become an authorisation:
+the write requires
+`canonicalRepoKey(created.repoUrl) === canonicalRepoKey(session.remoteUrl)`, and
+`pr_repo_key` is stored with the number and re-checked at merge time.
 
 ## 3. The merge sequence (req 7, 8, 14, 15, 16, 17)
 
@@ -148,10 +128,11 @@ repo-bound only:
       · pushed     → refuse: "merge again once its checks report"
       · cancelAutoPush(sessionId) only when the push landed
 both kinds:
- 3. one live read of the pull request                          (req 7, 8, 16, 17)
-      · repo-bound: the PR head SHA must equal local HEAD              (req 14)
- 4. claim durably (`merging`), then merge with expected sha             (req 16)
- 5. record the witnessed merge from the REST response             (req 9, 10, 11)
+ 3. one live read of the pull request → a structured observation (req 7, 8, 16)
+ 4. the caller's mode decides what the observation means               (req 17)
+      · direct: merge now, or refuse
+      · --auto: merge now, or record an arming            (repo-bound, req 18)
+ 5. claim durably, merge at the observed SHA, settle           (req 9, 10, 11)
 ```
 
 Steps 1 and 2 are **repo-bound only**: a sandbox session has no ShipIt
@@ -160,31 +141,19 @@ may push.
 
 ### One live read, not a cache handoff
 
-The previous revision gated repo-bound merges on the PR status poller's summary.
-Round 2 showed that cannot carry the guarantee:
+The poller's summary cannot carry this decision. `forceRefreshSession()` returns
+`void` and returns silently for an untracked session, and `pollRepo()` preserves
+the previous state when unauthenticated, rate-limited or handed no repository
+data — so a "forced" refresh that failed leaves `getStatus()` returning a stale
+green summary. The poll also indexes open pull requests by `headRefName`, so two
+pull requests from one branch overwrite each other, and the summary carries no
+head SHA while the poller's own model deliberately holds two.
 
-- `forceRefreshSession()` returns `void` and returns silently for an untracked
-  session; `pollRepo()` **preserves the previous state** when unauthenticated,
-  rate-limited, or handed no repository data. So a "forced" refresh that failed
-  leaves `getStatus()` returning a stale green summary — a revoked approval or a
-  changed check result evaluated from cache.
-- The poll indexes open pull requests by `headRefName`, so two pull requests from
-  one branch overwrite each other in a branch-keyed map. The summary is not
-  guaranteed to be the recorded pull request at all.
-- The summary carries no head SHA, and the poller's model deliberately holds
-  **two** — `extractCurrentHeadOid()` (the ref tip) and `extractHeadSha()` (the
-  commit whose check rollup was read). Adding a SHA to the summary would also
-  mean teaching `prStatusEqual()` about it, or the poller's update gate swallows
-  a head change with otherwise identical status.
+Nor does the poller's *query* fit: `buildPrStatusQuery()` emits the bulk
+`pullRequests` connection with a number only as an alias, `PR_LIGHT_FIELDS` has
+no `isDraft`, and `parsePrNode()` fixes `prState` to `"open"`.
 
-So the merge does its own read: **a small query written for this decision**, not
-the poller's. Round 3 showed reuse does not fit — `buildPrStatusQuery()` always
-emits the bulk `pullRequests` connection with the number as an extra alias that
-only `extractFocusedPrNodes()` can retrieve, `PR_LIGHT_FIELDS` has no `isDraft`,
-and `parsePrNode()` fixes `prState` to `"open"`. Coercing `PrStatusSummary` into
-an irreversible decision costs more than the fields are worth.
-
-The merge query asks for exactly what the gate needs, by number:
+So the merge does its own read, written for this decision:
 
 ```
 pullRequest(number: $n) {
@@ -195,82 +164,69 @@ pullRequest(number: $n) {
 
 One round trip, one pull request, both SHAs — `headRefOid` (the ref tip) and the
 rollup's `commit.oid` (what the checks describe). Nothing is cached, nothing is
-branch-keyed, and `PrStatusSummary`, `prStatusEqual()` and the poller are all
-untouched.
+branch-keyed, and `PrStatusSummary`, `prStatusEqual()` and the poller are
+untouched. The selection is deliberately minimal: `number` is what the caller
+supplied, `mergeable` is never consulted, and the rollup's `contexts` list is
+bounded — counting a bounded list is how a fail-open gate gets built.
 
-The selection is deliberately smaller than the first draft's: `number` is what
-the caller supplied, `mergeable` is never consulted by the gate, and the rollup's
-`contexts` list is bounded — counting a bounded list is how a fail-open gate gets
-built. The gate reads `statusCheckRollup.state`, and treats a **null rollup** as
-zero checks.
+### The read returns an observation; the caller decides
 
-**A null rollup counts only in a response that carries no `errors`.**
-`graphqlQuery()` logs non-rate-limit GraphQL errors and still returns the body,
-so a partial response can hold `errors` *and* a null rollup — which would read as
-"this repository has no CI" and merge. The gate requires an empty `errors` array
-and the presence of the fields it decides on, before any of the rows below apply.
+The read produces a **structured observation**, not a verdict, because the two
+callers need different things from the same facts — a direct merge refuses on
+pending checks, while `--auto` exists precisely to record an arming for that
+case:
 
-The gate then reads:
+| Observation | Direct merge | `--auto` (repo-bound) |
+|---|---|---|
+| read failed, node missing, or any GraphQL `errors` | refuse | refuse |
+| rollup `commit.oid !== headRefOid` | refuse (req 16) | refuse |
+| repo-bound and `headRefOid !== local HEAD` | refuse (req 14) | refuse |
+| `state !== "OPEN"`, or `isDraft` | refuse (req 7) | refuse |
+| a required check failing | refuse (req 7) | refuse |
+| `reviewDecision` review_required / changes_requested | refuse (req 8) | refuse |
+| **null rollup** (zero checks) inside the CI grace | refuse: waiting for checks to start | refuse |
+| checks **pending** | refuse, naming `--auto` (req 17) | **arm** at `headRefOid` (req 18) |
+| checks passed, or null rollup past the grace | merge now | merge now |
 
-| Condition | Result |
-|---|---|
-| the read failed, the node is missing, or the response carries **any** GraphQL `errors` | refuse — never "no checks" |
-| rollup `commit.oid !== headRefOid` | refuse: the checks describe an older commit (req 16) |
-| repo-bound and `headRefOid !== local HEAD` | refuse: GitHub does not have this session's work (req 14) |
-| `state !== "OPEN"`, or `isDraft` | refuse (req 7) |
-| a required check failing | refuse (req 7) |
-| checks pending | refuse, naming `--auto` (req 17) |
-| **null rollup** (zero checks), inside the CI grace | refuse: "waiting for CI checks to start" |
-| **null rollup** past that grace | proceed — the repository has no CI |
-| `reviewDecision` review_required / changes_requested | refuse (req 8) |
+The zero-check grace refuses **both** modes on purpose: an empty check set inside
+the window means "not registered yet", and arming against it would authorise a
+commit whose checks nobody has seen.
 
-Two rows deserve their reason.
+**Any GraphQL `errors` refuses before anything else applies.** `graphqlQuery()`
+logs non-rate-limit errors and still returns the body, so a partial response can
+hold `errors` *and* a null rollup — which would read as "this repository has no
+CI" and merge.
 
 **The zero-check split** is what `getCheckStatus()` cannot express: it maps both
-"no checks configured" *and* a swallowed API failure to `"none"`, and
+"no checks configured" and a swallowed API failure to `"none"`, and
 `agentMergePullRequest()` treats `"none"` as permission to merge — a fail-open
 defect for **sandbox** merges today. Requirement 7 says the guardrails apply to
 every agent merge, so this read replaces `getCheckStatus()` on both paths.
-The grace **extends** `CiGraceTracker` rather than calling it as it stands —
-round 6 was right that the previous wording claimed reuse for what is really a
-second mode. The tracker keys its timer by session and head SHA and returns
-`false` immediately when the repository's CI history is unknown, which is correct
-for the poller (it will see that repository again) and wrong for a one-shot merge
-decision. It gains a merge-specific entry point: keyed by repository, pull
-request and head SHA, and treating an unknown history as *start the grace*. An earlier revision derived the window from the head
-commit's `committedDate`; round 3 rejected that correctly, since commit time is
-not check-registration time.
 
-**It is reached through one new method on `PrStatusPoller`, not called
-directly.** Round 4 found why that matters: the tracker is `private` to the
-poller, and `shouldForcePending()` is synchronous over state the poller loads
-first — the poll loop awaits `ensureWorkflowsLoaded()` before deciding, and a
-tracker constructed fresh for the merge route would have none of the sticky
-"this repo has CI" signal. So the poller exposes
-`awaitCiGraceDecision({ sessionId, repoUrl, repoKey, prNumber, headSha, headBranch, baseBranch })`
-— `prNumber` explicitly, because that is what makes the key repository + pull
-request + SHA rather than session + SHA —
-which does the preload and then the existing call. One grace implementation, one
-caller-visible answer.
+**The grace extends `CiGraceTracker`** rather than calling it as it stands. The
+tracker keys its timer by session and head SHA and returns `false` immediately
+when a repository's CI history is unknown — correct for the poller, which will
+see that repository again, and wrong for a one-shot decision. It gains a
+merge-specific entry point keyed by **repository, pull request and head SHA**
+(two pull requests can share a commit), where an unknown history *starts* the
+grace. It is reached through one new poller method,
+`awaitCiGraceDecision({ sessionId, repoUrl, repoKey, prNumber, headSha, headBranch, baseBranch })`,
+because the tracker is private to the poller and its decision depends on state
+the poll loop preloads with `ensureWorkflowsLoaded()`.
 
-Both differences come from round 5 and stand: two pull requests can legitimately
-share a commit SHA, so a session+SHA key is not enough; and for an irreversible
-decision, "no CI history" means wait rather than proceed.
-
-**The local-HEAD row** is the half `guardMergeSync()` cannot cover. That guard
-compares local HEAD with the remote-*tracking* ref and, by design, **proceeds
-whenever it cannot tell** (no tracking ref, HEAD elsewhere, unreachable remote) —
-right for the merge button, wrong for an irreversible act. Comparing the live
-`headRefOid` with the local HEAD this call just committed is the direct
-statement of requirement 14, and it fails closed.
+**The local-HEAD row** is the half `guardMergeSync()` cannot cover: that guard
+compares local HEAD with the remote-*tracking* ref and, by design, proceeds
+whenever it cannot tell. Comparing the live `headRefOid` with the local HEAD this
+call just committed is the direct statement of requirement 14, and it fails
+closed.
 
 ### Merge at a SHA (req 16)
 
 `PullRequestDetail.head` is a **branch name** (`pr.head.ref`,
 `github-auth-prs.ts:705`), and `mergePullRequest()` sends no expected SHA
 (`github-auth-prs.ts:167`), so anything advancing the branch between the check
-and the merge is merged unchecked. The head SHA from step 3 is passed as the REST
-merge's `sha`, and GitHub refuses atomically if the head has moved.
+and the merge is merged unchecked. The observed `headRefOid` is passed as the
+REST merge's `sha`, and GitHub refuses atomically if the head has moved.
 
 ### The flush needs a complete outcome (req 15)
 
@@ -282,314 +238,218 @@ progress** (`commitHash: null`, indistinguishable from a clean tree —
 `flushPendingTurnCommit()` returns a discriminated outcome — `committed` /
 `nothing-to-commit` / `blocked-secret` / `blocked-unreadable` /
 `blocked-conflict` / `partial-unreadable` — and the merge proceeds on the first
-two only. `agentCreatePr()` adopts it too; it has the same two holes today.
+two only.
+
+`agentCreatePr()`'s own behaviour is **not** changed here. It adapts to the new
+return type and nothing more: its conflict and partial-unreadable handling may
+deserve attention, but requirement 15 is about merging, and this feature is not
+where that gets decided.
 
 ### The refusal after a push (req 17)
 
 `guardMergeSync` already says the right thing — *"Pushed N commits that had not
 reached GitHub yet … merge again once its checks report."* The agent path appends
-one clause: `--auto` arms merge-when-green. The command never waits by itself.
+one clause: `--auto` records the merge for when they pass. The command never
+waits by itself.
 
 The verdict grows one field, not a taxonomy: `{ action: "hold"; pushed: boolean;
 message }`. The caller's only question is whether a synchronous push landed,
 because the debounced auto-push may be cancelled **only** then — it is
 session-keyed in `services/auto-push-scheduler.ts`, so cancelling one that no
-push replaced strands the commit. `push-failed` and `diverged` stay
-distinguishable in the message, which nothing branches on.
+push replaced strands the commit.
 
-### `--auto`: a ShipIt arming, bound to one commit (req 18–21)
+## 4. `--auto`: a ShipIt arming, bound to one commit (req 18–21)
 
-`--auto` does **not** use GitHub's own merge-when-green. Round 5 refuted that:
-`expectedHeadOid` is a precondition checked when the arming is *enabled*, not a
-binding on the merge GitHub later performs, and GitHub keeps an arming alive
-across a push by anyone with write access. So a native arming can land a commit
-the agent never authorised, and withdrawing the grant cannot cancel it. The
-existing ShipIt-managed loop is no better on its own: `AutoMergeState` holds
-neither a pull-request number nor a SHA, and it selects through the poller's
-branch-keyed map.
+`--auto` does **not** use GitHub's own merge-when-green. `expectedHeadOid` is a
+precondition checked when the arming is *enabled*, not a binding on the merge
+GitHub later performs, and GitHub keeps an arming alive across a push by anyone
+with write access — so a native arming can land a commit the agent never
+authorised, and withdrawing the grant cannot cancel it. The existing
+ShipIt-managed loop is no better on its own: `AutoMergeState` holds neither a
+pull-request number nor a SHA, and it selects through the branch-keyed map.
 
-**Repo-bound sessions only.** Round 6 found the arming cannot describe a sandbox
-at all — a sandbox has no `session.remoteUrl`, may target several repositories,
-is not tracked by the repository poller, and is governed by `dangerousGitHubOps`
-rather than the repository grant. Requirement 12 already settles what to do:
-sandbox behaviour does not change, so a sandbox `--auto` keeps today's native
-arming and none of this section applies to it.
+**Repo-bound sessions only.** A sandbox has no `session.remoteUrl`, may target
+several repositories, is not tracked by the repository poller, and is governed by
+`dangerousGitHubOps` rather than the repository grant. Requirement 12 settles it:
+sandbox behaviour does not change, and none of this section applies there.
 
 ```sql
 CREATE TABLE agent_merge_armings (
-  session_id   TEXT PRIMARY KEY,   -- one arming per session; a session has one PR
-  repo_key     TEXT NOT NULL,      -- canonicalRepoKey of the repo-bound session's remote
+  session_id   TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  repo_key     TEXT NOT NULL,      -- canonicalRepoKey of the session's remote
   pr_number    INTEGER NOT NULL,
-  expected_sha TEXT NOT NULL,      -- the head the live read returned
+  expected_sha TEXT NOT NULL,      -- the head the live read observed
   method       TEXT NOT NULL,      -- merge | squash | rebase
-  state        TEXT NOT NULL,      -- 'pending' | 'merging' | 'settling'
-  last_error   TEXT                -- surfaced once, not every tick
+  state        TEXT NOT NULL,      -- pending | merging | settling
+  origin       TEXT NOT NULL,      -- auto | direct
+  last_error   TEXT
 );
 CREATE INDEX idx_agent_merge_armings_repo ON agent_merge_armings(repo_key);
 ```
 
-Keyed by session, so a second `--auto` replaces the first rather than
-accumulating. There is deliberately no `armed_at`: nothing times an arming out,
-and a column no code reads is a column that will drift.
+There is deliberately no `armed_at`: nothing times an arming out, and a column no
+code reads is a column that will drift.
 
-**One remote gate, two callers with their own predicates.** The GraphQL read and
-the refusal table are shared; the caller-specific part is not, and round 6 was
-right that calling it "the same gate" hid that. The direct path runs mid-turn
-with a worktree and compares the live head with **local HEAD**. The executor runs
-post-turn, may have no worktree at all after a restart, and compares the live
-head with its durable **`expected_sha`**. Same remote read, one predicate each.
+### The state machine
 
-If the head no longer matches, the arming is **deleted** and a persisted notice
-says so (req 19). It is never re-pointed at the new head, because nothing
-authorised that commit. Otherwise the merge goes out with that SHA as the REST
-merge's expected `sha` (req 18).
-
-**Keeping the executor reachable (req 21).** Durability is not enough on its own:
-the polling supervisor iterates `tracker.sessionRepos`, and the global gate opens
-only for in-memory automation, so after a restart with no viewer a persisted
-arming would never receive a tick. So armings are a **first-class input to the
-supervisor and the global gate** — loaded at startup, `ensure()`d when one is
-written, and their repository ticked even when no ordinarily tracked session
-would keep polling alive.
-
-**But not before in-flight turns are adopted.** `trackSession()` polls
-immediately when the gate is open, and the poller exists before
-`reattachInFlightTurns()` has run — so activating armings at construction could
-merge a session's pre-turn head while a surviving turn still holds uncommitted
-work. Armings are therefore **loaded** at startup and **activated** only after
-reattachment completes.
-
-**Serialisation, stated honestly.** Order matters here, and round 7 corrected it:
-`PostTurnHold.begin()` only increments a counter — it neither waits for existing
-work nor blocks turn admission — so the lease alone would let the executor fire
-during the very turn that armed it. So the executor:
-
-1. refuses while `runner.agentBusy || runner.systemTurnInProgress`, the same
-   precheck the managed performer makes;
-2. then takes the post-turn lease (conditional: there may be no runner at all
-   after a restart) and holds it across the final arming re-read, the grant
-   re-read and the REST call;
-3. and one in-flight flag per session makes it exclusive with the managed
-   auto-merge loop.
-
-That is what the design can promise, and it is **not** an absolute "never while
-working": the managed performer documents that a turn can begin after the busy
-check while a merge request is in flight, and the same is true here. The SHA
-precondition protects the *commit*; the precheck and lease narrow, but do not
-eliminate, the overlap with a turn.
-
-**Revocation is local, which is the point (req 20).** Turning
-`allow_agent_merge` off deletes every **pending** arming whose `repo_key` matches
-— one statement in the same transaction as the flag, resolved by
-`canonicalRepoKey`, so every URL spelling of that repository is covered. No network call can fail and
-leave GitHub armed while ShipIt reports the permission off, which is exactly what
-the native path could not avoid. The executor re-reads both the arming row and
-the grant immediately before merging, so a revocation that lands first wins. The
-residual window is one HTTP call wide, and what lands in it is still the commit
-the agent was authorised to merge.
-
-**Deleting the row on success — after settlement, not at the response.** The
-arming may be the only thing holding the global polling gate open, and the
-managed loop deliberately keeps a `completed` marker until the terminal PR state
-is observed for exactly this reason. So a successful REST response moves the
-arming to **`settling`**, and it is deleted only once
-`forceVerifySessionPrState()` has seen the terminal state and
-`awaitMergeHandling()` has settled — otherwise the gate can close before the
-card, `mergedAt` and the reset eligibility do (req 10, 11).
-
-**The row is claimed *before* the REST call, not after it.** Round 10 found the
-gap: an executor that only writes `settling` on success has an unrepresentable
-window — the row it is merging can be replaced or cleared while the call is in
-flight, and then its own success has nowhere to land (or a crash loses it
-entirely). So the state machine is `pending → merging → settling → deleted`:
+`pending → merging → settling → deleted`, and the claim is written **before** the
+REST call, never after it. An executor that only recorded success would have an
+unrepresentable window: the row it is merging could be replaced or cleared while
+the call is in flight, leaving its own success nowhere to land.
 
 | State | Written | Who may touch it |
 |---|---|---|
 | `pending` | when `--auto` arms | every lifecycle clear, revocation, a second `--auto` |
-| `merging` | durably, immediately **before** the REST call | nothing but the executor |
-| `settling` | on a witnessed REST success | nothing but settlement |
+| `merging` | durably, immediately **before** the REST call | only the performer |
+| `settling` | on a witnessed REST success | only settlement |
 
-A second `--auto` while a row is `merging` or `settling` is **refused**, not
-queued — one row per session stays true and the primary key can never collide.
-On restart, a `merging` row is reconciled from its own tuple: read that pull
-request in that repository and ask whether `expected_sha` merged, then move it to
-`settling` or back to `pending`.
+A second `--auto` while a row is `merging` or `settling` is **refused**, so one
+row per session stays true and the primary key cannot collide. `merging` and
+`settling` are **monotonic**: an origin change, archive, a re-arm, a reset, an
+unarchive, a repository removal and revocation all act on `pending` rows only.
+Only settlement, or destroying the session (through the cascade), removes a
+`merging` or `settling` row.
 
-**The state column is durable, not an in-memory flag**, and that is what makes
-revocation safe to race. Round 8's case: revocation arriving during or just after
-the REST call would otherwise delete the only record that a merge is in flight —
-and neither of the alternatives can recover it, since a forced verification is
-one-shot and may still read the pull request as open under eventual consistency,
-while the attribution memory is deliberately not persisted. So:
+**`origin` decides what a failure means.** A merge that GitHub refuses — a
+conflict, branch protection, a moved head — is an ordinary outcome, and the two
+callers want opposite things from it. A failed **direct** claim is **deleted**: a
+plain `gh pr merge` must never leave behind something that merges later. A failed
+**auto** claim returns to `pending` with `last_error`, surfaced once rather than
+on every tick. Crash reconciliation preserves the same distinction: on restart, a
+`merging` row is resolved from its own tuple — read that pull request in that
+repository, ask whether `expected_sha` merged — and then either moves to
+`settling` or follows its `origin` back to `pending` or to deletion.
 
-- **revocation deletes `pending` armings only** (req 20 — nothing more will be
-  merged), and
-- a REST success **writes `settling` even if the row was deleted in the
-  meantime**, so settlement and the merge record always have somewhere to live.
+### Where the executor runs, and what it excludes
 
-A `settling` row authorises no further merge; it exists only until the merge it
-already performed is fully recorded.
+In the PR status poller's existing tick, beside the managed auto-merge loop —
+not a second timer. Durability alone would not reach it: the polling supervisor
+iterates `tracker.sessionRepos` and the global gate opens only for in-memory
+automation, so after a restart with no viewer a persisted arming would never
+receive a tick. Armings are therefore a **first-class input to the supervisor and
+the gate** — loaded at startup, `ensure()`d when one is written, and their
+repository ticked even when no ordinarily tracked session would keep polling
+alive. They are **activated only after `reattachInFlightTurns()` completes**,
+because `trackSession()` polls immediately when the gate is open and the poller
+exists before reattachment; activating at construction could merge a session's
+pre-turn head while a surviving turn still holds uncommitted work.
 
-**`settling` is monotonic (round 9).** Protecting it from revocation alone was
-not enough: an origin change, a second `--auto`, archive, a re-arm, a reset, an
-unarchive or a repository removal could each erase or replace the row between the
-REST success and the end of settlement — and archive forcibly disposes the runner,
-while remote replacement is serialised with nothing. So **every one of those
-paths acts on `pending` rows only.** A `settling` row is untouched by all of
-them; the only thing that removes it is settlement completing, or the session
-being destroyed outright (hard delete / full reset, through the cascade).
+**A merge and a turn are mutually exclusive, through admission (docs/266 req 2).**
+A busy check alone cannot give that: `PostTurnHold.begin()` only increments a
+counter, interactive admission (`ws-handlers/send-message.ts`) tests `running`
+and `systemTurnInProgress`, dispatched admission (`session-runner.ts`) does the
+same, and none of them consults `agentBusy` — so a turn can start *during* the
+REST call, after which its push is refused and its work is stranded. That is a
+documented failure of the existing managed loop, not a hypothetical.
 
-**Settlement never calls `forceVerifySessionPrState()`.** That function resolves
-the *current* tracker repository and the *current* branch, and the lookup beneath
-it picks the latest pull request **by branch**, not by number — so a re-arm or an
-unarchive inside the *same* repository is enough to make it settle the wrong pull
-request. Round 9's "skip when the repository changed" was therefore not enough,
-and round 10 was right to reject it.
+So the exclusion is a **session-scoped merge claim that admission itself
+respects**: the performer takes it only when the session is idle, both admission
+paths queue a turn while it is held, and it is released when the merge has
+settled. One claim, checked in the three places that can start work. This is what
+lets requirement 18's promise — and the agent-facing documentation — say plainly
+that a merge never lands under a live turn.
 
-Instead: **a performed merge is recorded from what was witnessed, not
-rediscovered.** The REST response already says the merge happened and at which
-commit, so the performer calls the poller's merge bookkeeping directly with
-`(sessionId, owner, repo, prNumber, mergeSha)` — the same work `verifyMissingPr`
-does when it *detects* a merge (the merged snapshot and `mergedHeadSha`) followed
-by the merged callback that stamps `merged_at`. Nothing is polled, so nothing can
-observe the pull request as still open and resolve immediately, which is exactly
-how `awaitMergeHandling()` could return before `merged_at` existed.
+### Revocation (req 20)
 
-Any write to *session* state is guarded by the **whole** tuple: the session's
-current `pr_repo_key` **and** `pr_number` must still equal the row's. If either
-has moved on, the merge is still recorded against the row, and the session's card
-is left alone.
+Turning `allow_agent_merge` off deletes every **pending** arming whose `repo_key`
+matches — one statement in the same transaction as the flag, resolved by
+`canonicalRepoKey`, so every URL spelling of that repository is covered. Nothing
+network-dependent can fail and leave a merge armed while ShipIt reports the
+permission off, which is exactly what the native path could not avoid.
 
-**Clearing (all of it `pending`-only, per the monotonicity rule above).** On a
-settled merge; on a head that no longer matches; when the
-pull request closes; on **archive** and on hard delete or full reset (a foreign
-key with `ON DELETE CASCADE`, plus the explicit archive hook — round 6 correctly
-rejected `untrackSession()`, which has no production lifecycle caller); on the
-docs/202 re-arm and the reset and unarchive clears that also drop `pr_number`;
-on repository removal; and on revocation.
+Requirement 20 says *every* request that has not merged is cancelled, so the
+in-flight case is not waived: revocation and the claim-to-REST interval share a
+**per-repository boundary**. Revocation either wins — cancelling before the
+request is issued — or waits for an already-issued request to resolve before it
+reports the permission withdrawn. The user is never told the permission is off
+while a merge it authorised is still in flight.
 
-**Two failure modes the executor must handle**, both round 6's:
+## 5. Settlement (req 9, 10, 11)
 
-- **No runner to emit through.** `emitNoticeInTurn()` needs one, and a post-turn
-  or post-restart executor may have none. Its notices go through
-  `persistNoticeUnattached()`, which exists for exactly this case, so the record
-  persists either way.
-- **A crash between GitHub accepting the merge and the row being deleted.** On
-  the next tick the pull request reads as closed/merged, and naively deleting the
-  arming would destroy the only evidence — requirement 9 asks for a record. So a
-  terminal reconciliation records first, *then* deletes. **What it may claim is
-  narrower than what a witnessed merge claims**, and round 7 was right to insist
-  on the difference: finding `expected_sha` merged proves the agent *authorised*
-  that commit, not that ShipIt performed the merge — a user, the card, or
-  GitHub-native auto-merge could have landed the same SHA, and
-  `merge-attribution.ts` already documents that this race cannot honestly name
-  the performer. So recovery records "the agent armed this commit, and it is now
-  merged"; only a witnessed successful REST response records "the agent merged
-  it".
+**Both merge paths settle the same way**, whether the merge came from `--auto` or
+from a direct `gh pr merge`.
+
+Settlement never calls `forceVerifySessionPrState()`. That resolves the *current*
+tracker repository and the *current* branch, and the lookup beneath it picks the
+latest pull request **by branch**, not by number — so a re-arm or an unarchive
+inside the same repository is enough to make it settle the wrong pull request.
+Nor does it use `awaitMergeHandling()`: a one-shot verification that still reads
+the pull request as open creates no merge handling at all, so the await resolves
+immediately and the command could report success before `merged_at` existed.
+
+Instead, a performed merge is recorded from **what was witnessed**. The merge
+response says the merge happened and at which commit, and the row says which pull
+request in which repository. Settlement then runs **one canonical
+terminal-promotion operation, addressed by pull-request number**, supplied with
+the complete pull-request facts it needs — the promotion that builds the
+persisted card needs URL, title, body, base, branch and diff statistics; the
+notification needs URL, title and branch; the reset anchor needs the head SHA;
+the issue lifecycle needs the body. The merge response carries none of that, so
+settlement fetches those facts for that number before promoting. It is the same
+operation `verifyMissingPr` reaches on detection, and it leaves `merged_at`, the
+merged snapshot, `mergedHeadSha` and reset eligibility exactly as a detected
+merge does — which is what requirement 11 asks for.
+
+**Every settlement effect is retry-safe.** "Record, then delete" is not
+crash-idempotent on its own: transcript notices get random ids, so a crash
+between the append and the delete would produce a second notice on recovery. So
+the merge record carries a **stable natural identity** —
+`agent-merge:<repo_key>#<pr_number>@<merge_sha>` — and settlement is idempotent
+on it; the promotion, the lifecycle callbacks and the notification keep their
+existing fire-once behaviour. Only after settlement is written is the row
+deleted; until then it is also what holds the polling gate open, which is why
+deleting at the REST response would let the gate close before the card,
+`merged_at` and reset eligibility exist.
+
+**What the record may claim.** A witnessed REST success records *"the agent
+merged it"*. Crash recovery that finds `expected_sha` already merged records
+something narrower — *"the agent armed this commit, and it is now merged"* —
+because a user, the card, or GitHub's own auto-merge could have landed the same
+commit, and `merge-attribution.ts` documents that this race cannot honestly name
+the performer.
+
+**Where the notice goes.** `emitNoticeInTurn()` needs a runner, and a post-turn
+or post-restart performer may have none, so notices go through
+`persistNoticeUnattached()`. `logMergePerformed()` stays as the ops-log half.
+
+**Session state is guarded by the whole tuple.** Any write to the *session* —
+its card, its reset eligibility — requires the session's current `pr_repo_key`
+**and** `pr_number` to still equal the row's. If either has moved on, the merge
+is still recorded against the row and the session is left alone.
+
+**A shippable branch (req 10).** After the merge the branch sits on the merged
+tip, so the post-turn auto-push is refused as stacked on it. With `merged_at`
+settled, the merge result tells the agent to run `shipit branch reset-to-base`
+— docs/239's own wording. That is the agent's step, so no user action is needed.
 
 **A user's own auto-merge is untouched** — different record, different loop, and
-the repository grant does not govern it (req 20).
+the repository grant does not govern it.
 
-## 4. After the merge (req 9, 10, 11)
-
-- **Settlement before success — through the same machine as the arming.** A
-  direct merge takes the identical path: a durable `merging` claim before the
-  REST call, and the witnessed bookkeeping after it. Round 10 showed why the
-  earlier "verify then `awaitMergeHandling()`" was not enough — a one-shot
-  verification can still read the pull request as open, in which case no merge
-  handling is created and the await resolves immediately, so the command could
-  report success before `merged_at` existed and the agent's very next command,
-  `shipit branch reset-to-base`, would see `not-merged`. Recording from the
-  witnessed response removes the race rather than timing it, and the durable row
-  means a crash mid-way is reconciled instead of lost. **One settlement machine,
-  two callers** — `forceVerifySessionPrState()` and `awaitMergeHandling()` are
-  not used by either.
-- **The record (req 9).** `emitNoticeInTurn()` from
-  `orchestrator/chat-card-persistence.ts` — it routes through `emitChatCard`, so
-  it emits, records in-band and persists in one call. No new card type, no
-  column, no migration. `logMergePerformed()` stays as the ops-log half.
-- **A shippable branch (req 10).** The branch then sits on the merged tip, so the
-  post-turn auto-push is refused as stacked on it. With `mergedAt` settled, the
-  merge result tells the agent to run `shipit branch reset-to-base` — docs/239's
-  own wording. That is the agent's step, so no user action is needed.
-
-## 5. UI (req 1)
+## 6. UI (req 1)
 
 One toggle — *Allow agents to merge their own pull requests* — with help text
 naming what it permits: this session's own pull request, checks green, branch
-protection still enforced by GitHub. It goes in an **"Agent permissions" section
-inside the existing Project Settings surface**, not a new tab: one toggle does
-not justify an otherwise empty navigation category. It earns a tab when a second
-repo-scoped agent permission exists.
-
-## What the reviews changed
-
-| Round | Finding | Change |
-|---|---|---|
-| 1 | `--repo` retargets the repository | refused on repo-bound merges |
-| 1 | current branch is agent-writable | ownership from `session.branch` + `session.prNumber` |
-| 1 | `"none"` checks merge immediately | a real status gate (see round 2) |
-| 1 | `pr.head` is a branch name | merge at an expected SHA |
-| 1 | flush has four failure modes | discriminated outcome |
-| 1 | `reviewDecision` had no source | the live read supplies it |
-| 1 | extra mechanism | no new endpoint, no `ops-refused`, no new tab |
-| 2 | refusing `cwd` breaks every merge | `cwd` ignored, not refused |
-| 2 | the poller summary is cached, branch-keyed and SHA-less | one live read instead |
-| 2 | two SHAs, and only one is the checked one | refuse unless rollup SHA == head SHA |
-| 2 | `prNumber` had no lifecycle | writers, clearers and the no-backfill rule tabled |
-| 2 | sandbox merges stayed fail-open | the live read replaces `getCheckStatus()` on both paths |
-| 2 | `mergedAt` is not settled at return | `awaitMergeHandling()` before success |
-| 2 | `--auto` undecided for repo-bound | managed auto-merge, as the card does |
-| 2 | three-value verdict taxonomy | one `pushed` boolean |
-| 3 | the poller's query/parser does not fit (no `isDraft`, bulk shape, fixed state) | a small merge-only query instead of reuse |
-| 3 | `committedDate` is not a check-registration clock | reuse `CiGraceTracker`, delete the heuristic |
-| 3 | `quickCreatePr()` cannot tell "found" from "opened" | give it `alreadyExisted`; add the `/pr/quick` writer |
-| 3 | `guardMergeSync()` proceeds when it cannot tell | compare the live PR head with local HEAD, fail closed |
-| 3 | managed `--auto` is session-bound and SHA-less | native arming only; refuse with GitHub's reason |
-| 4 | `--repo` could record a foreign PR as the session's | provenance write requires a canonical-repo match |
-| 4 | the grace tracker is private and needs a preload | one `awaitCiGraceDecision()` facade on the poller |
-| 4 | a native arming outlived the permission | `expectedHeadOid`, recorded arming, cancelled on revocation — **refuted in round 5** |
-| 4 | the merge query asked for more than the gate uses | `number`, `mergeable` and `contexts` dropped |
-| 5 | `expectedHeadOid` binds the arming, not the merge | `--auto` is a ShipIt arming bound to one commit (user decision, req 18–21) |
-| 5 | a partial GraphQL response reads as "no CI" | any `errors` refuses, before the gate table applies |
-| 5 | the CI grace was keyed by session + SHA | keyed by repository + PR + SHA; unknown CI starts the grace |
-| 6 | a persisted arming would never get a tick | armings feed the polling supervisor and global gate |
-| 6 | the arming cannot describe a sandbox | armings are repo-bound only; sandbox keeps today's behaviour (req 12) |
-| 6 | "never while working" was absolute | a lease and a per-session in-flight flag, with the residual overlap stated |
-| 6 | `untrackSession()` is not a lifecycle hook | clear on archive, delete and full reset instead |
-| 6 | a crash could erase the merge record | terminal reconciliation records, then deletes |
-| 6 | `armed_at` had no consumer | dropped from the schema |
-| 7 | armings could execute before in-flight turns were adopted | loaded at startup, activated after reattachment |
-| 7 | the lease does not block turn admission | an explicit busy precheck before the lease |
-| 7 | recovery could not honestly claim who merged | recovery records the authorisation, not the performance |
-| 7 | deleting on the REST response could close the polling gate | a settling state, deleted after settlement |
-| 7 | the grace facade omitted the PR number | `prNumber` passed explicitly |
-| 8 | `origin` can be replaced under a recorded PR number | store `pr_repo_key`, match at merge time, clear on identity change |
-| 8 | revocation could delete a settling arming | durable `state`; revocation deletes `pending` only |
-| 9 | other lifecycle paths could still erase `settling` | `settling` is monotonic; every clear acts on `pending` only |
-| 9 | settlement used current session targeting | reconciled from the row's own repo + PR + SHA |
-| 10 | a same-repo re-arm still mis-settled | no `forceVerifySessionPrState()` at all; session writes need the whole tuple |
-| 10 | the row was claimed only after the REST call | durable `merging` claim before it; a second `--auto` is refused meanwhile |
-| 10 | a direct merge could report success before `merged_at` | both paths record from the witnessed response, through one machine |
+protection still enforced by GitHub. It goes in an "Agent permissions" section
+inside the existing Project Settings surface, not a new tab: one toggle does not
+justify an otherwise empty navigation category.
 
 ## Key files
 
 | File | Change |
 |---|---|
 | `src/server/shared/database.ts` | migrations: `repos.allow_agent_merge`, `sessions.pr_number` + `pr_repo_key`, `agent_merge_armings` |
-| `src/server/orchestrator/services/git.ts`, `sessions.ts` | clear provenance and armings when `origin` changes |
-| `src/server/orchestrator/agent-merge-armings.ts` | the arming store: arm, read, delete by session / repo / cascade |
-| `src/server/orchestrator/ci-grace-tracker.ts` | a merge-specific entry point (repo + PR + SHA; unknown history waits) |
-| `src/server/orchestrator/pr-polling-supervisor.ts`, `polling-global-gate.ts` | armings as a polling input, so a restart still executes them |
+| `src/server/orchestrator/agent-merge-armings.ts` | the arming store: arm, claim, state transitions, delete by session / repo |
 | `src/server/orchestrator/repo-store.ts` | grant read/write, `canonicalRepoKey`-matched |
-| `src/server/orchestrator/api-routes-session-repos.ts` | grant on the existing `PATCH /api/repos/:url` |
+| `src/server/orchestrator/api-routes-session-repos.ts` | grant on the existing `PATCH /api/repos/:url`; revocation and its boundary |
 | `src/server/orchestrator/pr-target.ts` | `mergeDisposition()`; `--repo` refused, `cwd` ignored |
-| `src/server/orchestrator/services/github.ts` | flush outcome; the merge-gate query + gate; both merge paths; `quickCreatePr()` gains `alreadyExisted` |
-| `src/server/orchestrator/pr-status-poller.ts` | `awaitCiGraceDecision()` facade over the private `CiGraceTracker` |
+| `src/server/orchestrator/services/github.ts` | flush outcome; the merge-gate read and observation; both merge paths; `quickCreatePr()` gains `alreadyExisted` |
 | `src/server/orchestrator/github-auth-prs.ts` | expected `sha` on the REST merge |
-| `src/server/orchestrator/pr-status-poller.ts` | the arming executor, in the existing tick, behind the docs/266 busy gate |
+| `src/server/orchestrator/pr-status-poller.ts` | `awaitCiGraceDecision()`; the arming executor; the canonical terminal promotion |
+| `src/server/orchestrator/ci-grace-tracker.ts` | a merge entry point (repo + PR + SHA; unknown history waits) |
+| `src/server/orchestrator/pr-polling-supervisor.ts`, `polling-global-gate.ts` | armings as a polling input |
+| `src/server/orchestrator/ws-handlers/send-message.ts`, `session-runner.ts` | admission respects the merge claim |
 | `src/server/orchestrator/services/branch-sync.ts` | `pushed` on the hold verdict |
-| `src/server/orchestrator/services/pr-lifecycle.ts`, `pr-rearm.ts`, `sessions.ts` | `prNumber` writers and clearers |
+| `src/server/orchestrator/services/pr-lifecycle.ts`, `pr-rearm.ts`, `services/git.ts`, `sessions.ts` | provenance writers and clearers |
 | `src/server/orchestrator/api-routes-github.ts` | gate, ownership, settlement, notice |
 | `src/client/components/ProjectSettings.tsx` | Agent permissions section + toggle |
 | `src/server/shipit-docs/github.md` | agent-facing text ([draft](./agent-docs.md)) |
@@ -599,12 +459,19 @@ repo-scoped agent permission exists.
 - `pr-target.test.ts` — dispositions; `--repo` refused and `cwd` ignored on a
   repo-bound merge; the ordinary call (which always carries `cwd`) is allowed.
 - `services/github-agent-merge.test.ts` — ownership refusals (foreign number,
-  wrong branch, no recorded PR); each flush outcome; the cancel rule; every row
-  of the gate table, including rollup-SHA mismatch and both zero-check cases; the
-  expected-`sha` merge; `awaitMergeHandling` awaited before success.
+  wrong branch, no recorded PR, moved `pr_repo_key`); each flush outcome; the
+  cancel rule; every row of the observation table in **both** modes; the
+  expected-`sha` merge.
+- `agent-merge-armings.test.ts` — the state machine, including a failed direct
+  claim being deleted while a failed auto claim returns to pending, and crash
+  reconciliation of a `merging` row from its own tuple.
+- Admission tests — a turn queues while a merge claim is held, on both the
+  interactive and the dispatched path.
+- Settlement tests — idempotence on the natural identity (a repeated settlement
+  produces one notice), and the promoted state matching a detected merge.
 - `services/branch-sync.test.ts` — `pushed` true only after a successful push.
-- `prNumber` lifecycle tests: written only on `alreadyExisted: false`, cleared by
-  each of the three clearing paths, never backfilled.
+- Provenance lifecycle tests: written only on `alreadyExisted: false` with a
+  matching repository, cleared by each clearing path, never backfilled.
 - `integration_tests/agent-driven-pr.test.ts` — granted / not granted / foreign
   pull request; the notice surviving a history reload.
 - The container-route snapshot must not gain the grant route.
@@ -612,9 +479,9 @@ repo-scoped agent permission exists.
 
 ## Risks
 
-- **The live read costs one GraphQL round trip per merge attempt**, and the
-  advertised loop makes at least two attempts. That is the price of not trusting
-  a cache, and it is bounded by the agent's own call rate.
+- **The live read costs one GraphQL round trip per merge attempt**, and
+  settlement costs another for the promotion facts. That is the price of not
+  trusting a cache, and it is bounded by the agent's own call rate.
 - **The refusal is the common path, by design.** Any turn with an edit ends in a
   push, so the first `gh pr merge` refuses. The agent-facing docs must say so, or
-  agents will report a failure instead of merging with `--auto`.
+  agents will report a failure instead of using `--auto`.
