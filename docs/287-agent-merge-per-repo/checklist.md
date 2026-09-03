@@ -45,6 +45,8 @@ Revision 2 (2026-09-02), after two review rounds.
       that awaits `ensureWorkflowsLoaded()` (the tracker is private and needs it)
 - [ ] `CiGraceTracker` gains a merge entry point keyed by repository + PR + head
       SHA, where an unknown CI history starts the grace; its tests cover both modes
+- [ ] `awaitCiGraceDecision()` takes `prNumber` explicitly; a test covers two pull
+      requests in one repository sharing a head SHA
 - [ ] Query asks only for what the gate reads; a null rollup means zero checks
 - [ ] Gate table implemented in full: failed read, rollup-SHA mismatch,
       local-HEAD mismatch, draft/closed, failing, pending, both zero-check cases
@@ -60,10 +62,13 @@ Revision 2 (2026-09-02), after two review rounds.
 - [ ] Executor runs in the poller's existing tick
 - [ ] Armings feed the polling supervisor and the global gate: loaded at startup,
       `ensure()`d on arm, ticked with no viewer and no tracked session (req 21)
+- [ ] Armings are activated only after `reattachInFlightTurns()` completes
 - [ ] Executor shares the remote gate but has its own predicate: `expected_sha`,
       not local HEAD (it may have no worktree)
-- [ ] Executor holds the post-turn lease across the final re-reads and the REST
-      call, and one in-flight flag makes it exclusive with managed auto-merge
+- [ ] Executor refuses while `agentBusy || systemTurnInProgress`, **then** takes
+      the post-turn lease (conditional when there is no runner) across the final
+      re-reads and the REST call
+- [ ] One in-flight flag makes it exclusive with managed auto-merge
 - [ ] Head no longer equal to `expected_sha` ⇒ delete the arming + persisted
       notice; never re-point it at the new head (req 19)
 - [ ] Merge sends `expected_sha` as the REST expected `sha` (req 18)
@@ -72,9 +77,13 @@ Revision 2 (2026-09-02), after two review rounds.
 - [ ] Armings survive a restart (req 21)
 - [ ] Cleared on merge, head change, PR close, **archive**, hard delete / full
       reset, docs/202 re-arm, reset, unarchive, repository removal
-- [ ] Notices use the unattached path when there is no runner
-- [ ] Terminal reconciliation: an arming whose `expected_sha` already merged
-      records the merge (req 9) before the row is deleted
+- [ ] Notices use `persistNoticeUnattached()` when there is no runner
+- [ ] A successful REST response marks the arming **settling**; it is deleted only
+      after `forceVerifySessionPrState()` sees terminal state and
+      `awaitMergeHandling()` settles (or the gate can close too early)
+- [ ] Terminal reconciliation records before deleting, and says only what it can
+      prove: recovery records "the agent armed this commit and it is now merged";
+      "the agent merged it" needs a witnessed REST success
 - [ ] A refused merge keeps the arming and records `last_error`, surfaced once
 - [ ] A user's card-armed auto-merge is untouched by any of this
 

@@ -9,7 +9,7 @@ description: Widen the docs/224 merge gate from a per-sandbox grant to a per-rep
 Implements [requirements.md](./requirements.md). Extends
 `docs/224-sandbox-merge-capability` (the shim, the route, the guardrails).
 
-> **Revision 7, 2026-09-03.** Six independent review rounds; every finding
+> **Revision 8, 2026-09-03.** Seven independent review rounds; every finding
 > verified at the source before it was accepted. Round 1 rebuilt the ownership
 > check, round 2 replaced the status gate and caught a `cwd` rule that would have
 > broken every merge, round 3 replaced the query and the grace window, round 4
@@ -234,7 +234,9 @@ poller, and `shouldForcePending()` is synchronous over state the poller loads
 first — the poll loop awaits `ensureWorkflowsLoaded()` before deciding, and a
 tracker constructed fresh for the merge route would have none of the sticky
 "this repo has CI" signal. So the poller exposes
-`awaitCiGraceDecision({ sessionId, repoUrl, repoKey, headSha, headBranch, baseBranch })`,
+`awaitCiGraceDecision({ sessionId, repoUrl, repoKey, prNumber, headSha, headBranch, baseBranch })`
+— `prNumber` explicitly, because that is what makes the key repository + pull
+request + SHA rather than session + SHA —
 which does the preload and then the existing call. One grace implementation, one
 caller-visible answer.
 
@@ -336,15 +338,31 @@ supervisor and the global gate** — loaded at startup, `ensure()`d when one is
 written, and their repository ticked even when no ordinarily tracked session
 would keep polling alive.
 
-**Serialisation, stated honestly.** The executor takes the session's post-turn
-lease (`post-turn-hold.ts`) and holds it across the final arming re-read, the
-grant re-read and the REST call, and one in-flight flag per session makes the
-agent executor and the managed auto-merge loop mutually exclusive. That is what
-the design can promise. It is **not** an absolute "never while working": the
-existing managed performer documents that a turn can begin after the busy check
-while a merge request is in flight, and the same is true here. The SHA
-precondition protects the *commit*; the lease narrows, but does not eliminate,
-the overlap with a turn.
+**But not before in-flight turns are adopted.** `trackSession()` polls
+immediately when the gate is open, and the poller exists before
+`reattachInFlightTurns()` has run — so activating armings at construction could
+merge a session's pre-turn head while a surviving turn still holds uncommitted
+work. Armings are therefore **loaded** at startup and **activated** only after
+reattachment completes.
+
+**Serialisation, stated honestly.** Order matters here, and round 7 corrected it:
+`PostTurnHold.begin()` only increments a counter — it neither waits for existing
+work nor blocks turn admission — so the lease alone would let the executor fire
+during the very turn that armed it. So the executor:
+
+1. refuses while `runner.agentBusy || runner.systemTurnInProgress`, the same
+   precheck the managed performer makes;
+2. then takes the post-turn lease (conditional: there may be no runner at all
+   after a restart) and holds it across the final arming re-read, the grant
+   re-read and the REST call;
+3. and one in-flight flag per session makes it exclusive with the managed
+   auto-merge loop.
+
+That is what the design can promise, and it is **not** an absolute "never while
+working": the managed performer documents that a turn can begin after the busy
+check while a merge request is in flight, and the same is true here. The SHA
+precondition protects the *commit*; the precheck and lease narrow, but do not
+eliminate, the overlap with a turn.
 
 **Revocation is local, which is the point (req 20).** Turning
 `allow_agent_merge` off deletes every arming whose `repo_key` matches — one
@@ -356,7 +374,16 @@ the grant immediately before merging, so a revocation that lands first wins. The
 residual window is one HTTP call wide, and what lands in it is still the commit
 the agent was authorised to merge.
 
-**Clearing.** On a successful merge; on a head that no longer matches; when the
+**Deleting the row on success — after settlement, not at the response.** The
+arming may be the only thing holding the global polling gate open, and the
+managed loop deliberately keeps a `completed` marker until the terminal PR state
+is observed for exactly this reason. So a successful REST response marks the
+arming **settling**, and it is deleted only once `forceVerifySessionPrState()`
+has seen the terminal state and `awaitMergeHandling()` has settled — otherwise
+the gate can close before the card, `mergedAt` and the reset eligibility do
+(req 10, 11).
+
+**Clearing.** On a settled merge; on a head that no longer matches; when the
 pull request closes; on **archive** and on hard delete or full reset (a foreign
 key with `ON DELETE CASCADE`, plus the explicit archive hook — round 6 correctly
 rejected `untrackSession()`, which has no production lifecycle caller); on the
@@ -366,14 +393,21 @@ on repository removal; and on revocation.
 **Two failure modes the executor must handle**, both round 6's:
 
 - **No runner to emit through.** `emitNoticeInTurn()` needs one, and a post-turn
-  or post-restart executor may have none. Its notices go through the unattached
-  path (`emitNoticePostTurn`, which takes the `append` and an emit that may
-  broadcast to nobody), so the record persists either way.
+  or post-restart executor may have none. Its notices go through
+  `persistNoticeUnattached()`, which exists for exactly this case, so the record
+  persists either way.
 - **A crash between GitHub accepting the merge and the row being deleted.** On
   the next tick the pull request reads as closed/merged, and naively deleting the
-  arming would destroy the only evidence — requirement 9 asks for a record of
-  that merge. So a terminal reconciliation runs first: an arming whose
-  `expected_sha` is the merged head records the merge notice, *then* deletes.
+  arming would destroy the only evidence — requirement 9 asks for a record. So a
+  terminal reconciliation records first, *then* deletes. **What it may claim is
+  narrower than what a witnessed merge claims**, and round 7 was right to insist
+  on the difference: finding `expected_sha` merged proves the agent *authorised*
+  that commit, not that ShipIt performed the merge — a user, the card, or
+  GitHub-native auto-merge could have landed the same SHA, and
+  `merge-attribution.ts` already documents that this race cannot honestly name
+  the performer. So recovery records "the agent armed this commit, and it is now
+  merged"; only a witnessed successful REST response records "the agent merged
+  it".
 
 **A user's own auto-merge is untouched** — different record, different loop, and
 the repository grant does not govern it (req 20).
@@ -441,6 +475,11 @@ repo-scoped agent permission exists.
 | 6 | `untrackSession()` is not a lifecycle hook | clear on archive, delete and full reset instead |
 | 6 | a crash could erase the merge record | terminal reconciliation records, then deletes |
 | 6 | `armed_at` had no consumer | dropped from the schema |
+| 7 | armings could execute before in-flight turns were adopted | loaded at startup, activated after reattachment |
+| 7 | the lease does not block turn admission | an explicit busy precheck before the lease |
+| 7 | recovery could not honestly claim who merged | recovery records the authorisation, not the performance |
+| 7 | deleting on the REST response could close the polling gate | a settling state, deleted after settlement |
+| 7 | the grace facade omitted the PR number | `prNumber` passed explicitly |
 
 ## Key files
 
