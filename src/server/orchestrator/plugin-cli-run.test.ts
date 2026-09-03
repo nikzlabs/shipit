@@ -657,6 +657,35 @@ exports:
   });
 
   /**
+   * The toolchain overrides are for a TRACKED generation and must not follow a
+   * self import (independent review). Here `/plugin` is the user's own working
+   * tree, swept by the post-turn `git add -A`, so pointing a lazy browser
+   * download at `/plugin/.shipit-toolchain` would commit a toolchain into their
+   * repository. No exported `install` runs for a self import either, so the
+   * redirect would also aim the plugin away from the browser already baked at
+   * `/opt/playwright-browsers` — readable by any uid — and at a directory that
+   * is always empty.
+   */
+  it("leaves the image's toolchain paths alone under `repo: self`", async () => {
+    declareSelfUse();
+    const fake = fakeDocker();
+    (fake.docker as unknown as Record<string, unknown>).getImage = () => ({
+      inspect: async () => ({ Config: { Env: ["PATH=/usr/bin:/bin"] } }),
+    });
+
+    await runPluginCommand(deps(fake.docker), { alias: "probe", command: "probe", args: [] });
+
+    const env = fake.containers[0].opts.Env as string[];
+    for (const name of ["PLAYWRIGHT_BROWSERS_PATH=", "NPM_CONFIG_PREFIX=", "PATH="]) {
+      expect(env.some((e) => e.startsWith(name))).toBe(false);
+    }
+    expect(env.join("\n")).not.toContain(PLUGIN_BROWSERS_DIR);
+    // The two that are NOT about the overlay still apply: `HOME` has always been
+    // redirected here, and for the same reason.
+    expect(env).toContain("HOME=/tmp");
+  });
+
+  /**
    * nikzlabs/shipit#2298 — on an overlay-backed session the clone's dep dirs are
    * empty mount points and the content lives only in the per-session overlay
    * volumes. An invocation container attached none, so `/project` — and, under

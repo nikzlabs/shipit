@@ -419,7 +419,7 @@ async function runInstallOnce(
         if (run.failure) {
           outcome = {
             ok: false,
-            reason: `install for \`${plugin}\` ${run.failure}${blockedHostsClause(policy, job, run.output)}`,
+            reason: `install for \`${plugin}\` ${run.failure}${blockedHostsClause(policy, job)}`,
           };
           break;
         }
@@ -512,79 +512,35 @@ async function runInstallOnce(
  * declared host is already allowed — in which case the install failed for some
  * other reason and saying "egress" would be a wrong guess.
  *
- * **What the failure actually looked like decides which of two sentences this
- * is, and that is the fix for a real incident.** A blocked host used to be the
- * only input: the clause was appended on ANY non-zero exit, with no link to the
- * error above it. On 2026-09-03 it followed an `EACCES` on a read-only browser
- * store and told the operator to change the allowlist — and the hosts it named
- * were genuinely denied, so it was not even *wrong*, merely irrelevant, which is
- * the harder case: it reads as a diagnosis while being a coincidence.
+ * **It is stated as separate information, never as the diagnosis, and that is
+ * the fix for a real incident.** A blocked host is the only thing this clause
+ * knows; it was appended on ANY non-zero exit with no link to the error above
+ * it. On 2026-09-03 it followed an `EACCES` on a read-only browser store and
+ * sent the operator to the allowlist — and the hosts it named were genuinely
+ * denied, so it was not even *wrong*, merely irrelevant, which is the harder
+ * case: it reads as a diagnosis while being a coincidence.
  *
- * It is still emitted either way, because a first activation has no other place
- * to learn its hosts are denied (the Plugins card resolves declared hosts from
- * LIVE generations, and a first install has none — `plugin-hosts.ts`). What
- * changes is whether it claims to explain the failure above it.
+ * **Classifying the output as network-shaped was tried and rejected** (review
+ * finding). It cannot establish causality, only that some network-looking text
+ * exists somewhere — an allowed registry can time out while an unrelated
+ * declared host is denied, and the confident wording would then be wrong in a
+ * new way. Leading with "Separately" costs nothing, needs no heuristic to
+ * maintain, and tells the reader the same thing a correct classifier would.
+ *
+ * It is emitted whenever a declared host is denied, because a first activation
+ * has no other place to learn that: the Plugins card resolves declared hosts
+ * from LIVE generations, and a first install has none (`plugin-hosts.ts`).
  */
-function blockedHostsClause(
-  policy: PluginEgressPolicy,
-  job: PluginInstallJob,
-  output: string,
-): string {
+function blockedHostsClause(policy: PluginEgressPolicy, job: PluginInstallJob): string {
   const declared = job.exports.flatMap((e) => e.hosts ?? []);
   const blocked = unreachableDeclaredHosts(policy, declared);
   if (blocked.length === 0) return "";
   const names = blocked.map((h) => `\`${h}\``).join(", ");
   const [is, it] = blocked.length === 1 ? ["is", "it"] : ["are", "them"];
-  const denied = `this plugin declares ${names}, which ${is} not in this session's egress allowlist`;
-  const grant = `${it} in the Plugins tab (or Settings → Network egress) and refresh the plugin`;
-  return looksLikeNetworkFailure(output)
-    ? `\n\nThat reads as a network failure, and ${denied}. Allow ${grant}.`
-    : `\n\nThat does not read as a network failure, so the egress allowlist is `
-      + `probably not the cause. Separately: ${denied} — allow ${grant} if a `
-      + "later attempt does fail on the network.";
-}
-
-/**
- * Whether an install's output carries a signature of the network being cut.
- *
- * Derived from how a denial actually reaches the container rather than from one
- * incident's symptoms: Tier B's dnsmasq REFUSES a non-allowlisted domain
- * (`getaddrinfo`, `EAI_AGAIN`, `ENOTFOUND`, curl's "could not resolve host"),
- * the SNI proxy closes a denied handshake mid-TLS (`ECONNRESET`, "socket hang
- * up", `EPROTO`), and Tier A's firewall drops the packets outright
- * (`ETIMEDOUT`, `EHOSTUNREACH`, `ENETUNREACH`) — see `run-resolver.sh`,
- * `sni-proxy/main.go`, `init-firewall.sh`.
- *
- * Deliberately generous, and it decides only the WORDING of a clause that is
- * printed either way: a false positive says "network" about a failure that was
- * not one, which is where this started, but the hosts named alongside it are
- * genuinely denied; a false negative costs a sentence's confidence and nothing
- * else. Neither can withhold the grant instructions.
- */
-export function looksLikeNetworkFailure(output: string): boolean {
-  const text = output.toLowerCase();
-  return [
-    "getaddrinfo",
-    "eai_again",
-    "enotfound",
-    "eai_noname",
-    "could not resolve",
-    "name resolution",
-    "servfail",
-    "econnrefused",
-    "econnreset",
-    "socket hang up",
-    "eproto",
-    "etimedout",
-    "ehostunreach",
-    "enetunreach",
-    "network is unreachable",
-    "err_tls",
-    "tunneling socket could not be established",
-    "network error",
-    "failed to download",
-    "download failed",
-  ].some((needle) => text.includes(needle));
+  return `\n\nSeparately — this plugin declares ${names}, which ${is} not in this `
+    + "session's egress allowlist. If the failure above is a network error against "
+    + `${blocked.length === 1 ? "that host" : "one of those hosts"}, allow ${it} in the `
+    + "Plugins tab (or Settings → Network egress) and refresh the plugin.";
 }
 
 /**
@@ -706,7 +662,9 @@ async function runInstallContainer(
     // the whole `/opt/playwright-browsers` EACCES).
     Env: [
       `${PLUGIN_COMMIT_ENV}=${job.commit}`,
-      ...(await pluginContainerEnv(deps.docker, deps.image)),
+      // `toolchain: true` unconditionally: install runs only for a TRACKED
+      // generation, where `/plugin` is the overlay volume and never a clone.
+      ...(await pluginContainerEnv(deps.docker, deps.image, { toolchain: true })),
       // req 28 — point the package managers at this plugin repository's own
       // download cache, the same names and the same layout every session
       // container uses (`container-lifecycle.ts`). Set only when the cache is

@@ -22,12 +22,16 @@ import {
   createPluginInstallRunner,
   installCommands,
   installStampPath,
-  looksLikeNetworkFailure,
   reapOrphanPluginInstalls,
   PLUGIN_INSTALL_DIR,
   PLUGIN_INSTALL_NETWORK,
 } from "./plugin-install.js";
-import { PLUGIN_BROWSERS_DIR, PLUGIN_NPM_PREFIX_DIR } from "./plugin-container-env.js";
+import {
+  PLUGIN_BROWSERS_DIR,
+  PLUGIN_NPM_PREFIX_DIR,
+  PLUGIN_TOOLCHAIN_DIR_NAME,
+} from "./plugin-container-env.js";
+import { pluginBasePinDir } from "./plugin-dep-store.js";
 import { clearUntrustedContainerNetworks, isUntrustedContainerIp } from "./api-container-guard.js";
 import { handPluginCheckoutToWorker, chownTreeToSessionWorker } from "./session-worker-uid.js";
 import { readInstallRecord } from "./plugin-install-record.js";
@@ -185,7 +189,7 @@ function fakeDocker(opts: {
       inspect: async () => ({
         Config: {
           Env: [
-            "PATH=/opt/agent-cli/node_modules/.bin:/usr/local/bin:/usr/bin:/bin",
+            "PATH=/home/shipit/.npm-global/bin:/opt/agent-cli/node_modules/.bin:/usr/bin:/bin",
             "PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers",
             "NPM_CONFIG_PREFIX=/home/shipit/.npm-global",
           ],
@@ -348,13 +352,18 @@ describe("createPluginInstallRunner", () => {
     for (const dir of [PLUGIN_BROWSERS_DIR, PLUGIN_NPM_PREFIX_DIR]) {
       expect(dir.startsWith(`${PLUGIN_INSTALL_DIR}/`)).toBe(true);
     }
-    // No override may still name a tree this uid cannot write.
-    expect(env.join("\n")).not.toContain("/opt/playwright-browsers");
-    expect(env.join("\n")).not.toContain("/home/shipit");
+    // No VARIABLE may still name a tree this uid cannot write. Asserted per
+    // variable rather than over the joined string, because `PATH` legitimately
+    // still carries the image's own unwritable `/home/shipit/.npm-global/bin` —
+    // an entry that is merely never found, not one anything tries to create.
+    // The fake above models that segment for exactly this reason.
+    expect(env).not.toContain("PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers");
+    expect(env).not.toContain("NPM_CONFIG_PREFIX=/home/shipit/.npm-global");
+    expect(env.filter((e) => !e.startsWith("PATH=")).join("\n")).not.toContain("/home/shipit");
     // A global install has to be reachable by bare name afterwards, and the
     // image's own PATH entries have to survive the prepend.
     expect(env).toContain(
-      `PATH=${PLUGIN_NPM_PREFIX_DIR}/bin:/opt/agent-cli/node_modules/.bin:/usr/local/bin:/usr/bin:/bin`,
+      `PATH=${PLUGIN_NPM_PREFIX_DIR}/bin:/home/shipit/.npm-global/bin:/opt/agent-cli/node_modules/.bin:/usr/bin:/bin`,
     );
   });
 
@@ -668,29 +677,13 @@ describe("createPluginInstallRunner", () => {
     })(job([probe]));
 
     expect(result.ok).toBe(false);
-    expect(result.reason).toContain("does not read as a network failure");
+    expect(result.reason).toContain("Separately —");
+    // Never asserted as the cause: the hosts really are denied, and had nothing
+    // to do with this failure.
+    expect(result.reason).toContain("If the failure above is a network error");
     // …and still says which hosts are denied, and where to grant them.
     expect(result.reason).toContain("api.vendor.example");
     expect(result.reason).toContain("egress allowlist");
-  });
-
-  it("blames egress only when the output carries a network signature", () => {
-    for (const output of [
-      "npm ERR! getaddrinfo EAI_AGAIN registry.example",
-      "connect ETIMEDOUT 10.0.0.1:443",
-      "Error: socket hang up",
-      "curl: (6) Could not resolve host: cdn.playwright.dev",
-      "Failed to download chromium",
-    ]) {
-      expect(looksLikeNetworkFailure(output)).toBe(true);
-    }
-    for (const output of [
-      "Error: EACCES: permission denied, mkdir '/opt/playwright-browsers/__dirlock'",
-      "sh: 1: vite: not found",
-      "",
-    ]) {
-      expect(looksLikeNetworkFailure(output)).toBe(false);
-    }
   });
 
   // Saying "egress" about an install that failed for another reason points the
@@ -820,10 +813,19 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     return path.join(pluginWorkDir(stateDir, "tools", commit), "upper");
   }
 
+  /**
+   * What the install container leaves in the writable layer. It models the
+   * container's `Cmd` as well as the command's own writes: `mkdir -p` over
+   * `PLUGIN_TOOLCHAIN_DIRS` runs on every install, and a browser downloaded into
+   * one of them is what the store hit below must not lose.
+   */
   function installs(commit = COMMIT): () => void {
     return () => {
       fs.mkdirSync(path.join(upper(commit), "node_modules", "left-pad"), { recursive: true });
       fs.writeFileSync(path.join(upper(commit), "node_modules", "left-pad", "index.js"), "1");
+      const browsers = path.join(upper(commit), PLUGIN_TOOLCHAIN_DIR_NAME, "playwright-browsers");
+      fs.mkdirSync(browsers, { recursive: true });
+      fs.writeFileSync(path.join(browsers, "chromium-1194"), "a browser this install downloaded");
     };
   }
 
@@ -833,7 +835,8 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     const cold = await createPluginInstallRunner({ ...runner, docker: first.docker })(job([npmExport()]));
 
     expect(first.containers).toHaveLength(1);
-    expect(cold.basePins).toHaveLength(1);
+    // Two: the plugin's declared `node_modules`, and ShipIt's own toolchain tree.
+    expect(cold.basePins).toHaveLength(2);
     // The tree left the writable layer: the store holds one copy, not two.
     expect(fs.existsSync(path.join(upper(), "node_modules"))).toBe(false);
 
@@ -849,6 +852,15 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     expect(next.createdVolumes).toHaveLength(0);
     expect(warm.ok).toBe(true);
     expect(warm.basePins).toEqual(cold.basePins);
+    // **And the browser the cold install downloaded is in one of them.** A store
+    // hit clears the writable layer and runs nothing, so before the toolchain
+    // tree was promoted alongside the declared dirs this generation went live
+    // with `node_modules` and no browser — an install that "succeeded" leaving a
+    // toolchain nothing can find, which is worse than the EACCES it replaced.
+    const stored = warm.basePins!
+      .map((pin) => pluginBasePinDir(stateDir, pin)!)
+      .map((dir) => path.join(dir, PLUGIN_TOOLCHAIN_DIR_NAME, "playwright-browsers", "chromium-1194"));
+    expect(stored.some((f) => fs.existsSync(f))).toBe(true);
   });
 
   it("docs/266 — a forced retry installs even when the shared store has a hit", async () => {
@@ -891,7 +903,7 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     });
 
     expect(second.containers).toHaveLength(1);
-    expect(moved.basePins).toHaveLength(1);
+    expect(moved.basePins).toHaveLength(2);
     // A different dep state is a different scope, never an overwrite of the one
     // an earlier commit's generations are still mounting.
     expect(moved.basePins).not.toEqual(cold.basePins);

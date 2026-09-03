@@ -44,48 +44,77 @@
  * Playwright image would point it away from the browsers that image ships. A
  * service that wants the install-time toolchain names it in its own fragment.
  *
- * Audited and deliberately NOT overridden:
+ * Audited and deliberately NOT overridden — each with the cost it leaves behind,
+ * because two of these are limits rather than non-issues:
  *
- *  - `JAVA_HOME`, `ANDROID_SDK_ROOT`, `ANDROID_HOME`, and the Gradle / agent-CLI
- *    `PATH` entries — read-only toolchains, correct as inherited. A plugin that
- *    needs to *add* an SDK component still cannot, which is a real limit of
- *    borrowing the image rather than this bug; relocating a multi-gigabyte SDK
- *    would cost far more than it buys.
+ *  - `JAVA_HOME` and the Gradle / agent-CLI `PATH` entries — read-only
+ *    toolchains, correct as inherited.
+ *  - `ANDROID_SDK_ROOT` / `ANDROID_HOME`. **Not read-only**: the Dockerfile
+ *    makes the SDK directories world-writable on purpose, so on-demand
+ *    `sdkmanager` components land there as an unprivileged uid. So an install
+ *    CAN write one — into its own disposable container layer, which no later CLI
+ *    or service container shares. Relocating a multi-gigabyte SDK to fix that
+ *    would cost far more than it buys, so the limit stands and is documented for
+ *    plugin authors instead (`shipit-docs/plugin-authoring.md`).
  *  - `GRADLE_USER_HOME` is not baked at all — Gradle derives it from `HOME`,
  *    which is `/tmp` here: writable, and ephemeral like any other build cache a
  *    plugin did not declare a dep dir for.
  *  - `NODE_ENV=production`. Not a path, so it EACCESes nothing, but it is
  *    inherited the same way and it is not inert: npm's `omit` defaults to `dev`
- *    when it is set, so a plugin whose `install:` is `npm ci && npm run build`
- *    gets no devDependencies. Left alone because every replacement value is a
- *    behaviour change for plugin code that reads it at *run* time, and because
- *    the failure it causes is loud and self-describing rather than silent.
+ *    when it is set, so `npm ci` in an `install:` installs no devDependencies.
+ *    Left alone because every replacement value is a behaviour change for plugin
+ *    code that reads it at *run* time — but note the failure it causes is NOT
+ *    necessarily loud: the install exits 0 with an incomplete tree, and the
+ *    first symptom can be a missing module when a companion CLI runs much later.
+ *    A plugin that needs them passes `--include=dev` explicitly, which is what
+ *    the authoring doc now tells authors to do.
  */
 
+import path from "node:path";
 import type Docker from "dockerode";
 import { CONTAINER_PLUGIN_DIR } from "../shared/plugin-contract.js";
+
+/**
+ * The directory's name at the plugin repository's root. Dot-prefixed and
+ * namespaced: it sits beside the author's own files and must not collide with
+ * one of them.
+ *
+ * `plugin-dep-store.ts` appends it to every store plan's declared dep dirs —
+ * see {@link PLUGIN_TOOLCHAIN_DIR}.
+ */
+export const PLUGIN_TOOLCHAIN_DIR_NAME = ".shipit-toolchain";
 
 /**
  * Root of the writable toolchain tree, inside the generation's overlay so that
  * whatever install puts there is still mounted at the same path when the
  * plugin's own code runs.
  *
- * Dot-prefixed and namespaced: it sits at the plugin repository's root, beside
- * the author's own files, and must not collide with one of them.
+ * **This is not an in-clone artifact path, which is why it does not trip
+ * `no-clone-writes.test.ts`.** `/plugin` here is a generation's overlay volume
+ * in ShipIt's own state dir, never a session's git clone, and nothing ever runs
+ * `git add -A` over it. The one case where `/plugin` IS the user's clone is
+ * `repo: self`, and `plugin-cli-run.ts` deliberately does not apply these
+ * overrides there — see {@link pluginContainerEnv}.
  */
-export const CONTAINER_PLUGIN_TOOLCHAIN_DIR = `${CONTAINER_PLUGIN_DIR}/.shipit-toolchain`;
+export const PLUGIN_TOOLCHAIN_DIR = path.posix.join(CONTAINER_PLUGIN_DIR, PLUGIN_TOOLCHAIN_DIR_NAME);
 
 /** Replaces the image's root-owned `PLAYWRIGHT_BROWSERS_PATH`. */
-export const PLUGIN_BROWSERS_DIR = `${CONTAINER_PLUGIN_TOOLCHAIN_DIR}/playwright-browsers`;
+export const PLUGIN_BROWSERS_DIR = path.posix.join(PLUGIN_TOOLCHAIN_DIR, "playwright-browsers");
 
 /** Replaces the image's uid-1000-owned `NPM_CONFIG_PREFIX`. */
-export const PLUGIN_NPM_PREFIX_DIR = `${CONTAINER_PLUGIN_TOOLCHAIN_DIR}/npm-global`;
+export const PLUGIN_NPM_PREFIX_DIR = path.posix.join(PLUGIN_TOOLCHAIN_DIR, "npm-global");
 
 /**
- * The directories the overrides name, for the install container to create up
- * front. A tool that assumes its own root already exists — rather than
- * `mkdir -p`-ing it — would otherwise fail on a path ShipIt chose for it, which
- * is a worse failure than the one being fixed because nothing names ShipIt.
+ * The directories the overrides name, created by the install container up front.
+ *
+ * Two reasons, and the second is load-bearing. A tool that assumes its own root
+ * already exists — rather than `mkdir -p`-ing it — would otherwise fail on a
+ * path ShipIt chose for it, which is a worse failure than the one being fixed
+ * because nothing in it names ShipIt. And the tree must exist even when the
+ * install downloads nothing, because `plugin-dep-store.ts` promotes it as a dep
+ * dir: a directory that is sometimes absent would leave that scope with no
+ * pointer, and `adoptPluginDepBases` is all-or-nothing, so every plugin without
+ * a toolchain would stop getting store hits entirely.
  */
 export const PLUGIN_TOOLCHAIN_DIRS: readonly string[] = [
   PLUGIN_BROWSERS_DIR,
@@ -94,6 +123,15 @@ export const PLUGIN_TOOLCHAIN_DIRS: readonly string[] = [
 
 /**
  * The overrides both plugin container surfaces set, in one list.
+ *
+ * `toolchain` is what makes the two surfaces agree, and what lets ONE of them
+ * opt out. Under `repo: self` (req 27) `/plugin` is the user's own working
+ * tree — writable, and swept by the post-turn `git add -A` — so pointing a
+ * browser download at it would commit a toolchain into their repository. The
+ * exported `install` never runs for a self import either, so there is nothing
+ * there to find: passing `false` leaves the image's own values inherited, which
+ * also keeps the browser already baked at `/opt/playwright-browsers` (readable
+ * by any uid) reachable rather than redirecting the plugin away from it.
  *
  * Async only because `PATH` cannot be composed without the image's own value:
  * `Env` entries are literals, so there is no `$PATH` to expand, and the
@@ -105,20 +143,32 @@ export const PLUGIN_TOOLCHAIN_DIRS: readonly string[] = [
  * process.
  *
  * A daemon that cannot answer degrades to no `PATH` override rather than
- * failing the run: a globally installed binary is then reachable at
- * `$NPM_CONFIG_PREFIX/bin` and not by bare name, which is a smaller loss than
- * refusing every plugin install over one inspect.
+ * failing the run — refusing every plugin install over one inspect is the worse
+ * trade — but it degrades **loudly**: `NPM_CONFIG_PREFIX` still moves, so a
+ * global install succeeds and its binary is then reachable only at
+ * `$NPM_CONFIG_PREFIX/bin`, and a silent version of that is a "command not
+ * found" nothing explains.
  */
-export async function pluginContainerEnv(docker: Docker, image: string): Promise<string[]> {
-  const env = [
-    "HOME=/tmp",
-    "AGENT_HOME=/tmp",
-    "npm_config_update_notifier=false",
+export async function pluginContainerEnv(
+  docker: Docker,
+  image: string,
+  opts: { toolchain: boolean },
+): Promise<string[]> {
+  const env = ["HOME=/tmp", "AGENT_HOME=/tmp", "npm_config_update_notifier=false"];
+  if (!opts.toolchain) return env;
+  env.push(
     `PLAYWRIGHT_BROWSERS_PATH=${PLUGIN_BROWSERS_DIR}`,
     `NPM_CONFIG_PREFIX=${PLUGIN_NPM_PREFIX_DIR}`,
-  ];
+  );
   const inherited = await imagePath(docker, image);
-  if (inherited) env.push(`PATH=${PLUGIN_NPM_PREFIX_DIR}/bin:${inherited}`);
+  if (inherited) {
+    env.push(`PATH=${PLUGIN_NPM_PREFIX_DIR}/bin:${inherited}`);
+  } else {
+    console.warn(
+      `[plugins] could not read \`${image}\`'s own PATH, so a plugin's globally installed `
+      + `binary will not be on PATH — look for it under ${PLUGIN_NPM_PREFIX_DIR}/bin`,
+    );
+  }
   return env;
 }
 

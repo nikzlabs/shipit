@@ -390,6 +390,17 @@ the generation's overlay, so what install fetches survives publish — and the
 succeed into a directory nothing at run time ever looks in. `/tmp` is the wrong
 target for these: it is a tmpfs discarded at container exit.
 
+Two consequences of that location, both found by review rather than by the
+incident. **A store hit clears the writable layer and runs nothing**, so the
+toolchain tree is appended to every store plan's dep dirs
+(`planPluginDepStore`) — otherwise a plugin that downloaded a browser would work
+on its first activation and silently lose it on the next commit sharing its dep
+state, which is the "succeeded but nothing can find it" outcome this whole change
+exists to avoid. And **`repo: self` does not get these overrides at all**: there
+`/plugin` IS the user's working tree, swept by the post-turn `git add -A`, and no
+exported install ran to put anything in it — so the image's own values stand,
+which also keeps the browser baked at `/opt/playwright-browsers` reachable.
+
 Downloading a browser inside a contained namespace was also a first for ShipIt
 (the session's own browser is baked at image-build time, outside containment),
 so `cdn.playwright.dev` and `playwright.download.prss.microsoft.com` — both

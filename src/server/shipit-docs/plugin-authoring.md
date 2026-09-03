@@ -157,19 +157,25 @@ is still there when your CLI runs:
 | `PLAYWRIGHT_BROWSERS_PATH` | `/plugin/.shipit-toolchain/playwright-browsers` |
 | `NPM_CONFIG_PREFIX` | `/plugin/.shipit-toolchain/npm-global` (its `bin` is on `PATH`) |
 
-Two consequences worth planning for. **That tree is inside the generation's
-writable layer**, so it is subject to the same `install-inputs` rule as a build
-output above — a store hit clears the layer and re-mounts a stored tree, and a
-browser is not in any `dep-dirs` you declared. And **a download needs egress**:
+You do **not** declare that directory in `dep-dirs` — ShipIt adds it to the
+shared store itself, so a later commit that reuses your dependencies keeps the
+browser instead of losing it. **A download does need egress**, though:
 `playwright install` reaches `cdn.playwright.dev` and
 `playwright.download.prss.microsoft.com`, both of which every session allows by
 default. Anything else your install downloads from must be declared in the
 plugin's `hosts:`, or the consuming session denies it.
 
-Nothing redirects a toolchain the image does *not* bake a variable for. The
-Android SDK at `/opt/android-sdk` is read-only here, so an `install` that runs
-`sdkmanager` fails; `HOME` is `/tmp`, which is a tmpfs the container discards, so
-anything a tool caches under `$HOME` is gone before a consumer sees it.
+Two limits of borrowing that image, both of which bite quietly:
+
+- **`NODE_ENV` is `production`**, so `npm ci` in an `install:` installs no
+  devDependencies. An install whose next step is `npm run build` then fails on a
+  missing bundler — and an install that merely *ships* a devDependency at runtime
+  exits 0 and fails much later. Pass `--include=dev` when you need them.
+- **A toolchain the image bakes no variable for does not move.** The Android SDK
+  at `/opt/android-sdk` is world-writable, so `sdkmanager` appears to work — but
+  it writes into the install container's own disposable layer, which no CLI or
+  service container shares. `HOME` is `/tmp`, a tmpfs the container discards, so
+  anything cached under `$HOME` is likewise gone before a consumer sees it.
 
 ### Nothing may write the checkout, including the tools you depend on
 

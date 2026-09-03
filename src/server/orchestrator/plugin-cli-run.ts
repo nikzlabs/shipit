@@ -516,13 +516,19 @@ async function runHeldPluginCommand(
     // req 15 — readable by the plugin itself, and UNSET under `repo: self`,
     // which is how a plugin tells a live working tree from an exact commit.
     ...(commit ? [`${PLUGIN_COMMIT_ENV}=${commit}`] : []),
-    // The run-time half of the install container's overrides, and it has to be
-    // the SAME list: a browser or a global binary that `install` fetched lives
-    // under `/plugin`, so this container has to resolve the variable that names
-    // it to the same path or the install succeeded into somewhere nothing looks
-    // (`plugin-container-env.ts`). Without it this container would also inherit
-    // the image's root-owned `/opt/playwright-browsers` unchanged.
-    ...(await pluginContainerEnv(deps.docker, deps.image)),
+    // The run-time half of the install container's overrides, and for a TRACKED
+    // import it has to be the SAME list: a browser or a global binary that
+    // `install` fetched lives under `/plugin`, so this container has to resolve
+    // the variable naming it to the same path, or the install succeeded into
+    // somewhere nothing looks (`plugin-container-env.ts`).
+    //
+    // Keyed on `pinned`, which is exactly "not `repo: self`". Under `repo: self`
+    // `/plugin` is the user's own working tree and the post-turn `git add -A`
+    // would commit whatever a lazy download wrote there — and no exported
+    // `install` ran to put anything there in the first place, so the image's own
+    // values (including the browser baked at `/opt/playwright-browsers`) are
+    // both safer and more useful than a ShipIt path that is always empty.
+    ...(await pluginContainerEnv(deps.docker, deps.image, { toolchain: pinned !== null })),
     ...declaredCredentialEnv(deps, exported.credentials),
   ];
 
