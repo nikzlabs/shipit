@@ -105,6 +105,26 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   ".pythonhosted.org", // files.pythonhosted.org (wheel downloads)
   ".nodejs.org", // nodejs.org — node-gyp downloads the Node headers tarball (npm `disturl`) here to compile native modules (node-pty, etc.)
 
+  // --- Browser binaries (Playwright) ---
+  // A session's OWN browser is baked into the worker image at docker-build time
+  // (`Dockerfile.session-worker.prod`, outside any containment), so nothing
+  // needed these hosts until a *plugin* install started downloading a browser of
+  // its own — the first code path that fetches one at run time, inside a
+  // contained namespace (docs/262, `plugin-install.ts`). Without them
+  // `playwright install` fails at DNS with a message that names no ShipIt
+  // concept.
+  //
+  // These are the two mirrors `playwright-core` dials, read verbatim from its
+  // `PLAYWRIGHT_CDN_MIRRORS` (verified against 1.56.0 rather than from memory:
+  // the default moved off `playwright.azureedge.net` around 1.40, and a plugin
+  // pinning a pre-1.40 Playwright still needs an operator-added extra or
+  // `PLAYWRIGHT_DOWNLOAD_HOST`). EXACT hosts, never a suffix — `.playwright.dev`
+  // would open the docs site and `.microsoft.com` most of Microsoft. Both are
+  // download-only artifact CDNs (you GET a browser zip), the same posture the
+  // npm/pypi/Gradle entries are here on.
+  "cdn.playwright.dev", // primary mirror, and the "hit the storage bucket directly" fallback
+  "playwright.download.prss.microsoft.com", // ESRP CDN mirror, tried when the primary fails
+
   // --- JVM / Android build artifact registries (docs/213) ---
   // The JVM analog of the npm/pypi entries above: Gradle/Maven resolve build
   // dependencies (AGP, Kotlin, AndroidX) from these. Required for the baked

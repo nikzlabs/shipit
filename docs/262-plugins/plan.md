@@ -370,9 +370,31 @@ plugin commit, the install string, or the content of the manifest's
 **What the container actually gets** (implemented — `plugin-install.ts`): the
 generation's overlay volume at `/plugin` as its ONLY mount, `cwd` there, the
 session-worker image for its toolchain with its ENTRYPOINT bypassed (that
-script prepares session mounts this container does not have), an environment
-of exactly `SHIPIT_PLUGIN_COMMIT` + `HOME=/tmp`, all capabilities dropped,
+script prepares session mounts this container does not have), `SHIPIT_PLUGIN_COMMIT`
+plus the writable-path overrides described next, all capabilities dropped,
 `no-new-privileges`, a memory and PID ceiling, and a timeout.
+
+**The image's `ENV` is inherited, and that had to be repaired rather than
+described away** (`plugin-container-env.ts`). This section used to say the
+environment was "exactly `SHIPIT_PLUGIN_COMMIT` + `HOME=/tmp`", which was true
+of the ORCHESTRATOR's environment and never true of the IMAGE's: Docker merges
+`createContainer.Env` over the image's own `ENV` and offers no way to unset an
+inherited name. The container runs as a per-session uid (docs/270), so every
+path the worker image bakes in for uid 1000 arrived unwritable — a plugin whose
+`install:` ran `playwright install` died at `EACCES … mkdir
+'/opt/playwright-browsers/__dirlock'` in production (2026-09-03, three
+sessions), and `NPM_CONFIG_PREFIX=/home/shipit/.npm-global` was the same bug one
+variable over. The fix OVERRIDES both onto `/plugin/.shipit-toolchain/…` — inside
+the generation's overlay, so what install fetches survives publish — and the
+**CLI invocation container sets the identical list**, or an install would
+succeed into a directory nothing at run time ever looks in. `/tmp` is the wrong
+target for these: it is a tmpfs discarded at container exit.
+
+Downloading a browser inside a contained namespace was also a first for ShipIt
+(the session's own browser is baked at image-build time, outside containment),
+so `cdn.playwright.dev` and `playwright.download.prss.microsoft.com` — both
+mirrors `playwright-core` dials — joined `EGRESS_DEFAULT_ALLOWLIST` beside the
+npm/pypi/Gradle artifact CDNs.
 
 **And its own network — which is a security control, not tidiness** (review
 finding, this round). "Not the session's network" is not enough. Install needs
@@ -2055,8 +2077,8 @@ coherent in one UI.
   `runInstall` is — the generation engine holds no Docker client.
 - ✓ `src/server/orchestrator/plugin-install.ts` — the throwaway install
   container: the generation's overlay volume at `/plugin` and nothing else, the
-  worker image for its toolchain with its entrypoint bypassed, no inherited
-  environment, capabilities dropped, bounded by a timeout, and its own network
+  worker image for its toolchain with its entrypoint bypassed, nothing inherited
+  from the orchestrator process, capabilities dropped, bounded by a timeout, and its own network
   whose subnet is denied at ShipIt's API (see §1b). Injected into
   `activateGeneration` as `runInstall` from `bootstrap-managers`, so neither the
   generation engine nor the activation service executes plugin-authored code.
@@ -2077,7 +2099,11 @@ coherent in one UI.
   and writes/sweeps `/plugin-bin`, marker-checked so nothing it did not write
   is ever touched. ✓ `src/server/orchestrator/plugin-cli-run.ts` is the
   invocation container; ✓ `plugin-container.ts` holds what it shares with
-  install (the untrusted network, the bounded wait).
+  install (the untrusted network, the bounded wait); ✓ `plugin-container-env.ts`
+  holds the other thing they must share — the overrides that make the borrowed
+  image's baked paths writable by a per-session uid, and that resolve to the
+  SAME `/plugin/.shipit-toolchain/…` directories on both surfaces so what
+  install fetches is what run time finds (see §1b).
 - ✓ `src/server/orchestrator/plugin-compose.ts` — the fragment edge (reqs 3, 5,
   16, 20): locate each import's fragment in whatever is live for it, validate it
   under the consuming session's own rules plus the plugin-edge allowlist, apply

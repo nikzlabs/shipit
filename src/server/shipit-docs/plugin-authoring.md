@@ -144,6 +144,33 @@ So the same preparation is declared **twice** — once in the manifest for
 consumers, once under `agent:` for your own sessions — and only one of the two
 runs in the session you develop in. Change one, change the other.
 
+### A toolchain your install downloads goes under `/plugin`, not into the image
+
+`install` borrows the session-worker image for its toolchain, but it runs as the
+**consuming session's own uid** — so every path that image bakes in for its own
+user is read-only to you. ShipIt redirects the two that a plugin actually
+installs into, at both install time and run time, so a tool fetched by `install`
+is still there when your CLI runs:
+
+| Variable | Points at |
+|---|---|
+| `PLAYWRIGHT_BROWSERS_PATH` | `/plugin/.shipit-toolchain/playwright-browsers` |
+| `NPM_CONFIG_PREFIX` | `/plugin/.shipit-toolchain/npm-global` (its `bin` is on `PATH`) |
+
+Two consequences worth planning for. **That tree is inside the generation's
+writable layer**, so it is subject to the same `install-inputs` rule as a build
+output above — a store hit clears the layer and re-mounts a stored tree, and a
+browser is not in any `dep-dirs` you declared. And **a download needs egress**:
+`playwright install` reaches `cdn.playwright.dev` and
+`playwright.download.prss.microsoft.com`, both of which every session allows by
+default. Anything else your install downloads from must be declared in the
+plugin's `hosts:`, or the consuming session denies it.
+
+Nothing redirects a toolchain the image does *not* bake a variable for. The
+Android SDK at `/opt/android-sdk` is read-only here, so an `install` that runs
+`sdkmanager` fails; `HOME` is `/tmp`, which is a tmpfs the container discards, so
+anything a tool caches under `$HOME` is gone before a consumer sees it.
+
 ### Nothing may write the checkout, including the tools you depend on
 
 For a consumer the tree is read-only at `/plugin` **and** at whatever path the

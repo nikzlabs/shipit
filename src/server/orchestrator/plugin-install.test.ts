@@ -22,10 +22,12 @@ import {
   createPluginInstallRunner,
   installCommands,
   installStampPath,
+  looksLikeNetworkFailure,
   reapOrphanPluginInstalls,
   PLUGIN_INSTALL_DIR,
   PLUGIN_INSTALL_NETWORK,
 } from "./plugin-install.js";
+import { PLUGIN_BROWSERS_DIR, PLUGIN_NPM_PREFIX_DIR } from "./plugin-container-env.js";
 import { clearUntrustedContainerNetworks, isUntrustedContainerIp } from "./api-container-guard.js";
 import { handPluginCheckoutToWorker, chownTreeToSessionWorker } from "./session-worker-uid.js";
 import { readInstallRecord } from "./plugin-install-record.js";
@@ -176,6 +178,20 @@ function fakeDocker(opts: {
     }),
     listContainers: async () => [],
     getContainer: (_id: string) => ({ remove: async () => undefined }),
+    // The session-worker image's own ENV, which `createContainer.Env` MERGES
+    // over rather than replaces — the two entries below are the ones a
+    // per-session uid cannot write, and the `PATH` the override has to preserve.
+    getImage: (_name: string) => ({
+      inspect: async () => ({
+        Config: {
+          Env: [
+            "PATH=/opt/agent-cli/node_modules/.bin:/usr/local/bin:/usr/bin:/bin",
+            "PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers",
+            "NPM_CONFIG_PREFIX=/home/shipit/.npm-global",
+          ],
+        },
+      }),
+    }),
     createContainer: async (createOpts: Record<string, unknown>) => {
       const record: CreatedContainer = {
         id: `c-${containers.length + 1}`,
@@ -305,8 +321,58 @@ describe("createPluginInstallRunner", () => {
     // docs/270 — `umask 002` so everything the install writes into the SHARED
     // dep cache and the promoted dep base is group-writable; the session
     // entrypoint that normally sets it is bypassed for this container.
-    expect(opts.Cmd).toEqual(["umask 002; npm ci"]);
+    expect(opts.Cmd).toEqual([
+      `umask 002; mkdir -p ${PLUGIN_BROWSERS_DIR} ${PLUGIN_NPM_PREFIX_DIR}; npm ci`,
+    ]);
     expect(opts.WorkingDir).toBe(PLUGIN_INSTALL_DIR);
+  });
+
+  // The 2026-09-03 production failure: `EACCES … mkdir
+  // '/opt/playwright-browsers/__dirlock'`. `Env` is MERGED over the image's own
+  // `ENV` and there is no way to unset an inherited name, so the paths the
+  // session-worker image bakes in for uid 1000 reached a container running as a
+  // per-session uid. The test the bug got past asserted only that this PROCESS's
+  // environment was absent, which was and stayed true.
+  it("overrides the image's worker-owned ENV paths with writable ones", async () => {
+    const { docker, containers } = fakeDocker();
+    const run = createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
+
+    expect(await run(job([exportWith("probe", "npx playwright install chromium")]))).toEqual({ ok: true });
+
+    const env = (containers[0]!.opts as { Env: string[] }).Env;
+    expect(env).toContain(`PLAYWRIGHT_BROWSERS_PATH=${PLUGIN_BROWSERS_DIR}`);
+    expect(env).toContain(`NPM_CONFIG_PREFIX=${PLUGIN_NPM_PREFIX_DIR}`);
+    // Both replacements live inside the generation's overlay, so what install
+    // fetches survives publish and is mounted at the same path at run time —
+    // the tmpfs `/tmp` would be discarded before the plugin could ever use it.
+    for (const dir of [PLUGIN_BROWSERS_DIR, PLUGIN_NPM_PREFIX_DIR]) {
+      expect(dir.startsWith(`${PLUGIN_INSTALL_DIR}/`)).toBe(true);
+    }
+    // No override may still name a tree this uid cannot write.
+    expect(env.join("\n")).not.toContain("/opt/playwright-browsers");
+    expect(env.join("\n")).not.toContain("/home/shipit");
+    // A global install has to be reachable by bare name afterwards, and the
+    // image's own PATH entries have to survive the prepend.
+    expect(env).toContain(
+      `PATH=${PLUGIN_NPM_PREFIX_DIR}/bin:/opt/agent-cli/node_modules/.bin:/usr/local/bin:/usr/bin:/bin`,
+    );
+  });
+
+  it("still overrides the writable paths when the image cannot be inspected", async () => {
+    const { docker, containers } = fakeDocker();
+    (docker as unknown as Record<string, unknown>).getImage = () => {
+      throw new Error("daemon says no");
+    };
+    const run = createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
+
+    expect(await run(job([exportWith("probe", "npm ci")]))).toEqual({ ok: true });
+
+    const env = (containers[0]!.opts as { Env: string[] }).Env;
+    expect(env).toContain(`PLAYWRIGHT_BROWSERS_PATH=${PLUGIN_BROWSERS_DIR}`);
+    // Degraded, not fatal: without the image's own PATH there is nothing safe to
+    // prepend to, so the variable is left inherited rather than rebuilt from a
+    // guess that would drop the toolchains on it.
+    expect(env.some((e) => e.startsWith("PATH="))).toBe(false);
   });
 
   it("creates the writable layer, and releases the volume when install ends", async () => {
@@ -579,6 +645,52 @@ describe("createPluginInstallRunner", () => {
     // The package manager's own output is still there — the clause is added to
     // the failure, not substituted for it.
     expect(result.reason).toContain("EAI_AGAIN");
+  });
+
+  /**
+   * The 2026-09-03 incident's second half. The declared hosts really were
+   * denied, so the clause was not wrong — it was irrelevant, appended to an
+   * `EACCES` on a read-only browser store, and it sent the operator to the
+   * allowlist. The hosts still have to be named (a first activation has no other
+   * way to learn they are denied), but the sentence must not claim to explain
+   * the failure above it.
+   */
+  it("does not blame egress for a failure that is not a network failure", async () => {
+    const { docker } = fakeDocker({
+      exit: 1,
+      logs: "Error: EACCES: permission denied, mkdir '/opt/playwright-browsers/__dirlock'\n",
+    });
+    const probe = { ...exportWith("probe", "npm ci"), hosts: ["api.vendor.example"] };
+
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir,
+      egress: () => CONTAINED_EGRESS,
+    })(job([probe]));
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("does not read as a network failure");
+    // …and still says which hosts are denied, and where to grant them.
+    expect(result.reason).toContain("api.vendor.example");
+    expect(result.reason).toContain("egress allowlist");
+  });
+
+  it("blames egress only when the output carries a network signature", () => {
+    for (const output of [
+      "npm ERR! getaddrinfo EAI_AGAIN registry.example",
+      "connect ETIMEDOUT 10.0.0.1:443",
+      "Error: socket hang up",
+      "curl: (6) Could not resolve host: cdn.playwright.dev",
+      "Failed to download chromium",
+    ]) {
+      expect(looksLikeNetworkFailure(output)).toBe(true);
+    }
+    for (const output of [
+      "Error: EACCES: permission denied, mkdir '/opt/playwright-browsers/__dirlock'",
+      "sh: 1: vite: not found",
+      "",
+    ]) {
+      expect(looksLikeNetworkFailure(output)).toBe(false);
+    }
   });
 
   // Saying "egress" about an install that failed for another reason points the

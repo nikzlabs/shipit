@@ -215,6 +215,23 @@ describe("buildEgressAllowlist", () => {
     expect(al.isAllowed("mcp.late.dev")).toBe(true);
   });
 
+  /**
+   * A plugin `install:` that runs `playwright install` is the first ShipIt code
+   * path that downloads a browser inside a contained namespace — the worker
+   * image bakes its own at docker-build time, outside containment, so nothing
+   * needed these hosts before (docs/262, `plugin-install.ts`).
+   *
+   * The two mirrors are `playwright-core`'s `PLAYWRIGHT_CDN_MIRRORS`, and the
+   * two rejections below are the reason each is an EXACT entry.
+   */
+  it("permits the Playwright CDN mirrors without opening their parent domains", () => {
+    const al = makeAllowlist(EGRESS_DEFAULT_ALLOWLIST);
+    expect(al.isAllowed("cdn.playwright.dev")).toBe(true);
+    expect(al.isAllowed("playwright.download.prss.microsoft.com")).toBe(true);
+    expect(al.isAllowed("playwright.dev")).toBe(false);
+    expect(al.isAllowed("login.microsoftonline.com")).toBe(false);
+  });
+
   it("base default list is non-empty and all suffix/exact entries normalize", () => {
     expect(EGRESS_DEFAULT_ALLOWLIST.length).toBeGreaterThan(0);
     for (const e of EGRESS_DEFAULT_ALLOWLIST) {
