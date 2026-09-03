@@ -305,6 +305,7 @@ export async function setupContainerManager(
             resourceLimits: sc.resourceLimits,
           };
         },
+        onTopologyChange: () => containerManager.beginContainerTopologyChange(),
       });
       await new Promise<void>((resolve) => {
         proxy.listen(0, "0.0.0.0", () => {

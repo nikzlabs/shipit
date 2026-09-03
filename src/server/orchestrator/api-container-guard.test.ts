@@ -12,7 +12,7 @@
  *      a route that newly matches — flips this red, forcing a reviewed update.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -33,6 +33,7 @@ import {
 } from "./egress-decision-auth.js";
 
 import { buildApp } from "./index.js";
+import { SessionContainerManager } from "./session-container.js";
 import { GitManager } from "../shared/git.js";
 import { SessionManager } from "./sessions.js";
 import { ChatHistoryManager } from "./chat-history.js";
@@ -349,6 +350,108 @@ describe("registerContainerOriginGuard — request gating", () => {
     expect(secrets.statusCode).toBe(200);
     const bootstrap = await app.inject({ method: "GET", url: "/api/bootstrap", remoteAddress: BROWSER_IP });
     expect(bootstrap.statusCode).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2b. What the guard hook costs — driven by the REAL SessionContainerManager
+// ---------------------------------------------------------------------------
+
+/**
+ * The stub above cannot see this: it answers `getSessionByAnyContainerIp` from a
+ * literal, so the guard's cost is invisible to every test in this file. In
+ * production that call ran a `listContainers` filtered on
+ * `shipit-parent-session` on every MISS — and a browser IP is a miss by
+ * definition, so the guard's root `onRequest` hook put a Docker round-trip in
+ * front of every browser request, WebSocket upgrades included. On a host with
+ * 259 containers that query took 0.70–1.19 s against a 1 s timeout, and every
+ * session switch showed "Reconnecting to server…" for a couple of seconds.
+ *
+ * So the manager is wired in for real here, over a fake Docker client that
+ * counts the queries. The mechanism lives in `container-origin-index.test.ts`;
+ * what this asserts is that the guard HOOK is what stops paying for it, and
+ * that it stops paying without giving up any of the denials above.
+ */
+describe("registerContainerOriginGuard — cost of the hook", () => {
+  const OPS_SERVICE_IP = "172.31.0.7";
+  let app: FastifyInstance;
+  let manager: SessionContainerManager;
+  let listContainers: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    listContainers = vi.fn(async () => [{
+      Id: "svc",
+      Labels: { "shipit-parent-session": OWN_SESSION },
+      NetworkSettings: { Networks: { net: { IPAddress: OPS_SERVICE_IP } } },
+    }]);
+    manager = new SessionContainerManager({
+      docker: {
+        listContainers,
+        getNetwork: () => ({ inspect: async () => { throw new Error("no such network"); } }),
+      } as never,
+      imageName: "shipit-session-worker:test",
+      networkName: "shipit-test",
+      skipHealthCheck: true,
+    });
+
+    app = Fastify({ logger: false });
+    registerContainerOriginGuard(app, { containerManager: manager });
+    app.get("/api/bootstrap", async () => ({ ok: true }));
+    app.put("/api/secrets", async () => ({ ok: true }));
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await manager.dispose();
+    clearUntrustedContainerNetworks();
+  });
+
+  it("stops querying Docker for a browser source IP", async () => {
+    // The test that would have caught the bug.
+    const first = await app.inject({ method: "GET", url: "/api/bootstrap", remoteAddress: BROWSER_IP });
+    expect(first.statusCode).toBe(200);
+    const afterFirst = listContainers.mock.calls.length;
+
+    for (let i = 0; i < 20; i++) {
+      const res = await app.inject({ method: "GET", url: "/api/bootstrap", remoteAddress: BROWSER_IP });
+      expect(res.statusCode).toBe(200);
+    }
+    expect(listContainers.mock.calls.length).toBe(afterFirst);
+
+    // Past the ONE SECOND the old negative cache short-circuited a repeated
+    // browser IP for. Without this wait the burst above passes against the
+    // buggy code too, and production's cost was precisely the request on the far
+    // side of that window — roughly one per second, each a full `listContainers`.
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    const later = await app.inject({ method: "GET", url: "/api/bootstrap", remoteAddress: BROWSER_IP });
+    expect(later.statusCode).toBe(200);
+    expect(listContainers.mock.calls.length).toBe(afterFirst);
+  });
+
+  it("still denies the Compose service IP the API it resolves through that index", async () => {
+    // The other half, and the one a "just skip the lookup" fix would break: the
+    // service container is identified from the same warm snapshot the browser
+    // request is answered from, and planning#371's blanket deny still applies.
+    for (const url of ["/api/bootstrap", "/api/secrets"]) {
+      const res = await app.inject({ method: "GET", url, remoteAddress: OPS_SERVICE_IP });
+      expect(res.statusCode).toBe(403);
+    }
+    const repeat = await app.inject({ method: "GET", url: "/api/bootstrap", remoteAddress: OPS_SERVICE_IP });
+    expect(repeat.statusCode).toBe(403);
+  });
+
+  it("keeps the §0 untrusted-network deny ahead of the lookup entirely", async () => {
+    // Section 0 must be the first thing the hook does, so a declared-untrusted
+    // caller is refused without the index being consulted at all — the property
+    // that lets it hold before the orchestrator has learned any address.
+    registerUntrustedContainerNetwork("172.28.0.0/16");
+    listContainers.mockClear();
+
+    const res = await app.inject({ method: "GET", url: "/api/bootstrap", remoteAddress: "172.28.0.7" });
+
+    expect(res.statusCode).toBe(403);
+    expect(listContainers).not.toHaveBeenCalled();
   });
 });
 

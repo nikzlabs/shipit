@@ -274,9 +274,17 @@ export function registerContainerOriginGuard(
     // one's network namespace. The two are deliberately kept apart (planning#371).
     // `getSessionByContainerIp` reads the manager's own record of the container
     // ShipIt created and runs the agent in; `getSessionByAnyContainerIp`
-    // (`session-container.ts:1228`) resolves anything carrying the
-    // `shipit-parent-session` label, which `compose-generator.ts:1113` stamps on
-    // every generated service — the project's own and a plugin's alike.
+    // resolves anything carrying the `shipit-parent-session` label, which
+    // `compose-generator.ts` stamps on every generated service — the project's
+    // own and a plugin's alike.
+    //
+    // This hook is ROOT-level, so the `await` below is on the path of every
+    // browser request and every WebSocket upgrade. A browser IP is in no
+    // container map, so it reaches that await every time — which is why
+    // `getSessionByAnyContainerIp` answers from a background-refreshed snapshot
+    // instead of running a `listContainers` per miss. It still THROWS when it
+    // has no snapshot it can trust, and the `catch` below is that answer's
+    // fail-closed half; treat both as load-bearing.
     let caller: { sessionId: string } | undefined;
     let otherContainer: { sessionId: string } | undefined;
     try {

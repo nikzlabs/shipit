@@ -29,6 +29,12 @@ interface MockDaemon {
   volumes: Map<string, { labels: Record<string, string> }>;
   /** Exec instances. Map of exec_id → container_id */
   execs: Map<string, string>;
+  /**
+   * Called as the daemon begins serving a request — i.e. at the moment the real
+   * daemon would be acting on it. The only place a test can observe orchestrator
+   * state *while* a Docker mutation is in flight.
+   */
+  onServe?: (method: string, url: string) => void;
   close: () => Promise<void>;
 }
 
@@ -46,6 +52,7 @@ function createMockDaemon(): MockDaemon {
   const server = http.createServer((req, res) => {
     const url = req.url ?? "/";
     const method = (req.method ?? "GET").toUpperCase();
+    daemon.onServe?.(method, url);
 
     // Read body for POST/PUT
     const chunks: Buffer[] = [];
@@ -294,7 +301,7 @@ function createMockDaemon(): MockDaemon {
     });
   });
 
-  return {
+  const daemon: MockDaemon = {
     server,
     socketPath,
     containers,
@@ -309,6 +316,7 @@ function createMockDaemon(): MockDaemon {
       });
     }),
   };
+  return daemon;
 }
 
 // ---------------------------------------------------------------------------
@@ -367,6 +375,9 @@ describe("Docker API proxy", () => {
   let proxy: http.Server;
   let proxyUrl: string;
   let sessionMap: Map<string, SessionInfo>;
+  /** Currently-open topology brackets, and how many were ever opened. */
+  let openBrackets: number;
+  let bracketOpensSeen: number;
 
   beforeEach(async () => {
     daemon = createMockDaemon();
@@ -380,9 +391,16 @@ describe("Docker API proxy", () => {
       dockerAccess: true,
     });
 
+    openBrackets = 0;
+    bracketOpensSeen = 0;
     const deps: DockerProxyDeps = {
       getSessionByContainerIp: (ip) => sessionMap.get(ip),
       socketPath: daemon.socketPath,
+      onTopologyChange: () => {
+        openBrackets++;
+        bracketOpensSeen++;
+        return () => { openBrackets--; };
+      },
     };
 
     proxy = createDockerProxy(deps);
@@ -455,6 +473,125 @@ describe("Docker API proxy", () => {
       const res = await makeRequest(proxyUrl, "POST", "/v1.41/swarm/init");
       expect(res.status).toBe(403);
       expect((res.body as any).message).toContain("Endpoint not allowed");
+    });
+  });
+
+  // --- Topology announcements to the API trust boundary ---
+
+  /**
+   * `sanitizeContainerCreate` stamps `shipit-parent-session` on every container
+   * the agent creates through this proxy, which makes those containers callers
+   * `api-container-guard.ts` has to recognise — it denies them the whole `/api/*`
+   * surface. It recognises them through a periodically-rebuilt IP index, and an
+   * unrecognised source IP reads as "browser or host", i.e. as MORE trusted than
+   * the agent that created the container. So a mutating proxy request has to say
+   * so, on both sides of the handler: the announcement AFTER it is what stops a
+   * snapshot that began before the new container from publishing as
+   * authoritative.
+   */
+  /**
+   * docs/201 — the container-topology bracket.
+   *
+   * `sanitizeContainerCreate` stamps `shipit-parent-session` on every container
+   * the agent creates through this proxy, which makes those containers callers
+   * `api-container-guard.ts` has to recognise — it denies them the whole `/api/*`
+   * surface. It recognises them through an IP index that answers from a
+   * periodically-refreshed snapshot, and an unrecognised source IP reads as
+   * "browser or host", i.e. as MORE trusted than the agent that created the
+   * container. So the operations that put a RUNNING container on a session
+   * network are bracketed, and the bracket has to still be open while the daemon
+   * acts.
+   */
+  describe("container-topology brackets", () => {
+    /** How many brackets were open at the moment the daemon served the request. */
+    async function openWhileServing(
+      method: string,
+      path: string,
+      body?: unknown,
+    ): Promise<{ status: number; open: number }> {
+      let seen = -1;
+      daemon.onServe = () => { seen = openBrackets; };
+      const res = await makeRequest(proxyUrl, method, path, body);
+      daemon.onServe = undefined;
+      return { status: res.status, open: seen };
+    }
+
+    async function createContainer(): Promise<string> {
+      const created = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", { Image: "alpine" });
+      bracketOpensSeen = 0;
+      return (created.body as { Id: string }).Id;
+    }
+
+    it("holds one across a container START, which is when code begins running", async () => {
+      // The case that matters most and the one that is easiest to get wrong:
+      // this route forwards with `pipeToDocker`, which used to be
+      // fire-and-forget — so the handler resolved, the bracket closed, and only
+      // THEN did the daemon start the container.
+      const id = await createContainer();
+
+      const { status, open } = await openWhileServing("POST", `/v1.41/containers/${id}/start`);
+
+      expect(status).toBe(204);
+      expect(open).toBe(1);
+      expect(openBrackets).toBe(0);
+    });
+
+    it("holds one across a restart, which can hand out a new address", async () => {
+      const id = await createContainer();
+
+      const { open } = await openWhileServing("POST", `/v1.41/containers/${id}/restart`);
+
+      expect(open).toBe(1);
+      expect(openBrackets).toBe(0);
+    });
+
+    it("holds one across a network connect, which gives a container a new address", async () => {
+      const id = await createContainer();
+      const net = await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", { Name: "n1" });
+      const netId = (net.body as { Id: string }).Id;
+      bracketOpensSeen = 0;
+
+      const { open } = await openWhileServing("POST", `/v1.41/networks/${netId}/connect`, { Container: id });
+
+      expect(open).toBe(1);
+      expect(openBrackets).toBe(0);
+    });
+
+    it("opens nothing for a create — a created container runs nothing and holds no address", async () => {
+      // Scope discipline, not an omission. A bracket suspends the API guard's
+      // fast path, so every one that buys nothing is pure latency.
+      bracketOpensSeen = 0;
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", { Image: "alpine" });
+
+      expect(res.status).toBe(201);
+      expect(bracketOpensSeen).toBe(0);
+    });
+
+    it("opens nothing for reads, or for mutations that only remove", async () => {
+      // A stop/kill/delete can only remove an index entry, and a stale positive
+      // fails toward denial.
+      const id = await createContainer();
+
+      await makeRequest(proxyUrl, "GET", "/_ping");
+      await makeRequest(proxyUrl, "GET", "/v1.41/containers/json");
+      await makeRequest(proxyUrl, "POST", `/v1.41/containers/${id}/stop`);
+      await makeRequest(proxyUrl, "DELETE", `/v1.41/containers/${id}`);
+
+      expect(bracketOpensSeen).toBe(0);
+    });
+
+    it("opens nothing for a start the label check refuses", async () => {
+      // The bracket is taken after authorisation, not at dispatch. Otherwise a
+      // caller with no right to the container — or one that simply sends its
+      // body slowly — could hold the whole orchestrator's browser traffic on the
+      // Docker path for as long as it liked.
+      daemon.containers.set("foreign", { labels: { [PARENT_SESSION_LABEL]: "other-session" }, running: false });
+      bracketOpensSeen = 0;
+
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/foreign/start");
+
+      expect(res.status).toBe(403);
+      expect(bracketOpensSeen).toBe(0);
     });
   });
 

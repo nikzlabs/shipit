@@ -43,6 +43,26 @@ export interface HealthDeps {
    * `startHealthMonitor`).
    */
   labelFilters: () => string[];
+  /**
+   * Called when a container carrying `shipit-parent-session` STARTS, whoever
+   * started it.
+   *
+   * The API trust boundary (`api-container-guard.ts`) resolves a caller through
+   * an IP index that answers from a periodically-refreshed snapshot, and an
+   * unrecognised source IP reads as "browser or host" — MORE trusted than a
+   * session container. The paths ShipIt drives bracket themselves
+   * (`SessionContainerManager.beginContainerTopologyChange`); this covers the
+   * one nobody drives — a Compose service that Docker's own restart policy
+   * brings back on a NEW address.
+   *
+   * Deliberately narrow. `die` is not reported: it can only REMOVE an entry, and
+   * a stale positive fails toward denial. Unlabelled starts are not reported
+   * either: they cannot change the labelled set, and reporting them would let
+   * unrelated churn on a shared daemon drop the freshness stamp continuously —
+   * which is the latency bug this index was rebuilt to fix. This is a backstop
+   * for a delivery-ordered stream, never the ordering mechanism.
+   */
+  onLabelledContainerStarted?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,10 +205,15 @@ export async function startHealthMonitor(
     // loop and only surfaced ~5s later via `pollStatus` as a generic
     // "Exited with code 137". We now dispatch by label inside the handler.
     // See docs/124-session-rescue-and-diagnostics §1.2.
+    // `start` is subscribed to for a different consumer than `die`/`oom`: it is
+    // the only signal that tells the API trust boundary's IP index a container
+    // came up that no ShipIt code path created — a Compose service restarted by
+    // Docker's own restart policy, on a new bridge address. The crash handler
+    // below ignores it.
     state.eventStream = await deps.docker.getEvents({
       filters: {
         type: ["container"],
-        event: ["die", "oom"],
+        event: ["die", "oom", "start"],
       },
     });
 
@@ -204,13 +229,31 @@ export async function startHealthMonitor(
     }
 
     state.eventStream.on("data", (chunk: Buffer) => {
+      // Docker streams newline-delimited JSON records, and a single `data` chunk
+      // carries whatever the socket happened to deliver — which is routinely
+      // SEVERAL records when a `compose up` starts a stack. Parsing the chunk as
+      // one object threw on every such batch and swallowed the whole batch,
+      // crash events included; subscribing to `start` made those batches
+      // commonplace, so it is split here.
+      for (const line of chunk.toString().split("\n")) {
+        if (line.trim()) handleEvent(line);
+      }
+    });
+
+    function handleEvent(line: string): void {
       try {
-        const event = JSON.parse(chunk.toString()) as {
+        const event = JSON.parse(line) as {
           Action?: string;
           Actor?: { ID?: string; Attributes?: Record<string, string> };
         };
         const attrs = event.Actor?.Attributes ?? {};
         const action = event.Action;
+        // Ahead of the crash dispatch below, and scoped to the label the trust
+        // boundary's index is built from — see `onLabelledContainerStarted` for
+        // why `die` and unlabelled starts are deliberately not reported.
+        if (action === "start" && attrs[COMPOSE_PARENT_SESSION_LABEL]) {
+          deps.onLabelledContainerStarted?.();
+        }
         if (action !== "die" && action !== "oom") return;
         // Read the real container ID from `Actor.ID` — `attrs.id` is never
         // populated by Docker, so the old `attrs.id ?? ""` was always "".
@@ -345,7 +388,7 @@ export async function startHealthMonitor(
       } catch {
         // Malformed event — ignore
       }
-    });
+    }
 
     state.eventStream.on("error", () => {
       // Event stream disconnected unexpectedly — clear the handle and
