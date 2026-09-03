@@ -9,7 +9,7 @@ description: Widen the docs/224 merge gate from a per-sandbox grant to a per-rep
 Implements [requirements.md](./requirements.md). Extends
 `docs/224-sandbox-merge-capability` (the shim, the route, the guardrails).
 
-> **Revision 9, 2026-09-03.** Eight independent review rounds; every finding
+> **Revision 10, 2026-09-03.** Nine independent review rounds; every finding
 > verified at the source before it was accepted. Round 1 rebuilt the ownership
 > check, round 2 replaced the status gate and caught a `cwd` rule that would have
 > broken every merge, round 3 replaced the query and the grace window, round 4
@@ -412,7 +412,28 @@ while the attribution memory is deliberately not persisted. So:
 A `settling` row authorises no further merge; it exists only until the merge it
 already performed is fully recorded.
 
-**Clearing.** On a settled merge; on a head that no longer matches; when the
+**`settling` is monotonic (round 9).** Protecting it from revocation alone was
+not enough: an origin change, a second `--auto`, archive, a re-arm, a reset, an
+unarchive or a repository removal could each erase or replace the row between the
+REST success and the end of settlement — and archive forcibly disposes the runner,
+while remote replacement is serialised with nothing. So **every one of those
+paths acts on `pending` rows only.** A `settling` row is untouched by all of
+them; the only thing that removes it is settlement completing, or the session
+being destroyed outright (hard delete / full reset, through the cascade).
+
+**And settlement reads the row's own tuple, not the session's current targeting.**
+`forceVerifySessionPrState()` resolves the *current* tracker repository and the
+*current* branch, and the terminal lookup underneath it picks the latest pull
+request **by branch**, not by number — so after an origin change, a branch reset
+or a restart it cannot reliably settle the pull request that actually merged. The
+executor therefore reconciles a `settling` row from its immutable
+`(repo_key, pr_number, expected_sha)`: it reads that pull request in that
+repository, confirms that SHA merged, records it, and only then deletes the row.
+Updating the *session's* card state stays best-effort and is skipped when the
+session's repository identity no longer matches the row's.
+
+**Clearing (all of it `pending`-only, per the monotonicity rule above).** On a
+settled merge; on a head that no longer matches; when the
 pull request closes; on **archive** and on hard delete or full reset (a foreign
 key with `ON DELETE CASCADE`, plus the explicit archive hook — round 6 correctly
 rejected `untrackSession()`, which has no production lifecycle caller); on the
@@ -511,6 +532,8 @@ repo-scoped agent permission exists.
 | 7 | the grace facade omitted the PR number | `prNumber` passed explicitly |
 | 8 | `origin` can be replaced under a recorded PR number | store `pr_repo_key`, match at merge time, clear on identity change |
 | 8 | revocation could delete a settling arming | durable `state`; revocation deletes `pending` only |
+| 9 | other lifecycle paths could still erase `settling` | `settling` is monotonic; every clear acts on `pending` only |
+| 9 | settlement used current session targeting | reconciled from the row's own repo + PR + SHA |
 
 ## Key files
 

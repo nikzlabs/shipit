@@ -81,6 +81,12 @@ Revision 2 (2026-09-02), after two review rounds.
 - [ ] A REST success writes `settling` even if the row was deleted meanwhile, so a
       revocation racing the call cannot strand settlement or the merge record
 - [ ] Armings survive a restart (req 21)
+- [ ] `settling` is monotonic: origin change, a second `--auto`, archive, re-arm,
+      reset, unarchive, repository removal and revocation all act on `pending`
+      rows only; only settlement or session destruction removes a `settling` row
+- [ ] Settlement reconciles from the row's own `(repo_key, pr_number,
+      expected_sha)`, never from current session targeting; session card state is
+      best-effort and skipped when repository identity changed
 - [ ] Cleared on merge, head change, PR close, **archive**, hard delete / full
       reset, docs/202 re-arm, reset, unarchive, repository removal
 - [ ] Notices use `persistNoticeUnattached()` when there is no runner
