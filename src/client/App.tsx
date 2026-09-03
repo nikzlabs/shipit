@@ -2117,12 +2117,14 @@ export default function App() {
       {/* docs/211 — for a sandbox session the PR-card slot holds the orientation
           banner instead (derived chrome from kind/capabilities — never a chat
           card). Other sessions keep the PR lifecycle card as their top chrome. */}
-      {/* docs/259 — and on mobile, before the session exists, the same slot names
-          the repo the session will be created in. Mutually exclusive with the
-          card below (whose condition already includes `!showNewSessionView`), so
-          the slot never has two occupants and the handover at graduation needs
-          no extra state. */}
-      {showNewSessionView && isMobile && newSessionRepoSlug && (
+      {/* docs/259 — and before the session exists, the same slot names the repo
+          the session will be created in. Mutually exclusive with the card below
+          (whose condition already includes `!showNewSessionView`), so the slot
+          never has two occupants and the handover at graduation needs no extra
+          state. Every viewport: the desktop sidebar names the repo too, but the
+          composer is where the user is looking, and the bar is also the switcher
+          (req 3) — so it earns its place on both. */}
+      {showNewSessionView && newSessionRepoSlug && (
         <NewSessionRepoBar
           repoSlug={newSessionRepoSlug}
           repo={repos.find((r) => r.url === newSessionRepoUrl)}

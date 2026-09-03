@@ -1,15 +1,14 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { CaretRightIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
-import { useEventListener } from "../hooks/useEventListener.js";
-import { Dialog } from "./ui/dialog.js";
+import { Dialog, DialogOverlay, DialogPanel, DialogPortal, DialogTitle } from "./ui/dialog.js";
 import { groupBandFill } from "./SessionSidebar/SessionGroup.js";
 import { repoColorVar } from "../../server/shared/repo-colors.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import type { RepoInfo } from "../../server/shared/types.js";
 
 /**
- * docs/259 — the mobile new-session screen's answer to "which repo am I in?".
+ * docs/259 — the new-session screen's answer to "which repo am I in?".
  *
  * Tapping `+` on the mobile tab bar starts a session in a repo the app picked
  * IMPLICITLY (the current session's repo, else the active repo) and lands on
@@ -24,8 +23,11 @@ import type { RepoInfo } from "../../server/shared/types.js";
  * `!showNewSessionView` — so the slot has one occupant at a time and the
  * handover on graduation is automatic, costing no steady-state vertical space.
  *
- * Mobile only. The desktop already answers the question in its always-visible
- * sidebar, where the group for this repo renders its `New session` row selected.
+ * Every viewport (req 1). The desktop sidebar names the repo as well, but it is
+ * across the window from the composer the user is typing in, and the bar is the
+ * switcher too (req 3). The only thing the viewport changes is the picker's
+ * shape: a bottom sheet under 768px (`useIsMobile`'s boundary, so `md:` is the
+ * desktop side), a centered card above it.
  */
 export function NewSessionRepoBar({
   repoSlug,
@@ -49,15 +51,16 @@ export function NewSessionRepoBar({
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
 
-  // The shared `Dialog` wrapper gives Back-button dismissal but no key handling
-  // (that lives in `DialogContent`, which this sheet deliberately does not use).
-  // Escape is the other way out for anyone on a hardware keyboard.
-  useEventListener(pickerOpen ? window : null, "keydown", (e) => {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      setPickerOpen(false);
-    }
-  });
+  // Where focus should land when the sheet opens: the row for the repo we're
+  // already in, which is the natural place to start from and the one Radix's
+  // default (first tabbable) would only reach by accident.
+  const initialRowRef = useRef<HTMLButtonElement | null>(null);
+  // And where it goes back to on close. Radix restores to whatever was focused
+  // when the sheet opened, which is the bar only where a click focuses a button
+  // — true in Chrome and Firefox, not in Safari, where it would land on <body>
+  // and restart the next Tab at the top of the document. Naming the target
+  // makes the restore the same on every browser.
+  const barRef = useRef<HTMLButtonElement | null>(null);
 
   // docs/254 — `colorIndex` is undefined only for a row written before that
   // migration's backfill. Such a repo gets no edge and no band rather than an
@@ -77,6 +80,7 @@ export function NewSessionRepoBar({
     <>
       <button
         type="button"
+        ref={barRef}
         data-testid="new-session-repo-bar"
         onClick={() => setPickerOpen(true)}
         aria-label={`New session in ${repoSlug} — change repository`}
@@ -98,72 +102,91 @@ export function NewSessionRepoBar({
         <CaretRightIcon size={ICON_SIZE.SM} className="ml-auto shrink-0 text-(--color-text-tertiary)" />
       </button>
 
-      {/* Wrapped in the shared Dialog purely to inherit Back-button dismissal,
-          the same way QuickCaptureOverlay does: the wrapper pushes a history
-          entry and maps Back → onOpenChange(false). The bottom-sheet layout is
-          kept bespoke rather than forced into DialogContent's fullscreen-on-
-          mobile mold — a three-row repo list does not warrant a whole screen. */}
-      {pickerOpen && (
-        <Dialog open onOpenChange={(o) => { if (!o) setPickerOpen(false); }}>
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Choose a repository"
-            className="fixed inset-0 z-50 flex flex-col justify-end bg-(--color-bg-overlay)"
-            onClick={(e) => {
-              if (e.target === e.currentTarget) setPickerOpen(false);
+      {/* `DialogPanel` is the raw Radix content: the focus trap, the restore of
+          focus to the bar on close, Escape and outside-pointer dismissal, with
+          no layout of its own. `DialogContent` is not used because it is
+          fullscreen under `md:` — a whole screen for a three-row repo list — and
+          the previous answer, a hand-rolled `role="dialog" aria-modal` div, was
+          a modal claim Tab could walk out of. Shape is bespoke, behaviour is
+          not. The `Dialog` wrapper adds Back-button dismissal on top.
+
+          Bottom sheet under `md:`, centered card at and above it: a list
+          anchored to the bottom edge of a wide window reads as a mobile
+          surface left switched on.
+
+          The open state is Radix's to unmount (`DialogPortal` renders nothing
+          when closed), NOT a `{pickerOpen && …}` guard around the root. A guard
+          there tears the whole tree out the instant the state flips, so the
+          focus scope never gets to run `onCloseAutoFocus` and focus is left on
+          `<body>` — the exact defect this rewrite exists to fix. */}
+      <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
+        <DialogPortal>
+          <DialogOverlay />
+          <DialogPanel
+            // Radix warns without one, and the visible heading is the honest
+            // name — better than an `aria-label` saying something else.
+            aria-describedby={undefined}
+            onOpenAutoFocus={(e) => {
+              // Land on the current repo's row rather than Radix's default
+              // (the first tabbable), and never on the obscured bar behind.
+              if (!initialRowRef.current) return;
+              e.preventDefault();
+              initialRowRef.current.focus();
             }}
+            onCloseAutoFocus={(e) => {
+              if (!barRef.current) return;
+              e.preventDefault();
+              barRef.current.focus();
+            }}
+            className="fixed inset-x-0 bottom-0 z-50 max-h-[70vh] overflow-y-auto rounded-t-xl border-t border-(--color-border-secondary) bg-(--color-bg-elevated) pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 md:inset-x-auto md:bottom-auto md:left-1/2 md:top-1/2 md:w-72 md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl md:border md:pb-3 md:shadow-2xl"
           >
-            <div className="max-h-[70vh] overflow-y-auto rounded-t-xl border-t border-(--color-border-secondary) bg-(--color-bg-elevated) pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2">
-              <h2 className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-(--color-text-tertiary)">
-                Start this session in
-              </h2>
-              {pickable.map((r, i) => {
-                const label = parseRepoLabel(r.url);
-                // Identity by URL, not by label. `parseRepoLabel` truncates a
-                // repo name at its first dot (`owner/api.v1` and `owner/api.v2`
-                // both render as `owner/api`), so a label comparison would mark
-                // BOTH rows selected and then refuse to switch to either. The
-                // label is only the fallback for the window before the repo
-                // list has loaded and `repo` is still undefined.
-                const selected = repo ? r.url === repo.url : label === repoSlug;
-                const swatch = r.colorIndex !== undefined ? repoColorVar(r.colorIndex) : undefined;
-                return (
-                  <button
-                    key={r.url}
-                    type="button"
-                    // Move focus into the sheet on open rather than leaving it
-                    // on the now-obscured bar. The selected row is the natural
-                    // landing spot; with nothing resolved yet, the first row is.
-                    autoFocus={selected || (!repo && i === 0)}
-                    aria-current={selected ? "true" : undefined}
-                    onClick={() => {
-                      setPickerOpen(false);
-                      // Re-picking the repo we're already in would otherwise
-                      // re-claim a session and reset the view — including the
-                      // draft the user just typed. Closing is the whole action.
-                      if (!selected) onSelectRepo(r.url);
-                    }}
-                    className={`flex w-full items-center gap-2.5 px-4 py-3 text-left text-sm ${
-                      selected ? "bg-(--color-accent-subtle)" : "active:bg-(--color-bg-hover)"
-                    }`}
-                  >
-                    <span
-                      aria-hidden
-                      className="size-2 shrink-0 rounded-full bg-(--color-text-tertiary)"
-                      style={swatch ? { backgroundColor: swatch } : undefined}
-                    />
-                    <span className="min-w-0 truncate text-(--color-text-primary)">{label}</span>
-                    {selected && (
-                      <CheckIcon size={ICON_SIZE.SM} className="ml-auto shrink-0 text-(--color-accent)" />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </Dialog>
-      )}
+            <DialogTitle className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-(--color-text-tertiary)">
+              Start this session in
+            </DialogTitle>
+            {pickable.map((r, i) => {
+              const label = parseRepoLabel(r.url);
+              // Identity by URL, not by label. `parseRepoLabel` truncates a
+              // repo name at its first dot (`owner/api.v1` and `owner/api.v2`
+              // both render as `owner/api`), so a label comparison would mark
+              // BOTH rows selected and then refuse to switch to either. The
+              // label is only the fallback for the window before the repo
+              // list has loaded and `repo` is still undefined.
+              const selected = repo ? r.url === repo.url : label === repoSlug;
+              const swatch = r.colorIndex !== undefined ? repoColorVar(r.colorIndex) : undefined;
+              return (
+                <button
+                  key={r.url}
+                  type="button"
+                  // The selected row is where focus lands on open; with
+                  // nothing resolved yet, the first row is.
+                  ref={selected || (!repo && i === 0) ? initialRowRef : undefined}
+                  aria-current={selected ? "true" : undefined}
+                  onClick={() => {
+                    setPickerOpen(false);
+                    // Re-picking the repo we're already in would otherwise
+                    // re-claim a session and reset the view — including the
+                    // draft the user just typed. Closing is the whole action.
+                    if (!selected) onSelectRepo(r.url);
+                  }}
+                  className={`flex w-full items-center gap-2.5 px-4 py-3 text-left text-sm ${
+                    selected ? "bg-(--color-accent-subtle)" : "active:bg-(--color-bg-hover)"
+                  }`}
+                >
+                  <span
+                    aria-hidden
+                    className="size-2 shrink-0 rounded-full bg-(--color-text-tertiary)"
+                    style={swatch ? { backgroundColor: swatch } : undefined}
+                  />
+                  <span className="min-w-0 truncate text-(--color-text-primary)">{label}</span>
+                  {selected && (
+                    <CheckIcon size={ICON_SIZE.SM} className="ml-auto shrink-0 text-(--color-accent)" />
+                  )}
+                </button>
+              );
+            })}
+          </DialogPanel>
+        </DialogPortal>
+      </Dialog>
     </>
   );
 }

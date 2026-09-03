@@ -214,6 +214,24 @@ const DialogContent = forwardRef<
 ));
 DialogContent.displayName = DialogPrimitive.Content.displayName;
 
+/**
+ * The raw Radix content node: focus trap, focus restoration to the trigger on
+ * close, Escape, outside-pointer dismissal and `aria-hidden` on the background —
+ * with no layout, no close button and no styling of its own.
+ *
+ * `DialogContent` is the default and stays the default. Reach for this only
+ * when a surface genuinely is not "centered card, fullscreen on mobile" —
+ * `NewSessionRepoBar`'s bottom sheet is the case it exists for. The point is
+ * that a bespoke SHAPE must not also mean hand-rolling the focus behaviour:
+ * doing that produced a surface claiming `aria-modal` that Tab could walk out
+ * of, and that dropped focus on `<body>` when it closed.
+ *
+ * Callers own the whole className (including `fixed`/`z-50`), supply their own
+ * `DialogOverlay` inside a `DialogPortal`, and must render a `DialogTitle` — it
+ * is what names the dialog, and Radix warns in dev without one.
+ */
+const DialogPanel = DialogPrimitive.Content;
+
 function DialogHeader({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
@@ -269,6 +287,7 @@ export {
   DialogPortal,
   DialogOverlay,
   DialogContent,
+  DialogPanel,
   DialogHeader,
   DialogFooter,
   DialogTitle,
