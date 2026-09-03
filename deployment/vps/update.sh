@@ -20,6 +20,22 @@ TRIGGER_FILE="$SHIPIT_DIR/.update-requested"
 # the other untracked trigger files so it survives image rebuilds. Keep this
 # path in sync with UPDATE_FAILED_FILE in src/server/orchestrator/release-channel.ts.
 FAILURE_FILE="$SHIPIT_DIR/.update-failed"
+# Written by deploy.sh the moment `docker compose up -d` returns — i.e. once the
+# new container has been STARTED (that is all it proves; there is no health gate).
+# deploy.sh keeps working after that: its EXIT trap prunes the build cache, which
+# can run for minutes. A kill landing in that tail must NOT roll the checkout
+# back — the new image is already running, so rolling back would leave the
+# checkout BEHIND it, the mirror of the bug this script exists to prevent.
+#
+# Its presence, NOT the exit status, is what decides the cleanup below. That is
+# safe because everything which can fail runs before the restart; the only work
+# after it is the prune, whose own failures deploy.sh swallows. Residual: a kill
+# in the instant between `compose up` returning and this file appearing still
+# rolls back. That window is milliseconds against a prune measured in minutes,
+# which is the whole point of the marker — closing it entirely would mean asking
+# a possibly-wedged Docker what is running, from inside the cleanup path.
+RESTART_MARKER="$SHIPIT_DIR/.deploy-restarted"
+export SHIPIT_RESTART_MARKER="$RESTART_MARKER"
 
 # Remove trigger file immediately so we don't re-run
 rm -f "$TRIGGER_FILE"
@@ -46,8 +62,9 @@ REF="unknown"
 TARGET_SHA="unknown"
 
 # Clear any stale failure marker — a fresh attempt starts clean and only
-# re-creates the marker if THIS attempt fails.
-rm -f "$FAILURE_FILE"
+# re-creates the marker if THIS attempt fails. Same for the restart marker: a
+# leftover from a previous run would make this run's failure read as a success.
+rm -f "$FAILURE_FILE" "$RESTART_MARKER"
 
 # Flag flipped to 1 only once the build+restart fully succeed. The EXIT trap
 # reads it to decide between the success path (drop the marker) and the failure
@@ -61,8 +78,11 @@ cleanup() {
   local code=$?
   # Disarm so the `exit` below can't re-enter this handler.
   trap - EXIT
-  if [ "$SUCCESS" -eq 1 ]; then
-    rm -f "$FAILURE_FILE" || true
+  if [ "$SUCCESS" -eq 1 ] || [ -f "$RESTART_MARKER" ]; then
+    if [ "$SUCCESS" -ne 1 ]; then
+      echo "$(date -Iseconds) ShipIt update interrupted (exit $code) AFTER the restart — the new image is live; keeping the checkout."
+    fi
+    rm -f "$FAILURE_FILE" "$RESTART_MARKER" || true
     exit 0
   fi
   echo "$(date -Iseconds) ShipIt update FAILED (exit $code) — rolling checkout back to $PRIOR_SHA"
@@ -76,6 +96,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# A kill from outside — systemd's TimeoutStartSec= firing, or an operator's
+# `systemctl stop` — must land in cleanup with a code that says so. Bash already
+# runs the EXIT trap on an untrapped SIGTERM, but `$?` there is 0, so the
+# breadcrumb claimed "exit 0" for a run that was killed. Exiting explicitly makes
+# it 143 (128+SIGTERM), 130 for SIGINT.
+trap 'exit 143' TERM
+trap 'exit 130' INT
+
 # Backoff schedule between fetch attempts (attempts = delays + 1). GitHub
 # intermittently answers an ANONYMOUS git request from this host's IP with a 401
 # even for a public repo — observed as a fetch failing one second after an
@@ -84,22 +112,35 @@ trap cleanup EXIT
 # sleeping; production always uses the default.
 FETCH_RETRY_DELAYS="${SHIPIT_FETCH_RETRY_DELAYS:-5 15 45}"
 
-# Fetch from origin, retrying on failure. The LAST attempt runs bare so its
-# non-zero status trips `set -e` and the EXIT trap above records git's real exit
-# code (128) and rolls the checkout back. HEAD still moves only after a fetch
-# succeeds — this only changes how many refusals it takes to give up.
+# Wall-clock bound on ONE fetch attempt. Git has no timeout of its own, so a
+# connection that stalls rather than refusing would hang the whole run forever.
+# A stall is treated exactly like a refusal: `timeout` exits 124 (137 when it had
+# to escalate to SIGKILL), which the retry below sees as a failed attempt. An
+# incremental fetch of this repo takes seconds, so 120 is generous.
+# Override-able only for the test harness.
+FETCH_TIMEOUT_SECONDS="${SHIPIT_FETCH_TIMEOUT_SECONDS:-120}"
+# `timeout` alone only SIGTERMs, and then waits — forever, if what it is waiting
+# on is deaf to TERM. `-k` is what makes the bound hard: SIGKILL this long after
+# the TERM. So the bound is really FETCH_TIMEOUT + KILL_GRACE, both bounded.
+FETCH_KILL_GRACE_SECONDS="${SHIPIT_FETCH_KILL_GRACE_SECONDS:-15}"
+
+# Fetch from origin, retrying on failure. The LAST attempt is the only one NOT
+# inside an `if`, so its non-zero status trips `set -e` and the EXIT trap above
+# records the real exit code (128 for a refusal, 124 or 137 for a stall) and
+# rolls the checkout back. HEAD still moves only after a fetch succeeds — this
+# only changes how many failures it takes to give up.
 fetch_origin() {
   local delay
   # Unquoted on purpose: the delay list is whitespace-separated.
   # shellcheck disable=SC2086
   for delay in $FETCH_RETRY_DELAYS; do
-    if git fetch origin --tags --prune; then
+    if timeout -k "$FETCH_KILL_GRACE_SECONDS" "$FETCH_TIMEOUT_SECONDS" git fetch origin --tags --prune; then
       return 0
     fi
     echo "$(date -Iseconds) git fetch origin --tags --prune failed — retrying in ${delay}s"
     sleep "$delay"
   done
-  git fetch origin --tags --prune
+  timeout -k "$FETCH_KILL_GRACE_SECONDS" "$FETCH_TIMEOUT_SECONDS" git fetch origin --tags --prune
 }
 
 # Resolve the release channel (feature 162). Default to edge when the
@@ -154,7 +195,10 @@ git reset --hard "$TARGET_SHA"
 # trap (rollback + failure marker) before the script aborts. The deploy command
 # is override-able (SHIPIT_DEPLOY_SCRIPT) so the test harness can substitute a
 # stub for the Docker build that exercises both the success and failure paths;
-# production leaves it unset and runs the real deploy.sh.
+# production leaves it unset and runs the real deploy.sh. This step gets no
+# `timeout` of its own: a build's honest duration varies too much to bound here,
+# so its backstop is TimeoutStartSec= on shipit-updater.service, whose SIGTERM
+# reaches this script's TERM trap and rolls the checkout back.
 DEPLOY_SCRIPT="${SHIPIT_DEPLOY_SCRIPT:-$SHIPIT_DIR/deployment/vps/deploy.sh}"
 bash "$DEPLOY_SCRIPT"
 

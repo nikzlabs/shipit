@@ -8,6 +8,13 @@ dist/
 *.db-shm
 .update-requested
 .restart-requested
+# The self-updater's own state, written into the checkout at /opt/shipit:
+# `.update-failed` is the failure breadcrumb the UI reads, `.deploy-restarted`
+# the "the new container is already running" marker deploy.sh hands to update.sh.
+# Ignored, not merely untracked, for the reason spelled out below: a stray
+# untracked file in the checkout stops the local install syncing.
+.update-failed
+.deploy-restarted
 # Release-channel preference (feature 162). Untracked so it survives
 # `git reset --hard` and image rebuilds.
 .release-channel

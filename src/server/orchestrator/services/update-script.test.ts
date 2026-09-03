@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync, execSync, spawn } from "node:child_process";
 
 /**
  * Drives the REAL host-side self-updater (deployment/vps/update.sh) end to end
@@ -75,14 +75,24 @@ describe("deployment/vps/update.sh (host self-updater)", () => {
 
   /**
    * Put a `git` shim ahead of the real one on the script's PATH. It logs every
-   * `fetch` invocation (so a run's round-trips can be counted) and optionally
-   * fails the first one the way GitHub's intermittent 401 does; everything else
-   * execs the real git.
+   * `fetch` invocation (so a run's round-trips can be counted) and can make a
+   * fetch fail the way GitHub's intermittent 401 does, or STALL the way a dead
+   * connection does; everything else execs the real git. The stall redirects its
+   * own stdio so the killed attempt leaves nothing holding the run's pipes open.
    */
-  const installGitShim = ({ failFirstFetch = false } = {}) => {
+  const installGitShim = ({
+    failFirstFetch = false,
+    stallFetch,
+    deafToTerm = false,
+  }: {
+    failFirstFetch?: boolean;
+    stallFetch?: "first" | "always";
+    deafToTerm?: boolean;
+  } = {}) => {
     const shimDir = path.join(root, "bin");
     const fetchLog = path.join(root, "fetches");
     const failedOnce = path.join(root, "failed-once");
+    const stalledOnce = path.join(root, "stalled-once");
     const realGit = execSync("command -v git", { shell: "/bin/bash" }).toString().trim();
     const failFirst = failFirstFetch
       ? `  if [ ! -f "${failedOnce}" ]; then
@@ -92,13 +102,33 @@ describe("deployment/vps/update.sh (host self-updater)", () => {
   fi
 `
       : "";
+    // Far longer than any timeout the tests set: if the bound does not fire, the
+    // assertion on elapsed time is what fails, not a passing-by-luck race.
+    // `deafToTerm` ignores SIGTERM, so only `timeout -k`'s SIGKILL ends it — the
+    // wedged connection a plain `timeout` would wait on forever. It waits in
+    // slices because `timeout` signals the whole process group: one long `sleep`
+    // would die of the TERM the shim itself is ignoring.
+    const stall = deafToTerm
+      ? `  trap '' TERM
+  for _i in $(seq 1 300); do sleep 0.1 </dev/null >/dev/null 2>&1; done
+`
+      : "  sleep 30 </dev/null >/dev/null 2>&1\n";
+    const stallBlock =
+      stallFetch === "always"
+        ? stall
+        : stallFetch === "first"
+          ? `  if [ ! -f "${stalledOnce}" ]; then
+    touch "${stalledOnce}"
+  ${stall}  fi
+`
+          : "";
     fs.mkdirSync(shimDir);
     fs.writeFileSync(
       path.join(shimDir, "git"),
       `#!/bin/bash
 if [ "$1" = fetch ]; then
   echo fetch >> "${fetchLog}"
-${failFirst}fi
+${failFirst}${stallBlock}fi
 exec ${realGit} "$@"
 `,
     );
@@ -111,6 +141,41 @@ exec ${realGit} "$@"
           : 0,
     };
   };
+
+  /**
+   * Start the real update.sh on the edge channel and kill its process GROUP once
+   * the deploy stub is in flight — what systemd's TimeoutStartSec= does to a run
+   * wedged in the build. `afterStart` is extra shell the stub runs before it
+   * hangs, so a test can model the restart having already happened.
+   */
+  const killDuringDeploy = (beforeReady = ""): Promise<number | null> =>
+    new Promise((resolve) => {
+      // `beforeReady` runs FIRST and the polled marker last, so the kill can
+      // never land between them — the test would otherwise pass or fail on
+      // which of two writes won a race.
+      fs.writeFileSync(
+        deployStub,
+        `#!/bin/bash\n${beforeReady}echo ran > "${deployMarker}"\nsleep 30\n`,
+      );
+      fs.chmodSync(deployStub, 0o755);
+      fs.writeFileSync(path.join(shipitDir, ".release-channel"), "edge");
+      const child = spawn("bash", [UPDATE_SCRIPT], {
+        env: { ...process.env, SHIPIT_DIR: shipitDir, SHIPIT_DEPLOY_SCRIPT: deployStub },
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: true, // its own process group, like a unit's control group
+      });
+      const waitForBuild = setInterval(() => {
+        if (!fs.existsSync(deployMarker)) return;
+        clearInterval(waitForBuild);
+        process.kill(-child.pid!, "SIGTERM");
+      }, 50);
+      // Also clears the timer when the script dies before the stub ever runs,
+      // which would otherwise leave it polling for the rest of the suite.
+      child.on("exit", (code) => {
+        clearInterval(waitForBuild);
+        resolve(code);
+      });
+    });
 
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-update-"));
@@ -316,5 +381,118 @@ exec ${realGit} "$@"
     // origin/stable and the tags both come from the ONE `--tags --prune` fetch.
     expect(shim.fetchCount()).toBe(1);
     expect(head(shipitDir)).toBe(target);
+  });
+
+  it("abandons a fetch that stalls and retries it", () => {
+    fs.writeFileSync(path.join(seedDir, "v.txt"), "edge4\n");
+    run("git checkout main", seedDir);
+    run("git add -A && git commit -m c-edge4", seedDir);
+    run("git push origin main", seedDir);
+    const target = head(seedDir);
+    // A hung connection, not a refusal: git would wait forever on its own.
+    const shim = installGitShim({ stallFetch: "first" });
+
+    const startedAt = Date.now();
+    const { code, stdout } = runUpdate("edge", {
+      env: {
+        SHIPIT_FETCH_TIMEOUT_SECONDS: "1",
+        SHIPIT_FETCH_RETRY_DELAYS: "0 0",
+        PATH: shim.pathPrefix,
+      },
+    });
+
+    expect(code).toBe(0);
+    // The stall is 30s: finishing at all means the bound fired and the retry ran.
+    expect(Date.now() - startedAt).toBeLessThan(20_000);
+    expect(stdout.match(/retrying in/g)).toHaveLength(1);
+    expect(head(shipitDir)).toBe(target);
+    expect(fs.existsSync(deployMarker)).toBe(true);
+  });
+
+  it("kills a fetch that ignores the timeout's TERM", () => {
+    fs.writeFileSync(path.join(seedDir, "v.txt"), "edge5\n");
+    run("git checkout main", seedDir);
+    run("git add -A && git commit -m c-edge5", seedDir);
+    run("git push origin main", seedDir);
+    const target = head(seedDir);
+    const shim = installGitShim({ stallFetch: "first", deafToTerm: true });
+
+    const startedAt = Date.now();
+    const { code, stdout } = runUpdate("edge", {
+      env: {
+        SHIPIT_FETCH_TIMEOUT_SECONDS: "1",
+        SHIPIT_FETCH_KILL_GRACE_SECONDS: "1",
+        SHIPIT_FETCH_RETRY_DELAYS: "0 0",
+        PATH: shim.pathPrefix,
+      },
+    });
+
+    expect(code).toBe(0);
+    // Without `timeout -k` the TERM is ignored and the attempt runs its full
+    // 30s: the bound is only real because something escalates to SIGKILL.
+    expect(Date.now() - startedAt).toBeLessThan(20_000);
+    expect(stdout.match(/retrying in/g)).toHaveLength(1);
+    expect(head(shipitDir)).toBe(target);
+  });
+
+  it("fails closed when every fetch stalls, recording the timeout's code", () => {
+    const before = head(shipitDir);
+    const shim = installGitShim({ stallFetch: "always" });
+
+    const { code } = runUpdate("edge", {
+      env: {
+        SHIPIT_FETCH_TIMEOUT_SECONDS: "1",
+        SHIPIT_FETCH_RETRY_DELAYS: "0 0",
+        PATH: shim.pathPrefix,
+      },
+    });
+
+    expect(code).toBe(124); // `timeout`'s code, distinguishing a stall from a 401
+    expect(shim.fetchCount()).toBe(3);
+    expect(head(shipitDir)).toBe(before);
+    expect(fs.existsSync(deployMarker)).toBe(false);
+    const marker = JSON.parse(
+      fs.readFileSync(path.join(shipitDir, ".update-failed"), "utf8"),
+    ) as { exitCode: number };
+    expect(marker.exitCode).toBe(124);
+  });
+
+  it("rolls back and records 143 when the run is killed mid-build", async () => {
+    const prior = head(shipitDir);
+    fs.writeFileSync(path.join(seedDir, "v.txt"), "killed\n");
+    run("git checkout main", seedDir);
+    run("git add -A && git commit -m c-killed", seedDir);
+    run("git push origin main", seedDir);
+
+    const code = await killDuringDeploy();
+
+    expect(code).toBe(143); // 128+SIGTERM, not the bare 0 an untrapped kill left
+    // The invariant the whole script exists for still holds under a kill.
+    expect(head(shipitDir)).toBe(prior);
+    const marker = JSON.parse(
+      fs.readFileSync(path.join(shipitDir, ".update-failed"), "utf8"),
+    ) as { runningSha: string; exitCode: number };
+    expect(marker.runningSha).toBe(prior);
+    expect(marker.exitCode).toBe(143);
+  });
+
+  it("keeps the checkout when the kill lands AFTER the restart", async () => {
+    fs.writeFileSync(path.join(seedDir, "v.txt"), "restarted\n");
+    run("git checkout main", seedDir);
+    run("git add -A && git commit -m c-restarted", seedDir);
+    run("git push origin main", seedDir);
+    const target = head(seedDir);
+
+    // deploy.sh keeps working after `docker compose up -d` returns (its EXIT
+    // trap prunes the build cache), so a timeout can land once the NEW image is
+    // already live. Rolling back there would leave the checkout BEHIND what is
+    // running — the mirror of the bug the rollback exists to prevent.
+    const code = await killDuringDeploy('echo built > "$SHIPIT_RESTART_MARKER"\n');
+
+    expect(code).toBe(0); // the update did succeed; only its cleanup was cut short
+    expect(head(shipitDir)).toBe(target);
+    expect(fs.existsSync(path.join(shipitDir, ".update-failed"))).toBe(false);
+    // The marker must not survive to make the NEXT run's failure read as success.
+    expect(fs.existsSync(path.join(shipitDir, ".deploy-restarted"))).toBe(false);
   });
 });

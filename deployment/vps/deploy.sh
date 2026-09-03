@@ -29,6 +29,12 @@ if [ -f "$SHIPIT_ENV_FILE" ]; then
   set +a
 fi
 
+# Re-install any systemd unit that drifted from the checkout (called after the
+# restart, below). setup.sh installs them at provisioning only, so without this
+# a unit change never reached a host that was already running.
+# shellcheck source=../lib/sync-systemd-units.sh
+. "$SHIPIT_DIR/deployment/lib/sync-systemd-units.sh"
+
 # planning#378 — the hostname the orchestrator answers to.
 #
 # api-origin-guard.ts refuses a request whose `Host` it cannot prove is ShipIt's
@@ -229,6 +235,23 @@ shipit_docker_build_with_retry docker compose -f "$COMPOSE_FILE" build "${DOCKER
 
 # Start orchestrator (session-worker containers are spawned on demand)
 docker compose -f "$COMPOSE_FILE" up -d --no-build shipit
+
+# Tell update.sh the new image is LIVE. Everything below this line is cleanup
+# (the EXIT-trap prune, which can run for minutes), so a kill landing past here
+# must not make update.sh roll the checkout back behind the running image. Only
+# set when update.sh asked for it, so a manual deploy writes nothing.
+if [ -n "${SHIPIT_RESTART_MARKER:-}" ]; then
+  echo "$SHIPIT_BUILD_ID" > "$SHIPIT_RESTART_MARKER" 2>/dev/null || true
+fi
+
+# Install any systemd unit that drifted from the checkout. Deliberately AFTER the
+# restart: a build that fails rolls the checkout back, and units installed from a
+# commit that never shipped would then describe neither the checkout nor the
+# running image. Here they track what is actually running. Silent no-op where the
+# units cannot be written (a non-root run, a host with no such directory).
+# The unit dir is override-able only so the test harness can point at a temp dir.
+shipit_sync_systemd_units \
+  "$SHIPIT_DIR/deployment/vps" "${SHIPIT_SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
 
 # Dangling images + stale BuildKit cache are reclaimed by the EXIT trap
 # (prune_build_artifacts) defined above, which runs on success and failure

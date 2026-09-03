@@ -4,6 +4,18 @@ After=docker.service
 
 [Service]
 Type=oneshot
+# Type=oneshot disables the start timeout by default, so a stalled step used to
+# hang this unit forever — and a hung activation blocks every later one behind
+# it, so ONE hang stops the host updating at all until a reboot.
+#
+# 90 minutes is a backstop for a hang, NOT a build budget: it has to sit above
+# the worst honest run (a cold --no-cache rebuild of every image on a small VPS,
+# plus up to ~10 min of bounded fetch retries), because killing a legitimate slow
+# build costs an update cycle. The fetches have their own, much tighter bound in
+# update.sh. The kill goes to the whole control group, so update.sh's TERM trap
+# rolls the checkout back and records exit 143 — unless the restart had already
+# happened, which it detects and keeps.
+TimeoutStartSec=90min
 ExecStart=/opt/shipit/deployment/vps/update.sh
 StandardOutput=journal
 StandardError=journal
