@@ -1370,6 +1370,41 @@ describe("git spawn coverage: nobody re-grants safe.directory (docs/266-orchestr
   const CONFIG_ENV_SET = /\bGIT_CONFIG_(?:COUNT|PARAMETERS|KEY_\d+|VALUE_\d+)["'`]?\s*[:=][^=]/;
 
   /**
+   * The one module that may set the protocol — docs/288-preemptive-github-auth's
+   * `http.<origin>.extraHeader`, which is how a held credential reaches git's
+   * FIRST request instead of the retry after a 401.
+   *
+   * A second policy owner rather than a hole, and scoped the same way
+   * {@link POLICY_OWNER} is: what the rule protects is `safe.directory`, and the
+   * shapes below cannot express it.
+   */
+  const CONFIG_ENV_POLICY_OWNER = path.join("shared", "git-remote-credential.ts");
+
+  /**
+   * The exact shapes docs/288 is allowed to write, and why each is safe on its
+   * own terms rather than because of the file it sits in.
+   *
+   *   - **`GIT_CONFIG_COUNT: "1"`** — a frozen literal. It names no key.
+   *   - **`GIT_CONFIG_KEY_n: `http.…`** — the key's literal PREFIX is `http.`,
+   *     so no value of the interpolated segment can make the key
+   *     `safe.directory`. That segment is an origin, and `assertSafeOrigin`
+   *     refuses anything but scheme + host + optional port — called inside
+   *     `gitCredentialEnv` itself, so this argument does not depend on a check
+   *     in another function.
+   *   - **`GIT_CONFIG_VALUE_n`** — a value. `safe.directory` is honoured by KEY;
+   *     a value cannot introduce one.
+   *
+   * `GIT_CONFIG_PARAMETERS` is deliberately NOT exempt anywhere, this module
+   * included: it packs key and value into one opaque string, so a line-reading
+   * scanner cannot check its key at all.
+   */
+  const isBoundedExtraHeaderPair = (line: string): boolean => (
+    /^\s*GIT_CONFIG_COUNT:\s*"1",?$/.test(line)
+    || /^\s*GIT_CONFIG_KEY_\d+:\s*`http\./.test(line)
+    || /^\s*GIT_CONFIG_VALUE_\d+:/.test(line)
+  );
+
+  /**
    * The key being **passed to git** — quoted as a config key, or written in
    * `key=value` form — rather than merely mentioned.
    *
@@ -1455,11 +1490,13 @@ describe("git spawn coverage: nobody re-grants safe.directory (docs/266-orchestr
   it("nothing sets git's GIT_CONFIG_* environment protocol", () => {
     const offenders: string[] = [];
     for (const file of ROOTS.flatMap(sourceFiles)) {
+      const rel = path.relative(REPO_SRC, file);
       const src = stripComments(fs.readFileSync(file, "utf-8"));
+      const exempt = rel.endsWith(CONFIG_ENV_POLICY_OWNER);
       for (const [i, line] of src.split("\n").entries()) {
-        if (CONFIG_ENV_SET.test(line)) {
-          offenders.push(`${path.relative(REPO_SRC, file)}:${i + 1} — ${line.trim()}`);
-        }
+        if (!CONFIG_ENV_SET.test(line)) continue;
+        if (exempt && isBoundedExtraHeaderPair(line)) continue;
+        offenders.push(`${rel}:${i + 1} — ${line.trim()}`);
       }
     }
 
@@ -1469,6 +1506,10 @@ describe("git spawn coverage: nobody re-grants safe.directory (docs/266-orchestr
       "the same way. simple-git refuses to spawn when it sees GIT_CONFIG_COUNT and",
       "RepoGit.sanitizeGitEnv strips it, but neither reaches a raw spawn that sets",
       "it on purpose — which is what this catches.",
+      `Only ${CONFIG_ENV_POLICY_OWNER} may set the protocol, and only as the`,
+      "docs/288-preemptive-github-auth `http.<origin>.extraHeader` pair, whose key",
+      "has a literal `http.` prefix and so can never name safe.directory. Any",
+      "other key, and GIT_CONFIG_PARAMETERS anywhere at all, is still a defect.",
     ].join("\n")).toEqual([]);
   });
 
@@ -1490,6 +1531,29 @@ describe("git spawn coverage: nobody re-grants safe.directory (docs/266-orchestr
     // original form, pinned the gap open by only naming COUNT.
     expect(CONFIG_ENV_SET.test('GIT_CONFIG_PARAMETERS: "\'safe.directory=*\'",')).toBe(true);
     expect(CONFIG_ENV_SET.test("env.GIT_CONFIG_PARAMETERS = injected;")).toBe(true);
+
+    // docs/288's exemption, pinned in BOTH directions — the shapes it must
+    // admit, and the ones it must keep reporting even inside the policy owner.
+    // Without the second half the exemption would be a file-shaped hole rather
+    // than a key-shaped one, which is exactly the widening this rule exists to
+    // prevent.
+    expect(isBoundedExtraHeaderPair('    GIT_CONFIG_COUNT: "1",')).toBe(true);
+    // `D` builds the interpolation marker at runtime, so none of these strings
+    // contains a literal `${`. The shape under test is a LINE OF SOURCE, and
+    // `no-template-curly-in-string` reads a literal one as a mistake.
+    const D = "$";
+    expect(isBoundedExtraHeaderPair(`    GIT_CONFIG_KEY_0: \`http.${D}{origin}.extraHeader\`,`)).toBe(true);
+    expect(isBoundedExtraHeaderPair(`    GIT_CONFIG_VALUE_0: \`Authorization: Basic ${D}{basic}\`,`)).toBe(true);
+
+    expect(isBoundedExtraHeaderPair('    GIT_CONFIG_KEY_0: "safe.directory",')).toBe(false);
+    expect(isBoundedExtraHeaderPair(`    GIT_CONFIG_KEY_0: \`${D}{anything}\`,`)).toBe(false);
+    expect(isBoundedExtraHeaderPair('    GIT_CONFIG_KEY_1: "credential.helper",')).toBe(false);
+    // A count other than the single frozen pair means more keys than the two
+    // lines above can account for.
+    expect(isBoundedExtraHeaderPair('    GIT_CONFIG_COUNT: "2",')).toBe(false);
+    expect(isBoundedExtraHeaderPair("    GIT_CONFIG_COUNT: String(pairs.length),")).toBe(false);
+    // Never exempt, in any file: the key is not separable from the value.
+    expect(isBoundedExtraHeaderPair('    GIT_CONFIG_PARAMETERS: "\'safe.directory=*\'",')).toBe(false);
 
     expect(PASSES_SAFE_DIRECTORY.test('["-c", "safe.directory=*", "status"]')).toBe(true);
     expect(PASSES_SAFE_DIRECTORY.test('["config", "--global", "safe.directory", "*"]')).toBe(true);

@@ -13,6 +13,7 @@ import {
   type GitRemoteCredentialResolver,
   credentialledGit,
   resolveTreeRemoteCredential,
+  withPreemptiveAuthFallback,
 } from "../../shared/git-remote-credential.js";
 import type { SessionManager } from "../sessions.js";
 import type { GitManager } from "../../shared/git.js";
@@ -370,12 +371,16 @@ export async function forkSession(
     try {
       // planning#426 — credentialled, for the reason `resolveRemoteCredential`
       // documents. Resolved here rather than once above because the credential is
-      // read per remote op by design (a mint is short-lived), and `null` — every
-      // test, local mode, a root-owned tree — hands back the plain `newGit` so
-      // this path stays byte-for-byte what it was.
+      // read per remote op by design (a mint is short-lived). docs/288 removed
+      // the uid gate: `null` now means a remote ShipIt holds no credential for,
+      // and hands back the plain `newGit`.
       const credential = await resolveTreeRemoteCredential(newWorkspaceDir, "origin", resolveRemoteCredential);
-      const fetchGit = credential ? credentialledGit(newWorkspaceDir, credential) : newGit;
-      await fetchGit.raw(["fetch", "origin", "--prune"]);
+      // docs/288 req 4 — the credential now rides the FIRST request, so a stale
+      // one would fail a refresh that a public origin answers anonymously. The
+      // retry restores exactly that.
+      await withPreemptiveAuthFallback(credential, "fork ref refresh", (cred) => (
+        cred ? credentialledGit(newWorkspaceDir, cred) : newGit
+      ).raw(["fetch", "origin", "--prune"]));
     } catch (err) {
       // Still non-fatal — a fork with stale `origin/*` refs is usable, it just
       // inflates the first PR diff. But it is no longer SILENT: this is one of the

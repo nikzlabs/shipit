@@ -35,6 +35,7 @@ import { ensureBareCache, type RepoGit } from "./repo-git.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import { getErrorMessage } from "./validation.js";
 import { fetchLfsIntoCache } from "./git-lfs-store.js";
+import { gitRemoteCredentialResolver } from "./services/github.js";
 
 /** How often the periodic sweep fetches every ready repo's bare cache. */
 export const PREFETCH_INTERVAL_MS = 3 * 60_000;
@@ -140,10 +141,11 @@ export function createRepoPrefetcher(deps: RepoPrefetcherDeps): RepoPrefetcher {
         repoUrl,
         createRepoGit,
       );
-      // Normalize the cache's origin to the plain URL so the global git
-      // credential helper supplies the token at fetch time — mirrors the
-      // warm-pool and slow-path. Embedding the token in the URL would leak
-      // it into config and error messages.
+      // Normalize the cache's origin to the plain URL — mirrors the warm-pool
+      // and slow-path. Embedding the token in the URL would leak it into config
+      // and error messages; the credential is supplied per-invocation instead
+      // (`RepoGit`, docs/288-preemptive-github-auth), which is also what lets the
+      // fetch below authenticate its FIRST request rather than after a 401.
       if (githubAuthManager.authenticated) {
         await cacheGit.setRemoteUrl(repoUrl);
       }
@@ -156,10 +158,12 @@ export function createRepoPrefetcher(deps: RepoPrefetcherDeps): RepoPrefetcher {
       // an asset-heavy repo would land a multi-minute transfer straight on the
       // user's critical path — the exact cost this is meant to move OFF it. The
       // `setRemoteUrl` above matters for this too: with the plain URL as origin,
-      // the LFS endpoint resolves through the same global credential helper.
-      // Flag-gated off by default and best-effort: a failure only means sessions
-      // keep downloading their own objects.
-      await fetchLfsIntoCache(getBareCacheDir(repoUrl));
+      // the LFS endpoint resolves against a remote the credential resolver can
+      // parse. Flag-gated off by default and best-effort: a failure only means
+      // sessions keep downloading their own objects.
+      await fetchLfsIntoCache(getBareCacheDir(repoUrl), {
+        resolveCredential: gitRemoteCredentialResolver(githubAuthManager),
+      });
     } catch (err) {
       // Best-effort: a transient fetch failure just means the claim path
       // falls back to its synchronous fetch until the next sweep succeeds.

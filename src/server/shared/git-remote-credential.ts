@@ -57,11 +57,26 @@
  * and consumed inside a single function and never handed to a caller who could
  * chain `.env()` onto it. Both halves are required; either alone is the failure
  * mode above.
+ *
+ * ## docs/288-preemptive-github-auth — the credential also has to arrive FIRST
+ *
+ * Everything above concerns *which* credential git uses. It says nothing about
+ * *when*, and the answer was "too late": over HTTPS git issues the request
+ * anonymously and consults a credential helper only after the server answers
+ * 401. Measured against git 2.39.5, a fetch of a PUBLIC repository therefore
+ * carries no `Authorization` header at all, however the helper is configured —
+ * so ~280 bare-cache prefetches an hour spent the host's shared *anonymous* IP
+ * budget instead of the token's, and GitHub throttles the former per source IP.
+ *
+ * Preemptive auth is `http.<origin>.extraHeader`, and the only delivery that
+ * keeps requirement 3 (no secret in argv, none at rest) is git's
+ * `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n` environment
+ * protocol — see {@link gitCredentialEnv}, which explains why the two guards
+ * that forbid those variables are unaffected by it.
  */
 
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
 import { safeSimpleGit } from "./git-hooks-guard.js";
-import { type GitTreeUidDeps, resolveGitTreeUid } from "./git-tree-uid.js";
 
 /**
  * A username/password pair for one remote, supplied per git invocation instead
@@ -174,9 +189,25 @@ export function sanitizeGitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  *    remote would. git passes its own environment to the helper it shells out
  *    to.
  */
+/**
+ * Refuse an origin that could reshape a config key.
+ *
+ * Called by BOTH {@link gitCredentialConfig} and {@link gitCredentialEnv} rather
+ * than by the first alone. They are always used together today, so the second
+ * call looks redundant — and the redundancy is the point: docs/288 interpolates
+ * the origin into a config KEY (`http.<origin>.extraHeader`), and
+ * `git-hooks-guard-coverage.test.ts` exempts that key from its
+ * "nothing sets `GIT_CONFIG_*`" rule on the strength of what the key can
+ * contain. An argument that rests on a check in a *different* function is an
+ * argument a future caller can invalidate without touching either.
+ */
+function assertSafeOrigin(origin: string): void {
+  if (!SAFE_ORIGIN.test(origin)) throw new Error(`Refusing to build a git credential helper for origin "${origin}"`);
+}
+
 export function gitCredentialConfig(credential: GitRemoteCredential): string[] {
   const { origin } = credential;
-  if (!SAFE_ORIGIN.test(origin)) throw new Error(`Refusing to build a git credential helper for origin "${origin}"`);
+  assertSafeOrigin(origin);
   // The reset alone IS the anonymous case: helpers cleared, nothing offered.
   if (!credential.token) return ["credential.helper="];
   const helper = `!f() { echo "username=$${CREDENTIAL_ENV_USERNAME}"; echo "password=$${CREDENTIAL_ENV_PASSWORD}"; }; f`;
@@ -202,13 +233,161 @@ export function gitCredentialSpawnOverrides(
   };
 }
 
-/** The environment that helper reads the credential out of. */
+/**
+ * The environment that carries the credential: what the helper reads it out of,
+ * and — docs/288-preemptive-github-auth req 1 — the `http.<origin>.extraHeader`
+ * that puts it on the FIRST request instead of the retry after a 401.
+ *
+ * ## Why the header, and why the environment
+ *
+ * git 2.39 has no `http.proactiveAuth` (git 2.46), so `extraHeader` is the only
+ * way to authenticate an initial request. Its value is the secret, so where the
+ * value travels is requirement 3, and only one of the three routes survives it:
+ * `-c http.<origin>.extraHeader=…` puts it in `/proc/<pid>/cmdline` (base64 is
+ * not encryption), a file puts it at rest — the orchestrator's global gitconfig
+ * is root-owned **0644 and read by the worker uid on purpose**, and an
+ * `include.path` the dropped uid cannot read is a hard `fatal: unable to access`
+ * on every git command (measured in docs/266 E3). The environment is neither.
+ *
+ * ## The two guards that forbid these variables, and why both still hold
+ *
+ * `GIT_CONFIG_COUNT` is genuinely dangerous *inherited*: it outranks everything
+ * `-c` can say, so one in the ambient environment could reinstate the very
+ * credential helper {@link gitCredentialConfig}'s reset just cleared. Both
+ * existing controls are about exactly that, and neither is weakened here:
+ *
+ *   - {@link sanitizeGitEnv} deletes `GIT_CONFIG_COUNT`, `GIT_CONFIG_PARAMETERS`
+ *     and every `GIT_CONFIG_KEY_n`/`VALUE_n` from the inherited environment.
+ *     Every caller spreads this function's result **after** that call, so the
+ *     only pair git sees is the one written here.
+ *   - simple-git refuses to spawn on `GIT_CONFIG_COUNT` without
+ *     `unsafe.allowUnsafeConfigEnvCount`. `git-hooks-guard.ts` rejected that flag
+ *     for a proposal to set the variable on `process.env`, where it would have
+ *     disabled the check for every instance in the process — including ones that
+ *     forward the ambient environment. Here it is set only on the two instances
+ *     that build their environment from `sanitizeGitEnv(process.env)`
+ *     ({@link credentialledGit} and `RepoGit`'s credentialled constructor), so
+ *     the check is switched off over an environment with nothing left to find.
+ *     `process.env` is untouched.
+ *
+ * ## Redirects need no extra guard
+ *
+ * Measured against git 2.39.5: git re-matches URL-scoped `http.*` config against
+ * the redirect target, so a 302 to a different origin arrives with **no**
+ * `Authorization` header, while a same-origin redirect (a renamed GitHub repo)
+ * keeps it. So no `http.followRedirects` change is needed, and the host-confusion
+ * hazard docs/172 Gap 2 fixed does not reappear through this route.
+ */
 export function gitCredentialEnv(credential: GitRemoteCredential): Record<string, string> {
   if (!credential.token) return {};
+  // The origin is interpolated into a config KEY below, so its shape is what
+  // makes that key incapable of naming `safe.directory` — see
+  // {@link assertSafeOrigin}.
+  assertSafeOrigin(credential.origin);
+  const { username, password } = credential.token;
+  const basic = Buffer.from(`${username}:${password}`, "utf8").toString("base64");
   return {
-    [CREDENTIAL_ENV_USERNAME]: credential.token.username,
-    [CREDENTIAL_ENV_PASSWORD]: credential.token.password,
+    [CREDENTIAL_ENV_USERNAME]: username,
+    [CREDENTIAL_ENV_PASSWORD]: password,
+    // Exactly one pair, and index 0, because `sanitizeGitEnv` has already
+    // removed anything that could be occupying another index.
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: `http.${credential.origin}.extraHeader`,
+    GIT_CONFIG_VALUE_0: `Authorization: Basic ${basic}`,
+    // Requirement 3, against the one route that defeats it. git redacts
+    // `Authorization` in a curl trace by DEFAULT, and `GIT_TRACE_REDACT=0` turns
+    // that redaction off — measured on git 2.39.5, where the same trace prints
+    // the header verbatim. `GIT_TRACE_CURL` can point that trace at a file. So an
+    // operator debugging a transport would write the credential to disk, and
+    // `sanitizeGitEnv` does not strip either variable.
+    //
+    // PINNED rather than stripped, deliberately: dropping `GIT_TRACE_CURL` would
+    // take away a diagnostic that is genuinely useful here (it is how docs/288's
+    // premise was established), while pinning the redaction keeps the trace and
+    // removes only the leak. An operator cannot opt out for a ShipIt-supplied
+    // credential, which is the intended asymmetry. Review finding.
+    GIT_TRACE_REDACT: "1",
   };
+}
+
+/**
+ * What git says when a credential it DID send was refused, as opposed to any
+ * other remote failure.
+ *
+ * Taken from git 2.39.5's own output rather than from a guess: a rejected token
+ * on github.com produces `remote: Invalid username or token.` followed by
+ * `fatal: Authentication failed for …`, and a credential that cannot be produced
+ * at all produces `could not read Username for …`. The bare status forms cover
+ * transports that report the code without the prose.
+ */
+const AUTH_REJECTED = /invalid username or token|authentication failed|could not read username|\b401\b/i;
+
+/**
+ * Whether some captured git output reads as "the credential was refused".
+ *
+ * Exported for the call sites whose git failure is a **return value** rather
+ * than a throw — `runGit` in `orchestrator/git-lfs.ts` resolves with an exit
+ * code, so they hand {@link withPreemptiveAuthFallback} a predicate instead of
+ * relying on it catching.
+ */
+export function looksLikeAuthRejection(text: string): boolean {
+  return AUTH_REJECTED.test(text);
+}
+
+/**
+ * Run a remote op with a preemptive credential, and fall back to running it
+ * WITHOUT one if the credential is refused (docs/288-preemptive-github-auth
+ * req 4).
+ *
+ * The fallback is not politeness, it is the requirement. Sending the credential
+ * first changes the outcome for a **public** repository with a stale token: the
+ * fetch succeeds anonymously today and dies `fatal: Authentication failed` once
+ * the header is preemptive (measured, git 2.39.5). Requirement 4 says the new
+ * behaviour may not be worse than today's, so a refused credential re-runs the
+ * operation on exactly the path it used before this feature — `null` here means
+ * "the git this call site would have built anyway", which for a root-side op is
+ * the global helper git never gets around to asking, and for a dropped-uid op is
+ * an anonymous request.
+ *
+ * **Only for operations an anonymous request could satisfy** — fetch, clone,
+ * ls-remote. Never `push`: GitHub answers `git-receive-pack` 401 to everyone, so
+ * the retry cannot succeed and would only replace a precise
+ * `Authentication failed` with a vaguer `could not read Username`, which is the
+ * "worse than today's failure" requirement 4 forbids.
+ */
+export async function withPreemptiveAuthFallback<T>(
+  credential: GitRemoteCredential | null,
+  what: string,
+  run: (credential: GitRemoteCredential | null) => Promise<T>,
+  /**
+   * For a `run` that REPORTS failure instead of throwing it — `runGit` in
+   * `orchestrator/git-lfs.ts` resolves with an exit code and captured stderr, so
+   * without this the retry would never fire on the LFS paths. Called only on a
+   * result that came back normally; a throw is still classified by its message.
+   */
+  rejected?: (value: T) => boolean,
+): Promise<T> {
+  if (!credential?.token) return run(credential);
+  try {
+    const result = await run(credential);
+    if (!rejected?.(result)) return result;
+    warnRetryingUnauthenticated(what, credential.origin);
+    return await run(null);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!AUTH_REJECTED.test(message)) throw err;
+    warnRetryingUnauthenticated(what, credential.origin);
+    return run(null);
+  }
+}
+
+function warnRetryingUnauthenticated(what: string, origin: string): void {
+  console.warn(
+    `[git] ${what}: ${origin} refused the credential ShipIt holds, so this operation is being `
+    + "retried unauthenticated — which is how it ran before docs/288-preemptive-github-auth. If it "
+    + "now succeeds, the credential is stale or scoped to another repository, and every "
+    + "authenticated operation (pushes included) is already failing.",
+  );
 }
 
 /**
@@ -304,39 +483,37 @@ export type GitRemoteCredentialResolver = (
  * The credential a git op on `dir` should carry for `remote`, or `null` for
  * "change nothing".
  *
- * `null` is the answer on every path that is not docs/266's dropped-uid git,
- * and that is the point: a root-side orchestrator git still reads the global
- * helper, which still reads the root-only PAT file, so handing it a second
- * credential would be churn with a blast radius. The predicate is
- * {@link resolveGitTreeUid} — the SAME fact `safeSimpleGit` drops on — so the
- * two can never disagree about which invocations need their own credential.
- * Read here rather than remembered from whenever the caller's instance was
- * built, which is the safe side of the one case where the two can differ: a
- * workspace chowned to the worker uid *after* a `GitManager` was made for it
- * gets a credential, where a cached "no drop" would leave the op unable to
- * authenticate.
+ * ## docs/288-preemptive-github-auth removed the dropped-uid gate
+ *
+ * This used to return `null` on every path that was not docs/266's dropped-uid
+ * git, on the argument that a root-side git already reads the global helper and
+ * a second credential would be churn. That argument no longer holds: the global
+ * helper is consulted only after a 401, so "already reads the global helper"
+ * means "fetches anonymously first", which is the whole defect docs/288 exists
+ * to fix (req 1 names pushes and fetches alike, without reference to uid).
+ *
+ * What bounds the change is the resolver, not this gate: every resolver in the
+ * tree is **github.com-only** (`getGitCredential` in
+ * `orchestrator/services/github.ts`), so a non-GitHub remote — a fork's local
+ * path, another session's directory, any third-party host — still resolves to
+ * `null` and is byte-for-byte unchanged. In production the gate was inert
+ * anyway: a session workspace always resolves to a session identity
+ * (`shared/session-identity.ts`), so it always dropped; the only orchestrator
+ * that does not drop is one that is not root, i.e. local/dogfood mode.
  *
  * Never throws. Every failure below resolves to `null`, which means the caller
  * runs the git it would have run anyway: docs/266-orchestrator-git-trust-boundary req 6 and `CLAUDE.md`
  * invariant 2 both say the post-turn path may not gain a way to fail, and a
- * credential that cannot be minted must therefore degrade to E1's behaviour
- * rather than abort the operation.
+ * credential that cannot be minted must therefore degrade to the pre-docs/288
+ * behaviour rather than abort the operation.
  */
 export async function resolveTreeRemoteCredential(
   dir: string,
   remote: string,
   resolve: GitRemoteCredentialResolver | undefined,
   readRemoteUrl?: () => Promise<string | undefined>,
-  /**
-   * Injection seam, same one {@link resolveGitTreeUid} documents and for the
-   * same reason: the interesting state — running as root against a tree owned
-   * by someone else — cannot be produced in a session container, which has no
-   * root and where `unshare -r` is refused.
-   */
-  treeUidDeps?: GitTreeUidDeps,
 ): Promise<GitRemoteCredential | null> {
   if (!resolve) return null;
-  if (resolveGitTreeUid(dir, treeUidDeps) === null) return null;
 
   let url: string | undefined;
   try {
@@ -382,7 +559,6 @@ export function credentialledGit(
   dir: string,
   credential: GitRemoteCredential,
   options?: Partial<SimpleGitOptions>,
-  extraEnv?: Record<string, string>,
 ): SimpleGit {
   return safeSimpleGit(dir, {
     ...options,
@@ -396,6 +572,12 @@ export function credentialledGit(
       allowUnsafeConfigPaths: true,
       allowUnsafeEditor: true,
       allowUnsafeCredentialHelper: true,
+      // docs/288 — the `GIT_CONFIG_COUNT` pair {@link gitCredentialEnv} writes.
+      // Safe here and nowhere else: this instance's environment is built from
+      // `sanitizeGitEnv(process.env)` immediately below, which has already
+      // deleted every inherited `GIT_CONFIG_*`, so the check is disabled over an
+      // environment that contains only what this module put there.
+      allowUnsafeConfigEnvCount: true,
     },
   }).env({
     ...sanitizeGitEnv(process.env),
@@ -403,6 +585,5 @@ export function credentialledGit(
     // The inherited helpers are reset, so a credential that fails must fail
     // fast rather than block on a prompt nothing will ever answer.
     GIT_TERMINAL_PROMPT: "0",
-    ...extraEnv,
   });
 }

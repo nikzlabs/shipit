@@ -7,9 +7,12 @@ import { safeSimpleGit, gitArgsWithHooksDisabled } from "../shared/git-hooks-gua
 import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
 import {
   type GitRemoteCredential,
+  type GitRemoteCredentialResolver,
   gitCredentialConfig,
   gitCredentialEnv,
+  resolveTreeRemoteCredential,
   sanitizeGitEnv,
+  withPreemptiveAuthFallback,
 } from "../shared/git-remote-credential.js";
 import { ensurePnpmStoreGitExcluded } from "../shared/git.js";
 import { hasUrlCredentials, stripRemoteUrlCredentials } from "./git-utils.js";
@@ -120,33 +123,128 @@ export {
  * gets its own complete .git/ directory via hardlinked local clones.
  */
 export class RepoGit {
+  /**
+   * The instance every LOCAL operation runs through — `rev-parse`, `config`,
+   * `log`, `gc`. A remote op does NOT use it; see {@link RepoGit.withRemote}.
+   */
   private git: SimpleGit;
   readonly repoDir: string;
+  /**
+   * A credential the caller supplied outright, which wins over
+   * {@link RepoGit.resolveRemoteCredential}. One caller does this:
+   * `plugin-fetch.ts`, where the repository is a *different* one from the
+   * session's and needs its own installation token (docs/262 req 10).
+   */
+  private readonly explicitCredential: GitRemoteCredential | undefined;
+  /**
+   * docs/288-preemptive-github-auth req 1 — mints the credential a remote op
+   * carries on its FIRST request, for the callers that supply no explicit one.
+   *
+   * Injected here rather than threaded through the ~6 call sites that build a
+   * bare-cache `RepoGit` (`repo-prefetch.ts`, `claim-session.ts`, `session.ts`'s
+   * unarchive and restore, `warm-pool-manager.ts`, `shipit-source.ts`) because
+   * this is the one place all of them pass through, and because the next site
+   * somebody adds then gets it without knowing this feature exists. It is the
+   * same shape `GitManager` already uses. Undefined in tests and wherever
+   * `createRepoGit` is stubbed, which leaves every op exactly as it was.
+   */
+  private readonly resolveRemoteCredential: GitRemoteCredentialResolver | undefined;
 
-  constructor(repoDir: string, credential?: GitRemoteCredential) {
+  constructor(
+    repoDir: string,
+    credential?: GitRemoteCredential,
+    resolveRemoteCredential?: GitRemoteCredentialResolver,
+  ) {
     this.repoDir = repoDir;
-    this.git = credential
-      ? safeSimpleGit(repoDir, {
-        config: gitCredentialConfig(credential),
-        // The three simple-git guards this path opts out of, none of them
-        // user-supplied: our own credential helper (host validated, token in
-        // the environment), and the `GIT_CONFIG_GLOBAL` / `GIT_EDITOR` this
-        // orchestrator sets on purpose — the same false positive
-        // `git-utils.ts` documents. Everything else it guards is dropped from
-        // the environment instead (see `sanitizeGitEnv`).
-        unsafe: {
-          allowUnsafeConfigPaths: true,
-          allowUnsafeEditor: true,
-          allowUnsafeCredentialHelper: true,
-        },
-      }).env({
-        ...sanitizeGitEnv(process.env),
-        ...gitCredentialEnv(credential),
-        // Fail instead of blocking on a prompt when nothing is supplied or the
-        // credential is refused.
-        GIT_TERMINAL_PROMPT: "0",
-      })
-      : safeSimpleGit(repoDir);
+    this.explicitCredential = credential;
+    this.resolveRemoteCredential = resolveRemoteCredential;
+    // Plain, even when a credential was supplied: every remaining user of
+    // `this.git` is LOCAL (`rev-parse`, `config`, `log`, `gc`), and a remote op
+    // builds its own credentialled instance in `withRemote`. Before docs/288 the
+    // persistent instance carried the secret because it was also the one doing
+    // the fetching; keeping it that way now would put the token in the
+    // environment of every `gc --auto` child for no reason. Review finding.
+    this.git = safeSimpleGit(repoDir);
+  }
+
+  /**
+   * A git instance carrying `credential`, or the plain one when it is null.
+   *
+   * The null branch is deliberately identical to what this class did before it
+   * had a credential at all, because that is what
+   * {@link withPreemptiveAuthFallback} falls back TO (docs/288 req 4): a
+   * refused credential must leave the operation running exactly the git it would
+   * have run before this feature.
+   */
+  private gitFor(credential: GitRemoteCredential | null): SimpleGit {
+    if (!credential) return safeSimpleGit(this.repoDir);
+    return safeSimpleGit(this.repoDir, {
+      config: gitCredentialConfig(credential),
+      // The simple-git guards this path opts out of, none of them
+      // user-supplied: our own credential helper (host validated, token in
+      // the environment), the `GIT_CONFIG_GLOBAL` / `GIT_EDITOR` this
+      // orchestrator sets on purpose — the same false positive `git-utils.ts`
+      // documents — and docs/288's `GIT_CONFIG_COUNT` pair, which is safe for
+      // the reason `gitCredentialEnv` documents: the environment below starts
+      // from `sanitizeGitEnv`, which has deleted every inherited `GIT_CONFIG_*`.
+      unsafe: {
+        allowUnsafeConfigPaths: true,
+        allowUnsafeEditor: true,
+        allowUnsafeCredentialHelper: true,
+        allowUnsafeConfigEnvCount: true,
+      },
+    }).env({
+      ...sanitizeGitEnv(process.env),
+      ...gitCredentialEnv(credential),
+      // Fail instead of blocking on a prompt when nothing is supplied or the
+      // credential is refused.
+      GIT_TERMINAL_PROMPT: "0",
+    });
+  }
+
+  /**
+   * The credential a remote op on this cache should carry, or null.
+   *
+   * `url` is passed by the operations that name their remote as an argument
+   * (`clone`, `cloneBare`) because there is no `remote.origin.url` to read yet —
+   * the repository does not exist. Everything else reads it off the repo.
+   */
+  private async remoteCredential(remote: string, url?: string): Promise<GitRemoteCredential | null> {
+    if (this.explicitCredential) return this.explicitCredential;
+    return resolveTreeRemoteCredential(
+      this.repoDir,
+      remote,
+      this.resolveRemoteCredential,
+      url === undefined ? undefined : async () => url,
+    );
+  }
+
+  /**
+   * Run a remote operation with a preemptive credential, retrying it
+   * unauthenticated if the credential is refused (docs/288 req 4).
+   *
+   * Every op reached through here is one an anonymous request could satisfy —
+   * fetch and clone. `deleteBranch` is a push and deliberately does not use it;
+   * see there.
+   */
+  private async withRemote<T>(
+    what: string,
+    remote: string,
+    url: string | undefined,
+    run: (git: SimpleGit) => Promise<T>,
+  ): Promise<T> {
+    const credential = await this.remoteCredential(remote, url);
+    // An EXPLICIT credential never falls back, and this is the one place the
+    // distinction matters. The fallback runs the git this class would have run
+    // anyway, which for a root-side op means the global helper — i.e. the host
+    // PAT. That is right for a credential ShipIt resolved (the PAT is what the
+    // op used before docs/288 anyway) and wrong for one the CALLER chose: a
+    // plugin repository is handed its own repo-scoped installation token
+    // precisely so it cannot reach further (docs/262 req 10), so silently
+    // retrying it under the host PAT would widen exactly the scope that
+    // credential exists to narrow. Review finding.
+    if (this.explicitCredential) return run(this.gitFor(credential));
+    return withPreemptiveAuthFallback(credential, what, (cred) => run(this.gitFor(cred)));
   }
 
   /**
@@ -156,7 +254,7 @@ export class RepoGit {
   async clone(url: string, branch?: string): Promise<void> {
     const args = ["clone", credentialFreeRemote(url, "clone"), "."];
     if (branch) args.push("--branch", branch);
-    await this.git.raw(args);
+    await this.withRemote("clone", "origin", url, (git) => git.raw(args));
   }
 
   /**
@@ -166,7 +264,9 @@ export class RepoGit {
   async cloneBare(url: string): Promise<void> {
     // Clone bare into the current directory. simple-git operates on repoDir,
     // but `git clone --bare` needs the parent to exist with the target as ".".
-    await this.git.raw(["clone", "--bare", credentialFreeRemote(url, "cloneBare"), "."]);
+    await this.withRemote("cloneBare", "origin", url, (git) => git.raw([
+      "clone", "--bare", credentialFreeRemote(url, "cloneBare"), ".",
+    ]));
     await this.ensureFetchRefspec();
     console.log("[git] Cloned bare repo:", this.repoDir);
   }
@@ -271,7 +371,12 @@ export class RepoGit {
     // ensureFetchRefspec). Idempotent, so cheap to run every fetch.
     await this.ensureFetchRefspec();
     const headBefore = await this.readHead();
-    await this.git.raw(["fetch", "--all", "--force", "--prune"]);
+    // docs/288-preemptive-github-auth req 1 — THE high-volume site. The prefetch
+    // sweep runs this every 3 minutes for every ready repo, ~280 times an hour
+    // in production, and every one of those requests used to be anonymous.
+    await this.withRemote("bare-cache fetch", "origin", undefined, (git) => git.raw([
+      "fetch", "--all", "--force", "--prune",
+    ]));
     // Touch the marker file
     fs.writeFileSync(markerPath, String(Date.now()));
     const headAfter = await this.readHead();
@@ -400,7 +505,7 @@ export class RepoGit {
   async fetch(remote: string, branch: string): Promise<void> {
     // --force: prevent "unable to update local ref" errors when concurrent
     // fetches race on the same repo (safe for remote tracking refs).
-    await this.git.fetch(remote, branch, ["--force"]);
+    await this.withRemote("fetch", remote, undefined, (git) => git.fetch(remote, branch, ["--force"]));
   }
 
   /**
@@ -487,10 +592,19 @@ export class RepoGit {
     }
   }
 
-  /** Delete a remote branch. Used during session cleanup. */
+  /**
+   * Delete a remote branch. Used during session cleanup.
+   *
+   * Credentialled like every other remote op, but deliberately NOT wrapped in
+   * {@link withPreemptiveAuthFallback}: this is a push, GitHub answers
+   * `git-receive-pack` 401 to everyone, so an unauthenticated retry cannot
+   * succeed and would only replace a precise `Authentication failed` with a
+   * vaguer `could not read Username` (docs/288 req 4).
+   */
   async deleteBranch(branchName: string): Promise<void> {
+    const git = this.gitFor(await this.remoteCredential("origin"));
     try {
-      await this.git.raw(["push", "origin", "--delete", branchName]);
+      await git.raw(["push", "origin", "--delete", branchName]);
       console.log("[git] Deleted remote branch:", branchName);
     } catch (err) {
       // Branch may never have been pushed (e.g. renamed before first push,

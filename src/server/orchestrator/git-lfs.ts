@@ -7,8 +7,10 @@ import {
   type GitRemoteCredential,
   type GitRemoteCredentialResolver,
   gitCredentialSpawnOverrides,
+  looksLikeAuthRejection,
   resolveTreeRemoteCredential,
   sanitizeGitEnv,
+  withPreemptiveAuthFallback,
 } from "../shared/git-remote-credential.js";
 
 /**
@@ -89,8 +91,12 @@ import {
  * So the pull resolves its own credential, exactly as `GitManager` does:
  * {@link resolveTreeRemoteCredential} against `origin`, through the resolver
  * registered once at boot by {@link configureLfsRemoteCredentialResolver}. It is
- * `null` — change nothing — on every path that is NOT a dropped-uid git, which
- * is every test, local mode, and the root-owned bare cache.
+ * `null` means "change nothing". docs/288-preemptive-github-auth narrowed what
+ * produces it: until then the resolver declined on every path that was not a
+ * dropped-uid git, so local mode and the root-owned bare cache were both `null`.
+ * That gate is gone — the credential now has to be on the FIRST request whatever
+ * uid the pull runs as — and `null` means only "not a remote ShipIt holds a
+ * credential for", i.e. every non-GitHub remote and an install with no token.
  *
  * ## Provisioning is not the only path that has to do this
  *
@@ -427,33 +433,41 @@ export async function materializeLfsContent(
   }
 
   // planning#426 — resolved AFTER the `usesLfs` gate, so a repo that tracks
-  // nothing with LFS costs one `git grep` and no remote-URL read. `null` on every
-  // path that is not a dropped-uid git, which leaves the pull byte-for-byte as it
-  // was: root git reads the global helper, which reads the root-only PAT file.
+  // nothing with LFS costs one `git grep` and no remote-URL read.
+  //
+  // docs/288-preemptive-github-auth corrected what this used to say. It claimed
+  // `null` "on every path that is not a dropped-uid git"; that gate is gone, so a
+  // credential resolves wherever the remote is github.com and ShipIt holds one,
+  // whatever uid the pull runs as. `null` now means "not a remote we hold a
+  // credential for", which is still every non-GitHub remote.
   const credential = opts?.resolveCredential === undefined
     ? await resolveTreeRemoteCredential(workspaceDir, "origin", lfsRemoteCredentialResolver)
     : await opts.resolveCredential();
-  const cred = gitCredentialSpawnOverrides(credential);
 
   const startedAt = Date.now();
-  const res = await (opts?.spawnGit ?? runGit)(
-    [...cred.args, "lfs", "pull"],
-    workspaceDir,
-    pullTimeoutMs(),
-    // Sanitized ONLY when a credential is in play, which is exactly when
-    // `credentialledGit` is constructed and for the same reason: one inherited
-    // `GIT_CONFIG_COUNT` / `GIT_CONFIG_PARAMETERS` is higher-precedence than
-    // anything `-c` can say, so it could reinstate the very helper the reset just
-    // cleared, and `GIT_ASKPASS` would be reached instead of the helper we
-    // supplied. Review finding.
-    //
-    // Deliberately NOT applied to the uncredentialled pull. `sanitizeGitEnv`
-    // also drops `GIT_SSH_COMMAND` and `PAGER`, and dropping those on the
-    // root-side path would change an op that authenticates through the global
-    // helper and works today — availability over tidiness, the same trade
-    // `resolveTreeRemoteCredential` makes by returning `null` there.
-    credential ? { ...sanitizeGitEnv(process.env), ...cred.env } : undefined,
-  );
+  // docs/288 req 4 — a public repo's LFS content pulls fine anonymously, so a
+  // stale credential must not turn materialized assets back into pointer stubs.
+  // `runGit` reports failure as an exit code, hence the predicate.
+  const res = await withPreemptiveAuthFallback(credential, "LFS pull", (usedCredential) => {
+    const cred = gitCredentialSpawnOverrides(usedCredential);
+    return (opts?.spawnGit ?? runGit)(
+      [...cred.args, "lfs", "pull"],
+      workspaceDir,
+      pullTimeoutMs(),
+      // Sanitized ONLY when a credential is in play, which is exactly when
+      // `credentialledGit` is constructed and for the same reason: one inherited
+      // `GIT_CONFIG_COUNT` / `GIT_CONFIG_PARAMETERS` is higher-precedence than
+      // anything `-c` can say, so it could reinstate the very helper the reset
+      // just cleared, and `GIT_ASKPASS` would be reached instead of the helper we
+      // supplied. Review finding.
+      //
+      // Deliberately NOT applied to the uncredentialled pull. `sanitizeGitEnv`
+      // also drops `GIT_SSH_COMMAND` and `PAGER`, and dropping those on a path
+      // with no credential to protect would change an op that works today —
+      // availability over tidiness.
+      usedCredential ? { ...sanitizeGitEnv(process.env), ...cred.env } : undefined,
+    );
+  }, (r) => r.code !== 0 && looksLikeAuthRejection(r.stderr || r.stdout));
   const durationMs = Date.now() - startedAt;
 
   if (res.code === 0) {
