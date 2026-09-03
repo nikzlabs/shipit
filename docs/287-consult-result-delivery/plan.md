@@ -97,11 +97,22 @@ turn, so this `done` can land *after* `agent_result`'s drain already started the
 next turn — and that successor owns `running` now. An empty slot means the
 identity guard cleared it for this agent and no successor has taken it.
 
-Guard: `turn-self-wake-commit.test.ts` → "clears the latched running flag when a
-task notification lands after a one-shot turn's result", which drives the
+Unlatching alone is not enough, though. A message typed while the phantom turn
+was latched is QUEUED (`send-message.ts` branches on `runner.running`), and
+`tryDrain` is single-shot — the non-streaming path spent its one attempt at
+`agent_result`. So the `done` handler's own drain returns immediately and
+`signalIdleIfIdle` correctly refuses to fire with a non-empty queue: the session
+reads idle and does nothing. The branch therefore drains explicitly when it
+unlatched a flag AND the queue is non-empty, *after* the commit — which is what
+planning#264's invariant requires of every drain.
+
+Guards, both in `turn-self-wake-commit.test.ts`: "clears the latched running flag
+when a task notification lands after a one-shot turn's result" drives the
 production event order `agent_result` → `agent_self_wake` → `done` on a
 non-streaming turn and asserts the runner ends idle, the finished SSE is
-broadcast, and the idle signal fires.
+broadcast, and the idle signal fires; "drains a message queued during the latched
+phantom turn" adds the queued message and asserts it is started. Both were
+verified red with the respective line removed.
 
 ### Fix 2 — deliver the result by waking the session
 
@@ -112,12 +123,13 @@ broadcast, and the idle signal fires.
 result <id>` rather than carrying a second copy of the output — the card is the
 artifact (planning#247).
 
-`runSubAgent` calls it in its `finally`, **after** `commitSubAgentWork`: the
+`runSubAgent` **starts** it in its `finally`, after `commitSubAgentWork`: the
 wake can start a turn immediately, and a turn that begins by discarding
-working-tree state would take the consult's own edits with it. It is awaited so
-that ordering is a guarantee rather than a race; the gate below means a caller
-still holding the HTTP call never reaches the wake, so no live consult pays the
-container-resume wait.
+working-tree state would take the consult's own edits with it. Starting it from
+that line is enough for the ordering, because the commit is already awaited. It
+is deliberately **not** awaited — a wake against an idle-reaped session boots a
+container and waits up to 30 s for its worker, and that `finally` is what holds
+the shim's HTTP response open.
 
 **When it stands down** (each is a `reason` on the returned decision, and a test):
 
@@ -133,12 +145,17 @@ A missing runner is **not** a stand-down: a disposed runner / restarted containe
 is exactly the case that lost the wake before, and `wakeSessionWithTurn` exists
 to resume it.
 
-**The record.** `SubAgentConsultCard.wakeDelivery` is stamped `queued` at
-dispatch, then patched from the turn's own settlement (docs/240) — `delivered`
-only on `completed`, `failed` with a detail otherwise. It serializes into the
-card's single json column, so no migration and no `CARD_MESSAGE_FIELDS` change.
-Its absence means "the agent had another way to see this", not "delivery
-failed".
+**The record.** `SubAgentConsultCard.wakeDelivery` is stamped `queued` once the
+dispatch is **accepted** — never before it, because the stamp is also the
+fire-once guard and a crash between a premature write and the dispatch would
+latch it shut on a wake that never happened. It is then patched from the turn's
+own settlement (docs/240): `delivered` only on `completed`, `failed` with a
+detail otherwise, and a settlement never gets downgraded back to `queued`. It
+serializes into the card's single json column, so no migration and no
+`CARD_MESSAGE_FIELDS` change. Its absence means "the agent had another way to see
+this", not "delivery failed". The record is for audit — the DB, the
+`[consult-delivery]` log lines, and `shipit agent result --json` — and the card
+face deliberately does not render it (requirements, resolved 2026-09-03).
 
 Nothing in the module throws: result delivery, the card and `shipit agent result`
 keep working when the wake cannot run (req 5).
@@ -153,7 +170,47 @@ way.
 
 **A doc warning in `/shipit-docs/agent.md`.** Fix 2 leaves no residual case for
 the shape the docs recommend, so a warning would describe a limitation that no
-longer exists.
+longer exists. `agent.md` instead states the new behavior: it is safe to end a
+turn with a consult still in flight.
+
+## Known residuals
+
+Found by cross-agent review of this branch (2026-09-03) and left in deliberately.
+None is a regression — each is a case that behaves exactly as it did before this
+change, i.e. the result is not delivered.
+
+1. **`originating-turn-live` can be read too early.** `runner.dispatch` and
+   `drainNextQueuedMessage` both set `running = true` synchronously and bump the
+   turn epoch later, inside `executeAgentTurn`. A consult finishing inside that
+   window reads `running=true` with the *originating* epoch and stands down.
+   Closing it needs a turn identity that moves atomically with `running`;
+   inverting the gate (wake when unsure) is worse, because it would add a
+   redundant turn to every ordinary foreground consult.
+2. **`resident-cli-delivers` trusts the process, not the shim.** A foreground
+   shim killed by its tool timeout leaves the resident CLI in place, and that CLI
+   raises no notification for a job it never backgrounded. The documented
+   recovery (`shipit agent result --wait`) already covers this shape; the
+   alternative signal, `backgroundTaskCount`, is drained by the CLI ~1 ms *before*
+   the notification it wakes on, so keying on it would fire duplicate wakes on
+   the common streaming path.
+3. **A wake is not restart-durable.** `onSettled` is an in-memory callback, and
+   nothing re-runs `finalizeConsultCard` after a restart (the boot reconcile
+   marks a stranded consult `cancelled`). The `queued` stamp is therefore written
+   only once the dispatch is *accepted*, so a crash before that leaves no stamp
+   to latch the fire-once guard shut. A crash after it loses the wake, exactly as
+   docs/196 did before it grew `deliveryId` + a reconciler.
+4. **The archive check is time-of-check/time-of-use**, and the route passes no
+   `restoreWorkspace`. Both match `services/session-report.ts`, the sibling this
+   follows; `wake-session.ts` documents the absent restore as the pre-docs/239
+   behavior. A session archived between the check and the dispatch, or one whose
+   checkout was disk-evicted, ends as a failed wake rather than a delivery.
+
+## Known limits of the tests
+
+The delivery tests use a fake runner whose creation is instantaneous and whose
+epoch moves atomically, so they cannot exercise residuals 1–4 — those need a
+window that only a real dispatch has. What they do pin is every decision the
+module makes from the state it is given.
 
 ## Key files
 

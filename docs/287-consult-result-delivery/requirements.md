@@ -15,8 +15,9 @@ description: A finished `shipit agent run` consult must reach the agent that ask
 3. It must not produce a second, redundant turn when the agent is already going
    to see the result: the consult's own call is still returning it on stdout, or
    the resident CLI is about to raise it as a self-wake.
-4. A delivery attempt must be visible on the consult card, including when the
-   woken turn did not run.
+4. A delivery attempt must be recorded on the consult card, including when the
+   woken turn did not run, so an operator or an agent reading the card back can
+   tell whether the hand-over happened.
 5. Delivery must never cost the caller its result: the sub-agent's output, its
    consult card, and `shipit agent result` all keep working whatever the
    delivery does.
@@ -29,6 +30,11 @@ description: A finished `shipit agent run` consult must reach the agent that ask
 
 ## Resolved questions
 
+- 2026-09-03 — *Should the card FACE render the delivery record?* No, not in this
+  change. The record exists so the state is auditable — from the DB, from the
+  orchestrator log, and from `shipit agent result --json`, which returns the
+  stored card. Rendering it would add a UI element for a state the user cannot
+  act on. Req 4 says "recorded", not "rendered", for that reason.
 - 2026-09-03 — *Should a `cancelled` consult also wake the session?* No. A
   `cancelled` card means ShipIt took the session away from the run (container
   teardown, forced dispose, the boot reconcile after a restart); there is no

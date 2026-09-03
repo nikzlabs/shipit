@@ -129,6 +129,16 @@ async function decideAndDeliver(
     // second child PR merging while the first consult is still going is an
     // ordinary shape in an orchestrating session. `dispatch` enqueues behind a
     // running turn, so waking is safe in that case.
+    //
+    // KNOWN RESIDUAL (cross-agent review, 2026-09-03). `runner.dispatch` and
+    // `drainNextQueuedMessage` both set `running = true` synchronously and only
+    // bump the epoch later, inside `executeAgentTurn`. A consult finishing
+    // inside that window reads `running=true, epoch=<originating>` and stands
+    // down, so the result is not delivered. That is today's behavior rather than
+    // a new failure, and the alternative — waking whenever we are unsure — would
+    // add a redundant turn to every ordinary FOREGROUND consult, which is the
+    // common case. Narrowing it needs a turn identity that moves atomically with
+    // `running`; tracked as follow-up work in the doc.
     if (runner.running && (runner.turnEpoch ?? 0) === req.originatingTurnEpoch) {
       return { woken: false, reason: "originating-turn-live" };
     }
@@ -136,6 +146,15 @@ async function decideAndDeliver(
     // produces a `task_notification`, which the adapter turns into
     // `agent_self_wake` and `turn-executor` re-arms into a real turn. Waking on
     // top of that would run a second, redundant turn saying the same thing.
+    //
+    // This is a property of the PROCESS, not of the shim: a foreground shim that
+    // its tool timeout SIGTERMed leaves the resident CLI in place, and that CLI
+    // raises no notification for a job it never backgrounded — so a consult
+    // whose shim died that way still gets no wake. Deliberate. The alternative
+    // signal (`backgroundTaskCount > 0`) is drained by the CLI ~1ms BEFORE the
+    // notification it wakes on, so keying on it would fire a duplicate wake on
+    // the ordinary streaming path — the common case — to cover a shape that
+    // already has a documented recovery (`shipit agent result --wait`).
     if (runner.isStreamingActive) {
       return { woken: false, reason: "resident-cli-delivers" };
     }
@@ -148,8 +167,6 @@ async function decideAndDeliver(
   if (readStoredCard(deps, sessionId, card.cardId)?.wakeDelivery) {
     return { woken: false, reason: "already-delivered" };
   }
-
-  stampDelivery(deps, sessionId, card.cardId, { at: new Date().toISOString(), outcome: "queued" });
 
   try {
     await wakeSessionWithTurn(deps, session, {
@@ -176,6 +193,12 @@ async function decideAndDeliver(
     console.error(`[consult-delivery] wake-turn not delivered to ${sessionId}:`, err);
     return { woken: false, reason: "wake-failed", detail };
   }
+
+  // Stamped only once the dispatch is ACCEPTED, never before it. The stamp is
+  // also the fire-once guard, so writing it up front would turn an orchestrator
+  // exit between the write and the dispatch into a permanent "already
+  // delivered" for a wake that never happened.
+  stampDelivery(deps, sessionId, card.cardId, { at: new Date().toISOString(), outcome: "queued" });
 
   console.log(
     `[consult-delivery] woke session=${sessionId} spawn=${card.spawnId} `
@@ -208,7 +231,22 @@ function stampDelivery(
   wakeDelivery: NonNullable<SubAgentConsultCard["wakeDelivery"]>,
 ): void {
   try {
-    deps.chatHistoryManager.updateSubAgentConsultCard(sessionId, cardId, { wakeDelivery });
+    // A settlement can only ever be an UPGRADE over `queued`, and a dispatch that
+    // settles before this function's own `queued` stamp is written (an empty
+    // queue cleared under it, a synchronous refusal) would otherwise be
+    // overwritten by it — a card reporting a turn as in flight forever.
+    if (wakeDelivery.outcome === "queued" && readStoredCard(deps, sessionId, cardId)?.wakeDelivery) {
+      return;
+    }
+    if (!deps.chatHistoryManager.updateSubAgentConsultCard(sessionId, cardId, { wakeDelivery })) {
+      // No persisted row carries this card — the fire-once guard and the audit
+      // trail are both gone with it. Say so rather than failing silently; the
+      // wake itself is unaffected and still worth making.
+      console.warn(
+        `[consult-delivery] no persisted card ${cardId} in ${sessionId} to stamp `
+        + `(outcome=${wakeDelivery.outcome}) — delivery is not deduplicated`,
+      );
+    }
   } catch (err) {
     console.warn(`[consult-delivery] could not stamp card ${cardId} of ${sessionId}:`, err);
   }

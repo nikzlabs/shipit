@@ -1587,6 +1587,68 @@ describe("post-turn flow for a self-woken turn", () => {
   });
 
   /**
+   * docs/287, from cross-agent review — unlatching alone is not enough when the
+   * latched turn collected a message.
+   *
+   * `send-message.ts` branches on `runner.running`, so anything the user types
+   * while the phantom adopted turn is latched is QUEUED. `tryDrain` is
+   * single-shot, and the non-streaming path already spent its one attempt at
+   * `agent_result` — so the `done` handler's drain returns immediately and
+   * `signalIdleIfIdle` correctly refuses to fire with a non-empty queue. Left
+   * there, the session reads idle and does nothing while a message sits in the
+   * queue, until some unrelated action trips `verifyRunningState`.
+   */
+  it("drains a message queued during the latched phantom turn", async () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: repoDir,
+      defaultAgentId: "claude" as AgentId,
+    });
+    const agent = makeFakeAgent();
+    const drainNext = vi.fn(async () => { runner.dequeue(); });
+
+    const deps: SystemTurnDeps = {
+      agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
+      autoCommit: vi.fn(realAutoCommit),
+      scheduleAutoPush: vi.fn(),
+      listenerDeps: makeListenerDeps(),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+
+    await executeAgentTurn(runner, deps, agent as never, {
+      agentId: "claude" as AgentId,
+      sessionId: "s1",
+      prompt: "p",
+      userText: "one-shot",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: null,
+      drainNext,
+      emit: () => {},
+      useStreaming: false,
+    });
+    await waitFor(() => agent.run.mock.calls.length === 1, "turn started");
+
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => drainNext.mock.calls.length === 1, "drained at agent_result");
+
+    // The consult's notification latches the runner busy, so the user's next
+    // message is queued rather than started.
+    await selfWake(agent);
+    expect(runner.running).toBe(true);
+    runner.enqueue({ text: "and now do the other thing", execution: "interactive" });
+
+    agent.emit("done", 0);
+
+    await waitFor(() => drainNext.mock.calls.length === 2, "queued message drained after the unlatch");
+    expect(runner.queueLength).toBe(0);
+
+    runner.dispose({ force: true });
+  });
+
+  /**
    * The re-arm's ninth hand-over, and the one it was missing: the adopted turn's
    * TURN-START HEAD.
    *

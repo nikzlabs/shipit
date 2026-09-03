@@ -1133,26 +1133,25 @@ export async function runSubAgent(
       { spawnId, subAgentId },
     );
 
-    // docs/287 — and now tell the AGENT. Last of all, and specifically AFTER
-    // `commitSubAgentWork` above: the wake can start a turn immediately, and a
-    // turn that begins by discarding working-tree state would take the consult's
-    // own edits with it. Awaited rather than fired-and-forgotten so the ordering
-    // is a guarantee instead of a race — the gate inside means a caller still
-    // holding this HTTP call never reaches the wake at all, so no live consult
-    // pays for the container-resume wait.
+    // docs/287 — and now tell the AGENT. STARTED here, after
+    // `commitSubAgentWork` above, and that ordering is the point: the wake can
+    // start a turn immediately, and a turn that begins by discarding
+    // working-tree state would take the consult's own edits with it. Starting it
+    // from this line is enough for that — the commit is already awaited.
+    //
+    // NOT awaited. A wake against an idle-reaped session boots a container and
+    // waits up to 30s for its worker, and this `finally` is what holds the shim's
+    // HTTP response open; a foreground caller is gated out of the wake anyway, so
+    // awaiting could only ever delay a response nobody is reading. Detached with
+    // a `catch` rather than left floating: the delivery owns its own error
+    // handling, and this is the backstop that keeps a throw from surfacing as an
+    // unhandled rejection.
     if (terminalCard && deps.deliverConsultResult) {
-      try {
-        await deps.deliverConsultResult({
-          sessionId,
-          card: terminalCard,
-          originatingTurnEpoch,
+      void deps
+        .deliverConsultResult({ sessionId, card: terminalCard, originatingTurnEpoch })
+        .catch((err: unknown) => {
+          console.error(`[sub-agent] result delivery failed session=${sessionId} spawn=${spawnId}:`, err);
         });
-      } catch (err) {
-        // The delivery owns its own error handling; this is the backstop that
-        // keeps a throw here from replacing the result (or the error) the caller
-        // came for.
-        console.error(`[sub-agent] result delivery failed session=${sessionId} spawn=${spawnId}:`, err);
-      }
     }
   }
 }

@@ -1935,7 +1935,7 @@ describe("runSubAgent — handing a finished consult back to the agent (docs/287
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function scenario(opts: { spawnResult?: Partial<SubAgentRunResult> } = {}) {
+  function scenario(opts: { spawnResult?: Partial<SubAgentRunResult>; holdDelivery?: boolean } = {}) {
     const runner = {
       subAgentSpawnsThisTurn: 0,
       sessionId: "s1",
@@ -1964,8 +1964,19 @@ describe("runSubAgent — handing a finished consult back to the agent (docs/287
     };
     /** What the tree looked like at the instant the delivery was invoked. */
     let treeCleanAtDelivery: boolean | undefined;
+    /**
+     * The delivery is deliberately NOT awaited by `runSubAgent` (it can boot a
+     * container), so a test that wants to see its effect has to await this
+     * instead of the spawn call. `gate` lets a test hold it open and prove the
+     * result comes back without it.
+     */
+    let settleGate: (() => void) | undefined;
+    const gate = opts.holdDelivery
+      ? new Promise<void>((r) => { settleGate = r; })
+      : Promise.resolve();
     const deliverConsultResult = vi.fn(async (_req: ConsultResultDeliveryRequest) => {
       treeCleanAtDelivery = await git.isClean();
+      await gate;
     });
     const deps = {
       sessionManager: { get: () => ({ id: "s1", kind: "repo", agentId: "claude", agentPinned: true }), list: () => [] },
@@ -1977,7 +1988,15 @@ describe("runSubAgent — handing a finished consult back to the agent (docs/287
       createGitManager: (dir: string) => new GitManager(dir),
       deliverConsultResult,
     } as never;
-    return { runner, deps, deliverConsultResult, treeClean: () => treeCleanAtDelivery };
+    return {
+      runner,
+      deps,
+      deliverConsultResult,
+      treeClean: () => treeCleanAtDelivery,
+      releaseDelivery: () => settleGate?.(),
+      /** Await the delivery the spawn started but did not wait for. */
+      delivery: () => deliverConsultResult.mock.results[0]?.value as Promise<void> | undefined,
+    };
   }
 
   it("delivers the terminal card, with the turn that asked for it, after the commit", async () => {
@@ -1996,7 +2015,24 @@ describe("runSubAgent — handing a finished consult back to the agent (docs/287
     expect(req.card.outputMarkdown).toBe("done");
     // Ordering, not sequence-by-inspection: the consult's own edits are already
     // in git by the time a turn could be woken on top of them.
+    await s.delivery();
     expect(s.treeClean()).toBe(true);
+  });
+
+  /**
+   * The delivery must not hold the shim's HTTP response open. A wake against an
+   * idle-reaped session boots a container and waits up to 30s for its worker;
+   * `runSubAgent` starts that work and returns without it.
+   */
+  it("returns the result without waiting for the delivery to finish", async () => {
+    const s = scenario({ holdDelivery: true });
+
+    const res = await runSubAgent(deps(s), "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+
+    expect(res.text).toBe("done");
+    expect(s.deliverConsultResult).toHaveBeenCalledTimes(1);
+    s.releaseDelivery();
+    await s.delivery();
   });
 
   /** A failed run is still an answer the agent has to react to. */

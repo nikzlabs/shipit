@@ -12,3 +12,4 @@
 - [x] Design doc + requirements.
 - [x] `npm run test:dev`, `npm run lint:dev`, `npm run typecheck`.
 - [x] Independent review of the branch diff.
+- [x] Act on the review: drain a message queued during the latched phantom turn; stamp `wakeDelivery` only after the dispatch is accepted; report an unstampable card; stop the delivery blocking the shim's HTTP response; record the residuals it found.
