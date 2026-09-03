@@ -1539,11 +1539,11 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * Create a standby container for a warm session. Identical to `create()` but
    * labels the container with `shipit-standby=true` and tracks it as standby.
    */
-  async createStandby(config: ContainerConfig): Promise<SessionContainer> {
+  async createStandby(config: ContainerConfig, opts?: CreateContainerOpts): Promise<SessionContainer> {
     const sc = await this.create({
       ...config,
       extraLabels: { ...config.extraLabels, [CONTAINER_STANDBY_LABEL]: "true" },
-    });
+    }, opts);
     this.standbySessionIds.add(config.sessionId);
     return sc;
   }

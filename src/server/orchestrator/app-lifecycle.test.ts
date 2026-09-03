@@ -1326,6 +1326,9 @@ describe("scheduleStartupTasks — warms every ready repo at boot (docs/148)", (
     const sessionManager = {
       get: (id: string) => id === "warm-stale" ? { workspaceDir: staleClonePath } : undefined,
       allIds: () => [],
+      // The boot sweep now DELETES a rejected warm row rather than only
+      // unpointing it, so a fake without this throws before the re-warm.
+      delete: () => true,
     } as unknown as Parameters<typeof scheduleStartupTasks>[0]["sessionManager"];
 
     const noop = () => {};

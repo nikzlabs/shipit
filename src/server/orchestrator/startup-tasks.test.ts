@@ -21,7 +21,7 @@ import { DatabaseManager } from "../shared/database.js";
 import { RepoStore } from "./repo-store.js";
 import { SecretStore } from "./secret-store.js";
 import { SessionManager } from "./sessions.js";
-import { runRemoteCredentialScrub, retireWarmSessions } from "./startup-tasks.js";
+import { runRemoteCredentialScrub, retireWarmSessions, scheduleStartupTasks } from "./startup-tasks.js";
 import { repoUrlToHash } from "./git-utils.js";
 
 /** How an older build named a per-repo directory: sha256 of the URL as typed. */
@@ -328,5 +328,83 @@ describe("retireWarmSessions", () => {
 
     expect(await retireWarmSessions({ repoStore, sessionManager })).toBe(1);
     expect(await retireWarmSessions({ repoStore, sessionManager })).toBe(0);
+  });
+});
+
+/**
+ * planning#501 — the boot sweep used to validate the CLONE alone, and log
+ * "validated" for a warm session whose standby container had died. Nothing
+ * downstream re-checked, so the repo stayed hollow and every later claim paid
+ * the full cold cost while still reporting a warm hit.
+ */
+describe("scheduleStartupTasks — a warm session needs its standby, not just its clone", () => {
+  function runBootSweep(containerStatus: string | undefined) {
+    const calls: string[] = [];
+    const deleted: string[] = [];
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-startup-standby-"));
+    const clonePath = path.join(tmpDir, "clone");
+    fs.mkdirSync(clonePath); // the clone is FINE — only the container is not
+
+    const repoStore = {
+      list: () => [{ url: "repo", status: "ready" as const, warmSessionId: "warm-1" }],
+      setWarmSessionId: () => {},
+    } as unknown as Parameters<typeof scheduleStartupTasks>[0]["repoStore"];
+    const sessionManager = {
+      get: (id: string) => id === "warm-1" ? { workspaceDir: clonePath } : undefined,
+      allIds: () => [],
+      delete: (id: string) => { deleted.push(id); return true; },
+    } as unknown as Parameters<typeof scheduleStartupTasks>[0]["sessionManager"];
+    const containerManager = {
+      get: () => containerStatus === undefined ? undefined : { status: containerStatus },
+      isStandby: () => true,
+      destroy: async () => undefined,
+    } as unknown as Parameters<typeof scheduleStartupTasks>[0]["containerManager"];
+
+    const noop = () => {};
+    const timer = scheduleStartupTasks(
+      {
+        repoStore,
+        sessionManager,
+        chatHistoryManager: { delete: noop } as unknown as Parameters<typeof scheduleStartupTasks>[0]["chatHistoryManager"],
+        usageManager: { delete: noop } as unknown as Parameters<typeof scheduleStartupTasks>[0]["usageManager"],
+        containerManager,
+        getBareCacheDir: (u: string) => path.join(tmpDir, "cache", u),
+        warmSessionForRepo: async (url: string) => { calls.push(url); },
+      },
+      [],
+    );
+    return { calls, deleted, timer, cleanup: () => fs.rmSync(tmpDir, { recursive: true, force: true }) };
+  }
+
+  it("re-warms when the clone exists but the standby is not running", async () => {
+    const { calls, deleted, timer, cleanup } = runBootSweep("exited");
+    await new Promise((r) => setTimeout(r, 0));
+    clearTimeout(timer);
+
+    expect(calls).toEqual(["repo"]);
+    // Deleted, not merely unpointed: an ungraduated warm row that survives is
+    // exactly what `findUngraduatedWarm` hands to the next claim as a reusable
+    // draft — the hollow session this check just rejected.
+    expect(deleted).toEqual(["warm-1"]);
+    cleanup();
+  });
+
+  it("re-warms when the clone exists and no container is tracked at all", async () => {
+    const { calls, timer, cleanup } = runBootSweep(undefined);
+    await new Promise((r) => setTimeout(r, 0));
+    clearTimeout(timer);
+
+    expect(calls).toEqual(["repo"]);
+    cleanup();
+  });
+
+  it("leaves a warm session whose clone and standby are both healthy", async () => {
+    const { calls, deleted, timer, cleanup } = runBootSweep("running");
+    await new Promise((r) => setTimeout(r, 0));
+    clearTimeout(timer);
+
+    expect(calls).toEqual([]);
+    expect(deleted).toEqual([]);
+    cleanup();
   });
 });

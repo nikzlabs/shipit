@@ -13,9 +13,10 @@
  * See docs/124-session-rescue-and-diagnostics §1.5.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { createPreviewErrorReporter } from "../preview-proxy.js";
+import { markStackUp, forgetStackUp } from "../preview-timing.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { WsServerMessage } from "../../shared/types.js";
 
@@ -180,6 +181,29 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
     nowMs += 6_000;
     report("sess-3", 5173, "boom", false);
     expect(emitted.filter((m) => m.type === "log_append").length).toBe(3);
+  });
+
+  it("closes the activation→preview-ready measurement on the first answered request", () => {
+    // The proxy has no separate readiness signal: `report.success` IS the
+    // "a request reached the upstream" hook, so the measurement hangs off it.
+    // Without this the timing module's own tests would still pass with the
+    // proxy-side call deleted.
+    const report = createPreviewErrorReporter(makeFakeRegistry({}));
+    markStackUp("sess-timing", [{ name: "web", port: 5173 }]);
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((msg: unknown) => {
+      if (typeof msg === "string" && msg.startsWith("[timing]")) logged.push(msg);
+    });
+
+    try {
+      report.success("sess-timing", 5173);
+    } finally {
+      spy.mockRestore();
+      forgetStackUp("sess-timing");
+    }
+
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain("preview.first-connect for sess-timing port=5173");
   });
 
   it("no-ops when no runner is registered for the session", () => {

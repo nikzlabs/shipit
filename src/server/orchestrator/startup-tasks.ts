@@ -485,17 +485,36 @@ export function scheduleStartupTasks(
       for (const repo of repoStore.list()) {
         if (repo.warmSessionId && repo.status === "ready") {
           const ws = sessionManager.get(repo.warmSessionId);
-          if (!ws?.workspaceDir || !existsSync(ws.workspaceDir)) {
-            console.log(`[warm] Stale warm session ${repo.warmSessionId} — clone missing, re-warming`);
+          // A warm session needs BOTH halves: the clone AND a running standby.
+          // Validating only the clone declared "validated" for a session whose
+          // container had died, and nothing downstream re-checked — the claim
+          // then paid the full cold cost while reporting a warm hit
+          // (planning#501). Container discovery has already re-adopted this
+          // process's containers by now, so the tracked status is fresh enough
+          // to read directly.
+          const containerDown = !!containerManager
+            && containerManager.get(repo.warmSessionId)?.status !== "running";
+          const cloneMissing = !ws?.workspaceDir || !existsSync(ws.workspaceDir);
+          if (cloneMissing || containerDown) {
+            console.log(
+              `[warm] Stale warm session ${repo.warmSessionId} — ${cloneMissing ? "clone missing" : "standby not running"}, re-warming`,
+            );
             if (containerManager?.isStandby(repo.warmSessionId)) {
               containerManager.destroy(repo.warmSessionId).catch((err: unknown) => {
                 console.error(`[warm] Failed to destroy stale standby:`, getErrorMessage(err));
               });
             }
+            // Delete the rejected row, don't just unpoint it. The zombie scan
+            // above already ran and spared this id because the pointer still
+            // named it; clearing the pointer alone leaves an ungraduated warm
+            // session that `findUngraduatedWarm` hands to the next claim as a
+            // reusable draft — the very session this check just rejected
+            // (review finding).
+            deleteSession(sessionManager, repo.warmSessionId, chatHistoryManager, usageManager);
             repoStore.setWarmSessionId(repo.url, undefined);
             fireAndForgetWarm(repo.url);
           } else {
-            console.log(`[warm] Warm session ${repo.warmSessionId} validated (clone exists)`);
+            console.log(`[warm] Warm session ${repo.warmSessionId} validated (clone + standby)`);
           }
         }
       }

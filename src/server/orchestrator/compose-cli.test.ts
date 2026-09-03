@@ -18,7 +18,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ComposeCli, type ComposeOutputSink } from "./compose-cli.js";
+import { ComposeCli, composeUpPhaseOf, type ComposeOutputSink } from "./compose-cli.js";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 
@@ -364,7 +364,164 @@ describe("ComposeCli — compose up output sink", () => {
     const { cli, calls } = makeSinkCli();
 
     await expect(cli.upService("dev")).resolves.toBeUndefined();
-    expect(calls[0]!.hasSink).toBe(false);
+    // `up` observes its own output for the build/create phase split, so it
+    // always hands the runner a sink — the caller's, wrapped, or its own.
+    expect(calls[0]!.hasSink).toBe(true);
+  });
+});
+
+/**
+ * The `[timing] compose.up` line. `docker compose up -d --build` is the single
+ * longest phase of a session activation, and until it was split the operator
+ * could not tell a slow image build from a slow container create.
+ */
+describe("ComposeCli — compose up phase timings", () => {
+  function makeCliEmitting(lines: string[]) {
+    const runner = vi.fn(async (_args: string[], _cwd: string, onOutput?: (c: string) => void) => {
+      for (const line of lines) onOutput?.(`${line}\n`);
+    });
+    return new ComposeCli({
+      sessionId: SID,
+      workspaceDir: "/workspace",
+      composeFile: "docker-compose.yml",
+      overrideFile: "/state/compose.override.yml",
+      composeQuery: vi.fn(async () => ""),
+      composeRunner: runner,
+    });
+  }
+
+  /** Every `[timing]` line one `up` produced. */
+  async function timingLines(lines: string[], run: (cli: ComposeCli) => Promise<void>) {
+    const seen: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((msg: unknown) => {
+      if (typeof msg === "string" && msg.startsWith("[timing]")) seen.push(msg);
+    });
+    try {
+      await run(makeCliEmitting(lines));
+    } finally {
+      spy.mockRestore();
+    }
+    return seen;
+  }
+
+  it("reports build and create when the output shows both phases", async () => {
+    const seen = await timingLines(
+      [
+        "#1 [internal] load build definition from Dockerfile",
+        "#8 exporting to image",
+        " Container shipit-abc-web-1  Creating",
+        " Container shipit-abc-web-1  Started",
+      ],
+      cli => cli.up(["web"]),
+    );
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain("compose.up for sess-1 services=web");
+    expect(seen[0]).toMatch(/total=\d+ms/);
+    expect(seen[0]).toMatch(/build=\d+ms/);
+    expect(seen[0]).toMatch(/create=\d+ms/);
+  });
+
+  it("classifies a phase marker split across two chunks", async () => {
+    // The runner delivers arbitrary slices of the stream, not lines. Splitting
+    // each chunk on its own lost any marker that straddled a boundary.
+    const runner = vi.fn(async (_args: string[], _cwd: string, onOutput?: (c: string) => void) => {
+      onOutput?.("#1 [internal] load build definition\n Contai");
+      onOutput?.("ner shipit-abc-web-1  Creating\n");
+    });
+    const cli = new ComposeCli({
+      sessionId: SID,
+      workspaceDir: "/workspace",
+      composeFile: "docker-compose.yml",
+      overrideFile: "/state/compose.override.yml",
+      composeQuery: vi.fn(async () => ""),
+      composeRunner: runner,
+    });
+    const seen: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((msg: unknown) => {
+      if (typeof msg === "string" && msg.startsWith("[timing]")) seen.push(msg);
+    });
+
+    await cli.up(["web"]);
+    spy.mockRestore();
+
+    expect(seen[0]).toMatch(/build=\d+ms/);
+    expect(seen[0]).toMatch(/create=\d+ms/);
+  });
+
+  it("classifies a final line the command never terminated", async () => {
+    // A process that exits mid-line: only the flush can resolve the held tail.
+    const runner = vi.fn(async (_args: string[], _cwd: string, onOutput?: (c: string) => void) => {
+      onOutput?.(" Container shipit-abc-web-1  Creating");
+    });
+    const cli = new ComposeCli({
+      sessionId: SID,
+      workspaceDir: "/workspace",
+      composeFile: "docker-compose.yml",
+      overrideFile: "/state/compose.override.yml",
+      composeQuery: vi.fn(async () => ""),
+      composeRunner: runner,
+    });
+    const seen: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((msg: unknown) => {
+      if (typeof msg === "string" && msg.startsWith("[timing]")) seen.push(msg);
+    });
+
+    await cli.up(["web"]);
+    spy.mockRestore();
+
+    expect(seen[0]).toMatch(/create=\d+ms/);
+  });
+
+  it("omits build for a stack whose images are already present", async () => {
+    const seen = await timingLines(
+      [" Container shipit-abc-web-1  Created", " Container shipit-abc-web-1  Started"],
+      cli => cli.up(["web"]),
+    );
+
+    expect(seen[0]).not.toContain("build=");
+    expect(seen[0]).toMatch(/create=\d+ms/);
+  });
+
+  it("reports the total even when the up fails", async () => {
+    const runner = vi.fn(async () => { throw new Error("boom"); });
+    const cli = new ComposeCli({
+      sessionId: SID,
+      workspaceDir: "/workspace",
+      composeFile: "docker-compose.yml",
+      overrideFile: "/state/compose.override.yml",
+      composeQuery: vi.fn(async () => ""),
+      composeRunner: runner,
+    });
+    const seen: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((msg: unknown) => {
+      if (typeof msg === "string" && msg.startsWith("[timing]")) seen.push(msg);
+    });
+
+    await expect(cli.up(["web"])).rejects.toThrow("boom");
+    spy.mockRestore();
+
+    expect(seen[0]).toMatch(/compose\.up for sess-1 services=web total=\d+ms/);
+  });
+});
+
+describe("composeUpPhaseOf", () => {
+  it("classifies container lines as create", () => {
+    expect(composeUpPhaseOf(" Container shipit-abc-web-1  Creating")).toBe("create");
+    expect(composeUpPhaseOf(" Container shipit-abc-web-1  Started")).toBe("create");
+    expect(composeUpPhaseOf(" Network shipit-abc_default  Created")).toBe("create");
+  });
+
+  it("classifies image acquisition — build AND pull — as build", () => {
+    expect(composeUpPhaseOf("#5 [builder 2/6] RUN npm ci")).toBe("build");
+    expect(composeUpPhaseOf(" => CACHED [base 1/2] FROM docker.io/library/node")).toBe("build");
+    expect(composeUpPhaseOf(" web Pulling")).toBe("build");
+    expect(composeUpPhaseOf(" 3f4a1b2c Downloading [====>]")).toBe("build");
+  });
+
+  it("says nothing about a line that reports neither phase", () => {
+    expect(composeUpPhaseOf("")).toBe(null);
+    expect(composeUpPhaseOf("time=\"2026-09-03\" level=warning msg=\"version is obsolete\"")).toBe(null);
   });
 });
 

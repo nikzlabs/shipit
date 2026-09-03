@@ -32,6 +32,7 @@ import {
 } from "../shared/agent-interface-sdk/bootstrap.js";
 import type { LogSource } from "../shared/types.js";
 import { appendAgentLog } from "./log-emit.js";
+import { markPreviewReachable } from "./preview-timing.js";
 
 // ---------------------------------------------------------------------------
 // Subdomain parsing
@@ -889,6 +890,10 @@ export function createPreviewErrorReporter(
   // pending error streak for this (sessionId, port).
   report.success = (sessionId, port) => {
     streakStartAt.delete(`${sessionId}:${port}`);
+    // The same signal closes the activation→preview-ready measurement: this is
+    // the first moment the dev server answered anything. Logged once per port
+    // per `compose up`, by the timing module itself.
+    markPreviewReachable(sessionId, port);
   };
 
   return report;

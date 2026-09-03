@@ -14,6 +14,7 @@ import { overlayLiveScopeSource, pluginLiveArtifactSource } from "./disk-livenes
 import { DEFAULT_DISK_LADDER, assertDiskLadderOrdering, type DiskLadderThresholds } from "./sessions.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import { createKeepPreviewRestartSupervisor, restoreReservedPreviews } from "./keep-preview-running.js";
+import { startWarmTierSweep } from "./warm-tier-sweep.js";
 
 /** Functions produced by {@link startStartupMonitors} that later steps need. */
 export interface StartupMonitors {
@@ -179,6 +180,22 @@ export async function startStartupMonitors(
   if (idleEnforcementInterval && typeof idleEnforcementInterval.unref === "function") {
     idleEnforcementInterval.unref();
   }
+
+  // ---- Warm-tier repair (planning#501, docs/288 req 10) ----
+  // Nothing else notices a standby container that died: it has no runner, so
+  // the orphan reconciler above skips it, and `warmSessionForRepo` will not
+  // rebuild while the warm session row exists. Without this pass a repo whose
+  // standby exits stays hollow, and every later claim pays the full cold cost
+  // while still reporting a warm hit.
+  const warmSweepInterval = containerManager && !isTestMode
+    ? startWarmTierSweep({
+        repoStore, sessionManager, containerManager,
+        warmSessionForRepo: rt.warmSessionForRepo,
+        ensureStandbyForWarmSession: rt.ensureStandbyForWarmSession,
+        waitForWarmSession: rt.waitForWarmSession,
+        getMemoryStats: () => latestMemoryStats.value,
+      })
+    : null;
 
   // ---- Disk janitor (startup-only CRASH-RECOVERY sweep) ----
   // Reclaims orphan ShipIt-labeled compose volumes/networks, the archived
@@ -427,6 +444,7 @@ export async function startStartupMonitors(
     if (memoryStatsInterval) clearInterval(memoryStatsInterval);
     if (idleEnforcementInterval) clearInterval(idleEnforcementInterval);
     if (diskEscalationInterval) clearInterval(diskEscalationInterval);
+    if (warmSweepInterval) clearInterval(warmSweepInterval);
     if (repoPrefetcher) repoPrefetcher.stop();
     claudeOAuthRefresherRef.ref?.stop();
     codexOAuthRefresherRef.ref?.stop();
