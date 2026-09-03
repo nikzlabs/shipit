@@ -544,6 +544,24 @@ const SESSION_RANGE_TIMEOUT_MS = 10_000;
 // SessionContainerManager
 // ---------------------------------------------------------------------------
 
+/** Parse a dotted-quad into a 32-bit number, or null when it is not one. */
+function toIpv4(value: string): number | null {
+  const parts = value.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+  return parts.reduce((result, part) => (result * 256) + part, 0) >>> 0;
+}
+
+/** Is `ip` inside `subnet` (CIDR)? False for anything either side cannot parse. */
+function ipInSubnet(ip: string, subnet: string): boolean {
+  const target = toIpv4(ip);
+  const [baseText, prefixText] = subnet.split("/");
+  const base = baseText ? toIpv4(baseText) : null;
+  const prefix = Number(prefixText);
+  if (target === null || base === null || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) return false;
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  return (target & mask) === (base & mask);
+}
+
 export class SessionContainerManager extends EventEmitter<SessionContainerManagerEvents> {
   private docker: Docker;
   private containers = new Map<string, SessionContainer>();
@@ -1370,6 +1388,12 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    */
   async destroy(sessionId: string, opts: { replacementFollows?: boolean } = {}): Promise<void> {
     this.lastCreateErrors.delete(sessionId);
+    // The session's networks go with it, and Docker reuses subnets. A range
+    // left behind would attribute a future session's addresses to this dead id
+    // (nikzlabs/shipit#2653); forgetting one costs only the no-Docker fast path,
+    // which the next network inspect restores. `destroyAgentContainer` keeps
+    // the networks and so deliberately keeps the ranges.
+    this.sessionNetworkRanges.delete(sessionId);
     return destroyContainer(this.lifecycleDeps(), sessionId, opts);
   }
 
@@ -1806,22 +1830,10 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
 
   /** Conservative bridge-origin check used only when Docker lookup is unavailable. */
   isLikelySessionContainerIp(ip: string): boolean {
-    const toIpv4 = (value: string): number | null => {
-      const parts = value.split(".").map(Number);
-      if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
-      return parts.reduce((result, part) => (result * 256) + part, 0) >>> 0;
-    };
-    const target = toIpv4(ip);
-    if (target === null) return false;
     for (const ranges of this.sessionNetworkRanges.values()) {
       for (const range of ranges) {
         if (range.gateway === ip) continue;
-        const [baseText, prefixText] = range.subnet.split("/");
-        const base = toIpv4(baseText);
-        const prefix = Number(prefixText);
-        if (base === null || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) continue;
-        const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
-        if ((target & mask) === (base & mask)) return true;
+        if (ipInSubnet(ip, range.subnet)) return true;
       }
     }
     return false;
