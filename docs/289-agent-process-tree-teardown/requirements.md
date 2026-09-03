@@ -4,7 +4,7 @@
 2. The guarantee holds regardless of how the third-party CLI behaves on its way out. It must not depend on the CLI tearing its own MCP servers down correctly.
 3. The signal semantics the adapters rely on are unchanged: a path that sends SIGINT first so the CLI can flush keeps doing that, and the tree teardown sits behind the same escalation rather than replacing it with an immediate SIGKILL.
 4. The sub-agent spawn path (`shared/sub-agent-run.ts`) behaves as before, apart from whatever it inherits from the shared helper.
-5. Terminating a tree never signals a process ShipIt did not spawn, including when a pid has been reaped and recycled.
+5. Terminating a tree never signals a process ShipIt did not spawn. A pid that was reaped and recycled between being recorded and being signalled must not receive the signal, up to the limit of what a pid-based API can promise — see the plan's note on the residual window.
 
 ## Open questions
 

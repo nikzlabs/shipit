@@ -27,7 +27,9 @@ A parent-chain walk does reach it, because at the instant we signal, the browser
 1. snapshot descendants of `child.pid` by scanning `/proc` for `ppid` chains;
 2. signal the root through `killChild` — so the caller's existing semantics are untouched;
 3. signal each snapshotted descendant with the same signal;
-4. after `graceMs` (5s), SIGKILL whatever from the roster — the root included — is still alive, re-walking and unioning to catch anything spawned in the gap. The timer is `unref`'d so a pending sweep never holds the worker's event loop open.
+4. after `graceMs` (5s), SIGKILL whatever from the roster — the root included — is still alive. The timer is `unref`'d so a pending sweep never holds the worker's event loop open.
+
+The sweep re-walks from **every roster member still alive**, not from the root. The root is usually the first to go, so a root-only re-walk finds nothing exactly when it matters: a survivor below it — an MCP server that ignored the SIGTERM — is free to spawn during the grace, and that late child is in no snapshot and reachable from no dead root. It is the original leak one level down, and an independent review reproduced it against the first version of this helper. Each re-walk root is identity-checked first, because the pids a walk *discovers* carry the walk's own identity: a bad root would launder a stranger's children into the roster where the per-pid check can no longer catch them.
 
 Zombies are skipped throughout: a zombie holds no CPU, cannot be signalled, and (its children having been reparented the moment it exited) hides nothing below it.
 
@@ -37,6 +39,8 @@ Moving a signal off the `ChildProcess` object and onto a raw `process.kill(pid)`
 
 - **the tree is walked only when `/proc` says the root's parent is us.** A pid that is not our own child is not a tree we may tear down; a fabricated pid (adapter tests carry `4242`, `12345`) is exactly that, and gets its signal through `killChild` alone. The sweep's re-walk re-checks the same thing, so a root pid recycled during the grace cannot make us enumerate a stranger's children;
 - **every delayed signal re-checks `starttime`** (field 22 of `/proc/<pid>/stat`), so a pid reaped and recycled during the grace is skipped rather than shot.
+
+**The residual window, stated exactly.** The check reads `/proc/<pid>/stat` and then calls `kill(2)`; those are two syscalls, not one, so a target that exits, is reaped, and has its pid handed to a new process *between them* would still receive the signal. Closing that completely needs a handle-based API — `pidfd_open` + `pidfd_send_signal` — which Node exposes no binding for, so the guarantee here is a narrowing rather than an elimination: the dangerous interval drops from the 5-second grace (where recycling is entirely plausible) to the microseconds between two adjacent syscalls, during which the kernel would have to allocate its way around the whole pid space (`pid_max`, 32768 or 4194304) to land on that one number. Worth knowing before anyone reads req 5 as absolute; not worth native code today.
 
 ### What did NOT change
 

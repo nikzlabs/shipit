@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { collectDescendants, killChild, killProcessTree } from "./kill-child.js";
+import { collectDescendants, killChild, killProcessTree, type ProcessIdentity } from "./kill-child.js";
 
 describe("killChild", () => {
   it("no-ops on null/undefined", () => {
@@ -74,6 +74,17 @@ async function until(predicate: () => boolean, timeoutMs = 5_000): Promise<boole
 // `/proc` is the only descendant source, so these are Linux-only — which is the
 // whole production runtime. A macOS dev machine skips them; CI does not.
 describe.skipIf(!existsSync("/proc/1/stat"))("killProcessTree", () => {
+  /**
+   * Every pid these tests create, killed at the end of each one.
+   *
+   * A run still leaves ~15 zombies behind, and no ordering here removes them:
+   * the behaviour under test kills a tree's root, which orphans what is below
+   * it onto the container's pid 1 — a Node worker, not a reaper — so those
+   * entries linger for the container's life. Killing children before their
+   * shell was measured and reclaimed nothing. The general fix is an init
+   * process in the container; the cost here is bounded (~15 per run against a
+   * pid limit in the thousands) and the tests are worth it.
+   */
   const strays: number[] = [];
   afterEach(() => {
     for (const pid of strays.splice(0)) {
@@ -104,25 +115,11 @@ describe.skipIf(!existsSync("/proc/1/stat"))("killProcessTree", () => {
 
   /**
    * The defect in one test. `sh -c 'sleep 300 & sleep 300'` leaves two sleeps
-   * that are NOT killed by the death of their parent — the same shape as an
-   * agent CLI's MCP server leaving a Playwright browser behind. The first half
-   * shows the pre-fix behaviour (a plain `killChild` orphans them), the second
-   * that the tree kill collects them.
+   * that the death of their parent does NOT kill — the same shape as an agent
+   * CLI's MCP server leaving a Playwright browser behind. Removing the
+   * snapshot from `killProcessTree` makes this fail.
    */
-  it("kills descendants that outlive a plain killChild", async () => {
-    const orphaning = await spawnTree("sleep 300 & sleep 300", 2);
-    const orphaned = collectDescendants(orphaning.pid ?? 0);
-    expect(orphaned.length).toBeGreaterThanOrEqual(2);
-
-    killChild(orphaning, "SIGTERM");
-    // `exit`, not `close`: the orphans inherited stdout, so the pipe — and
-    // therefore `close` — stays open for as long as they do. That delayed
-    // `close` is the second symptom of the same leak.
-    await new Promise<void>((resolve) => orphaning.once("exit", () => resolve()));
-    // The parent is gone and its children are not — this is the leak.
-    expect(orphaned.every((d) => alive(d.pid))).toBe(true);
-    for (const d of orphaned) process.kill(d.pid, "SIGKILL");
-
+  it("kills descendants that outlive their parent", async () => {
     const proc = await spawnTree("sleep 300 & sleep 300", 2);
     const descendants = collectDescendants(proc.pid ?? 0);
     expect(descendants.length).toBeGreaterThanOrEqual(2);
@@ -151,6 +148,41 @@ describe.skipIf(!existsSync("/proc/1/stat"))("killProcessTree", () => {
       else proc.once("exit", () => resolve());
     });
     expect(proc.signalCode).toBe("SIGKILL");
+  });
+
+  /**
+   * The gap a root-only re-walk leaves. The root is usually the first thing to
+   * die, so by sweep time it can no longer lead anywhere — while a descendant
+   * that ignored the SIGTERM is free to spawn during the grace (an MCP server
+   * launching a browser is exactly that shape). The sweep therefore re-walks
+   * from every roster member still alive, not from the root.
+   *
+   * The tree: our `sh` (dies on SIGTERM) → an inner `sh` that ignores SIGTERM
+   * and backgrounds a fresh `sleep` one second in, i.e. after the first signal
+   * and before the sweep.
+   */
+  it("kills a process a survivor spawned during the grace period", async () => {
+    const proc = await spawnTree(`sh -c 'trap "" TERM; sleep 1; sleep 300 & wait' & sleep 300`, 2);
+    const snapshot = collectDescendants(proc.pid ?? 0);
+    const snapshotPids = new Set(snapshot.map((d) => d.pid));
+    const survivor = snapshot.find((d) => collectDescendants(d.pid).length >= 1);
+    expect(survivor).toBeDefined();
+    const survivorPid = survivor?.pid ?? 0;
+
+    killProcessTree(proc, "SIGTERM", { graceMs: 3_000 });
+
+    let late: ProcessIdentity | undefined;
+    const spawned = await until(() => {
+      late = collectDescendants(survivorPid).find((d) => !snapshotPids.has(d.pid));
+      return late !== undefined;
+    }, 2_500);
+    expect(spawned).toBe(true);
+    const latePid = late?.pid ?? 0;
+    strays.push(latePid);
+
+    // Born after the snapshot, below a process the root can no longer lead us
+    // to — the sweep has to find it from the survivor.
+    expect(await until(() => !alive(latePid) && !alive(survivorPid))).toBe(true);
   });
 
   /**

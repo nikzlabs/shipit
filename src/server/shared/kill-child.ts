@@ -103,14 +103,21 @@ function readProcStat(
  * process with many threads, while a container's process table is tiny.
  */
 export function collectDescendants(rootPid: number): ProcessIdentity[] {
+  return descendantsOf([rootPid], readProcessTable());
+}
+
+/** `ppid` → its live children, for every process `/proc` will show us. */
+type ProcessTable = Map<number, ProcessIdentity[]>;
+
+function readProcessTable(): ProcessTable {
+  const childrenOf: ProcessTable = new Map();
   let entries: string[];
   try {
     entries = readdirSync("/proc");
   } catch {
-    return [];
+    return childrenOf;
   }
 
-  const childrenOf = new Map<number, { pid: number; startTime: number }[]>();
   for (const entry of entries) {
     const pid = Number.parseInt(entry, 10);
     if (!Number.isFinite(pid) || String(pid) !== entry) continue;
@@ -124,10 +131,14 @@ export function collectDescendants(rootPid: number): ProcessIdentity[] {
     if (siblings) siblings.push(row);
     else childrenOf.set(stat.ppid, [row]);
   }
+  return childrenOf;
+}
 
+/** Breadth-first descendants of every pid in `roots`, excluding the roots. */
+function descendantsOf(roots: number[], childrenOf: ProcessTable): ProcessIdentity[] {
   const found: ProcessIdentity[] = [];
-  const seen = new Set<number>([rootPid]);
-  const queue: number[] = [rootPid];
+  const seen = new Set<number>(roots);
+  const queue = [...roots];
   while (queue.length > 0) {
     const pid = queue.shift() ?? 0;
     for (const child of childrenOf.get(pid) ?? []) {
@@ -146,6 +157,13 @@ export function collectDescendants(rootPid: number): ProcessIdentity[] {
  *
  * Never signals pid 0 (the caller's whole process group), pid 1 (init), or our
  * own process, whatever the caller passes.
+ *
+ * The stat and the `kill(2)` are two syscalls, so this narrows the recycled-pid
+ * window rather than closing it: from the 5s grace, where recycling is
+ * plausible, to the microseconds between two adjacent calls, in which the kernel
+ * would have to allocate around the entire pid space to land on this number.
+ * Closing it outright needs `pidfd_open`/`pidfd_send_signal`, which Node exposes
+ * no binding for.
  */
 function signalIdentity(identity: ProcessIdentity, signal: NodeJS.Signals): boolean {
   const { pid, startTime } = identity;
@@ -257,11 +275,15 @@ export function killProcessTree(
  * alive after `graceMs`. Unref'd: a pending sweep must never be the reason the
  * worker's event loop stays open.
  *
- * The re-walk is gated on `root` still being the process we recorded. Without
- * that check, a root pid reaped and recycled during the grace would have us
- * enumerate — and SIGKILL — a stranger's children, which is the bystander
- * hazard back on a longer fuse: the late entries carry the walk's own identity,
- * so {@link signalIdentity} cannot catch it for them.
+ * The re-walk starts from EVERY roster member that is still the process we
+ * recorded, not from the root alone. The root is usually the first to go, and a
+ * survivor below it can spawn during the grace — an MCP server that ignores
+ * SIGTERM launching a browser, say — so a root-only re-walk would find nothing
+ * and leave that late child running, which is the whole leak again one level
+ * down. The identity check is what makes the re-walk safe: an unverified pid
+ * could have been reaped and recycled, and the pids a walk *discovers* carry
+ * their own identity, so {@link signalIdentity} cannot catch a bad root for
+ * them.
  */
 function scheduleSweep(
   root: ProcessIdentity,
@@ -271,9 +293,13 @@ function scheduleSweep(
 ): void {
   const timer = setTimeout(() => {
     const byPid = new Map(roster.map((p) => [p.pid, p]));
-    const current = readProcStat(root.pid);
-    if (current && !current.zombie && current.startTime === root.startTime) {
-      for (const late of collectDescendants(root.pid)) byPid.set(late.pid, late);
+    const stillOurs = roster.filter((p) => {
+      const current = readProcStat(p.pid);
+      return current !== null && !current.zombie && current.startTime === p.startTime;
+    });
+    if (stillOurs.length > 0) {
+      const late = descendantsOf(stillOurs.map((p) => p.pid), readProcessTable());
+      for (const l of late) byPid.set(l.pid, l);
     }
 
     let killed = 0;
