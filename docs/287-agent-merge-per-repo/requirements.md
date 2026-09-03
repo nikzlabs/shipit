@@ -65,7 +65,23 @@ but cannot land it. This feature moves the permission to the **repository**.
 
 ## Open questions
 
-None.
+- **Which checks must pass (req 7)?** The requirement says "required checks must
+  pass". A live read gives the *combined* status for the commit, which cannot say
+  which checks GitHub treats as required, and the API that could is behind a
+  permission ShipIt's installation tokens deliberately do not have. So either the
+  merge blocks on **every reported check** (stricter than the words: a failing
+  optional check would stop an agent merge), or the design reads each check's own
+  required flag and pages through them (faithful, more machinery, and it fails
+  closed on anything it cannot classify). This changes what the product does, so
+  it is not an implementation detail.
+- **What may a crash-recovery record claim (req 9)?** Requirement 9 says the
+  record "says the agent merged it". If ShipIt crashes between GitHub accepting a
+  merge and the record being written, recovery can prove that the agent
+  *authorised* that exact commit and that the commit is now merged — but not that
+  ShipIt performed the merge, because a user, the pull-request card or GitHub's
+  own auto-merge could have landed the same commit. Either requirement 9 allows
+  that narrower wording for the recovery case, or it needs a proof of performance
+  that survives a crash.
 
 ## Resolved questions
 

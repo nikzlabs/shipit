@@ -342,12 +342,27 @@ same, and none of them consults `agentBusy` — so a turn can start *during* the
 REST call, after which its push is refused and its work is stranded. That is a
 documented failure of the existing managed loop, not a hypothetical.
 
-So the exclusion is a **session-scoped merge claim that admission itself
-respects**: the performer takes it only when the session is idle, both admission
-paths queue a turn while it is held, and it is released when the merge has
-settled. One claim, checked in the three places that can start work. This is what
-lets requirement 18's promise — and the agent-facing documentation — say plainly
-that a merge never lands under a live turn.
+The exclusion is a **session-scoped merge claim**, and it has two kinds, because
+the two performers stand in opposite relations to the turn:
+
+| Claim | Taken by | Precondition |
+|---|---|---|
+| **turn-owned** | the direct `gh pr merge` route | none — it belongs to the turn that is already running, and that route documents that its own runner is always running |
+| **background** | the arming executor | the session is idle **and** its queue is empty |
+
+An idle-only rule would make the direct path impossible, since that HTTP call is
+issued from inside the active turn. A turn-owned claim instead says "this turn is
+merging", which is exactly what a later turn must wait for.
+
+**The claim is only worth what admission is.** Turn starts are not confined to
+the two entry points named above: a queued turn re-enters through
+`ws-handlers/agent-execution.ts`'s drain, and `runDispatchedTurn`
+(`session-runner.ts`) deliberately bypasses the ordinary send-or-queue decision
+via `dispatched-turn.ts`. A check added to two of those four is not an exclusion.
+So every turn start — interactive send, dispatched turn, queue drain, and
+adoption after a restart — passes through **one authoritative admission gate**
+that consults the claim; a background claim makes a turn wait, and it is released
+when the merge has settled.
 
 ### Revocation (req 20)
 
