@@ -437,6 +437,68 @@ install-gated services; a **manual** service the user had started stays stopped,
 Logs panel says so — the alternative was leaving it running against an upper layer that no longer
 exists.
 
+**So a rotation must be *earned* — a code-only commit does not rotate the base (ops finding,
+2026-09-03).** Everything above makes a rotation survivable; it also makes one expensive, and the
+publish CAS was handing out rotations nobody asked for. A session on a repo whose dependency files had
+not moved for two days was restarted; container creation logged `base generation rotated`,
+force-removed the two running Compose service containers holding its overlay volumes (exit 137), and
+reconciled the stack. The user's dev server died so the session could be moved onto a generation whose
+contents were byte-identical to the one it was already on.
+
+The cause was that the CAS ordered on **commit ancestry alone**: any strictly-forward default-branch
+commit advanced the base and therefore minted `g<N+1>`, whether or not it changed a single dependency
+input. Every published generation is a new immutable directory, so a code-only merge on `main` was
+enough to invalidate every live session's volume opts.
+
+The fix is to make the forward branch ask a second question before it materializes anything: *would
+this generation hold the same dependencies as the current one?* When the answer is provably yes, the
+pointer's **lineage** advances (`commit`, `updatedAt`) and its **contents** do not (`generation`,
+`baseDir`, `depth` are untouched) — the `lineage-advanced` outcome in `overlay-base.ts`. Live mounts
+keep resolving, `overlayDriverOpts` produces the same string, `overlayVolumeState` reads `match`,
+`releaseOverlayVolumeHolders` is never reached, and `applyOverlayDepDirs` is never told to reconcile.
+
+**The equality test is the one docs/198 already trusts**, not a new one: the pointer's recorded
+`marker.depsHash` (the dependency-input content key), `marker.runtimeKey` (the worker-side runtime
+fingerprint) and `marker.installCommands`, all against the candidate's. Everything the triple omits is
+already in the scope hash (repo URL, orchestrator runtime fingerprint, dep dir), so it cannot differ
+between the two sides.
+
+**But it needs one precondition docs/198's own use does not, because reusing a tree is a stronger
+claim than re-validating one** (review finding). `preStampInstallMarker` uses that triple to let a
+session **skip `agent.install`** — and a wrong skip is caught downstream, because the worker gate
+re-derives its own runtime key and re-checks the overlay-emptiness contradiction. Declining to
+*republish* has no such backstop: the candidate's freshly-installed snapshot is discarded and the old
+generation stands. That difference matters exactly where the hashed inputs stop describing the output:
+`npm ci` runs the repository's own `postinstall`, so a commit that changes only `scripts/build.js` or a
+`patches/*.patch` produces a different installed tree under an identical key — and a `patch-package`
+-style script writes that difference straight into the dep dir the base holds.
+
+This repo had already reached that conclusion once, on the plugin side (`plugin-dep-store.ts`, which
+declines the store outright for a lifecycle-script install with no declared inputs). So the detector
+moved to `shared/deps-hash.ts:hasInstallLifecycleScript` and both callers use it. On the session path
+it is carried as `PublishCandidate.contentKeyDescribesTree`, resolved by `overlay-publish.ts` (the side
+that holds the workspace) and **absent-means-false**, so a caller that cannot answer keeps rotating. A
+declared `agent.install-inputs` overrides it: that is the author stating what their install actually
+consumes, and it is why the incident repo qualifies despite its `npm ci --prefix …` commands, which
+the command allowlist alone rejects.
+
+Every uncertainty rotates, as before: a missing marker on either side, a `null`/absent `depsHash`
+(content-keying off, or an install whose inputs are not recognized), a pointer written before
+`depsHash` existed, a changed runtime key or install-command list. So does every comparison that is
+not a clean fast-forward — the equal-commit skip, the behind-the-base decline and the **force-push
+lineage reset** all keep their existing behavior, because a rewritten lineage is not a safe place to
+reason about content. The conservative answer is only ever wasteful; the permissive one would leave a
+session mounting deps it does not have.
+
+Advancing the pointer's `commit` rather than skipping outright is what keeps ordering intact. `commit`
+now means *the newest default-branch commit whose dependency content this generation is known to
+hold*, which is what both of its readers want: the CAS's ordering key (so a genuinely older candidate
+arriving late still reads as behind), and `preStampInstallMarker`'s exact-commit gate (a session at
+that commit hashes its dep files to the value the marker already records, so the widened match claims
+nothing the content match did not already grant). Guards: `overlay-base.test.ts`'s content-equal
+block, and `integration_tests/overlay-restart-preserves-services.test.ts`, which spans publish →
+generation → driver opts → holder eviction in both directions.
+
 **A stale volume also loses its lowerdir, which is why it must not survive a create.** Two of the four
 damaged sessions had the pinned base generation itself gone from disk. `liveMountedOverlayBaseGenerations`
 pins what **running** containers name, and the caller's union contributes each resumable session's

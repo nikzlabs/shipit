@@ -227,3 +227,56 @@ export function computeInstallDepsHash(
   if (inputs === null) return null;
   return computeDepsHash(workspaceDir, inputs);
 }
+
+// ---------------------------------------------------------------------------
+// Lifecycle scripts — when the hashed inputs do NOT describe the output tree
+// ---------------------------------------------------------------------------
+
+/**
+ * The npm lifecycle scripts an install RUNS, as opposed to the ones a publish or
+ * a test runs. Each of these executes repository code that the manifest and the
+ * lockfile do not describe, so its output is not a function of the hashed
+ * inputs. `prepublish` is here because npm still runs it on a plain install.
+ */
+const INSTALL_LIFECYCLE_SCRIPTS = ["preinstall", "install", "postinstall", "prepare", "prepublish"];
+
+/**
+ * Whether a checkout's own `package.json` declares an install lifecycle script.
+ *
+ * **This is the difference between the content key's two uses.** Skipping an
+ * *install* on a content-key hit is safe even here, because the worst case is a
+ * tree the marker gate re-validates. Skipping a *rebuild* — declining to publish
+ * a new base generation because the key says the deps are unchanged
+ * (`overlay-base.ts:isContentEqualPublish`), or adopting an existing plugin base
+ * (`plugin-dep-store.ts`) — is not: `npm ci` runs the repository's own
+ * `postinstall`, so a commit that changes only `scripts/build.js` or a
+ * `patches/*.patch` produces a DIFFERENT installed tree under an identical key,
+ * and a `patch-package`-style script writes that difference straight into the
+ * dep dir the base holds. Callers that reuse a tree rather than re-validate one
+ * must decline here.
+ *
+ * The ROOT manifest is the right one to read, and only looks partial: a
+ * sub-package install (`npm ci --prefix pkg`) leaves a positional the command
+ * allowlist rejects outright, so its content key is already `null` and no reuse
+ * path is reachable. Wherever the key IS non-null by allowlist, the root
+ * manifest is the one whose scripts npm runs.
+ *
+ * Unreadable or absent reads as "no" — there is then no npm install to have a
+ * lifecycle at all, and the content key is decided by
+ * {@link computeInstallDepsHash} either way. An explicit `agent.install-inputs`
+ * overrides this entirely at the call site: that is the author stating what
+ * their install actually consumes, which is exactly the claim this detector
+ * exists to avoid guessing.
+ */
+export function hasInstallLifecycleScript(checkoutDir: string): boolean {
+  let pkg: unknown;
+  try {
+    pkg = JSON.parse(fs.readFileSync(path.join(checkoutDir, "package.json"), "utf-8"));
+  } catch {
+    return false;
+  }
+  if (typeof pkg !== "object" || pkg === null) return false;
+  const scripts = (pkg as { scripts?: unknown }).scripts;
+  if (typeof scripts !== "object" || scripts === null) return false;
+  return INSTALL_LIFECYCLE_SCRIPTS.some((name) => Boolean((scripts as Record<string, unknown>)[name]));
+}

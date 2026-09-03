@@ -25,7 +25,10 @@
  *     the remote default-branch commit** may *publish* a new base.
  *   - A publish **advances** the base only when the candidate's commit strictly
  *     descends the current base's commit (`git merge-base --is-ancestor` true
- *     and the two differ). Equal → deps already current (no-op). Behind → the
+ *     and the two differ) **and its dependency content differs**; a forward
+ *     candidate whose trusted content key matches the base's moves the pointer's
+ *     commit alone and keeps the generation (`lineage-advanced` — see
+ *     `isContentEqualPublish`). Equal → deps already current (no-op). Behind → the
  *     CAS "loser" declines. A **diverged** candidate that is the current remote
  *     default (a force-push rewrote `main`) is a **lineage reset**: rebuild a
  *     clean base from empty for the rewritten default, rather than leaving
@@ -49,10 +52,21 @@
  *
  * ## GC contract (plan §4 / disk-janitor `sweepOrphanedOverlayBases`)
  *
- * The scope dir `overlay-base/<scope-hash>/` is long-lived; each publish creates
- * a new `g<N>` child, which bumps the scope dir's own mtime (POSIX direct-child
- * change), so the disk-janitor's mtime liveness fallback stays sound. We
- * additionally `utimes` the scope dir to be explicit.
+ * The scope dir `overlay-base/<scope-hash>/` is long-lived; each publish that
+ * MATERIALIZES creates a new `g<N>` child, which bumps the scope dir's own mtime
+ * (POSIX direct-child change), so the disk-janitor's mtime liveness fallback
+ * stays sound. We additionally `utimes` the scope dir to be explicit.
+ *
+ * A `lineage-advanced` publish materializes nothing and so refreshes neither —
+ * which is correct rather than an omission, and the reason is worth stating
+ * because the sentence above is no longer the whole GC story. Verified at
+ * `steady-state-reclaim.ts:sweepOrphanedOverlayBases` /
+ * `sweepStaleBaseGenerations`: nothing in the overlay-base sweep is decided by
+ * mtime. A whole scope dir survives on a LIVE MOUNT (plus resumable sessions),
+ * and within a live scope a generation survives on IDENTITY — `g0`, the
+ * pointer's current generation, or one a running/being-created container pins.
+ * A lineage-only publish leaves the current generation current, so it is
+ * protected by exactly the clause that protected it before.
  */
 
 import crypto from "node:crypto";
@@ -90,11 +104,22 @@ export interface OverlayScope {
 export interface BasePointer {
   /** `overlayScopeHash(repoUrl, runtimeKey)` — the scope identity on disk. */
   scopeHash: string;
-  /** The `main` commit this base was built from — the ordering key. */
+  /**
+   * The newest `main` commit whose dependency content this base is known to hold
+   * — the ordering key. Usually the commit the generation was built from; after a
+   * content-equal forward publish it is a strictly newer commit whose dependency
+   * inputs hash identically (`lineage-advanced`), which is precisely the claim
+   * both readers of this field want to make.
+   */
   commit: string;
   /** Incremental publishes stacked since the last clean rebuild (overlay depth). */
   depth: number;
-  /** Generation counter — bumps on every advance, flatten, and lineage reset. */
+  /**
+   * Generation counter — bumps on every *content* change: advance, flatten, and
+   * lineage reset. Never on a `lineage-advanced` publish, whose whole point is
+   * that the contents are unchanged, so live mounts (and the Compose containers
+   * holding them) stay valid.
+   */
   generation: number;
   /** Absolute orchestrator-visible path to this generation's contents (`overlay-base/<hash>/g<N>`). */
   baseDir: string;
@@ -148,11 +173,33 @@ export interface PublishCandidate {
    * can match across commits.
    */
   markerStamp?: { runtimeKey: string; installCommands: string[]; depsHash?: string | null };
+  /**
+   * Whether this install's hashed inputs actually **describe its output tree** —
+   * the precondition for declining to publish because the content key matches
+   * (`isContentEqualPublish`). Resolved by the caller, which is the side holding
+   * the workspace: `deps-hash.ts:hasInstallLifecycleScript` plus the
+   * `agent.install-inputs` override (see `overlay-publish.ts`).
+   *
+   * Separate from `markerStamp.depsHash` because the two answer different
+   * questions, and docs/198 only ever answered the first. A content key is
+   * enough to skip an *install* (the worker's marker gate re-validates what it
+   * finds) and not enough to skip a *rebuild*: `npm ci` runs the repository's
+   * own `postinstall`, so a commit touching only `scripts/build.js` or a
+   * `patches/*.patch` yields a different installed tree under an identical key —
+   * and a `patch-package`-style script writes that difference into the very dep
+   * dir the base holds. `plugin-dep-store.ts` reached the same conclusion for
+   * the same reason; this is that rule, on the session path.
+   *
+   * **Absent reads as `false`** — a caller that does not resolve it gets today's
+   * conservative rotation, never a reuse it did not vouch for.
+   */
+  contentKeyDescribesTree?: boolean;
 }
 
 export type PublishOutcome =
   | "created" // first base for this scope (v0 from empty)
   | "advanced" // strictly-forward commit, base moved forward (depth++)
+  | "lineage-advanced" // strictly-forward commit, content-equal → pointer commit only, SAME generation
   | "flattened" // forward but depth cap hit → clean rebuild from empty
   | "reset" // force-push: candidate is current default but diverged → clean rebuild
   | "skipped-equal" // candidate commit == base commit (deps already current)
@@ -480,6 +527,75 @@ export async function copySnapshotToBase(
 }
 
 // ---------------------------------------------------------------------------
+// Content-equal publishes (the no-op-rotation fix)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a strictly-forward candidate would materialize a generation with the
+ * SAME dependency content as the current base — so the rotation buys nothing and
+ * costs everything (see `publishBase`'s forward branch for what it costs).
+ *
+ * The comparison is the pointer's recorded identity against the candidate's, and
+ * it is deliberately the SAME identity `preStampInstallMarker` already trusts to
+ * skip `agent.install` outright over a base built at a different commit
+ * (docs/198): the dependency content key, the worker runtime fingerprint, and the
+ * install command list. If that triple is enough to tell a session "the deps you
+ * would install are already here, don't install", it is enough to tell a publish
+ * "the tree you would copy is already published, don't rotate". The scope hash
+ * carries the rest of the identity (repo URL, orchestrator runtime fingerprint,
+ * dep dir), so anything not compared here cannot differ between the two.
+ *
+ * Every uncertainty is a `false` — a candidate whose caller did not vouch that
+ * the hashed inputs describe the output tree (`contentKeyDescribesTree`, the
+ * lifecycle-script rule), a missing marker on either side, an absent or `null`
+ * `depsHash` (content-keying off, or an install whose inputs aren't recognized),
+ * a legacy pointer written before `depsHash` existed. Those keep the conservative
+ * rotation, which is always correct and only ever wasteful.
+ */
+function isContentEqualPublish(current: BasePointer, candidate: PublishCandidate): boolean {
+  // The key must be usable for REUSE, not merely for a re-validated skip — see
+  // the field doc. Checked first: it is the cheapest, and it is the one that says
+  // this publish never had the right to compare content in the first place.
+  if (!candidate.contentKeyDescribesTree) return false;
+  const have = current.marker;
+  const want = candidate.markerStamp;
+  if (!have || !want) return false;
+  // A `null`/absent hash is "unknown content", never a match — the same rule the
+  // marker gate uses (`install-marker.ts:depsHashMatches`).
+  if (typeof have.depsHash !== "string" || typeof want.depsHash !== "string") return false;
+  if (have.depsHash !== want.depsHash) return false;
+  if (have.runtimeKey !== want.runtimeKey) return false;
+  const a = have.installCommands;
+  const b = want.installCommands;
+  return a.length === b.length && a.every((cmd, i) => cmd === b[i]);
+}
+
+/**
+ * Record a content-equal forward publish: move the pointer's **lineage** metadata
+ * (`commit`, `updatedAt`) onto the newer commit while leaving `generation`,
+ * `baseDir` and `depth` exactly as they were.
+ *
+ * Advancing the commit rather than skipping outright is what keeps publish
+ * ordering intact: the CAS orders by `commit`, so a base left behind at an older
+ * commit would re-run this comparison for every later session, and a genuinely
+ * older candidate arriving late would still read as "forward". The pointer's
+ * `commit` means "the newest default-branch commit whose dependency content this
+ * generation is known to hold" — which is what both of its readers want: the CAS
+ * ordering key, and `preStampInstallMarker`'s exact-commit gate (a session at
+ * this commit hashes its dep files to the value the marker already records, so
+ * the widened exact-commit match claims nothing the content match didn't).
+ */
+function advanceLineageOnly(stateDir: string, current: BasePointer, candidate: PublishCandidate): PublishResult {
+  const pointer: BasePointer = {
+    ...current,
+    commit: candidate.commit,
+    updatedAt: new Date().toISOString(),
+  };
+  writeBasePointer(stateDir, pointer);
+  return { outcome: "lineage-advanced", pointer };
+}
+
+// ---------------------------------------------------------------------------
 // The publish compare-and-swap
 // ---------------------------------------------------------------------------
 
@@ -569,6 +685,20 @@ export async function publishBase(args: PublishBaseArgs): Promise<PublishResult>
 
     // Strictly forward → advance, or flatten at the depth cap.
     if (await isAncestor(current.commit, candidate.commit)) {
+      // …unless the newer commit changed no dependency input, in which case the
+      // new generation would be a byte-identical copy of the current one and the
+      // rotation is pure cost. And the cost is not disk: a generation bump
+      // rewrites every live session's overlay driver opts, so the next agent
+      // container creation must force-remove the Compose siblings holding those
+      // volumes (`releaseOverlayVolumeHolders`) and reconcile the stack over the
+      // new generation. Production, 2026-09-03: a Restart agent on a session
+      // whose branch and whose `main` had touched no package.json or lockfile
+      // for two days killed and recreated two running service containers,
+      // because a code-only commit had rotated the base underneath it. Keep the
+      // generation; move only the lineage.
+      if (isContentEqualPublish(current, candidate)) {
+        return advanceLineageOnly(stateDir, current, candidate);
+      }
       const wouldBeDepth = current.depth + 1;
       if (wouldBeDepth >= depthCap) {
         // Dedup against the superseded generation is safe for a flatten too:

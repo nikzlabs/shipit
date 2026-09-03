@@ -23,7 +23,12 @@
       empty-dep-dir contradiction check applies to both skip paths.
 - [x] **Orchestrator pre-stamp** (`preStampInstallMarker`) writes `depsHash` too,
       so a later different-commit/identical-deps session content-key-skips.
-- [x] **Publish/ancestry CAS unchanged** — this only widens skips.
+- [x] **Publish/ancestry CAS unchanged** — this only widens skips. *(No longer
+      true as of 2026-09-03: docs/183's "a rotation must be earned" gave the CAS a
+      second reader of the same key, so a content-equal forward publish advances
+      the pointer's lineage without minting a generation. That use needs a
+      precondition this one never did — `hasInstallLifecycleScript`, since
+      reusing a tree is a stronger claim than re-validating one.)*
 - [x] **Docs.** `shipit-docs/shipit-yaml.md` documents `install-inputs` + the
       content-keyed skip (field table + subsection).
 - [x] **Tests.** marker round-trip + legacy-miss + OR logic; `deps-hash` allowlist +
