@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, within } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { NewSessionRepoBar } from "./NewSessionRepoBar.js";
 import type { RepoInfo } from "../../server/shared/types.js";
 
@@ -37,7 +37,12 @@ function renderBar(overrides: Partial<Parameters<typeof NewSessionRepoBar>[0]> =
 /** The picker sheet, scoped so its rows don't collide with the bar's own label. */
 function openPicker() {
   fireEvent.click(screen.getByTestId("new-session-repo-bar"));
-  return within(screen.getByRole("dialog", { name: "Choose a repository" }));
+  return within(sheet()!);
+}
+
+/** The open sheet, or null. Named by its own visible heading (a `DialogTitle`). */
+function sheet() {
+  return screen.queryByRole("dialog", { name: "Start this session in" });
 }
 
 afterEach(cleanup);
@@ -74,10 +79,10 @@ describe("NewSessionRepoBar", () => {
 
   it("opens a picker listing every repo, checking the current one", () => {
     renderBar();
-    const sheet = openPicker();
+    const picker = openPicker();
 
-    expect(sheet.getByRole("button", { name: /owner\/alpha/ })).toHaveAttribute("aria-current", "true");
-    expect(sheet.getByRole("button", { name: /owner\/beta/ })).not.toHaveAttribute("aria-current");
+    expect(picker.getByRole("button", { name: /owner\/alpha/ })).toHaveAttribute("aria-current", "true");
+    expect(picker.getByRole("button", { name: /owner\/beta/ })).not.toHaveAttribute("aria-current");
   });
 
   it("starts a session in the picked repo", () => {
@@ -85,7 +90,7 @@ describe("NewSessionRepoBar", () => {
     fireEvent.click(openPicker().getByRole("button", { name: /owner\/beta/ }));
 
     expect(onSelectRepo).toHaveBeenCalledWith(BETA.url);
-    expect(screen.queryByRole("dialog", { name: "Choose a repository" })).toBeNull();
+    expect(sheet()).toBeNull();
   });
 
   it("just closes when the current repo is re-picked", () => {
@@ -95,7 +100,7 @@ describe("NewSessionRepoBar", () => {
     fireEvent.click(openPicker().getByRole("button", { name: /owner\/alpha/ }));
 
     expect(onSelectRepo).not.toHaveBeenCalled();
-    expect(screen.queryByRole("dialog", { name: "Choose a repository" })).toBeNull();
+    expect(sheet()).toBeNull();
   });
 
   it("distinguishes repos whose labels collide", () => {
@@ -115,18 +120,29 @@ describe("NewSessionRepoBar", () => {
   });
 
   it("closes the picker on Escape", () => {
-    // The shared Dialog wrapper supplies Back-button dismissal but no key
-    // handling — that lives in DialogContent, which this sheet doesn't use.
     renderBar();
     openPicker();
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.queryByRole("dialog", { name: "Choose a repository" })).toBeNull();
+    fireEvent.keyDown(sheet()!, { key: "Escape" });
+    expect(sheet()).toBeNull();
   });
 
   it("moves focus into the sheet, onto the current repo", () => {
     renderBar();
     const current = openPicker().getByRole("button", { name: /owner\/alpha/ });
     expect(document.activeElement).toBe(current);
+  });
+
+  it("returns focus to the bar when the picker closes", async () => {
+    // Desktop reaches this sheet by keyboard, and a dialog that drops focus on
+    // <body> restarts the user's next Tab at the top of the document. The
+    // hand-rolled role="dialog" div this replaced did exactly that.
+    // Async because Radix's focus scope restores on a timeout after unmount.
+    renderBar();
+    const bar = screen.getByTestId("new-session-repo-bar");
+    fireEvent.keyDown(openPicker().getByRole("button", { name: /owner\/alpha/ }), { key: "Escape" });
+
+    expect(sheet()).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(bar));
   });
 
   it("meets the 44px mobile touch floor", () => {

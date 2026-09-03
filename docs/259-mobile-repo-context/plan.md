@@ -66,16 +66,28 @@ except the repo the user is currently in, which is listed and checked even when
 hidden, or the picker would claim they are somewhere they are not.
 
 The sheet is bottom-anchored under 768px and a centered card at or above it —
-`md:`, because that is where `useIsMobile`'s `(max-width: 767px)` stops. Purely
-responsive classes on the two elements the sheet already had; a list pinned to
-the bottom edge of a wide window reads as a mobile surface left switched on.
+`md:`, because that is where `useIsMobile`'s `(max-width: 767px)` stops. A list
+pinned to the bottom edge of a wide window reads as a mobile surface left
+switched on.
 
-The sheet layout is bespoke inside the shared `Dialog` wrapper, which is what
-`QuickCaptureOverlay` already does: the wrapper buys Back-button dismissal, and
-`DialogContent` is fullscreen on mobile — a whole screen for a three-row repo
-list. `StartSessionButton`'s dropdown picker (docs/236) is not reused either; it
-is a desktop split-button whose caret half opens a `DropdownMenu`, and the point
-here is one large mobile tap target.
+**Bespoke shape, borrowed behaviour.** The panel is `DialogPanel` — the raw
+Radix content node, exported from `ui/dialog.tsx` for exactly this case — inside
+the shared `Dialog` wrapper, which adds Back-button dismissal the way
+`QuickCaptureOverlay` uses it. That buys the focus trap, focus restoration,
+Escape and outside-pointer dismissal while leaving every pixel of layout to the
+caller. `DialogContent` is still not used: it is fullscreen under `md:`, a whole
+screen for a three-row repo list, and its `max-md:` fullscreen rules would have
+to be unpicked one tailwind-merge conflict at a time. `StartSessionButton`'s
+dropdown picker (docs/236) is not reused either; it is a desktop split-button
+whose caret half opens a `DropdownMenu`, and the point here is one large mobile
+tap target.
+
+Two details that are load-bearing rather than stylistic. The open state is
+Radix's to unmount — a `{pickerOpen && <Dialog …>}` guard tears the tree out the
+instant the state flips, so the focus scope never runs its close handler.
+And the close target is **named** (`onCloseAutoFocus` → the bar) rather than
+left to Radix's "whatever was focused when it opened", which is the bar only on
+browsers where clicking a button focuses it — Chrome and Firefox yes, Safari no.
 
 ### 3. Per-repo drafts (req 4)
 
@@ -123,14 +135,19 @@ itself cannot tell the two apart.
 
 ## Accessibility of the sheet
 
-Not using `DialogContent` means not inheriting its focus trap, its
-outside-content hiding, or its Escape handling. The sheet supplies the parts
-that matter for its own shape: `aria-modal`, an Escape listener via
-`useEventListener`, and initial focus moved onto the current repo's row so
-focus does not sit on the obscured bar behind it. It is still not a true focus
-trap — Tab can reach the composer underneath. That trade buys not turning a
-three-row list into a fullscreen takeover on mobile; revisit it if a
-non-fullscreen sheet primitive ever lands.
+The first version hand-rolled the modal parts: `role="dialog" aria-modal="true"`
+on a plain div, an Escape listener via `useEventListener`, an `autoFocus` on the
+current row, and a backdrop click handler. That was a modal *claim* Tab could
+walk straight out of into the composer behind, and closing it dropped focus on
+`<body>`, so the next Tab restarted at the top of the document. Rendering the
+bar on desktop made both reachable by the input method most likely to hit them,
+which is why `DialogPanel` replaced the div rather than the div growing a
+hand-written focus trap.
+
+What the component still owns, because Radix has no opinion worth inheriting
+here: focus lands on the **current repo's row** on open (`onOpenAutoFocus`,
+overriding "first tabbable"), and returns to the **bar** on close
+(`onCloseAutoFocus`, overriding "whatever was focused when it opened").
 
 ## Key files
 
@@ -138,6 +155,7 @@ non-fullscreen sheet primitive ever lands.
 |---|---|
 | `client/components/NewSessionRepoBar.tsx` | New. The bar + its repo sheet. |
 | `client/App.tsx` | Render the bar in the PR-card slot; per-repo `messageInputFocusKey`. |
+| `client/components/ui/dialog.tsx` | Export `DialogPanel` — the raw Radix content, for a bespoke-shaped surface that still wants the focus scope. |
 
 `SessionGroup.tsx` is untouched: `groupBandFill` is already exported, and the
 3px edge is three inline style properties, not worth exporting a helper for.
@@ -150,7 +168,8 @@ non-fullscreen sheet primitive ever lands.
   a different one, and only closes when the current one is re-picked; hidden
   repos are omitted unless it is the repo the user is in; two repos whose labels
   collide are still told apart; Escape closes the sheet; focus lands on the
-  current row; the bar meets the 44px touch floor.
+  current row on open and returns to the bar on close; the bar meets the 44px
+  touch floor.
 - `MessageInput.test.tsx` — a draft typed under one new-session slug is restored
   after switching to another slug and back (req 4).
 
