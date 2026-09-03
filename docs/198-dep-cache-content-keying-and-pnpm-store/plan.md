@@ -96,6 +96,19 @@ templates and every plain npm/pnpm/pip repo.
   own HEAD as `sourceCommit`.
 - shipit-docs: `shipit-yaml.md` (the `install-inputs` field), `install.md` if present.
 
+**Second consumer of the same key (added 2026-09-03, docs/183's ops finding).**
+`publishBase` now uses the identical `(depsHash, runtimeKey, installCommands)`
+triple to decide the *other* direction: a strictly-forward candidate whose triple
+matches the current pointer's advances the base's **lineage** and keeps its
+**generation** (`lineage-advanced`), instead of materializing a byte-identical
+`g<N+1>` that invalidates every live session's overlay volume and force-removes
+the Compose containers holding it. The two uses are the same claim read two ways —
+"you do not need to install these deps" and "we do not need to republish them" —
+so they must stay on one key. Anything that weakens `computeInstallDepsHash`
+weakens both; anything that makes a `null` hash match would let a session mount a
+base it was never checked against. See docs/183's plan, "a rotation must be
+earned".
+
 ## Part 2 — pnpm: shared store volume instead of overlay
 
 ### Design
