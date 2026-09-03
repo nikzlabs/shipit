@@ -401,11 +401,27 @@ exists to avoid. And **`repo: self` does not get these overrides at all**: there
 exported install ran to put anything in it — so the image's own values stand,
 which also keeps the browser baked at `/opt/playwright-browsers` reachable.
 
-Downloading a browser inside a contained namespace was also a first for ShipIt
-(the session's own browser is baked at image-build time, outside containment),
-so `cdn.playwright.dev` and `playwright.download.prss.microsoft.com` — both
-mirrors `playwright-core` dials — joined `EGRESS_DEFAULT_ALLOWLIST` beside the
-npm/pypi/Gradle artifact CDNs.
+**A writable store is where ShipIt's obligation ends; the download is still
+req 24's business.** Downloading a browser inside a contained namespace is a
+first for ShipIt — the session's own is baked at image-build time, outside
+containment — so adding the Playwright mirrors to `EGRESS_DEFAULT_ALLOWLIST` was
+proposed and **rejected by the user**: that grants them to every session and
+every agent container on the host, permanently, for a need that arises only
+during a plugin install. req 24 already has the mechanism, and it was confirmed
+working end to end on a live session: the plugin **declares** its hosts
+(informational, granting nothing) and the user **grants** them per session, after
+which the install container is bound by the same `resolveEgress` allowlist its
+services are (`plugin-hosts.ts`).
+
+So a plugin that downloads a browser declares **both** `cdn.playwright.dev` and
+`playwright.download.prss.microsoft.com` — `playwright-core`'s
+`PLAYWRIGHT_CDN_MIRRORS` spans the two and falls back from the first to the
+second, so granting only the primary leaves a fallback denied and moves the
+failure to a retry. That pair is recorded here and in
+`shipit-docs/plugin-authoring.md` precisely so nobody has to reverse-engineer it
+from failing calls, which is what req 24 asks of a declared host — and it makes
+the install failure's blocked-hosts clause the main route by which a user learns
+what to grant.
 
 **And its own network — which is a security control, not tidiness** (review
 finding, this round). "Not the session's network" is not enough. Install needs

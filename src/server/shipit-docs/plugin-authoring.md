@@ -159,11 +159,27 @@ is still there when your CLI runs:
 
 You do **not** declare that directory in `dep-dirs` — ShipIt adds it to the
 shared store itself, so a later commit that reuses your dependencies keeps the
-browser instead of losing it. **A download does need egress**, though:
-`playwright install` reaches `cdn.playwright.dev` and
-`playwright.download.prss.microsoft.com`, both of which every session allows by
-default. Anything else your install downloads from must be declared in the
-plugin's `hosts:`, or the consuming session denies it.
+browser instead of losing it.
+
+**You DO have to declare the hosts it downloads from.** An install container is
+bound by the consuming session's egress allowlist, exactly like your services
+are, and nothing is granted just because an install wants it. Declare every
+download host in the plugin's `hosts:`; the consuming user then grants them from
+the Plugins tab. Playwright in particular needs **both** of its mirrors, because
+`playwright-core` falls back from the first to the second:
+
+```yaml
+exports:
+  plugins:
+    shots:
+      install: npm ci && npx playwright install chromium
+      hosts:
+        - cdn.playwright.dev
+        - playwright.download.prss.microsoft.com
+```
+
+Declaring only the primary leaves the fallback denied, and the install fails on
+the retry rather than the first attempt — which is much harder to read.
 
 Two limits of borrowing that image, both of which bite quietly:
 
