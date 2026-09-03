@@ -419,6 +419,13 @@ not allowed yet and offers to add them, for this session or for the whole
 instance. Adding one takes effect on the next companion-CLI call; there is no
 allow-once prompt from inside a plugin container.
 
+**A plugin whose very first `install` failed on those hosts is listed the same
+way**, even though it has no working version and its card reads `unavailable`.
+So when an install failure ends "…is not in this session's egress allowlist",
+the host rows and their Allow buttons are on that same card: allow, then
+press Refresh there. Nothing has to be retyped into Settings, and the session
+does not have to be recreated — the next install reads the allowlist fresh.
+
 Some hosts cannot be added at all, and the card says so **instead of** offering
 the buttons — one row, no action. Two states read that way, and neither is
 something you or the user can fix from the session:

@@ -265,6 +265,52 @@ describe("PluginReposPanel", () => {
         expect(screen.getByTestId("plugin-host-need-artk-cdn.example")).toBeTruthy();
         expect(screen.getByText("Allow for session")).toBeTruthy();
       });
+
+      /**
+       * The reported shape (user, 2026-09-03): a plugin whose FIRST install was
+       * denied the network it declared. The card is `unavailable` — no commit,
+       * no live generation — and its one issue row is the install failure whose
+       * last sentence tells the user to allow those hosts right here.
+       *
+       * So the buttons must be on THIS card state, not only on a healthy one.
+       * The server half (a failed attempt handing its declared hosts to the
+       * snapshot) is guarded at `services/plugin-activation.test.ts`; without
+       * it `hosts` arrives empty and this card renders the instruction with
+       * nothing to obey it with.
+       */
+      it("puts the buttons on the card the install failure points at", () => {
+        setSnapshot({
+          ...FIXTURE,
+          repos: [
+            {
+              ...FIXTURE.repos[1],
+              status: "unavailable",
+              uses: [
+                {
+                  plugin: "palette",
+                  alias: "artk",
+                  found: true,
+                  credentials: [],
+                  hosts: [{ host: "api.pixellab.ai", reach: "grantable" }],
+                },
+              ],
+              issues: [
+                "install for `palette` exited 1: getaddrinfo EAI_AGAIN\n\nThis plugin declares "
+                + "`api.pixellab.ai`, which is not in this session's egress allowlist. Allow it on "
+                + "this repository's card in the Plugins tab, then refresh the plugin.",
+              ],
+            },
+          ],
+        });
+        render(<PluginReposPanel />);
+
+        expect(screen.getByTestId("plugin-host-need-artk-api.pixellab.ai")).toBeTruthy();
+        expect(screen.getByText("Allow for session")).toBeTruthy();
+        expect(screen.getByText("Allow for ShipIt")).toBeTruthy();
+        // And the other half of the sentence: a version that failed to activate
+        // is still refreshable, so the grant has something to take effect on.
+        expect(screen.getByText("Refresh")).toBeTruthy();
+      });
     });
 
     it("credential gaps and host gaps count toward one needs chip", () => {
