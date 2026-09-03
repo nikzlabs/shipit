@@ -183,6 +183,32 @@ export interface SubAgentConsultCard {
    */
   outputTruncated?: true;
   createdAt: string;
+  /**
+   * docs/287 — the record of ShipIt having woken the session to hand this
+   * result to the agent, for the case where nothing else would.
+   *
+   * A backgrounded consult's result normally reaches the agent one of two ways:
+   * the shim prints it on stdout (foreground), or the resident streaming CLI
+   * turns the finished `Bash(run_in_background)` job into a self-wake. Neither
+   * exists on a ShipIt-started turn — those run one-shot, and a one-shot CLI
+   * reaps its background jobs and exits — so the orchestrator delivers the
+   * result itself, exactly as docs/196's merge watch and docs/233's session
+   * report do: durable card first, then a wake turn.
+   *
+   * Written only when that wake was attempted, so its absence means "the agent
+   * had another way to see this", not "the delivery failed". `outcome` follows
+   * the turn's own settlement (docs/240): `queued` the moment the turn is
+   * accepted, then `delivered` on a `completed` outcome and `failed` on
+   * anything else. Serializes into the card's single json column, so it needs
+   * no migration and no `CARD_MESSAGE_FIELDS` change.
+   */
+  wakeDelivery?: {
+    /** ISO timestamp of the wake attempt. */
+    at: string;
+    outcome: "queued" | "delivered" | "failed";
+    /** Why a `failed` delivery failed, or the terminal turn status behind it. */
+    detail?: string;
+  };
 }
 
 /**

@@ -2304,6 +2304,38 @@ export async function executeAgentTurn(
         return;
       }
 
+      // docs/287 — clear the flag here too, exactly as the streaming branch
+      // above does. `agent_result` normally clears it and this branch used to
+      // trust that; the trust breaks when a `task_notification` lands after the
+      // result, because `adoptCliStartedTurn` re-latches `running = true`
+      // (`ws-handlers/agent-listeners.ts`) and a ONE-SHOT process has no resident
+      // CLI left to run — or end — the turn it just adopted. Nothing cleared the
+      // flag again, so the three `running`-guarded steps below all no-op: no
+      // finished-SSE, no idle signal, and the session read busy until the next
+      // user action tripped the "stuck running=true" reset. Observed twice in
+      // production on 2026-09-03, both times with the notification arriving in
+      // the same second as process exit.
+      //
+      // Guarded on the agent slot being EMPTY, which the streaming branch gets
+      // from its own identity check above (and which that branch's unconditional
+      // clear does without). Non-streaming spawns a fresh process per turn, so
+      // this `done` can land after `agent_result`'s drain already started the
+      // next turn — and that successor owns `running` now. `agent-execution.ts`
+      // installs a turn's agent BEFORE `executeAgentTurn` sets `running`, so a
+      // successor that is genuinely under way has a non-empty slot and is left
+      // alone.
+      //
+      // One window is not covered and is deliberately accepted:
+      // `drainNextQueuedMessage` sets `running = true` a few awaits before that
+      // `setAgent`, so a `done` resuming exactly there sees an empty slot and
+      // clears a flag the queued turn just set. It is self-healing — the queued
+      // turn's own `executeAgentTurn` sets `running` again at entry, and the two
+      // `running`-guarded steps here run after the drain and the commit — and
+      // narrowing it further would need the adoption edge to be reported to the
+      // executor, which is more mechanism than the symptom is worth.
+      const unlatched = runner?.getAgent() === null && runner.running;
+      if (unlatched) runner.running = false;
+
       // Non-streaming: drain first (clears queued visual state before the slow
       // commit), broadcast the finished SSE so other tabs update promptly, then
       // commit/PR, then signal idle (remediation) last. All guarded so a prior
@@ -2314,6 +2346,19 @@ export async function executeAgentTurn(
       await postTurnStep("finished-sse", broadcastFinishedIfIdle);
       await postTurnStep("commit", runCommitAndPr);
       await postTurnStep("idle", signalIdleIfIdle);
+      // docs/287 — and the queue, if the phantom turn above left anything in it.
+      // A message typed while the adopted turn was latched is QUEUED
+      // (`send-message.ts` branches on `runner.running`), but `tryDrain` is
+      // single-shot: the non-streaming path already spent its one attempt at
+      // `agent_result`, so the drain a line above returns immediately and
+      // `signalIdleIfIdle` correctly refuses to fire with a non-empty queue.
+      // Without this the message sits there — the session reads idle and does
+      // nothing — until an unrelated action trips `verifyRunningState`. Runs
+      // AFTER the commit, which is what planning#264's invariant requires of every
+      // drain: a queued turn may begin by discarding working-tree state.
+      if (unlatched && (runner?.queueLength ?? 0) > 0) {
+        await postTurnStep("drain-after-unlatch", () => input.drainNext());
+      }
       // docs/169 — hand control back to a multi-turn driver (rebase loop) and
       // clear the system-turn flag, after all post-turn work has settled.
       finishTurn();

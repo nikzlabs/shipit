@@ -94,6 +94,7 @@ import {
   exhaustionLockoutUntil,
 } from "../ws-handlers/agent-rate-limits.js";
 import { commitSubAgentWork } from "./sub-agent-commit.js";
+import type { ConsultResultDeliveryRequest } from "./consult-result-delivery.js";
 import type { GitManager } from "../../shared/git.js";
 import { ServiceError } from "./types.js";
 
@@ -186,6 +187,19 @@ export interface RunSubAgentDeps {
    * minimal test setups keep working; absent ⇒ no commit is attempted.
    */
   createGitManager?: (dir: string) => GitManager;
+  /**
+   * docs/287 — hand the finished consult back to the agent that asked for it,
+   * for the case where nothing else will: a ShipIt-started turn runs one-shot,
+   * so there is no resident CLI to turn the finished background job into a
+   * self-wake and no live shim to print the text.
+   *
+   * Injected rather than called directly so the decision (when to wake) is
+   * testable on its own, and so a partial test setup — or a runtime with no
+   * container manager to resume a session with — simply omits it and keeps the
+   * pre-docs/287 behavior. It owns its own guards; this module only supplies the
+   * facts it cannot see: the terminal card, and which turn asked.
+   */
+  deliverConsultResult?: (req: ConsultResultDeliveryRequest) => Promise<unknown>;
 }
 
 export interface RunSubAgentInput {
@@ -528,6 +542,12 @@ export async function runSubAgent(
 
   const spawnId = randomUUID();
   const cardId = randomUUID();
+  // docs/287 — which turn asked for this consult. Read at admission, because by
+  // the time the run finishes the runner may be serving a different turn (or
+  // none), and "is the caller still on the other end of this HTTP call?" is
+  // exactly the question the delivery gate has to answer. `?? 0` mirrors the
+  // runner's own default for partial stubs.
+  const originatingTurnEpoch = runner.turnEpoch ?? 0;
 
   const provisionAttempt = (): void => {
     if (!provisioned || !credentialsDir) return;
@@ -626,6 +646,14 @@ export async function runSubAgent(
    *    recorded card while the turn still holds it, else patch the finalized DB
    *    row directly.
    */
+  /**
+   * docs/287 — the card as it was actually written, kept for the delivery step
+   * in the `finally`. Set by `finalizeConsultCard`, which every terminal path
+   * (success, failover-exhausted, transport error, cancel) goes through, so its
+   * absence means the run never reached a terminal state at all.
+   */
+  let terminalCard: SubAgentConsultCard | undefined;
+
   const finalizeConsultCard = (terminal: SubAgentConsultCard) => {
     // A `cancelled` card without a `statusDetail` is the defect this function
     // closes structurally rather than at each call site: the caller that forgets
@@ -636,6 +664,7 @@ export async function runSubAgent(
       terminal.status === "cancelled" && !terminal.statusDetail
         ? { ...terminal, statusDetail: UNATTRIBUTED_CONSULT_DETAIL }
         : terminal;
+    terminalCard = card;
     if (card !== terminal) {
       console.warn(
         `[sub-agent] cancelled consult named no terminator session=${sessionId} `
@@ -1103,6 +1132,27 @@ export async function runSubAgent(
       sessionId,
       { spawnId, subAgentId },
     );
+
+    // docs/287 — and now tell the AGENT. STARTED here, after
+    // `commitSubAgentWork` above, and that ordering is the point: the wake can
+    // start a turn immediately, and a turn that begins by discarding
+    // working-tree state would take the consult's own edits with it. Starting it
+    // from this line is enough for that — the commit is already awaited.
+    //
+    // NOT awaited. A wake against an idle-reaped session boots a container and
+    // waits up to 30s for its worker, and this `finally` is what holds the shim's
+    // HTTP response open; a foreground caller is gated out of the wake anyway, so
+    // awaiting could only ever delay a response nobody is reading. Detached with
+    // a `catch` rather than left floating: the delivery owns its own error
+    // handling, and this is the backstop that keeps a throw from surfacing as an
+    // unhandled rejection.
+    if (terminalCard && deps.deliverConsultResult) {
+      void deps
+        .deliverConsultResult({ sessionId, card: terminalCard, originatingTurnEpoch })
+        .catch((err: unknown) => {
+          console.error(`[sub-agent] result delivery failed session=${sessionId} spawn=${spawnId}:`, err);
+        });
+    }
   }
 }
 

@@ -46,6 +46,7 @@ export * from "./post-interrupt-commit.js";
 export * from "./agent.js";
 export * from "./sub-agent.js";
 export * from "./sub-agent-commit.js";
+export * from "./consult-result-delivery.js";
 export * from "./sub-agent-target.js";
 export * from "./spawn-inventory.js";
 export * from "./voice.js";
