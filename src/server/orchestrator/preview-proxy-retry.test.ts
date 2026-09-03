@@ -58,6 +58,17 @@ async function startUpstream(
 }
 
 /** A free port nothing is listening on yet. */
+/**
+ * A port nothing can be listening on, for the cases that need a REFUSED connect
+ * rather than a free port to bind later. {@link reservePort} cannot serve those:
+ * it hands back a port it has just closed, and in a suite running hundreds of
+ * files in parallel another test's ephemeral server can take it in the gap. The
+ * request then reaches a stranger, and the assertion reads as a mechanism
+ * failure — a 404 where a 502 was expected, which is exactly how this surfaced
+ * in CI. Port 1 is privileged, so no unprivileged test process can occupy it.
+ */
+const NEVER_LISTENING_PORT = 1;
+
 async function reservePort(): Promise<number> {
   const probe = http.createServer();
   await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
@@ -124,7 +135,7 @@ describe("preview proxy — connect retry", () => {
   });
 
   it("answers a navigation with the connecting page once the window is exhausted", async () => {
-    const port = await reservePort();
+    const port = NEVER_LISTENING_PORT;
     const base = await startProxy({ connectRetryMs: 0 });
 
     const res = await previewRequest(base, port);
@@ -142,7 +153,7 @@ describe("preview proxy — connect retry", () => {
   it("gives an asset the JSON error, not an HTML page", async () => {
     // A stylesheet or an XHR handed HTML would be a parse error in the app
     // rather than an honest failure.
-    const port = await reservePort();
+    const port = NEVER_LISTENING_PORT;
     const base = await startProxy({ connectRetryMs: 0 });
 
     const res = await previewRequest(base, port, { accept: "text/css" });
@@ -176,7 +187,7 @@ describe("preview proxy — connect retry", () => {
     // A POST body is consumed by the first attempt, so a retry would send an
     // empty one. It fails as it always did — and fast, which is what this
     // asserts: the whole call finishes well inside the retry window.
-    const port = await reservePort();
+    const port = NEVER_LISTENING_PORT;
     const base = await startProxy();
 
     const started = Date.now();
@@ -210,7 +221,7 @@ describe("preview proxy — renderer isolation", () => {
     // group, so a preview opened before its dev server is listening would be
     // pinned site-keyed for the rest of the session if only the real page
     // carried the header.
-    const port = await reservePort();
+    const port = NEVER_LISTENING_PORT;
     const base = await startProxy({ connectRetryMs: 0 });
 
     const res = await previewRequest(base, port);
@@ -233,7 +244,7 @@ describe("preview proxy — renderer isolation", () => {
   it("marks the unreachable-asset response too", async () => {
     // Not a document itself, but it is served on the preview origin and it
     // costs nothing to keep every path on the same contract.
-    const port = await reservePort();
+    const port = NEVER_LISTENING_PORT;
     const base = await startProxy({ connectRetryMs: 0 });
 
     const res = await previewRequest(base, port, { accept: "text/css" });
