@@ -3,6 +3,14 @@
 # Called by the shipit-updater systemd path unit when .update-requested appears.
 set -euo pipefail
 
+# The host checkout carries no credential helper by design (the repo is public,
+# and docs/266 keeps credentials out of root-owned trees), and systemd gives this
+# script no terminal. Without this, an anonymous fetch that GitHub refuses with a
+# 401 makes git try to PROMPT for a username and die with the misleading
+# "could not read Username for 'https://github.com': No such device or address".
+# With it, the same refusal reads "terminal prompts disabled" — the real cause.
+export GIT_TERMINAL_PROMPT=0
+
 # Override-able only so the test harness can point the whole script at a throwaway
 # git checkout + bare "origin"; defaults to the real install path in production.
 SHIPIT_DIR="${SHIPIT_DIR:-/opt/shipit}"
@@ -68,15 +76,46 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Backoff schedule between fetch attempts (attempts = delays + 1). GitHub
+# intermittently answers an ANONYMOUS git request from this host's IP with a 401
+# even for a public repo — observed as a fetch failing one second after an
+# identical fetch succeeded — so a single refusal must not fail the whole update.
+# Override-able only so the test harness can drive the retry path without
+# sleeping; production always uses the default.
+FETCH_RETRY_DELAYS="${SHIPIT_FETCH_RETRY_DELAYS:-5 15 45}"
+
+# Fetch from origin, retrying on failure. The LAST attempt runs bare so its
+# non-zero status trips `set -e` and the EXIT trap above records git's real exit
+# code (128) and rolls the checkout back. HEAD still moves only after a fetch
+# succeeds — this only changes how many refusals it takes to give up.
+fetch_origin() {
+  local delay
+  # Unquoted on purpose: the delay list is whitespace-separated.
+  # shellcheck disable=SC2086
+  for delay in $FETCH_RETRY_DELAYS; do
+    if git fetch origin --tags --prune; then
+      return 0
+    fi
+    echo "$(date -Iseconds) git fetch origin --tags --prune failed — retrying in ${delay}s"
+    sleep "$delay"
+  done
+  git fetch origin --tags --prune
+}
+
 # Resolve the release channel (feature 162). Default to edge when the
 # preference file is absent so existing installs keep tracking main.
 CHANNEL="$(cat "$SHIPIT_DIR/.release-channel" 2>/dev/null || echo edge)"
 echo "$(date -Iseconds) Updating on channel '$CHANNEL'"
 
-# Fetch all tags + the channel's branch. We resolve a COMMIT to reset to (not a
-# branch ref) so build-id stays a SHA and the checkout never points ahead of the
-# image for longer than the build.
-git fetch origin --tags --prune
+# ONE fetch per run, for both channels. `--tags --prune` with the default
+# `remote.origin.fetch` refspec (+refs/heads/*:refs/remotes/origin/*) already
+# updates origin/main AND origin/stable and brings the release tags, so the
+# per-channel `git fetch origin <branch>` that used to follow was a second
+# anonymous round-trip that fetched nothing new — it only doubled the exposure to
+# GitHub's intermittent 401 on anonymous requests from this host's IP.
+# We resolve a COMMIT to reset to (not a branch ref) so build-id stays a SHA and
+# the checkout never points ahead of the image for longer than the build.
+fetch_origin
 
 if [ "$CHANNEL" = "stable" ]; then
   # Option A (docs/214): the stable channel advances ONLY to the latest final
@@ -87,7 +126,6 @@ if [ "$CHANNEL" = "stable" ]; then
   # vX.Y.Z-rc.N); `sort -V | tail -n1` picks the highest. NOT `git describe`
   # (nearest tag by distance — wrong on a branch with multiple tags).
   REF="origin/stable"
-  git fetch origin stable
   LATEST_TAG="$(git tag --merged origin/stable \
     | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
     | sort -V \
@@ -101,7 +139,6 @@ if [ "$CHANNEL" = "stable" ]; then
   echo "$(date -Iseconds) Stable channel target: $LATEST_TAG ($TARGET_SHA)"
 else
   REF="origin/main"
-  git fetch origin main
   TARGET_SHA="$(git rev-parse "$REF")"
   echo "$(date -Iseconds) Edge channel target: $REF ($TARGET_SHA)"
 fi

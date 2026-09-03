@@ -198,22 +198,36 @@ final tag reachable from `origin/stable` and resets to *its commit* (fail closed
 if none):
 
 ```sh
+export GIT_TERMINAL_PROMPT=0        # a refusal must fail, not hang on a prompt
 CHANNEL="$(cat "$SHIPIT_DIR/.release-channel" 2>/dev/null || echo edge)"
-git fetch origin --tags --prune
+fetch_origin                        # ONE `git fetch origin --tags --prune`, retried
 if [ "$CHANNEL" = "stable" ]; then
-  git fetch origin stable
   LATEST_TAG="$(git tag --merged origin/stable \
     | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
     | sort -V | tail -n1)"
   [ -z "$LATEST_TAG" ] && { echo "no stable release yet"; exit 1; }   # fail closed
   TARGET_SHA="$(git rev-parse "${LATEST_TAG}^{commit}")"
 else
-  git fetch origin main
   TARGET_SHA="$(git rev-parse origin/main)"
 fi
 git reset --hard "$TARGET_SHA"
 bash "$SHIPIT_DIR/deployment/vps/deploy.sh"
 ```
+
+The single fetch is deliberate. GitHub intermittently answers an **anonymous**
+git request from the VPS's IP with a 401 even for this public repo (four updater
+runs failed that way on 2026-09-02/03; one run had `--tags --prune` succeed and
+the per-channel fetch one second later refused). The host carries no credential
+helper by design, so git cannot retry with a token and — under systemd, with no
+terminal — used to die while prompting. So: `GIT_TERMINAL_PROMPT=0` makes the
+cause legible, the per-channel `git fetch origin <branch>` is gone (the default
+`+refs/heads/*:refs/remotes/origin/*` refspec already updates `origin/main` and
+`origin/stable`, so it was a second round-trip that fetched nothing), and
+`fetch_origin` retries with a `5 15 45`s backoff — overridable via
+`SHIPIT_FETCH_RETRY_DELAYS` only so tests can run the retry path without
+sleeping. The last attempt's failure still trips `set -e`, so the rollback trap
+and the `.update-failed` breadcrumb are unchanged, and HEAD still moves only
+after a fetch succeeds.
 
 `deploy.sh` is unchanged: it bakes `SHIPIT_BUILD_ID="$(git rev-parse HEAD)"`,
 which now points at the release **tag's commit** on stable (or the `main` tip on
