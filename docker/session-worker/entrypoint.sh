@@ -15,9 +15,21 @@
 #     orchestrator gates its own §7 chowns on the SAME var, so neither side can
 #     disagree about who owns the mounts. One env flips both.
 #
-# gosu (not setuid) relies on PID 1's CAP_SETUID/CAP_SETGID, which composes
-# cleanly with `no-new-privileges`. Do NOT flip gosu to setuid or drop
-# SETUID/SETGID from the container's CapAdd — that breaks this boot path.
+# gosu (not setuid) relies on the container's CAP_SETUID/CAP_SETGID bounding
+# set, which composes cleanly with `no-new-privileges`. Do NOT flip gosu to
+# setuid or drop SETUID/SETGID from the container's CapAdd — that breaks this
+# boot path.
+#
+# planning#508 — this script is NOT PID 1, and must not try to be. The
+# orchestrator creates the container with `HostConfig.Init: true`
+# (`container-lifecycle.ts`), so the daemon runs `docker-init` (tini) as PID 1
+# and execs this entrypoint underneath it. That is deliberate and load-bearing:
+# every `exec` below hands the process on in place, so whatever ends up running
+# the worker is tini's direct CHILD — which keeps SIGTERM forwarding intact and,
+# the point of the flag, leaves an init in PID 1 to reap the orphans the worker
+# never waits on (an MCP server's headless Chromium, a `sh -c` wrapper, esbuild,
+# a git helper). Do NOT add an init here as well, and do NOT replace the final
+# `exec` with a wait loop — see docs/051 §14.
 set -eu
 
 UID_GID="${SHIPIT_SESSION_WORKER_UID:-}"

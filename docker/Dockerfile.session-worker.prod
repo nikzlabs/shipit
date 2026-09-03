@@ -50,8 +50,9 @@ ENV BASE_IMAGE_DIGEST=${BASE_IMAGE_DIGEST}
 # `gosu` (docs/150): the entrypoint runs as root only to prep the writable
 # mounts, then drops to the unprivileged `shipit` user before exec'ing the
 # worker. gosu is the Debian-native, no-TTY privilege-drop tool (su-exec is
-# Alpine-only). It is intentionally NOT setuid — it relies on PID 1's
-# CAP_SETUID/CAP_SETGID, which composes with `no-new-privileges`.
+# Alpine-only). It is intentionally NOT setuid — it relies on the container's
+# CAP_SETUID/CAP_SETGID bounding set (PID 1 is `docker-init`, planning#508, which
+# passes that set on), which composes with `no-new-privileges`.
 # `git-lfs` (docs/231): a repo that tracks assets with Git LFS checks its images,
 # audio and other binaries out as ~130-byte pointer stubs unless the LFS filters
 # are installed — broken previews with no error anywhere (nikzlabs/shipit#1729).

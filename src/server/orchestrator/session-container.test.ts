@@ -423,6 +423,8 @@ describe("SessionContainerManager", () => {
             SecurityOpt: ["no-new-privileges"],
             CapDrop: ["ALL"],
             CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "KILL"],
+            // planning#508 — an init in PID 1, or orphans never get reaped.
+            Init: true,
           }),
         }),
       );
@@ -741,6 +743,44 @@ describe("SessionContainerManager", () => {
       const { HostConfig } = mockDocker.createContainer.mock.calls[0][0];
       expect(HostConfig.CapDrop).toEqual(["ALL"]);
       expect(HostConfig.CapAdd).toEqual(["CHOWN", "SETUID", "SETGID", "FOWNER", "KILL"]);
+    });
+  });
+
+  // --- planning#508 — an init in PID 1, so orphaned descendants get reaped ---
+
+  describe("PID 1 / orphan reaping", () => {
+    /**
+     * The flag is one boolean in a HostConfig of thirty, it has no user-visible
+     * effect until a container has been alive for hours, and its absence is
+     * invisible in every test that does not name it: a session with no init
+     * runs perfectly well until its zombies exhaust `PidsLimit`, at which point
+     * every `fork` in the session fails EAGAIN. That combination — silent,
+     * slow, catastrophic — is why it is asserted on its own rather than left to
+     * the create-config test above, and why the hardening case below exists:
+     * the hardening flags are the code that rebuilds this HostConfig, so they
+     * are where a refactor would drop it.
+     */
+    let savedEnv: NodeJS.ProcessEnv;
+    beforeEach(() => {
+      savedEnv = { ...process.env };
+    });
+    afterEach(() => {
+      process.env = savedEnv;
+    });
+
+    it("runs docker-init as PID 1 so orphans are reaped", async () => {
+      await manager.create(buildConfig());
+      const { HostConfig } = mockDocker.createContainer.mock.calls[0][0];
+      expect(HostConfig.Init).toBe(true);
+    });
+
+    it("keeps the init when kernel-tier hardening is enabled", async () => {
+      process.env.SESSION_RUNTIME = "runsc";
+      process.env.SESSION_SECCOMP = "1";
+      process.env.SESSION_READONLY_ROOTFS = "1";
+      await manager.create(buildConfig());
+      const { HostConfig } = mockDocker.createContainer.mock.calls[0][0];
+      expect(HostConfig.Init).toBe(true);
     });
   });
 
@@ -1549,12 +1589,14 @@ describe("SessionContainerManager", () => {
 
     it("does NOT treat a bare oom event as a container exit", async () => {
       // Docker fires `oom` when the cgroup's OOM-killer kills *a process* — not
-      // necessarily the container. In a session container PID 1 is the worker and
-      // the agent CLI is a child, so the common case is the one where the container
-      // SURVIVES: the CLI is killed, the worker keeps serving. Emitting
-      // `container_exited` here would finalize the live turn as crashed, dispose
-      // the runner, and trip the OOM circuit breaker against a healthy container.
-      // If PID 1 really was the victim, a `die` follows — and that one is proof.
+      // necessarily the container. In a session container PID 1 is `docker-init`,
+      // the worker is its child and the agent CLI a grandchild, so the common case
+      // is the one where the container SURVIVES: the CLI is killed, the worker
+      // keeps serving. Emitting `container_exited` here would finalize the live
+      // turn as crashed, dispose the runner, and trip the OOM circuit breaker
+      // against a healthy container. If the WORKER really was the victim, a `die`
+      // follows — docker-init exits with the child it supervises — and that one is
+      // proof.
       await manager.create(buildConfig());
       await manager.startHealthMonitor();
 

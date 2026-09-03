@@ -1320,6 +1320,26 @@ export async function createContainer(
         CpuPeriod: DEFAULT_CPU_PERIOD,
         PidsLimit: config.pidsLimit,
         NetworkMode: deps.networkName,
+        // planning#508 — `docker-init` (tini) as PID 1, so orphans are REAPED.
+        //
+        // Without it the worker is PID 1 (`entrypoint.sh` ends in `exec`) and
+        // Node only `waitpid`s the pids it spawned itself, so every descendant
+        // whose intermediate parent exited first — an MCP server's headless
+        // Chromium, a `sh -c` wrapper, esbuild, a git helper — stays `<defunct>`
+        // for the container's life. Measured 2026-09-03: ~9,100 zombies across
+        // 35 workers. A zombie holds a pid, so this is a leak against
+        // `PidsLimit` above, and a long-lived session ends up failing every
+        // fork with EAGAIN. See docs/051 §14 for the full account, the choice of
+        // the flag over an image-baked tini, the daemon requirement (a daemon
+        // with no `InitBinary` fails the create, loudly and on purpose), and why
+        // a container created BEFORE this flag existed can never gain it.
+        //
+        // Composes with the rest of this HostConfig: docker-init is not setuid,
+        // so `no-new-privileges` is unaffected; it passes on the CapAdd bounding
+        // set, so the entrypoint's `gosu` drop keeps CAP_SETUID/CAP_SETGID; and
+        // the entrypoint `exec`s the worker, so tini's direct child IS the
+        // worker and SIGTERM forwarding (graceful shutdown) is unchanged.
+        Init: true,
         // docs/172 Tier B — DNS is NOT redirected via the container `--dns`
         // option: on a user-defined network Docker keeps 127.0.0.11 as the
         // nameserver and demotes `--dns` to a mere upstream, so the agent never

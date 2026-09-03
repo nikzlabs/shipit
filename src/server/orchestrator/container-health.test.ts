@@ -444,8 +444,9 @@ describe("container-health: egress sidecar reap on die/oom (planning#224)", () =
   });
 
   it("leaves a session ALONE when it survived the OOM — no exit, no reap", async () => {
-    // The whole reason `oom` is no longer terminal. PID 1 is the session worker and
-    // the agent CLI is a child, so the likely OOM victim is the CLI — the container
+    // The whole reason `oom` is no longer terminal. PID 1 is `docker-init`, the
+    // session worker is its child and the agent CLI a grandchild, so the likely
+    // OOM victim is the CLI — the container
     // keeps running. Acting on the event would finalize the live turn as crashed,
     // dispose the runner, and trip the OOM circuit breaker on a healthy container.
     await start({ agentRunning: true });

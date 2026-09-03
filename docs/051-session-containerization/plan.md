@@ -652,6 +652,47 @@ getOrCreate(sessionId, sessionDir, agentId) {
 
 Both `SessionRunner` (direct) and `ContainerSessionRunner` (Docker proxy) implement the same interface. Tests continue to use the direct mode with stubs.
 
+### 14. PID 1 must be an init (planning#508)
+
+**Invariant: a session container runs `docker-init` as PID 1, never the worker.** `container-lifecycle.ts` sets `HostConfig.Init: true` on every session container, and `docker/session-worker/entrypoint.sh` must stay a chain of `exec`s underneath it.
+
+**Why.** Node/libuv calls `waitpid` only on pids it spawned itself. A session's process tree is full of intermediate parents that exit before their descendants do — an agent CLI whose MCP server launched headless Chromium, a `sh -c` wrapper, an esbuild service, a git credential helper, a Compose `sleep`. Each survivor is reparented to PID 1. With the worker in PID 1 (the entrypoint's `exec` put it there), nothing ever waits on them, so they stay `<defunct>` for the container's whole life.
+
+**Measured on the production host, 2026-09-03.** ~9,100 zombies out of ~9,200 tasks; load average 116 on 16 cores at 27% system time. Every zombie's parent was a `session-worker.ts` node process that was PID 1 in its own namespace; the five worst workers held 750–1,570 each. By command: `sh` 3,886, `chrome-headless` 1,853, `sleep` 733, `esbuild` 318, `node` 316, `git` 249, plus `chrome_crashpad` and `codex-code-mode`. A day-long orchestration session (many `shipit agent run` sub-agents, each starting a CLI + MCP servers + headless Chromium) held 173 defunct `chrome` and 98 defunct `chrome_crashpad`.
+
+**Why it is a leak and not an untidy `ps`.** A zombie holds its pid until someone reaps it, and a held pid counts against the `PidsLimit` cgroup (§ `container-config-builder.ts`, `PIDS_LIMIT` 8192). That host was already at `pids.current` 1,741 in one container. The end state is a session where every `fork` returns EAGAIN — the agent can no longer run a command at all, in a container that looks healthy by every other measure.
+
+**Why the flag and not tini in the image.** Both would work here — the session container always runs our entrypoint, so an image-baked `exec tini -- …` would reach it. The flag wins on three ordinary grounds rather than on any capability the image approach lacks: it is Docker's own supported mechanism for exactly this (`--init`, documented as reaping zombies and forwarding signals), it is one line of orchestration policy with no image rebuild and no new binary in the image, and it is set per container — so if a container that *bypasses* the entrypoint ever needs an init, the same mechanism extends to it instead of a second, image-side one being added alongside. Today no such container needs one (see the audit below), so that last point is a property of the choice and not a reason forced by the current code.
+
+**Requirement and failure mode.** The daemon must provide an init binary — `docker info` reports `InitBinary: docker-init`, at `/usr/libexec/docker/docker-init` on the production host. It ships with docker-ce and Docker Desktop, so in practice this is always satisfied. On a daemon without one, `createContainer` fails with the daemon's own error and the session surfaces a container-create failure after the usual retries. That is the accepted outcome: a loud, named failure on an unusual daemon beats silently running unreaped again, and there is no fallback path to keep working.
+
+**Rollout: the flag reaches a container only at CREATE, so already-running workers keep the old behaviour.** `HostConfig.Init` cannot be changed on a live container — a pid namespace has whatever PID 1 it was born with. Deploying this therefore fixes every container created afterwards and none created before, and ShipIt deliberately keeps existing workers across an orchestrator restart: `restart-turn-reattach.ts` retains a stale container with an active turn, background task, terminal, install or reservation, and that sweep runs boot-only. After the work goes idle, recycling is driven by memory pressure (docs/284), not by the missing init — so a legacy worker can keep its zombies, and keep making more, for as long as it survives.
+
+That is accepted rather than automated: draining the affected containers is a one-time operational step (restart them, or let them be reclaimed), and the population is bounded by a single deployment. If it turns out to need doing repeatedly, the mechanism to build is a rediscovery-time check of the inspected `HostConfig.Init` that marks a legacy worker for recycling as soon as its turn/install/terminal state is safely idle — independently of memory pressure. Do NOT reach for a forced restart of a busy container: the whole point of the retention rule it would break is that a live turn dies unadoptable.
+
+**Composition with the rest of the HostConfig** — verified at the source rather than assumed:
+
+- `no-new-privileges` is unaffected: docker-init is not setuid.
+- The entrypoint's `gosu` drop still works: capabilities are a container-wide bounding set, docker-init inherits it and execs the entrypoint with it, so CAP_SETUID/CAP_SETGID are still available.
+- Graceful shutdown is unchanged: the entrypoint `exec`s the worker in place, so tini's direct child *is* the worker, and tini forwards SIGTERM to it.
+- `ReadonlyRootfs` is unaffected: the daemon bind-mounts the init at `/dev/init`, and `/dev` is a tmpfs the read-only rootfs does not cover.
+- Local mode (`RUNTIME_MODE=local`) is untouched — it creates no containers, and its worker is not PID 1 anyway, which is why the dogfood instance never showed this.
+
+**Other `docker.createContainer` call sites — audited, and deliberately left alone.** The flag belongs where a *long-lived* PID 1 *can accumulate orphans*; both halves have to hold.
+
+| Call site | Container | Left alone because |
+|---|---|---|
+| `plugin-cli-run.ts` (`execute`) | plugin companion CLI | Bounded by `DEFAULT_PLUGIN_CLI_TIMEOUT_MS` (15 min) and removed in a `finally`; zombies die with the container, well inside `CLI_PIDS_LIMIT` (512). |
+| `plugin-install.ts` (`runInstallContainer`) | one install command | Same shape: bounded, waited on, removed. Bounded lifetime is the whole argument — do not read PID 1 being `sh` as a reaping guarantee, since a shell waits on its own jobs and makes no promise about arbitrary orphaned grandchildren. |
+| `plugin-egress.ts` (netns holder) | `exec sleep infinity` | Long-lived, but `sleep` never forks, so nothing can be reparented to it. Sidecars share only its *network* namespace, not its pid namespace. |
+| `egress-proxy-install.ts` (`launchEgressProxy`) | SNI proxy | Long-lived, single process — it listens and dials and spawns nothing. |
+| `egress-dns-install.ts` (`launchEgressResolver`) | dnsmasq | Long-lived, but `run-resolver.sh` ends in `exec dnsmasq`, one process with no children. |
+| `egress-firewall-install.ts` (both) | firewall / subnet-allow | Short-lived one-shot scripts, waited on and removed. |
+
+Revisit any row whose process starts forking a tree it does not wait on; the invariant is about the shape, not about the file.
+
+**Guards.** `session-container.test.ts` → `describe("PID 1 / orphan reaping")` asserts `Init: true` both on the default create and with every kernel-tier hardening flag on (that is the code which rebuilds this HostConfig, so it is where a refactor would drop it), plus the flag in the main create-config assertion.
+
 ---
 
 ## Phased Implementation

@@ -162,7 +162,7 @@ SessionContainerManager.create(config):
        Image: "shipit-session-worker:latest",
        Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],
        NetworkingConfig: { shipit bridge network },
-       HostConfig: { Memory: sized from host capacity, CpuQuota, PidsLimit },
+       HostConfig: { Memory: sized from host capacity, CpuQuota, PidsLimit, Init: true },
        Labels: { "shipit-session-id": sessionId },
      })
   3. container.start()
@@ -170,6 +170,8 @@ SessionContainerManager.create(config):
   5. Poll GET http://{ip}:9100/health every 500ms (up to 30s)
   6. Return { id, workerUrl: "http://{ip}:9100", containerIp, status: "running" }
 ```
+
+**`Init: true` is load-bearing — PID 1 must be an init, never the worker** (planning#508, docs/051 §14). Node only `waitpid`s the pids it spawned, so every descendant whose intermediate parent exited first — an MCP server's headless Chromium, a `sh -c` wrapper, esbuild, a git helper — is reparented to PID 1 and, with the worker there, never reaped. Production on 2026-09-03 carried ~9,100 zombies across 35 workers. A zombie holds a pid, so it counts against `PidsLimit` and a long-lived session eventually fails every `fork` with EAGAIN while looking healthy by every other measure. Two consequences: `entrypoint.sh` must stay a chain of `exec`s (it runs *under* docker-init and hands the process on in place, which is what keeps SIGTERM forwarding working), and the flag has to survive any refactor of this HostConfig — `session-container.test.ts` → `describe("PID 1 / orphan reaping")` is the guard. The other `docker.createContainer` call sites (plugin CLI/install, the egress sidecars, the netns holder) are audited in docs/051 §14 and deliberately left without it: each is either short-lived or a single process that never forks. **The flag applies at create only** — a live container cannot gain an init, and a worker retained across a deployment (`restart-turn-reattach.ts` keeps busy ones; recycling is otherwise memory-pressure driven) keeps accumulating zombies until it is recreated.
 
 ### Container Destruction
 
