@@ -370,9 +370,58 @@ plugin commit, the install string, or the content of the manifest's
 **What the container actually gets** (implemented — `plugin-install.ts`): the
 generation's overlay volume at `/plugin` as its ONLY mount, `cwd` there, the
 session-worker image for its toolchain with its ENTRYPOINT bypassed (that
-script prepares session mounts this container does not have), an environment
-of exactly `SHIPIT_PLUGIN_COMMIT` + `HOME=/tmp`, all capabilities dropped,
+script prepares session mounts this container does not have), `SHIPIT_PLUGIN_COMMIT`
+plus the writable-path overrides described next, all capabilities dropped,
 `no-new-privileges`, a memory and PID ceiling, and a timeout.
+
+**The image's `ENV` is inherited, and that had to be repaired rather than
+described away** (`plugin-container-env.ts`). This section used to say the
+environment was "exactly `SHIPIT_PLUGIN_COMMIT` + `HOME=/tmp`", which was true
+of the ORCHESTRATOR's environment and never true of the IMAGE's: Docker merges
+`createContainer.Env` over the image's own `ENV` and offers no way to unset an
+inherited name. The container runs as a per-session uid (docs/270), so every
+path the worker image bakes in for uid 1000 arrived unwritable — a plugin whose
+`install:` ran `playwright install` died at `EACCES … mkdir
+'/opt/playwright-browsers/__dirlock'` in production (2026-09-03, three
+sessions), and `NPM_CONFIG_PREFIX=/home/shipit/.npm-global` was the same bug one
+variable over. The fix OVERRIDES both onto `/plugin/.shipit-toolchain/…` — inside
+the generation's overlay, so what install fetches survives publish — and the
+**CLI invocation container sets the identical list**, or an install would
+succeed into a directory nothing at run time ever looks in. `/tmp` is the wrong
+target for these: it is a tmpfs discarded at container exit.
+
+Two consequences of that location, both found by review rather than by the
+incident. **A store hit clears the writable layer and runs nothing**, so the
+toolchain tree is appended to every store plan's dep dirs
+(`planPluginDepStore`) — otherwise a plugin that downloaded a browser would work
+on its first activation and silently lose it on the next commit sharing its dep
+state, which is the "succeeded but nothing can find it" outcome this whole change
+exists to avoid. And **`repo: self` does not get these overrides at all**: there
+`/plugin` IS the user's working tree, swept by the post-turn `git add -A`, and no
+exported install ran to put anything in it — so the image's own values stand,
+which also keeps the browser baked at `/opt/playwright-browsers` reachable.
+
+**A writable store is where ShipIt's obligation ends; the download is still
+req 24's business.** Downloading a browser inside a contained namespace is a
+first for ShipIt — the session's own is baked at image-build time, outside
+containment — so adding the Playwright mirrors to `EGRESS_DEFAULT_ALLOWLIST` was
+proposed and **rejected by the user**: that grants them to every session and
+every agent container on the host, permanently, for a need that arises only
+during a plugin install. req 24 already has the mechanism, and it was confirmed
+working end to end on a live session: the plugin **declares** its hosts
+(informational, granting nothing) and the user **grants** them per session, after
+which the install container is bound by the same `resolveEgress` allowlist its
+services are (`plugin-hosts.ts`).
+
+So a plugin that downloads a browser declares **both** `cdn.playwright.dev` and
+`playwright.download.prss.microsoft.com` — `playwright-core`'s
+`PLAYWRIGHT_CDN_MIRRORS` spans the two and falls back from the first to the
+second, so granting only the primary leaves a fallback denied and moves the
+failure to a retry. That pair is recorded here and in
+`shipit-docs/plugin-authoring.md` precisely so nobody has to reverse-engineer it
+from failing calls, which is what req 24 asks of a declared host — and it makes
+the install failure's blocked-hosts clause the main route by which a user learns
+what to grant.
 
 **And its own network — which is a security control, not tidiness** (review
 finding, this round). "Not the session's network" is not enough. Install needs
@@ -2055,8 +2104,8 @@ coherent in one UI.
   `runInstall` is — the generation engine holds no Docker client.
 - ✓ `src/server/orchestrator/plugin-install.ts` — the throwaway install
   container: the generation's overlay volume at `/plugin` and nothing else, the
-  worker image for its toolchain with its entrypoint bypassed, no inherited
-  environment, capabilities dropped, bounded by a timeout, and its own network
+  worker image for its toolchain with its entrypoint bypassed, nothing inherited
+  from the orchestrator process, capabilities dropped, bounded by a timeout, and its own network
   whose subnet is denied at ShipIt's API (see §1b). Injected into
   `activateGeneration` as `runInstall` from `bootstrap-managers`, so neither the
   generation engine nor the activation service executes plugin-authored code.
@@ -2077,7 +2126,11 @@ coherent in one UI.
   and writes/sweeps `/plugin-bin`, marker-checked so nothing it did not write
   is ever touched. ✓ `src/server/orchestrator/plugin-cli-run.ts` is the
   invocation container; ✓ `plugin-container.ts` holds what it shares with
-  install (the untrusted network, the bounded wait).
+  install (the untrusted network, the bounded wait); ✓ `plugin-container-env.ts`
+  holds the other thing they must share — the overrides that make the borrowed
+  image's baked paths writable by a per-session uid, and that resolve to the
+  SAME `/plugin/.shipit-toolchain/…` directories on both surfaces so what
+  install fetches is what run time finds (see §1b).
 - ✓ `src/server/orchestrator/plugin-compose.ts` — the fragment edge (reqs 3, 5,
   16, 20): locate each import's fragment in whatever is live for it, validate it
   under the consuming session's own rules plus the plugin-edge allowlist, apply

@@ -33,6 +33,7 @@ import {
   pluginDepCacheDir,
   promotePluginDepDirs,
 } from "./plugin-dep-store.js";
+import { PLUGIN_TOOLCHAIN_DIR_NAME } from "./plugin-container-env.js";
 
 const COMMIT = "c".repeat(40);
 
@@ -60,10 +61,21 @@ function seedCheckout(lock: string): void {
   fs.writeFileSync(path.join(checkoutDir, "package-lock.json"), lock);
 }
 
-/** What an install leaves behind in the generation's writable layer. */
+/**
+ * What an install leaves behind in the generation's writable layer — including
+ * the ShipIt-owned toolchain tree, which the install container creates
+ * unconditionally (`plugin-container-env.ts`, `PLUGIN_TOOLCHAIN_DIRS`). Seeded
+ * here because its promotion is part of the same lifecycle: a fixture that
+ * omitted it could not fail on the store hit losing a downloaded browser.
+ */
 function seedInstalled(contents = "module.exports = 1;\n"): void {
   fs.mkdirSync(path.join(upperDir, "node_modules", "left-pad"), { recursive: true });
   fs.writeFileSync(path.join(upperDir, "node_modules", "left-pad", "index.js"), contents);
+  fs.mkdirSync(path.join(upperDir, PLUGIN_TOOLCHAIN_DIR_NAME, "playwright-browsers"), { recursive: true });
+  fs.writeFileSync(
+    path.join(upperDir, PLUGIN_TOOLCHAIN_DIR_NAME, "playwright-browsers", "chromium-1194"),
+    "a browser the install downloaded",
+  );
 }
 
 beforeEach(() => {
@@ -90,7 +102,11 @@ describe("planPluginDepStore", () => {
   it("plans a scope per declared dep dir when the install is content-keyable", () => {
     seedCheckout("{}");
     const plan = planPluginDepStore({ source: "acme/tools", exports: [exportWith()], checkoutDir });
-    expect(plan?.dirs.map((d) => d.depDir)).toEqual(["node_modules"]);
+    // The declared dir, plus ShipIt's own toolchain tree — see
+    // `planPluginDepStore`. Without the second one a store hit would clear the
+    // writable layer and skip the install, leaving a plugin that downloaded a
+    // browser at install time with no browser and nothing naming the cause.
+    expect(plan?.dirs.map((d) => d.depDir)).toEqual(["node_modules", PLUGIN_TOOLCHAIN_DIR_NAME]);
     expect(plan?.installCommands).toEqual(["npm ci"]);
   });
 
@@ -227,7 +243,13 @@ describe("promotePluginDepDirs", () => {
 
     expect(promoted).toEqual([
       { depDir: "node_modules", pin: pluginBasePin(plan.dirs[0]!.scopeHash, 1), lost: false },
+      { depDir: PLUGIN_TOOLCHAIN_DIR_NAME, pin: pluginBasePin(plan.dirs[1]!.scopeHash, 1), lost: false },
     ]);
+    // The toolchain tree reaches the store on the same terms as a declared dir,
+    // which is what makes it survive a later generation's store hit.
+    expect(fs.existsSync(path.join(
+      pluginBasePinDir(root, pins[1]!)!, PLUGIN_TOOLCHAIN_DIR_NAME, "playwright-browsers", "chromium-1194",
+    ))).toBe(true);
     // The base tree is rooted at the dep dir's own relative path, because it is
     // stacked as a lowerdir of the plugin ROOT — not mounted at the dep dir.
     const genDir = pluginBasePinDir(root, pins[0]!)!;
@@ -281,7 +303,10 @@ describe("promotePluginDepDirs", () => {
     // ordinary, complete outcome.
     expect(await promotePluginDepDirs({
       depStoreDir: root, plan, commit: COMMIT, upperDir, repoName: "tools",
-    })).toEqual([{ depDir: "node_modules", pin: null, lost: false }]);
+    })).toEqual([
+      { depDir: "node_modules", pin: null, lost: false },
+      { depDir: PLUGIN_TOOLCHAIN_DIR_NAME, pin: null, lost: false },
+    ]);
     expect(readBasePointerByHash(root, plan.dirs[0]!.scopeHash)).toBeNull();
   });
 
@@ -294,7 +319,10 @@ describe("promotePluginDepDirs", () => {
 
     expect(await promotePluginDepDirs({
       depStoreDir: root, plan, commit: COMMIT, upperDir, repoName: "tools",
-    })).toEqual([{ depDir: "node_modules", pin: null, lost: false }]);
+    })).toEqual([
+      { depDir: "node_modules", pin: null, lost: false },
+      { depDir: PLUGIN_TOOLCHAIN_DIR_NAME, pin: null, lost: false },
+    ]);
     expect(fs.existsSync(path.join(root, "elsewhere", "secret"))).toBe(true);
   });
 
@@ -311,7 +339,10 @@ describe("promotePluginDepDirs", () => {
       depStoreDir: root, plan, commit: COMMIT, upperDir, repoName: "tools",
     });
 
-    expect(promoted).toEqual([{ depDir: "node_modules", pin: null, lost: true }]);
+    expect(promoted).toEqual([
+      { depDir: "node_modules", pin: null, lost: true },
+      { depDir: PLUGIN_TOOLCHAIN_DIR_NAME, pin: null, lost: true },
+    ]);
     expect(fs.existsSync(path.join(upperDir, "node_modules"))).toBe(false);
   });
 });

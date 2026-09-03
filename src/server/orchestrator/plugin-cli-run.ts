@@ -8,7 +8,10 @@
  * the worker's loopback credential broker (`/agent-ops/*`, which needs no
  * token) and would therefore hand any plugin a real GitHub token. Req 19 holds
  * here by construction: this container has no `/credentials`, no worker URL, no
- * session network, and no inherited environment.
+ * session network, and nothing from the orchestrator process's environment. (The
+ * borrowed image's own `ENV` is inherited — Docker merges over it and cannot
+ * unset it — so its worker-owned paths are overridden by
+ * `plugin-container-env.ts`.)
  *
  * What it DOES hold is exactly the in-session usage contract:
  *
@@ -93,6 +96,7 @@ import {
   readGenerationRecordAt,
 } from "./plugin-generations.js";
 import { ensureUntrustedPluginNetwork, waitForContainerExit } from "./plugin-container.js";
+import { pluginContainerEnv } from "./plugin-container-env.js";
 import {
   preparePluginNetns,
   UNCONTAINED_PLUGIN_EGRESS,
@@ -512,8 +516,19 @@ async function runHeldPluginCommand(
     // req 15 — readable by the plugin itself, and UNSET under `repo: self`,
     // which is how a plugin tells a live working tree from an exact commit.
     ...(commit ? [`${PLUGIN_COMMIT_ENV}=${commit}`] : []),
-    "HOME=/tmp",
-    "npm_config_update_notifier=false",
+    // The run-time half of the install container's overrides, and for a TRACKED
+    // import it has to be the SAME list: a browser or a global binary that
+    // `install` fetched lives under `/plugin`, so this container has to resolve
+    // the variable naming it to the same path, or the install succeeded into
+    // somewhere nothing looks (`plugin-container-env.ts`).
+    //
+    // Keyed on `pinned`, which is exactly "not `repo: self`". Under `repo: self`
+    // `/plugin` is the user's own working tree and the post-turn `git add -A`
+    // would commit whatever a lazy download wrote there — and no exported
+    // `install` ran to put anything there in the first place, so the image's own
+    // values (including the browser baked at `/opt/playwright-browsers`) are
+    // both safer and more useful than a ShipIt path that is always empty.
+    ...(await pluginContainerEnv(deps.docker, deps.image, { toolchain: pinned !== null })),
     ...declaredCredentialEnv(deps, exported.credentials),
   ];
 

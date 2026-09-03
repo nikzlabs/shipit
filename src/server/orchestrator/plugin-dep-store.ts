@@ -77,6 +77,7 @@ import { isOverlayEnabled, overlayRuntimeKey } from "./overlay-session.js";
 import { shareTreeWithAllSessions, shareWithAllSessions } from "./session-worker-uid.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { pluginsRoot, readGenerationRecordAt } from "./plugin-generations.js";
+import { PLUGIN_TOOLCHAIN_DIR_NAME } from "./plugin-container-env.js";
 
 /** One declared dep dir, resolved to the store scope that would hold it. */
 export interface PluginDepDirPlan {
@@ -224,6 +225,23 @@ export function planPluginDepStore(args: {
     }
   }
   if (depDirs.length === 0) return null;
+  // **ShipIt's own toolchain tree travels with the declared ones, and the author
+  // does not have to know it exists.** A store hit clears the writable layer and
+  // runs nothing, so anything the install produced outside a promoted dep dir is
+  // gone — which is the documented contract for a plugin's *own* build output,
+  // and cannot be for a directory ShipIt chose (`plugin-container-env.ts`). A
+  // plugin that downloads a browser at install time would otherwise work on its
+  // first activation and lose it on the next commit that shares its dep state:
+  // an install that "succeeded" leaving a browser nothing can find, which is
+  // worse than the loud EACCES this whole path replaced.
+  //
+  // Appended BEFORE the tracked-source check below on purpose: a repository that
+  // somehow commits this directory disables the store rather than having its own
+  // file promoted into a tree every session mounts. And only when the plugin
+  // declared at least one dep dir of its own — an empty list already means "no
+  // store for this generation", and one ShipIt-owned directory must not be what
+  // turns it on.
+  depDirs.push(PLUGIN_TOOLCHAIN_DIR_NAME);
   // A dep dir that is already in the checkout is tracked source, not an install
   // artifact. `existsSync` follows symlinks on purpose — a symlinked dep dir is
   // just as much a thing we must not promote.

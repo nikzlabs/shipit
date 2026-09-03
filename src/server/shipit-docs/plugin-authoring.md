@@ -144,6 +144,55 @@ So the same preparation is declared **twice** — once in the manifest for
 consumers, once under `agent:` for your own sessions — and only one of the two
 runs in the session you develop in. Change one, change the other.
 
+### A toolchain your install downloads goes under `/plugin`, not into the image
+
+`install` borrows the session-worker image for its toolchain, but it runs as the
+**consuming session's own uid** — so every path that image bakes in for its own
+user is read-only to you. ShipIt redirects the two that a plugin actually
+installs into, at both install time and run time, so a tool fetched by `install`
+is still there when your CLI runs:
+
+| Variable | Points at |
+|---|---|
+| `PLAYWRIGHT_BROWSERS_PATH` | `/plugin/.shipit-toolchain/playwright-browsers` |
+| `NPM_CONFIG_PREFIX` | `/plugin/.shipit-toolchain/npm-global` (its `bin` is on `PATH`) |
+
+You do **not** declare that directory in `dep-dirs` — ShipIt adds it to the
+shared store itself, so a later commit that reuses your dependencies keeps the
+browser instead of losing it.
+
+**You DO have to declare the hosts it downloads from.** An install container is
+bound by the consuming session's egress allowlist, exactly like your services
+are, and nothing is granted just because an install wants it. Declare every
+download host in the plugin's `hosts:`; the consuming user then grants them from
+the Plugins tab. Playwright in particular needs **both** of its mirrors, because
+`playwright-core` falls back from the first to the second:
+
+```yaml
+exports:
+  plugins:
+    shots:
+      install: npm ci && npx playwright install chromium
+      hosts:
+        - cdn.playwright.dev
+        - playwright.download.prss.microsoft.com
+```
+
+Declaring only the primary leaves the fallback denied, and the install fails on
+the retry rather than the first attempt — which is much harder to read.
+
+Two limits of borrowing that image, both of which bite quietly:
+
+- **`NODE_ENV` is `production`**, so `npm ci` in an `install:` installs no
+  devDependencies. An install whose next step is `npm run build` then fails on a
+  missing bundler — and an install that merely *ships* a devDependency at runtime
+  exits 0 and fails much later. Pass `--include=dev` when you need them.
+- **A toolchain the image bakes no variable for does not move.** The Android SDK
+  at `/opt/android-sdk` is world-writable, so `sdkmanager` appears to work — but
+  it writes into the install container's own disposable layer, which no CLI or
+  service container shares. `HOME` is `/tmp`, a tmpfs the container discards, so
+  anything cached under `$HOME` is likewise gone before a consumer sees it.
+
 ### Nothing may write the checkout, including the tools you depend on
 
 For a consumer the tree is read-only at `/plugin` **and** at whatever path the

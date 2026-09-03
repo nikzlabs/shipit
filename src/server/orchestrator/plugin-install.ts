@@ -18,14 +18,19 @@
  *
  * So the install gets a container of its own, and it holds exactly one thing:
  * the generation's overlay volume (the pristine checkout merged with its own
- * writable layer). No `/credentials`, no `/workspace`, no worker URL, no
- * session network, no inherited environment. Reqs 7 and 19 hold **by
+ * writable layer). No `/credentials`, no `/workspace`, no worker URL, and
+ * nothing from this PROCESS's environment. Reqs 7 and 19 hold **by
  * construction** here rather than by convention.
  *
  * The image is the session-worker image, for its toolchain (node, npm, git) —
  * but its ENTRYPOINT is deliberately bypassed. That script prepares a session's
  * mounts and drops privileges for the worker; none of it applies here, and its
  * chown loop would walk mounts this container does not have.
+ *
+ * The image's own `ENV`, however, IS inherited and cannot be dropped — Docker
+ * merges `Env` over it — so the paths it bakes in for the worker are overridden
+ * with writable ones instead. `plugin-container-env.ts` is that override, and
+ * the reason it exists.
  *
  * **The volume is removed when install finishes.** Publish renames the staging
  * directory, so the runtime volume for the same generation has a different
@@ -74,6 +79,7 @@ import {
   type PluginNetns,
 } from "./plugin-egress.js";
 import { PLUGIN_CLI_LABEL, sessionPathMount, type MountSpec } from "./plugin-cli-run.js";
+import { pluginContainerEnv, PLUGIN_TOOLCHAIN_DIRS } from "./plugin-container-env.js";
 import { DEP_CACHE_CONTAINER_PATH } from "../shared/fs-constants.js";
 import { readInstallRecord, writeInstallRecord, type PluginInstallOutcome } from "./plugin-install-record.js";
 
@@ -505,14 +511,36 @@ async function runInstallOnce(
  * Empty when nothing is denied, when the plugin declared nothing, or when every
  * declared host is already allowed — in which case the install failed for some
  * other reason and saying "egress" would be a wrong guess.
+ *
+ * **It is stated as separate information, never as the diagnosis, and that is
+ * the fix for a real incident.** A blocked host is the only thing this clause
+ * knows; it was appended on ANY non-zero exit with no link to the error above
+ * it. On 2026-09-03 it followed an `EACCES` on a read-only browser store and
+ * sent the operator to the allowlist — and the hosts it named were genuinely
+ * denied, so it was not even *wrong*, merely irrelevant, which is the harder
+ * case: it reads as a diagnosis while being a coincidence.
+ *
+ * **Classifying the output as network-shaped was tried and rejected** (review
+ * finding). It cannot establish causality, only that some network-looking text
+ * exists somewhere — an allowed registry can time out while an unrelated
+ * declared host is denied, and the confident wording would then be wrong in a
+ * new way. Leading with "Separately" costs nothing, needs no heuristic to
+ * maintain, and tells the reader the same thing a correct classifier would.
+ *
+ * It is emitted whenever a declared host is denied, because a first activation
+ * has no other place to learn that: the Plugins card resolves declared hosts
+ * from LIVE generations, and a first install has none (`plugin-hosts.ts`).
  */
 function blockedHostsClause(policy: PluginEgressPolicy, job: PluginInstallJob): string {
   const declared = job.exports.flatMap((e) => e.hosts ?? []);
   const blocked = unreachableDeclaredHosts(policy, declared);
   if (blocked.length === 0) return "";
-  return `\n\nThis plugin declares ${blocked.map((h) => `\`${h}\``).join(", ")}, which `
-    + `${blocked.length === 1 ? "is" : "are"} not in this session's egress allowlist. `
-    + "Allow it in the Plugins tab (or Settings → Network egress) and refresh the plugin.";
+  const names = blocked.map((h) => `\`${h}\``).join(", ");
+  const [is, it] = blocked.length === 1 ? ["is", "it"] : ["are", "them"];
+  return `\n\nSeparately — this plugin declares ${names}, which ${is} not in this `
+    + "session's egress allowlist. If the failure above is a network error against "
+    + `${blocked.length === 1 ? "that host" : "one of those hosts"}, allow ${it} in the `
+    + "Plugins tab (or Settings → Network egress) and refresh the plugin.";
 }
 
 /**
@@ -619,15 +647,24 @@ async function runInstallContainer(
     // session's install EACCESes appending to an npm cacache `index-v5` entry
     // (they are appended to, not write-once), and copy-up of a base file it did
     // not create yields something it cannot edit.
-    Cmd: [`umask 002; ${command}`],
+    // …and the toolchain roots the env below names, because a tool that assumes
+    // its own root exists must not fail on a path ShipIt picked for it.
+    Cmd: [`umask 002; mkdir -p ${PLUGIN_TOOLCHAIN_DIRS.join(" ")}; ${command}`],
     WorkingDir: PLUGIN_INSTALL_DIR,
     ...(identity !== null ? { User: `${identity.uid}:${identity.gid}` } : {}),
-    // The generation's env and nothing else. Notably absent: everything in this
-    // process's environment, the worker URL, and any credential.
+    // The generation's env, plus the overrides that make the IMAGE's own ENV
+    // usable by a non-root uid. Notably absent: everything in this process's
+    // environment, the worker URL, and any credential.
+    //
+    // The image's ENV is not absent and cannot be — Docker merges `Env` over it
+    // and offers no way to unset an inherited name, which is why
+    // `pluginContainerEnv` overrides rather than omits (see that module: it is
+    // the whole `/opt/playwright-browsers` EACCES).
     Env: [
       `${PLUGIN_COMMIT_ENV}=${job.commit}`,
-      "HOME=/tmp",
-      "npm_config_update_notifier=false",
+      // `toolchain: true` unconditionally: install runs only for a TRACKED
+      // generation, where `/plugin` is the overlay volume and never a clone.
+      ...(await pluginContainerEnv(deps.docker, deps.image, { toolchain: true })),
       // req 28 — point the package managers at this plugin repository's own
       // download cache, the same names and the same layout every session
       // container uses (`container-lifecycle.ts`). Set only when the cache is

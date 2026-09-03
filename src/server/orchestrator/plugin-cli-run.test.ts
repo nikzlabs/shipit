@@ -22,6 +22,7 @@ import {
   type PluginCliDeps,
 } from "./plugin-cli-run.js";
 import { OVERLAY_VERIFY_FAILURE } from "./overlay-volume.js";
+import { PLUGIN_BROWSERS_DIR, PLUGIN_NPM_PREFIX_DIR } from "./plugin-container-env.js";
 import { clearUntrustedContainerNetworks, isUntrustedContainerIp } from "./api-container-guard.js";
 import {
   claimGenerationDeletion,
@@ -656,6 +657,35 @@ exports:
   });
 
   /**
+   * The toolchain overrides are for a TRACKED generation and must not follow a
+   * self import (independent review). Here `/plugin` is the user's own working
+   * tree, swept by the post-turn `git add -A`, so pointing a lazy browser
+   * download at `/plugin/.shipit-toolchain` would commit a toolchain into their
+   * repository. No exported `install` runs for a self import either, so the
+   * redirect would also aim the plugin away from the browser already baked at
+   * `/opt/playwright-browsers` — readable by any uid — and at a directory that
+   * is always empty.
+   */
+  it("leaves the image's toolchain paths alone under `repo: self`", async () => {
+    declareSelfUse();
+    const fake = fakeDocker();
+    (fake.docker as unknown as Record<string, unknown>).getImage = () => ({
+      inspect: async () => ({ Config: { Env: ["PATH=/usr/bin:/bin"] } }),
+    });
+
+    await runPluginCommand(deps(fake.docker), { alias: "probe", command: "probe", args: [] });
+
+    const env = fake.containers[0].opts.Env as string[];
+    for (const name of ["PLAYWRIGHT_BROWSERS_PATH=", "NPM_CONFIG_PREFIX=", "PATH="]) {
+      expect(env.some((e) => e.startsWith(name))).toBe(false);
+    }
+    expect(env.join("\n")).not.toContain(PLUGIN_BROWSERS_DIR);
+    // The two that are NOT about the overlay still apply: `HOME` has always been
+    // redirected here, and for the same reason.
+    expect(env).toContain("HOME=/tmp");
+  });
+
+  /**
    * nikzlabs/shipit#2298 — on an overlay-backed session the clone's dep dirs are
    * empty mount points and the content lives only in the per-session overlay
    * volumes. An invocation container attached none, so `/project` — and, under
@@ -866,10 +896,14 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
     // supplies `PATH` and `AGENT_HOME`. An `ENV GITHUB_TOKEN=…` added to that
     // Dockerfile would reach plugin code with this assertion still green. That
     // is the image's contract to hold, not this call's — but it IS a second
-    // surface, and nothing in this file guards it.
+    // surface, and the writable-path overrides below are what this call can do
+    // about the part of it that broke (see the next test).
     expect([...env].sort()).toEqual([
+      "AGENT_HOME=/tmp",
       "FAL_KEY=secret-value",
       "HOME=/tmp",
+      `NPM_CONFIG_PREFIX=${PLUGIN_NPM_PREFIX_DIR}`,
+      `PLAYWRIGHT_BROWSERS_PATH=${PLUGIN_BROWSERS_DIR}`,
       `SHIPIT_PLUGIN_COMMIT=${COMMIT}`,
       "SHIPIT_PLUGIN_STATE=/plugin-state",
       "SHIPIT_PROJECT_DIR=/project",
@@ -897,6 +931,42 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
    * no mount and no environment variable changed, so nothing else in this file
    * would notice.
    */
+  /**
+   * The run-time half of the 2026-09-03 install failure, and the half that
+   * would have made the fix worse than the bug on its own.
+   *
+   * `install` fetches a browser into the generation's overlay because the
+   * image's `/opt/playwright-browsers` is root-owned and this container runs as
+   * a per-session uid. `/plugin` is that same overlay, mounted at the same path
+   * here — but only if this container ALSO resolves the variable to it. Inherit
+   * the image's value instead and the install succeeds into a directory nothing
+   * ever looks in, which fails later, further from the cause.
+   */
+  it("resolves the toolchain paths to the same overlay directories install wrote", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker();
+    // The image's own ENV, which `Env` merges over rather than replaces.
+    (fake.docker as unknown as Record<string, unknown>).getImage = () => ({
+      inspect: async () => ({
+        Config: { Env: ["PATH=/usr/local/bin:/usr/bin:/bin", "PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers"] },
+      }),
+    });
+
+    await runPluginCommand(deps(fake.docker), call);
+
+    const env = fake.containers[0].opts.Env as string[];
+    expect(env).toContain(`PLAYWRIGHT_BROWSERS_PATH=${PLUGIN_BROWSERS_DIR}`);
+    expect(env).toContain(`NPM_CONFIG_PREFIX=${PLUGIN_NPM_PREFIX_DIR}`);
+    // Both under `/plugin`, which is the volume install wrote and this call
+    // mounts — not `/tmp`, which is a tmpfs that never outlived the install.
+    for (const dir of [PLUGIN_BROWSERS_DIR, PLUGIN_NPM_PREFIX_DIR]) {
+      expect(dir.startsWith("/plugin/")).toBe(true);
+    }
+    expect(env.join("\n")).not.toContain("/opt/playwright-browsers");
+    expect(env).toContain(`PATH=${PLUGIN_NPM_PREFIX_DIR}/bin:/usr/local/bin:/usr/bin:/bin`);
+  });
+
   it("keeps its own network namespace, where the worker's token broker does not listen", async () => {
     declareConsumer();
     publishGeneration();
