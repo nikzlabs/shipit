@@ -320,15 +320,37 @@ unarchive, a repository removal and revocation all act on `pending` rows only.
 Only settlement, or destroying the session (through the cascade), removes a
 `merging` or `settling` row.
 
-**`origin` decides what a failure means.** A merge that GitHub refuses — a
-conflict, branch protection, a moved head — is an ordinary outcome, and the two
-callers want opposite things from it. A failed **direct** claim is **deleted**: a
-plain `gh pr merge` must never leave behind something that merges later. A failed
-**auto** claim returns to `pending` with `last_error`, surfaced once rather than
-on every tick. Crash reconciliation preserves the same distinction: on restart, a
-`merging` row is resolved from its own tuple — read that pull request in that
-repository, ask whether `expected_sha` merged — and then either moves to
-`settling` or follows its `origin` back to `pending` or to deletion.
+**A merge attempt has three outcomes, not two.** The REST call is a plain
+`fetch`, which can reject *after* GitHub accepted the request — so "it threw" does
+not mean "it did not merge", and treating it as a failure would discard the
+record of a merge that already happened:
+
+| Outcome | What it means | What happens to the row |
+|---|---|---|
+| **witnessed success** | a parsed response saying the merge landed | → `settling` |
+| **definitive refusal** | GitHub answered no — conflict, protection, moved head | `origin` decides (below) |
+| **indeterminate** | a transport error, a timeout, an unparseable body | stays `merging`, reconciled from the tuple |
+
+Only a definitive refusal ends a claim, and then `origin` decides how: a failed
+**direct** claim is **deleted**, because a plain `gh pr merge` must never leave
+behind something that merges later; a failed **auto** claim returns to `pending`
+with `last_error`, surfaced once rather than on every tick.
+
+An indeterminate outcome — and equally a crash — leaves the row `merging`, and it
+is resolved from its own tuple: read that pull request in that repository and ask
+whether `expected_sha` merged. Merged ⇒ `settling`; open ⇒ follow `origin` back
+to `pending` or to deletion. Nothing is decided from the shape of the error.
+
+**A `pending` row also needs terminal handling.** The observation table refuses
+every non-open pull request, so without this a row whose pull request was merged
+or closed by somebody else — the user, the pull-request card's own auto-merge —
+would refuse for ever, and keep the polling gate open with it:
+
+| What the read finds | The row |
+|---|---|
+| `MERGED` at `expected_sha` | settle, with the narrower "the agent asked for this commit and it is now merged" attribution (req 9) |
+| `MERGED` or closed at a different head | cancel as moved-head, with the req 19 notice |
+| closed without merging | delete, with a terminal notice |
 
 ### Where the executor runs, and what it excludes
 
@@ -369,10 +391,15 @@ the two entry points named above: a queued turn re-enters through
 `ws-handlers/agent-execution.ts`'s drain, and `runDispatchedTurn`
 (`session-runner.ts`) deliberately bypasses the ordinary send-or-queue decision
 via `dispatched-turn.ts`. A check added to two of those four is not an exclusion.
-So every turn start — interactive send, dispatched turn, queue drain, and
-adoption after a restart — passes through **one authoritative admission gate**
-that consults the claim; a background claim makes a turn wait, and it is released
-when the merge has settled.
+So every turn start — interactive send, dispatched turn, and queue drain —
+passes through **one authoritative admission gate** that consults the claim; a
+background claim makes a turn wait, and it is released when the merge has
+settled.
+
+**Adoption after a restart is deliberately not gated.** It resumes a turn that
+already exists rather than starting a new one, startup already completes adoption
+before later automation, and gating it could block the very turn that owns a
+persisted direct claim. The gate is for new work only.
 
 ### Revocation (req 20)
 
@@ -415,9 +442,20 @@ operation `verifyMissingPr` reaches on detection, and it leaves `merged_at`, the
 merged snapshot, `mergedHeadSha` and reset eligibility exactly as a detected
 merge does — which is what requirement 11 asks for.
 
-**Every settlement effect is retry-safe.** "Record, then delete" is not
-crash-idempotent on its own: transcript notices get random ids, so a crash
-between the append and the delete would produce a second notice on recovery. So
+**Every settlement effect is retry-safe, and the promotion must be re-entered.**
+Two separate hazards. First, "record, then delete" is not crash-idempotent on its
+own: transcript notices get random ids, so a crash between the append and the
+delete would produce a second notice on recovery.
+
+Second — and this one changes existing behaviour — the terminal promotion is
+**not** crash-reentrant today. It persists the terminal pull-request snapshot
+first, derives `alreadyTerminal` from that persisted state, and writes
+`mergedHeadSha`, `merged_at` and the downstream merge handling **later and only
+when `!alreadyTerminal`**. A crash in between therefore suppresses those writes
+permanently on restart, which would leave requirements 10 and 11 unmet with no
+way to notice. So a durable `settling` row **re-enters** terminal promotion even
+when `pr_status` already reads terminal, and each required effect is idempotent
+or durably checkpointed before the row is deleted. So
 the merge record carries a **stable natural identity** —
 `agent-merge:<repo_key>#<pr_number>@<merge_sha>` — and settlement is idempotent
 on it; the promotion, the lifecycle callbacks and the notification keep their

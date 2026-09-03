@@ -59,10 +59,17 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 - [ ] `merging` / `settling` are monotonic: origin change, archive, re-arm, reset,
       unarchive, repository removal, revocation and a second `--auto` act on
       `pending` rows only
-- [ ] `origin` decides failure handling: a failed **direct** claim is deleted, a
-      failed **auto** claim returns to `pending` with `last_error` surfaced once
-- [ ] Crash reconciliation resolves a `merging` row from its own tuple and keeps
-      that origin distinction
+- [ ] Three merge outcomes: witnessed success → `settling`; **definitive GitHub
+      refusal** → `origin` decides; **indeterminate** (transport error, timeout,
+      unparseable body) → stays `merging`
+- [ ] `origin` decides only on a definitive refusal: a failed **direct** claim is
+      deleted, a failed **auto** claim returns to `pending` with `last_error`
+- [ ] A `merging` row (indeterminate outcome or crash) is resolved from its own
+      tuple, never from the shape of the error
+- [ ] Terminal handling for `pending` rows, so one cannot wait for ever on a pull
+      request somebody else merged or closed: merged at `expected_sha` → settle
+      with the narrow attribution; terminal at another head → cancel as
+      moved-head; closed unmerged → delete with a notice
 - [ ] Executor runs in the poller's existing tick
 - [ ] Armings feed the polling supervisor and the global gate: loaded at startup,
       `ensure()`d on arm, ticked with no viewer and no tracked session (req 21)
@@ -76,8 +83,10 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
       active turn) and **background** (the executor: idle session, empty queue)
 - [ ] One authoritative admission gate consulted by **every** turn start:
       interactive send (`ws-handlers/send-message.ts`), dispatched turns
-      (`session-runner.ts` → `dispatched-turn.ts`), the queue drain
-      (`ws-handlers/agent-execution.ts`), and adoption after a restart
+      (`session-runner.ts` → `dispatched-turn.ts`) and the queue drain
+      (`ws-handlers/agent-execution.ts`)
+- [ ] Adoption after a restart is **not** gated — it resumes an existing turn,
+      and gating it could block the turn that owns a persisted direct claim
 - [ ] A background claim makes a turn wait; released when the merge has settled
 - [ ] One in-flight claim makes the executor exclusive with managed auto-merge
 - [ ] A test proves a queued turn does not start mid-merge through the drain path
@@ -98,8 +107,15 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
       the complete PR facts (URL, title, body, base, branch, diff stats, head SHA)
 - [ ] Promoted state matches a detected merge: `merged_at`, merged snapshot,
       `mergedHeadSha`, reset eligibility
-- [ ] Merge record carries a stable natural identity
-      (`agent-merge:<repo_key>#<pr>@<sha>`) and settlement is idempotent on it
+- [ ] A `settling` row **re-enters** terminal promotion even when `pr_status`
+      already reads terminal — today's promotion persists the snapshot first and
+      writes `merged_at` / `mergedHeadSha` / merge handling only when
+      `!alreadyTerminal`, so a crash between them would suppress them for ever
+- [ ] A test crashes between the snapshot and those writes, and proves the
+      restart still lands `merged_at`, `mergedHeadSha` and reset eligibility
+- [ ] Merge record carries a stable natural identity built only from durable row
+      values (`agent-merge:<repo_key>#<pr>@<expected_sha>`); settlement is
+      idempotent on it
 - [ ] Notices go through `persistNoticeUnattached()` when there is no runner
 - [ ] Recovery records only what it can prove: "the agent armed this commit and it
       is now merged"; "the agent merged it" needs a witnessed REST success
