@@ -189,9 +189,25 @@ export function sanitizeGitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  *    remote would. git passes its own environment to the helper it shells out
  *    to.
  */
+/**
+ * Refuse an origin that could reshape a config key.
+ *
+ * Called by BOTH {@link gitCredentialConfig} and {@link gitCredentialEnv} rather
+ * than by the first alone. They are always used together today, so the second
+ * call looks redundant — and the redundancy is the point: docs/288 interpolates
+ * the origin into a config KEY (`http.<origin>.extraHeader`), and
+ * `git-hooks-guard-coverage.test.ts` exempts that key from its
+ * "nothing sets `GIT_CONFIG_*`" rule on the strength of what the key can
+ * contain. An argument that rests on a check in a *different* function is an
+ * argument a future caller can invalidate without touching either.
+ */
+function assertSafeOrigin(origin: string): void {
+  if (!SAFE_ORIGIN.test(origin)) throw new Error(`Refusing to build a git credential helper for origin "${origin}"`);
+}
+
 export function gitCredentialConfig(credential: GitRemoteCredential): string[] {
   const { origin } = credential;
-  if (!SAFE_ORIGIN.test(origin)) throw new Error(`Refusing to build a git credential helper for origin "${origin}"`);
+  assertSafeOrigin(origin);
   // The reset alone IS the anonymous case: helpers cleared, nothing offered.
   if (!credential.token) return ["credential.helper="];
   const helper = `!f() { echo "username=$${CREDENTIAL_ENV_USERNAME}"; echo "password=$${CREDENTIAL_ENV_PASSWORD}"; }; f`;
@@ -264,6 +280,10 @@ export function gitCredentialSpawnOverrides(
  */
 export function gitCredentialEnv(credential: GitRemoteCredential): Record<string, string> {
   if (!credential.token) return {};
+  // The origin is interpolated into a config KEY below, so its shape is what
+  // makes that key incapable of naming `safe.directory` — see
+  // {@link assertSafeOrigin}.
+  assertSafeOrigin(credential.origin);
   const { username, password } = credential.token;
   const basic = Buffer.from(`${username}:${password}`, "utf8").toString("base64");
   return {

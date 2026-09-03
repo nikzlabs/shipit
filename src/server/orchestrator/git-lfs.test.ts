@@ -245,9 +245,16 @@ describe("materializeLfsContent", () => {
       delete process.env.GIT_CONFIG_VALUE_0;
     }
 
-    expect(seen.GIT_CONFIG_COUNT).toBeUndefined();
-    expect(seen.GIT_CONFIG_KEY_0).toBeUndefined();
-    expect(seen.GIT_CONFIG_VALUE_0).toBeUndefined();
+    // docs/288-preemptive-github-auth changed the SPELLING of this assertion and
+    // not its claim. `sanitizeGitEnv` still strips the inherited pair; ShipIt's
+    // own `http.<origin>.extraHeader` pair is then written over the cleared slot,
+    // so "the variables are absent" stopped being the way to say "the injection
+    // did not survive". What has to hold is that the attacker's KEY and VALUE are
+    // gone — assert that directly, which is also the stronger statement.
+    expect(seen.GIT_CONFIG_KEY_0).not.toBe("credential.helper");
+    expect(seen.GIT_CONFIG_KEY_0).toBe("http.https://github.com.extraHeader");
+    expect(seen.GIT_CONFIG_VALUE_0).not.toContain("attacker");
+    expect(seen.GIT_CONFIG_COUNT).toBe("1");
     expect(seen.GIT_ASKPASS).toBeUndefined();
     // The credential itself still made it through.
     expect(seen.SHIPIT_GIT_CRED_PASSWORD).toBe("ghp_secret");
