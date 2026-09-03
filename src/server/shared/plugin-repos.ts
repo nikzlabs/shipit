@@ -87,6 +87,46 @@ export interface PluginReposConfig {
   uses: PluginUse[];
 }
 
+/**
+ * One name a plugin declares it uses — a credential (req 23) or an external
+ * host (req 24) — and whether the plugin can do its job without it.
+ *
+ * **The manifest grammar, and why it is this one.** A bare string is
+ * REQUIRED; a mapping with `optional: true` is not:
+ *
+ * ```yaml
+ * credentials: [FAL_KEY, { name: PIXELLAB_KEY, optional: true }]
+ * hosts:       [fal.run, { name: pixellab.ai,  optional: true }]
+ * ```
+ *
+ * Three properties decided it. It is a **widening**: every manifest written
+ * before optionality existed keeps its exact meaning, since a plain list of
+ * strings is still a plain list of required names — the regression that
+ * matters most, because a plugin author who never asked for this must not have
+ * their declaration re-read. It is **one grammar for both lists**, parsed by
+ * one function: req 24 asks for "the same visibility req 23 gives
+ * credentials", so a host expressed one way and a credential another would
+ * make that sentence false the day it shipped. And it is **legible without a
+ * legend** — `optional: true` says what it means, where a sigil (`FAL_KEY?`)
+ * would be terser, unsearchable, and invisible in a review diff.
+ *
+ * The key is `name:` for hosts too, rather than `host:`, for the same reason:
+ * one shape, one parser, nothing to keep in step.
+ */
+export interface PluginRequirement {
+  name: string;
+  /**
+   * `optional: true` in the manifest — the plugin works without it.
+   *
+   * This changes only how an UNSATISFIED name is REPORTED. It grants nothing
+   * (req 24's second sentence is absolute: "a plugin declaration never widens
+   * a session's network reach by itself"), and an optional name that IS
+   * satisfied behaves exactly like a required one that is: the credential is
+   * delivered, the host is reachable.
+   */
+  optional: boolean;
+}
+
 /** One exported plugin from the manifest (plan §1b). All fields optional —
  * a CLI-only or files-only export is valid. */
 export interface PluginExport {
@@ -114,10 +154,14 @@ export interface PluginExport {
    * exist after install simply contributes nothing.
    */
   depDirs: string[];
-  /** Credential NAMES only — values live with each consuming project (req 23). */
-  credentials: string[];
-  /** Informational; grants nothing (req 24). */
-  hosts: string[];
+  /**
+   * Credential NAMES only — values live with each consuming project (req 23).
+   * Each carries whether the plugin needs it or merely uses it when given
+   * ({@link PluginRequirement}).
+   */
+  credentials: PluginRequirement[];
+  /** Informational; grants nothing (req 24). Required unless marked optional. */
+  hosts: PluginRequirement[];
   /** Declared settings + defaults (req 26). */
   settings: Record<string, { description?: string; default?: string | number | boolean }>;
 }
@@ -154,8 +198,10 @@ export interface PluginRepoUseView {
    * the reason `credentials` is: req 24 asks for "the same visibility req 23
    * gives credentials", and a flat list cannot name the claimant.
    *
-   * A `false` here is a gap the user may close deliberately, never one the
-   * declaration closed by itself — the declaration grants nothing.
+   * An unallowed host here is a gap the user may close deliberately, never one
+   * the declaration closed by itself — the declaration grants nothing. Each
+   * need carries the plugin's own `optional`, which decides whether the card
+   * reads it as a need or as an offer.
    */
   hosts: PluginHostNeed[];
 }
@@ -739,6 +785,94 @@ const CREDENTIAL_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
 /** A hostname, no scheme, no path — `fal.run`, not `https://fal.run/x` (req 24). */
 const HOST_RE = /^[A-Za-z0-9][A-Za-z0-9.-]*$/;
 
+const KNOWN_REQUIREMENT_KEYS = new Set(["name", "optional"]);
+
+/**
+ * Parse one `credentials:` or `hosts:` list into {@link PluginRequirement}s —
+ * ONE function for both lists, which is the point rather than a saving.
+ *
+ * Req 24 asks for "the same visibility req 23 gives credentials", and both
+ * lists are collected by one walk (`plugin-needs.ts`) and rendered by one card
+ * in one shape. A second copy of this parser is how the two grammars start
+ * disagreeing about what `optional` means.
+ *
+ * Returns the parsed list, or `{error}` — the caller drops the whole plugin
+ * (fail-closed per plugin, plan §1b).
+ */
+function parseRequirementList(
+  raw: unknown,
+  field: "credentials" | "hosts",
+  exportName: string,
+  warnings: string[],
+): PluginRequirement[] | { error: string } {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    return {
+      error: field === "credentials"
+        ? "`credentials` must be a list of credential NAMES"
+        : "`hosts` must be a list of hostnames",
+    };
+  }
+
+  const out: PluginRequirement[] = [];
+  for (const entry of raw) {
+    // The widening (reqs 23, 24): a bare string is REQUIRED — exactly what
+    // every manifest written before optionality existed already meant.
+    let value: unknown = entry;
+    let optional = false;
+    if (isMapping(entry)) {
+      for (const key of Object.keys(entry)) {
+        if (!KNOWN_REQUIREMENT_KEYS.has(key)) {
+          warnings.push(
+            `Unknown key \`exports.plugins.${exportName}.${field}[].${key}\` in shipit.yaml.`,
+          );
+        }
+      }
+      if (entry.name === undefined || entry.name === null) {
+        return { error: `each \`${field}\` entry needs a \`name:\`` };
+      }
+      value = entry.name;
+      if (entry.optional !== undefined && entry.optional !== null) {
+        // Fail-closed, the `overrides.services.<x>.autostart` rule: `optional:
+        // "true"` is a string, and reading it as either answer would be a guess
+        // about what the plugin author meant. Guessing "required" would report
+        // a gap the author said was fine; guessing "optional" would hide one.
+        if (typeof entry.optional !== "boolean") {
+          return { error: `\`${field}\` entries take \`optional: true\` or \`optional: false\`` };
+        }
+        optional = entry.optional;
+      }
+    }
+
+    const nameError = requirementNameError(field, value);
+    if (nameError) return { error: nameError };
+    out.push({ name: value as string, optional });
+  }
+  return out;
+}
+
+/** Why a declared name is unusable, or null when it is fine. */
+function requirementNameError(field: "credentials" | "hosts", value: unknown): string | null {
+  if (field === "hosts") {
+    return typeof value === "string" && HOST_RE.test(value)
+      ? null
+      : `hosts must be bare hostnames like \`fal.run\` (got \`${String(value)}\`)`;
+  }
+  if (typeof value !== "string" || !CREDENTIAL_NAME_RE.test(value)) {
+    return `credential names must look like environment variables (got \`${String(value)}\`)`;
+  }
+  // The check belongs HERE rather than on either delivery surface, so both
+  // inherit one answer and the plugin author is told at declaration time (see
+  // `PLUGIN_CONTRACT_ENV_NAMES`): the compose surface silently drops such a
+  // name while the CLI surface appends a duplicate `Env` entry whose resolution
+  // nothing specifies. Refused rather than ignored, because a plugin that names
+  // one of these has confused ShipIt's contract for its own configuration, and
+  // telling it so is cheaper than either surface's undefined behaviour.
+  return PLUGIN_CONTRACT_ENV_NAMES.has(value)
+    ? `\`${value}\` is set by ShipIt in every plugin container, so a plugin cannot declare it as a credential`
+    : null;
+}
+
 /**
  * Parse the `exports:` block. Fail-closed **per plugin** (plan §1b): a plugin
  * entry with any invalid field is dropped whole, with a warning naming the
@@ -852,40 +986,10 @@ function parseExportEntry(name: string, entry: unknown, warnings: string[]): Plu
     }
   }
 
-  const credentials: string[] = [];
-  if (entry.credentials !== undefined && entry.credentials !== null) {
-    if (!Array.isArray(entry.credentials)) return drop("`credentials` must be a list of credential NAMES");
-    for (const c of entry.credentials) {
-      if (typeof c !== "string" || !CREDENTIAL_NAME_RE.test(c)) {
-        return drop(`credential names must look like environment variables (got \`${String(c)}\`)`);
-      }
-      // The check belongs HERE rather than on either delivery surface, so both
-      // inherit one answer and the plugin author is told at declaration time
-      // (see `PLUGIN_CONTRACT_ENV_NAMES`): the compose surface silently drops
-      // such a name while the CLI surface appends a duplicate `Env` entry whose
-      // resolution nothing specifies. Refused rather than ignored, because a
-      // plugin that names one of these has confused ShipIt's contract for its
-      // own configuration, and telling it so is cheaper than either surface's
-      // undefined behaviour.
-      if (PLUGIN_CONTRACT_ENV_NAMES.has(c)) {
-        return drop(
-          `\`${c}\` is set by ShipIt in every plugin container, so a plugin cannot declare it as a credential`,
-        );
-      }
-      credentials.push(c);
-    }
-  }
-
-  const hosts: string[] = [];
-  if (entry.hosts !== undefined && entry.hosts !== null) {
-    if (!Array.isArray(entry.hosts)) return drop("`hosts` must be a list of hostnames");
-    for (const h of entry.hosts) {
-      if (typeof h !== "string" || !HOST_RE.test(h)) {
-        return drop(`hosts must be bare hostnames like \`fal.run\` (got \`${String(h)}\`)`);
-      }
-      hosts.push(h);
-    }
-  }
+  const credentials = parseRequirementList(entry.credentials, "credentials", name, warnings);
+  if (!Array.isArray(credentials)) return drop(credentials.error);
+  const hosts = parseRequirementList(entry.hosts, "hosts", name, warnings);
+  if (!Array.isArray(hosts)) return drop(hosts.error);
 
   const settings: PluginExport["settings"] = {};
   if (entry.settings !== undefined && entry.settings !== null) {

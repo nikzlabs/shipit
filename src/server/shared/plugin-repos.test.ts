@@ -261,8 +261,10 @@ describe("parsePluginExports", () => {
       compose: "test-plugin/docker-compose.yml",
       cli: { probe: "test-plugin/cli/probe.mjs" },
       installInputs: ["test-plugin/install.mjs"],
-      credentials: ["PROBE_TOKEN"],
-      hosts: ["example.com"],
+      // A bare string is a REQUIRED name — what every manifest written before
+      // optionality existed already meant (reqs 23, 24).
+      credentials: [{ name: "PROBE_TOKEN", optional: false }],
+      hosts: [{ name: "example.com", optional: false }],
     });
     expect(exportsList[0].settings.greeting).toEqual({ description: "Echo text", default: "hello" });
   });
@@ -351,6 +353,94 @@ describe("parsePluginExports", () => {
     }
   });
 
+  // reqs 23, 24 — optionality, expressed the SAME way in both lists because
+  // req 24 asks for "the same visibility req 23 gives credentials".
+  describe("optional credentials and hosts", () => {
+    it("reads a bare string as required and a mapping as what it says", () => {
+      const warnings: string[] = [];
+      const [exported] = parsePluginExports(
+        {
+          plugins: {
+            assetgen: {
+              credentials: ["FAL_KEY", { name: "PIXELLAB_KEY", optional: true }],
+              hosts: ["fal.run", { name: "pixellab.ai", optional: true }],
+            },
+          },
+        },
+        warnings,
+      );
+      expect(warnings).toEqual([]);
+      expect(exported?.credentials).toEqual([
+        { name: "FAL_KEY", optional: false },
+        { name: "PIXELLAB_KEY", optional: true },
+      ]);
+      expect(exported?.hosts).toEqual([
+        { name: "fal.run", optional: false },
+        { name: "pixellab.ai", optional: true },
+      ]);
+    });
+
+    it("takes an explicit `optional: false` as required", () => {
+      const [exported] = parsePluginExports(
+        { plugins: { p: { hosts: [{ name: "fal.run", optional: false }] } } },
+        [],
+      );
+      expect(exported?.hosts).toEqual([{ name: "fal.run", optional: false }]);
+    });
+
+    it("validates a mapping's name exactly as a bare one, and says why it dropped", () => {
+      // The widening adds a way to WRITE a name, never a way to smuggle one
+      // past the rules: the same hostname and env-var shapes apply, and the
+      // ShipIt contract names stay reserved. Each drop must also SURFACE — a
+      // silently dropped export is a plugin that is simply not there, with no
+      // sentence anywhere saying so (req 13).
+      const cases: [unknown, string][] = [
+        [{ hosts: [{ name: "https://fal.run" }] }, "bare hostnames"],
+        [{ credentials: [{ name: "lower_case" }] }, "look like environment variables"],
+        ...[...PLUGIN_CONTRACT_ENV_NAMES].map(
+          (name): [unknown, string] => [{ credentials: [{ name, optional: true }] }, name],
+        ),
+      ];
+      for (const [entry, mentions] of cases) {
+        const warnings: string[] = [];
+        expect(parsePluginExports({ plugins: { p: entry } }, warnings)).toEqual([]);
+        expect(warnings).toContainEqual(expect.stringContaining("`exports.plugins.p`"));
+        expect(warnings).toContainEqual(expect.stringContaining(mentions));
+      }
+    });
+
+    it("drops the plugin when `optional` is not a boolean", () => {
+      // Fail-closed, the `overrides.services.<x>.autostart` rule: `optional:
+      // \"true\"` is a string, and either reading would be a guess.
+      const warnings: string[] = [];
+      expect(
+        parsePluginExports(
+          { plugins: { p: { credentials: [{ name: "FAL_KEY", optional: "true" }] } } },
+          warnings,
+        ),
+      ).toEqual([]);
+      expect(warnings).toContainEqual(expect.stringContaining("`optional: true`"));
+    });
+
+    it("drops the plugin when a mapping entry has no name", () => {
+      const warnings: string[] = [];
+      expect(parsePluginExports({ plugins: { p: { hosts: [{ optional: true }] } } }, warnings)).toEqual([]);
+      expect(warnings).toContainEqual(expect.stringContaining("needs a `name:`"));
+    });
+
+    it("warns on an unknown key inside an entry, keeping the plugin", () => {
+      // Forward-compatibility, the same warn-not-drop rule every other unknown
+      // key gets — but a misspelled `optionl:` must not vanish silently.
+      const warnings: string[] = [];
+      const [exported] = parsePluginExports(
+        { plugins: { p: { credentials: [{ name: "FAL_KEY", optionl: true }] } } },
+        warnings,
+      );
+      expect(exported?.credentials).toEqual([{ name: "FAL_KEY", optional: false }]);
+      expect(warnings).toContainEqual(expect.stringContaining("credentials[].optionl"));
+    });
+  });
+
   it("leaves an ordinary SHIPIT_-ish name alone — only the contract names are taken", () => {
     // The reservation is the four names ShipIt sets, not a prefix land-grab: a
     // plugin's own `SHIPIT_TOOL_TOKEN` collides with nothing.
@@ -359,7 +449,10 @@ describe("parsePluginExports", () => {
       { plugins: { p: { credentials: ["SHIPIT_TOOL_TOKEN", "FAL_KEY"] } } },
       warnings,
     );
-    expect(exportsList[0]?.credentials).toEqual(["SHIPIT_TOOL_TOKEN", "FAL_KEY"]);
+    expect(exportsList[0]?.credentials).toEqual([
+      { name: "SHIPIT_TOOL_TOKEN", optional: false },
+      { name: "FAL_KEY", optional: false },
+    ]);
     expect(warnings).toEqual([]);
   });
 });
@@ -685,11 +778,11 @@ describe("buildPluginReposSnapshot", () => {
 
     it("attaches each group to its own use entry, by alias", () => {
       const card = build([
-        { repo: "tools", plugin: "palette", alias: "artk", hosts: [{ host: "fal.run", reach: "grantable" }] },
+        { repo: "tools", plugin: "palette", alias: "artk", hosts: [{ host: "fal.run", reach: "grantable", optional: false }] },
       ]);
       expect(card.uses[0]).toMatchObject({
         alias: "artk",
-        hosts: [{ host: "fal.run", reach: "grantable" }],
+        hosts: [{ host: "fal.run", reach: "grantable", optional: false }],
       });
       expect(card.uses[1]).toMatchObject({ alias: "probe", hosts: [] });
     });
@@ -698,7 +791,7 @@ describe("buildPluginReposSnapshot", () => {
       // A gap the user may close deliberately is not a malfunction of the
       // version: the plugin is live and whole, one allowlist entry away.
       const card = build([
-        { repo: "tools", plugin: "palette", alias: "artk", hosts: [{ host: "fal.run", reach: "grantable" }] },
+        { repo: "tools", plugin: "palette", alias: "artk", hosts: [{ host: "fal.run", reach: "grantable", optional: false }] },
       ]);
       expect(card.status).toBe("active");
       expect(card.issues).toEqual([]);
@@ -738,12 +831,12 @@ describe("buildPluginReposSnapshot", () => {
           repo: "tools",
           plugin: "palette",
           alias: "artk",
-          credentials: [{ name: "FAL_KEY", satisfied: false }],
+          credentials: [{ name: "FAL_KEY", satisfied: false, optional: false }],
         },
       ]);
       expect(card.uses[0]).toMatchObject({
         alias: "artk",
-        credentials: [{ name: "FAL_KEY", satisfied: false }],
+        credentials: [{ name: "FAL_KEY", satisfied: false, optional: false }],
       });
       // A plugin with no declared credentials carries an empty list, not the
       // other plugin's needs.

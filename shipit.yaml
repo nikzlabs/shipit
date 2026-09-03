@@ -38,7 +38,14 @@ exports:
       install: node test-plugin/install.mjs
       install-inputs: [test-plugin/install.mjs]
       credentials: [PROBE_TOKEN]
-      hosts: [example.com]
+      # reqs 23, 24 — declared OPTIONAL, which is what the probe actually is:
+      # `probe --host-check` reaches example.com or reports `allowed: false`,
+      # and either way the report prints and the command exits 0 ("the probe
+      # reports; it does not judge"). Nothing else about the host changes — it
+      # is still declared, still resolved against this session's egress, and
+      # still grantable from the card. `PROBE_TOKEN` stays REQUIRED, so this
+      # fixture exercises both halves of the grammar.
+      hosts: [{ name: example.com, optional: true }]
       settings:
         greeting:
           description: Text the probe service and CLI echo back

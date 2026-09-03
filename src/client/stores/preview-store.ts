@@ -88,7 +88,17 @@ export const PREVIEW_LINK_INTENT_TTL_MS = 120_000;
  * compose services, and — docs/262 req 23 — activated plugins, by alias. A
  * name claimed by both is one row, because it is one stored secret.
  */
-export type DeclaredSecretState = SecretRequirement & { services: string[]; plugins?: string[] };
+export type DeclaredSecretState = SecretRequirement & {
+  services: string[];
+  plugins?: string[];
+  /**
+   * reqs 23, 24 — a claiming plugin cannot work without this name. Distinct
+   * from `required`, which is compose's and gates the preview banner; this one
+   * only stops the row offering "value (optional)" for a key the Plugins card
+   * says a plugin needs (`secret-resolver.ts`).
+   */
+  pluginRequired?: boolean;
+};
 
 /**
  * Snapshot of declared secrets for the current session — driven by the

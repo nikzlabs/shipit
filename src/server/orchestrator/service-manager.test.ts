@@ -20,6 +20,7 @@ import {
 import { DEFAULT_STOP_GRACE_PERIOD_MS } from "./compose-generator.js";
 import { SESSION_WORKSPACE_SUBDIR, SESSION_STATE_SUBDIR } from "./session-state-dir.js";
 import { serializeStackOp } from "./stack-op-queue.js";
+import type { PluginCredentialDeclaration } from "../shared/plugin-credentials.js";
 
 /**
  * Create a real session layout in a temp dir: the clone at
@@ -1762,7 +1763,7 @@ services:
     ports: ['3000:3000']
 `);
     // The first sync sees no live generation; the second sees one.
-    let declarations: { repo: string; plugin: string; alias: string; credentials: string[] }[] = [];
+    let declarations: PluginCredentialDeclaration[] = [];
     const composeCalls: string[][] = [];
     const mgr = new ServiceManager({
       sessionId: "test-session",
@@ -1785,7 +1786,7 @@ services:
     try { await mgr.start(); } catch { /* expected — no docker */ }
     expect(snapshots.at(-1)?.plugins).toEqual([]);
 
-    declarations = [{ repo: "art-kit", plugin: "palette", alias: "artk", credentials: ["FAL_KEY"] }];
+    declarations = [{ repo: "art-kit", plugin: "palette", alias: "artk", credentials: [{ name: "FAL_KEY", optional: false }] }];
     const callsBefore = composeCalls.length;
     await mgr.refreshSecretsStatus();
 
@@ -1794,7 +1795,7 @@ services:
         repo: "art-kit",
         plugin: "palette",
         alias: "artk",
-        credentials: [{ name: "FAL_KEY", satisfied: false }],
+        credentials: [{ name: "FAL_KEY", satisfied: false, optional: false }],
       },
     ]);
     // The whole point of the narrow method: no `compose up`, so a plugin
@@ -1816,7 +1817,7 @@ services:
       composeRunner: () => Promise.reject(new Error("no docker")),
       secretsLoader: async () => ({}),
       pluginCredentialsLoader: () => [
-        { repo: "art-kit", plugin: "palette", alias: "artk", credentials: ["FAL_KEY"] },
+        { repo: "art-kit", plugin: "palette", alias: "artk", credentials: [{ name: "FAL_KEY", optional: false }] },
       ],
       pollIntervalMs: 0,
     });

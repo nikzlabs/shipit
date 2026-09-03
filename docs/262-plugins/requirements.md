@@ -210,7 +210,10 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     visible, named gap, never an opaque failure. Whatever store feeds a
     plugin holds only values the user placed there for plugins; it can never
     resolve ShipIt's own platform credentials — the user's GitHub identity,
-    tracker tokens, or agent tokens.
+    tracker tokens, or agent tokens. A plugin can declare a credential as
+    **optional** — one it uses when given and works without. An unset optional
+    credential is shown as something the plugin *can* use, never as an unmet
+    need; setting it is still offered.
 24. Plugin code gets no network access of its own. A plugin **declares** the
     external hosts its services and CLIs need — so the user never has to
     reverse-engineer them from failing calls — but the declaration grants
@@ -223,7 +226,15 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     allowlist — for the session or for the whole ShipIt instance — as a
     deliberate user act. Wiring a plugin that calls external APIs stays a
     known, guided onboarding step rather than a surprise or a guessing
-    game.
+    game. A plugin can declare a host as **optional**, the same way and in the
+    same words as an optional credential (req 23): one it uses when the session
+    can reach it and works without. An unallowed optional host is shown as
+    something the plugin *can* use, never as an unmet need and never as the
+    reason for a failure, and it keeps whatever affordance a required host in
+    the same state would have — the grant where a grant can take effect, and
+    the reason where none can. Optionality changes
+    only how the gap is reported — it grants nothing, and an optional host that
+    IS allowed behaves exactly like a required one.
 25. The agent (or the user) in a project session can report feedback on a
     plugin — a bug, a limitation, a feature request — as an **issue on the
     plugin's own repository**, from within the session. Declaring the plugin
@@ -375,6 +386,20 @@ ever saying the second.
 answer's date and the words that settled it.
 
 ## Resolved questions
+
+- **2026-09-03 — May a plugin declare a host or a credential it does not
+  need?** Stated directly by the user, from a live session running a plugin
+  (`assetgen`) whose declared pixellab hosts are deliberately absent from that
+  session's egress allowlist: *"they are optional, I guess we need a way to
+  express that in the plugin declaration"*, and on the credential half, *"env
+  vars need to be optionable"*. Both declarations were bare name lists, so
+  every unsatisfied name was reported as an unmet need — a permanent
+  attention state on the Plugins card, and a sentence appended to unrelated
+  install failures, for a gap the user had already decided not to close. →
+  reqs 23 and 24 amended, in one change over both because req 24 already
+  defines its visibility as req 23's. The manifest grammar is a widening
+  (a bare string stays required; `{ name: X, optional: true }` marks the
+  other), which is the agent's choice and recorded in `plan.md` §1b.
 
 - **2026-09-02 — Where does the USER refresh a plugin, and may a pinned one be
   refreshed?** Stated directly by the user: *"I should be able to update

@@ -2,7 +2,7 @@
 
 The deliberately tiny plugin that drives the plugin-repositories
 implementation (docs/262-plugins/plan.md §5): one service, one CLI, one
-skill, one setting, one credential name, one host. Each export is a **probe**:
+skill, one setting, one required credential name, one optional host. Each export is a **probe**:
 it checks one part of the usage contract (plan §2) and reports what it finds,
 so a contract regression shows up as a changed report field, not a guess.
 

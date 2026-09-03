@@ -575,6 +575,27 @@ exports:
     expect(env.some((e) => e.startsWith("OTHER="))).toBe(false);
   });
 
+  // reqs 23, 24 — an OPTIONAL credential the project HAS set is delivered
+  // exactly as a required one is. Optionality bounds how an unsatisfied name is
+  // reported; filtering on it here would withhold a value the user deliberately
+  // provided, and the plugin would fail with the card saying nothing is wrong.
+  it("injects an optional credential the project has a value for", async () => {
+    declareConsumer();
+    publishGeneration(`
+exports:
+  plugins:
+    requirements:
+      cli:
+        reqs: cli/index.mjs
+      credentials: [{ name: FAL_KEY, optional: true }]
+`);
+    const fake = fakeDocker();
+
+    await runPluginCommand(deps(fake.docker), call);
+
+    expect(fake.containers[0].opts.Env as string[]).toContain("FAL_KEY=secret-value");
+  });
+
   // req 23's last sentence, as an assertion: a plugin's store can never resolve
   // ShipIt's own platform credentials. The dep is typed as `loadSecrets` alone,
   // and satisfaction is decided by the credential slice's single definition —

@@ -339,7 +339,12 @@ export function collectPluginFragments(
         ...(port !== undefined ? { port } : {}),
         definition: source.definition,
         fragmentDir: fragmentDir === "." ? "" : fragmentDir,
-        credentials: [...new Set(exported.credentials)],
+        // Names only, required and optional alike: an optional credential the
+        // project HAS set is delivered exactly as a required one is (reqs 23,
+        // 24 — optionality is about reporting an unsatisfied name, not about
+        // what a satisfied one does). Satisfaction is decided downstream, once,
+        // in `service-secrets-resolver.ts`.
+        credentials: [...new Set(exported.credentials.map((c) => c.name))],
         self: snapshot.self,
         checkoutDir: snapshot.root,
         ...(snapshot.commit ? { commit: snapshot.commit } : {}),

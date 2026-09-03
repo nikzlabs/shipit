@@ -8,6 +8,7 @@ import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { PluginReposSnapshot } from "../../server/shared/plugin-repos.js";
 import type { PluginHostNeed } from "../../server/shared/plugin-hosts.js";
+import type { PluginCredentialNeed } from "../../server/shared/plugin-credentials.js";
 import type { EgressHostGrantOutcome } from "../../server/shared/types.js";
 
 function setSnapshot(snapshot: PluginReposSnapshot | null) {
@@ -119,7 +120,7 @@ describe("PluginReposPanel", () => {
 
   // docs/262 req 23 — a missing key is a visible, NAMED gap.
   describe("credential needs", () => {
-    const withNeeds = (credentials: { name: string; satisfied: boolean }[]): PluginReposSnapshot => ({
+    const withNeeds = (credentials: PluginCredentialNeed[]): PluginReposSnapshot => ({
       ...FIXTURE,
       repos: [
         {
@@ -130,7 +131,7 @@ describe("PluginReposPanel", () => {
     });
 
     it("names the credential and the plugin that needs it", () => {
-      setSnapshot(withNeeds([{ name: "FAL_KEY", satisfied: false }]));
+      setSnapshot(withNeeds([{ name: "FAL_KEY", satisfied: false, optional: false }]));
       render(<PluginReposPanel />);
       const row = screen.getByTestId("plugin-credential-need-artk-FAL_KEY");
       expect(row.textContent).toContain("FAL_KEY");
@@ -141,7 +142,7 @@ describe("PluginReposPanel", () => {
     it("a satisfied credential is stated, not silently dropped", () => {
       // req 23 asks for "which credentials … and whether they are satisfied":
       // a set key is reported quietly; only a gap gets an action row.
-      setSnapshot(withNeeds([{ name: "FAL_KEY", satisfied: true }]));
+      setSnapshot(withNeeds([{ name: "FAL_KEY", satisfied: true, optional: false }]));
       render(<PluginReposPanel />);
       expect(screen.queryByTestId("plugin-credential-need-artk-FAL_KEY")).toBeNull();
       expect(screen.queryByText("1 need")).toBeNull();
@@ -154,7 +155,7 @@ describe("PluginReposPanel", () => {
       // plan §3's store trap: `setProjectSettingsRepoUrl` selects the store
       // `/api/secrets` writes to, so the plugin repository's URL would save the
       // key where nothing reads it.
-      setSnapshot(withNeeds([{ name: "FAL_KEY", satisfied: false }]));
+      setSnapshot(withNeeds([{ name: "FAL_KEY", satisfied: false, optional: false }]));
       render(<PluginReposPanel />);
       fireEvent.click(screen.getByText("Add key…"));
 
@@ -164,10 +165,55 @@ describe("PluginReposPanel", () => {
     });
 
     it("offers no button when the session has no repository to save into", () => {
-      setSnapshot({ ...withNeeds([{ name: "FAL_KEY", satisfied: false }]), consumerRepoUrl: null });
+      setSnapshot({ ...withNeeds([{ name: "FAL_KEY", satisfied: false, optional: false }]), consumerRepoUrl: null });
       render(<PluginReposPanel />);
       expect(screen.getByTestId("plugin-credential-need-artk-FAL_KEY")).toBeTruthy();
       expect(screen.queryByText("Add key…")).toBeNull();
+    });
+
+    /**
+     * reqs 23, 24 — a key the plugin can use and does not need. The live case:
+     * a project deliberately never sets it, and a permanent unmet-need state
+     * for a gap the user has already decided not to close is an alarm nobody
+     * can clear.
+     */
+    describe("an OPTIONAL credential", () => {
+      it("reads as an offer, not a need, and keeps 'Add key…'", () => {
+        setSnapshot(withNeeds([{ name: "PIXELLAB_KEY", satisfied: false, optional: true }]));
+        render(<PluginReposPanel />);
+        const row = screen.getByTestId("plugin-credential-optional-artk-PIXELLAB_KEY");
+        expect(row.textContent).toContain("can use");
+        expect(row.textContent).toContain("PIXELLAB_KEY");
+        expect(row.textContent).toContain("artk");
+        // Not a need: no need row, no need chip.
+        expect(screen.queryByTestId("plugin-credential-need-artk-PIXELLAB_KEY")).toBeNull();
+        expect(screen.queryByText("1 need")).toBeNull();
+        // The user may still want to set it.
+        expect(screen.getByText("Add key…")).toBeTruthy();
+      });
+
+      it("is counted and worded exactly like a required one once SET", () => {
+        // Optionality is about the unsatisfied state alone.
+        setSnapshot(withNeeds([{ name: "PIXELLAB_KEY", satisfied: true, optional: true }]));
+        render(<PluginReposPanel />);
+        expect(screen.queryByTestId("plugin-credential-optional-artk-PIXELLAB_KEY")).toBeNull();
+        expect(screen.getByTestId("plugin-credentials-set").textContent).toContain("PIXELLAB_KEY");
+      });
+
+      it("leaves a required sibling a need — flip the flag and the row comes back", () => {
+        // The guard, run red: the SAME fixture with `optional: false` renders
+        // the need row and the chip.
+        setSnapshot(
+          withNeeds([
+            { name: "FAL_KEY", satisfied: false, optional: false },
+            { name: "PIXELLAB_KEY", satisfied: false, optional: true },
+          ]),
+        );
+        render(<PluginReposPanel />);
+        expect(screen.getByTestId("plugin-credential-need-artk-FAL_KEY")).toBeTruthy();
+        expect(screen.getByTestId("plugin-credential-optional-artk-PIXELLAB_KEY")).toBeTruthy();
+        expect(screen.getByText("1 need")).toBeTruthy();
+      });
     });
   });
 
@@ -184,7 +230,7 @@ describe("PluginReposPanel", () => {
     });
 
     it("names the host and the plugin that declares it", () => {
-      setSnapshot(withHosts([{ host: "fal.run", reach: "grantable" }]));
+      setSnapshot(withHosts([{ host: "fal.run", reach: "grantable", optional: false }]));
       render(<PluginReposPanel />);
       const row = screen.getByTestId("plugin-host-need-artk-fal.run");
       expect(row.textContent).toContain("fal.run");
@@ -193,7 +239,7 @@ describe("PluginReposPanel", () => {
     });
 
     it("an allowed host is stated, not silently dropped", () => {
-      setSnapshot(withHosts([{ host: "fal.run", reach: "allowed" }]));
+      setSnapshot(withHosts([{ host: "fal.run", reach: "allowed", optional: false }]));
       render(<PluginReposPanel />);
       expect(screen.queryByTestId("plugin-host-need-artk-fal.run")).toBeNull();
       expect(screen.queryByText("1 need")).toBeNull();
@@ -211,7 +257,7 @@ describe("PluginReposPanel", () => {
      */
     describe("a host no grant can reach", () => {
       it("states the deployment's limit on one row, and offers NO button", () => {
-        setSnapshot(withHosts([{ host: "fal.run", reach: "blocked-by-deployment" }]));
+        setSnapshot(withHosts([{ host: "fal.run", reach: "blocked-by-deployment", optional: false }]));
         render(<PluginReposPanel />);
         const row = screen.getByTestId("plugin-hosts-ungrantable");
         expect(row.textContent).toContain("fal.run");
@@ -224,7 +270,7 @@ describe("PluginReposPanel", () => {
       });
 
       it("names a sealed session instead when that is the reason", () => {
-        setSnapshot(withHosts([{ host: "fal.run", reach: "blocked-by-session" }]));
+        setSnapshot(withHosts([{ host: "fal.run", reach: "blocked-by-session", optional: false }]));
         render(<PluginReposPanel />);
         const row = screen.getByTestId("plugin-hosts-ungrantable");
         expect(row.textContent).toContain("network access is off");
@@ -234,8 +280,8 @@ describe("PluginReposPanel", () => {
       it("collapses several such hosts into ONE row that names them all", () => {
         setSnapshot(
           withHosts([
-            { host: "fal.run", reach: "blocked-by-deployment" },
-            { host: "api.openai.example", reach: "blocked-by-deployment" },
+            { host: "fal.run", reach: "blocked-by-deployment", optional: false },
+            { host: "api.openai.example", reach: "blocked-by-deployment", optional: false },
           ]),
         );
         render(<PluginReposPanel />);
@@ -246,9 +292,27 @@ describe("PluginReposPanel", () => {
       });
 
       it("is still a need — the gap is visible even though nobody here can close it", () => {
-        setSnapshot(withHosts([{ host: "fal.run", reach: "blocked-by-deployment" }]));
+        setSnapshot(withHosts([{ host: "fal.run", reach: "blocked-by-deployment", optional: false }]));
         render(<PluginReposPanel />);
         expect(screen.getByText("1 need")).toBeTruthy();
+      });
+
+      it("says so on an OPTIONAL host's own row, with no button", () => {
+        // The optional rows are not collapsed into the shared ungrantable row —
+        // that row is the alarm, and an optional host is the quiet case.
+        setSnapshot(withHosts([{ host: "pixellab.ai", reach: "blocked-by-deployment", optional: true }]));
+        render(<PluginReposPanel />);
+        expect(screen.queryByTestId("plugin-hosts-ungrantable")).toBeNull();
+        const row = screen.getByTestId("plugin-host-optional-artk-pixellab.ai");
+        expect(row.textContent).toContain("can use");
+        expect(row.textContent).toContain("can't allow extra hosts");
+        expect(screen.queryByText("Allow for session")).toBeNull();
+        expect(screen.queryByText("1 need")).toBeNull();
+        // …and it does NOT claim the host is absent from the allowlist.
+        // `blocked-by-deployment` is decided before the allowlist is consulted
+        // (`egress-host-reach.ts`), so an already-allowlisted host carries this
+        // verdict too and that sentence would be false (review finding).
+        expect(row.textContent).not.toContain("egress allowlist");
       });
 
       it("leaves a grantable host on the same card with its buttons", () => {
@@ -256,8 +320,8 @@ describe("PluginReposPanel", () => {
         // take the grant away from one the user really can allow.
         setSnapshot(
           withHosts([
-            { host: "fal.run", reach: "blocked-by-session" },
-            { host: "cdn.example", reach: "grantable" },
+            { host: "fal.run", reach: "blocked-by-session", optional: false },
+            { host: "cdn.example", reach: "grantable", optional: false },
           ]),
         );
         render(<PluginReposPanel />);
@@ -291,7 +355,7 @@ describe("PluginReposPanel", () => {
                   alias: "artk",
                   found: true,
                   credentials: [],
-                  hosts: [{ host: "api.pixellab.ai", reach: "grantable" }],
+                  hosts: [{ host: "api.pixellab.ai", reach: "grantable", optional: false }],
                 },
               ],
               issues: [
@@ -313,6 +377,39 @@ describe("PluginReposPanel", () => {
       });
     });
 
+    /**
+     * reqs 23, 24 — the live case this grammar exists for: a plugin declaring
+     * hosts the project deliberately leaves out of its egress allowlist. The
+     * gap stays visible and grantable; it just stops reading as a fault.
+     */
+    it("an OPTIONAL grantable host reads as an offer and keeps both grants", () => {
+      setSnapshot(withHosts([{ host: "pixellab.ai", reach: "grantable", optional: true }]));
+      render(<PluginReposPanel />);
+      const row = screen.getByTestId("plugin-host-optional-artk-pixellab.ai");
+      expect(row.textContent).toContain("can use");
+      expect(row.textContent).toContain("pixellab.ai");
+      expect(screen.queryByTestId("plugin-host-need-artk-pixellab.ai")).toBeNull();
+      expect(screen.queryByText("1 need")).toBeNull();
+      expect(screen.getByText("Allow for session")).toBeTruthy();
+      expect(screen.getByText("Allow for ShipIt")).toBeTruthy();
+    });
+
+    it("the same host declared REQUIRED is a need — the flag is what decides", () => {
+      // The guard run red: one field flipped, same everything else.
+      setSnapshot(withHosts([{ host: "pixellab.ai", reach: "grantable", optional: false }]));
+      render(<PluginReposPanel />);
+      expect(screen.getByTestId("plugin-host-need-artk-pixellab.ai")).toBeTruthy();
+      expect(screen.queryByTestId("plugin-host-optional-artk-pixellab.ai")).toBeNull();
+      expect(screen.getByText("1 need")).toBeTruthy();
+    });
+
+    it("an optional host that IS allowed behaves exactly like a required one", () => {
+      setSnapshot(withHosts([{ host: "pixellab.ai", reach: "allowed", optional: true }]));
+      render(<PluginReposPanel />);
+      expect(screen.queryByTestId("plugin-host-optional-artk-pixellab.ai")).toBeNull();
+      expect(screen.getByTestId("plugin-hosts-allowed").textContent).toContain("pixellab.ai");
+    });
+
     it("credential gaps and host gaps count toward one needs chip", () => {
       setSnapshot({
         ...FIXTURE,
@@ -324,8 +421,8 @@ describe("PluginReposPanel", () => {
                 plugin: "palette",
                 alias: "artk",
                 found: true,
-                credentials: [{ name: "FAL_KEY", satisfied: false }],
-                hosts: [{ host: "fal.run", reach: "grantable" }],
+                credentials: [{ name: "FAL_KEY", satisfied: false, optional: false }],
+                hosts: [{ host: "fal.run", reach: "grantable", optional: false }],
               },
             ],
           },
@@ -339,7 +436,7 @@ describe("PluginReposPanel", () => {
     // allowlist, at one of the two scopes the requirement names — never
     // anything plugin-local, and never a side effect of the declaration.
     it("each scope posts to the existing egress route with that scope", async () => {
-      const snapshot = withHosts([{ host: "fal.run", reach: "grantable" }]);
+      const snapshot = withHosts([{ host: "fal.run", reach: "grantable", optional: false }]);
       setSnapshot(snapshot);
       const grants: unknown[] = [];
       const originalFetch = globalThis.fetch;
@@ -377,8 +474,8 @@ describe("PluginReposPanel", () => {
     describe("the outcome is reported after the grant", () => {
       /** Grant, then answer the refetch with a snapshot where the host is allowed. */
       const renderGrant = async (grant: EgressHostGrantOutcome | null, button: string) => {
-        const before = withHosts([{ host: "fal.run", reach: "grantable" }]);
-        const after = withHosts([{ host: "fal.run", reach: "allowed" }]);
+        const before = withHosts([{ host: "fal.run", reach: "grantable", optional: false }]);
+        const after = withHosts([{ host: "fal.run", reach: "allowed", optional: false }]);
         setSnapshot(before);
         // The store drops a snapshot for a session the app isn't on, and the
         // point of this row is that it OUTLIVES the need row the refetch
@@ -446,8 +543,8 @@ describe("PluginReposPanel", () => {
       // silent disappearance the issue is about, so the account moves to the
       // card, where it survives.
       it("a failed grant is reported on the card, not on the row that unmounts", async () => {
-        const before = withHosts([{ host: "fal.run", reach: "grantable" }]);
-        const after = withHosts([{ host: "fal.run", reach: "allowed" }]);
+        const before = withHosts([{ host: "fal.run", reach: "grantable", optional: false }]);
+        const after = withHosts([{ host: "fal.run", reach: "allowed", optional: false }]);
         setSnapshot(before);
         useSessionStore.setState({ sessionId: "sess" });
         const originalFetch = globalThis.fetch;

@@ -19,6 +19,9 @@ import {
 const parsePluginRepos = (raw: unknown) => parseRepos(raw, [], []);
 const parsePluginExports = (raw: unknown) => parseExports(raw, []);
 
+/** A declared host, required unless said otherwise (reqs 23, 24). */
+const req = (name: string, optional = false) => ({ name, optional });
+
 describe("pluginHostDeclarationsFor", () => {
   it("reads the LIVE manifest of each declared repository", () => {
     const plugins = parsePluginRepos({
@@ -29,7 +32,21 @@ describe("pluginHostDeclarationsFor", () => {
     // `repo: self` resolves against the project's own manifest (req 27), so no
     // generation is needed for this half.
     expect(pluginHostDeclarationsFor(plugins, selfExports, () => null)).toEqual([
-      { repo: "dev", plugin: "probe", alias: "probe", hosts: ["fal.run"] },
+      { repo: "dev", plugin: "probe", alias: "probe", hosts: [{ name: "fal.run", optional: false }] },
+    ]);
+  });
+
+  it("carries an optional declaration through unchanged (req 24)", () => {
+    const plugins = parsePluginRepos({
+      repos: [{ repo: "self", name: "dev" }],
+      use: [{ plugin: "assetgen", from: "dev" }],
+    });
+    const selfExports = parsePluginExports({
+      plugins: { assetgen: { hosts: ["fal.run", { name: "pixellab.ai", optional: true }] } },
+    });
+    expect(pluginHostDeclarationsFor(plugins, selfExports, () => null)[0]?.hosts).toEqual([
+      { name: "fal.run", optional: false },
+      { name: "pixellab.ai", optional: true },
     ]);
   });
 
@@ -45,10 +62,10 @@ describe("pluginHostDeclarationsFor", () => {
       repos: [{ repo: "a/b", name: "tools", branch: "main" }],
       use: [{ plugin: "probe", from: "tools", alias: "artk" }],
     });
-    const attempted = () => [{ name: "probe", hosts: ["downloads.vendor.example"] }];
+    const attempted = () => [{ name: "probe", hosts: [req("downloads.vendor.example")] }];
 
     expect(pluginHostDeclarationsFor(plugins, [], () => null, attempted)).toEqual([
-      { repo: "tools", plugin: "probe", alias: "artk", hosts: ["downloads.vendor.example"] },
+      { repo: "tools", plugin: "probe", alias: "artk", hosts: [req("downloads.vendor.example")] },
     ]);
   });
 
@@ -64,10 +81,10 @@ describe("pluginHostDeclarationsFor", () => {
       use: [{ plugin: "probe", from: "dev" }],
     });
     const selfExports = parsePluginExports({ plugins: { probe: { hosts: ["fal.run"] } } });
-    const attempted = () => [{ name: "probe", hosts: ["fal.run", "api.pixellab.ai"] }];
+    const attempted = () => [{ name: "probe", hosts: [req("fal.run"), req("api.pixellab.ai")] }];
 
     expect(pluginHostDeclarationsFor(plugins, selfExports, () => null, attempted)).toEqual([
-      { repo: "dev", plugin: "probe", alias: "probe", hosts: ["fal.run", "api.pixellab.ai"] },
+      { repo: "dev", plugin: "probe", alias: "probe", hosts: [req("fal.run"), req("api.pixellab.ai")] },
     ]);
   });
 

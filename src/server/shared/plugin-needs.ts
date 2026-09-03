@@ -17,12 +17,15 @@
  *    a needs list assembled from a plugin that does not exist is fiction (the
  *    card already says the selector is missing);
  *  - names are de-duplicated in manifest order, and a plugin that declares
- *    none contributes no group at all.
+ *    none contributes no group at all;
+ *  - each name carries whether it is REQUIRED or OPTIONAL, and both kinds are
+ *    collected: optionality changes how an unsatisfied name is reported, never
+ *    whether it is known.
  *
  * Filesystem-free, like its two callers: the client imports the types.
  */
 
-import type { PluginExport, PluginReposConfig } from "./plugin-repos.js";
+import type { PluginExport, PluginReposConfig, PluginRequirement } from "./plugin-repos.js";
 
 /** One activated plugin and the names it declares of one kind. */
 export interface PluginNeedDeclaration {
@@ -32,8 +35,31 @@ export interface PluginNeedDeclaration {
   plugin: string;
   /** The consumer's alias — unique across the project, so it keys the group. */
   alias: string;
-  /** The declared names, in manifest order, de-duplicated. */
-  values: string[];
+  /**
+   * The declared names, in manifest order, de-duplicated — each carrying
+   * whether the plugin needs it or merely uses it when given (reqs 23, 24).
+   */
+  values: PluginRequirement[];
+}
+
+/**
+ * De-duplicate one plugin's declared names, keeping manifest order.
+ *
+ * A name declared twice with two different answers resolves to **required**,
+ * whichever order it was written in. That direction is the safe one: it
+ * over-reports a gap the user may ignore, where the other hides a gap that
+ * stops the plugin working — and only a malformed manifest can produce the
+ * conflict at all.
+ */
+function dedupeRequirements(values: readonly PluginRequirement[]): PluginRequirement[] {
+  const byName = new Map<string, PluginRequirement>();
+  for (const value of values) {
+    const prior = byName.get(value.name);
+    // `Map.set` on an existing key keeps its original position, so replacing an
+    // optional entry with its required twin does not reorder the list.
+    if (!prior || (prior.optional && !value.optional)) byName.set(value.name, value);
+  }
+  return [...byName.values()];
 }
 
 /**
@@ -52,7 +78,7 @@ export interface PluginNeedDeclaration {
 export function declaredPluginNeeds<T extends Pick<PluginExport, "name">>(
   plugins: PluginReposConfig,
   manifestFor: (repoName: string) => readonly T[] | null,
-  pick: (exported: T) => readonly string[],
+  pick: (exported: T) => readonly PluginRequirement[],
 ): PluginNeedDeclaration[] {
   const declarations: PluginNeedDeclaration[] = [];
 
@@ -68,7 +94,7 @@ export function declaredPluginNeeds<T extends Pick<PluginExport, "name">>(
       const exported = byName.get(use.plugin.toLowerCase());
       if (!exported) continue;
 
-      const values = [...new Set(pick(exported))];
+      const values = dedupeRequirements(pick(exported));
       if (values.length === 0) continue;
       declarations.push({
         repo: repo.name,

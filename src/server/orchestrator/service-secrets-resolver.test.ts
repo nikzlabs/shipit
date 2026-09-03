@@ -19,7 +19,10 @@ const PALETTE: PluginCredentialDeclaration = {
   repo: "art-kit",
   plugin: "palette",
   alias: "artk",
-  credentials: ["FAL_KEY", "OPENAI_API_KEY"],
+  credentials: [
+    { name: "FAL_KEY", optional: false },
+    { name: "OPENAI_API_KEY", optional: false },
+  ],
 };
 
 let sessionDir: string;
@@ -75,8 +78,8 @@ describe("plugin credential needs on secrets_status (req 23)", () => {
         plugin: "palette",
         alias: "artk",
         credentials: [
-          { name: "FAL_KEY", satisfied: true },
-          { name: "OPENAI_API_KEY", satisfied: false },
+          { name: "FAL_KEY", satisfied: true, optional: false },
+          { name: "OPENAI_API_KEY", satisfied: false, optional: false },
         ],
       },
     ]);
@@ -88,9 +91,52 @@ describe("plugin credential needs on secrets_status (req 23)", () => {
     const snapshot = resolver.getSnapshot();
 
     expect(snapshot.declared).toEqual([
-      { name: "FAL_KEY", services: [], plugins: ["artk"] },
-      { name: "OPENAI_API_KEY", services: [], plugins: ["artk"] },
+      { name: "FAL_KEY", services: [], plugins: ["artk"], pluginRequired: true },
+      { name: "OPENAI_API_KEY", services: [], plugins: ["artk"], pluginRequired: true },
     ]);
+  });
+
+  // reqs 23, 24 — this row is what the Plugins card's "Add key…" opens, so the
+  // two must not disagree: a card saying "`artk` needs `FAL_KEY`" beside a
+  // field offering "value (optional)" is one surface contradicting the other.
+  it("says whether a claiming plugin can work without the name", async () => {
+    const resolver = makeResolver({
+      plugins: () => [
+        {
+          repo: "art-kit",
+          plugin: "palette",
+          alias: "artk",
+          credentials: [
+            { name: "FAL_KEY", optional: false },
+            { name: "PIXELLAB_KEY", optional: true },
+          ],
+        },
+      ],
+    });
+    await resolver.sync([]);
+    const byName = new Map(resolver.getSnapshot().declared.map((d) => [d.name, d]));
+    expect(byName.get("FAL_KEY")?.pluginRequired).toBe(true);
+    expect(byName.get("PIXELLAB_KEY")?.pluginRequired).toBe(false);
+    // Both are still settable rows: an optional key is one the user may want to
+    // provide, so it must not vanish from the panel where a value is entered.
+    expect(byName.get("PIXELLAB_KEY")?.plugins).toEqual(["artk"]);
+  });
+
+  it("never writes a plugin's answer onto compose's `required`", async () => {
+    // `required` gates the preview's blocking banner; `pluginRequired` gates
+    // nothing. A plugin declaring a project secret must not promote it.
+    const resolver = makeResolver({
+      plugins: () => [
+        { repo: "art-kit", plugin: "palette", alias: "artk", credentials: [{ name: "FAL_KEY", optional: false }] },
+      ],
+    });
+    await resolver.sync(apiService);
+    const falKey = resolver.getSnapshot().declared.find((d) => d.name === "FAL_KEY");
+    expect(falKey?.pluginRequired).toBe(true);
+    expect(falKey?.required).toBeUndefined();
+    // …and it reaches the blocking banner through neither route: the project's
+    // own required-and-missing secret is there, the plugin's is not.
+    expect(resolver.getSnapshot().missingRequired).not.toContain("FAL_KEY");
   });
 
   it("does not fire the project's blocking secrets banner", async () => {
@@ -131,8 +177,8 @@ describe("plugin credential needs on secrets_status (req 23)", () => {
     const snapshot = resolver.getSnapshot();
 
     expect(snapshot.plugins[0].credentials).toEqual([
-      { name: "FAL_KEY", satisfied: false },
-      { name: "OPENAI_API_KEY", satisfied: false },
+      { name: "FAL_KEY", satisfied: false, optional: false },
+      { name: "OPENAI_API_KEY", satisfied: false, optional: false },
     ]);
     // …and the account value is still there for the agent, untouched.
     expect(snapshot.agentValues.OPENAI_API_KEY).toBe("fixture-account-level");
@@ -144,6 +190,7 @@ describe("plugin credential needs on secrets_status (req 23)", () => {
     expect(resolver.getSnapshot().plugins[0].credentials[0]).toEqual({
       name: "FAL_KEY",
       satisfied: false,
+      optional: false,
     });
   });
 

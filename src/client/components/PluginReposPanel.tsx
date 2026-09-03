@@ -20,7 +20,7 @@ import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useApi, ApiError } from "../hooks/useApi.js";
 import type { PluginRepoCardView } from "../../server/shared/plugin-repos.js";
-import type { EgressHostGrantOutcome } from "../../server/shared/types.js";
+import type { EgressHostGrantOutcome, EgressHostReach } from "../../server/shared/types.js";
 import { egressBlockedReason, summarizeEgressGrant } from "./egress-grant-summary.js";
 import { RichErrorText } from "./PrLifecycleCard/RichErrorText.js";
 
@@ -101,39 +101,46 @@ function PluginRepoCard({
 }) {
   const isSelf = repo.status === "self";
   const statusLabel = STATUS_LABEL[repo.status];
-  // req 23 — every declared credential this repo's plugins lack, kept with the
-  // plugin alias that needs it so the row can name the gap.
-  const missingKeys = repo.uses.flatMap((u) =>
-    (u.credentials ?? []).filter((c) => !c.satisfied).map((c) => ({ alias: u.alias, name: c.name })),
-  );
+  // reqs 23, 24 — every declared credential and host, kept with the plugin
+  // alias that declares it so each row can name the claimant.
+  const keys = repo.uses.flatMap((u) => (u.credentials ?? []).map((c) => ({ alias: u.alias, ...c })));
+  const hosts = repo.uses.flatMap((u) => (u.hosts ?? []).map((h) => ({ alias: u.alias, ...h })));
+  // Every declared credential this repo's plugins LACK and cannot work without.
+  const missingKeys = keys.filter((c) => !c.satisfied && !c.optional);
+  // A key the plugin can use and does not need. Shown — a silent omission would
+  // leave "why is this plugin not doing the thing?" unanswerable — but not as a
+  // need: the project may have decided never to set it, and an alarm that
+  // cannot be cleared is one the reader learns to ignore.
+  const optionalKeys = keys.filter((c) => !c.satisfied && c.optional);
   // req 23 asks the session to show which credentials a plugin requires AND
   // whether they are satisfied — so a set key is stated too, quietly. Only the
-  // unsatisfied ones get an action row.
-  const setKeys = repo.uses.flatMap((u) =>
-    (u.credentials ?? []).filter((c) => c.satisfied).map((c) => ({ alias: u.alias, name: c.name })),
-  );
+  // unsatisfied ones get an action row. A set key reads the same either way:
+  // optionality is about the unsatisfied state alone.
+  const setKeys = keys.filter((c) => c.satisfied);
   // req 24 — the same lists for declared external hosts. A host the session may
   // reach is stated quietly, because the requirement asks the session to SHOW
   // what a plugin needs, not only what is broken.
-  const allowedHosts = repo.uses.flatMap((u) =>
-    (u.hosts ?? []).filter((h) => h.reach === "allowed").map((h) => ({ alias: u.alias, host: h.host })),
-  );
+  const allowedHosts = hosts.filter((h) => h.reach === "allowed");
   // A gap the user closes deliberately — the only one that may carry a button.
-  const grantableHosts = repo.uses.flatMap((u) =>
-    (u.hosts ?? []).filter((h) => h.reach === "grantable").map((h) => ({ alias: u.alias, host: h.host })),
-  );
+  const grantableHosts = hosts.filter((h) => h.reach === "grantable" && !h.optional);
   // planning#383 — and a gap NO user act closes: this deployment installs no
   // resolver, or this session admits no user hosts at all. Both buttons would
   // write a durable entry that changes nothing, so the card states the fact
   // instead of offering one. Collapsed into a single row because the reason is a
   // property of the session or the deployment, not of each host: repeating it
   // per host would read as several different problems.
-  const ungrantableHosts = repo.uses.flatMap((u) =>
-    (u.hosts ?? [])
-      .filter((h) => h.reach === "blocked-by-session" || h.reach === "blocked-by-deployment")
-      .map((h) => ({ alias: u.alias, host: h.host, reach: h.reach })),
+  const ungrantableHosts = hosts.filter(
+    (h) => !h.optional && (h.reach === "blocked-by-session" || h.reach === "blocked-by-deployment"),
   );
+  // The optional half of both, in one list: a host the plugin can use and the
+  // session does not reach. It keeps its grant affordance where a grant would
+  // work — the user may still want it — and states the blocking reason where
+  // one would not, for the same reason the required row does.
+  const optionalHosts = hosts.filter((h) => h.optional && h.reach !== "allowed");
   const blockedReason = ungrantableHosts[0] ? egressBlockedReason(ungrantableHosts[0].reach) : null;
+  // Optional gaps are deliberately NOT counted: the chip means "something to go
+  // and set", and a count that never reaches zero however much the user sets is
+  // a chip that stops meaning anything.
   const needCount = missingKeys.length + grantableHosts.length + ungrantableHosts.length;
   // planning#376 — what the last grant on THIS card took effect on, and the
   // failure if it had one. Both live here rather than in the row that made the
@@ -291,16 +298,7 @@ function PluginRepoCard({
             <code className="font-mono text-xs">{need.name}</code> is not set for this project —{" "}
             <span className="font-medium">{need.alias}</span> needs it
           </span>
-          {consumerRepoUrl && (
-            <CardAction
-              className="ml-auto"
-              onClick={() =>
-                useUiStore.getState().setProjectSettingsRepoUrl(consumerRepoUrl, "secrets")
-              }
-            >
-              Add key…
-            </CardAction>
-          )}
+          <AddKeyAction consumerRepoUrl={consumerRepoUrl} />
         </div>
       ))}
 
@@ -312,6 +310,8 @@ function PluginRepoCard({
           key={`${need.alias}:${need.host}`}
           alias={need.alias}
           host={need.host}
+          reach={need.reach}
+          optional={false}
           onGranted={(outcome) => {
             setFailedHost(null);
             setGrant(outcome);
@@ -344,6 +344,45 @@ function PluginRepoCard({
           </div>
         </div>
       )}
+
+      {/* reqs 23, 24 — the optional half of both lists, below every real need.
+          "`assetgen` can use `pixellab.ai`" has to read differently from
+          "`assetgen` needs `fal.run`": one is an offer, the other a gap. Same
+          rows, same actions, quieter voice — the user who wants to close it
+          still can, and the user who never will is not told off for it. */}
+      {optionalKeys.map((need) => (
+        <div
+          key={`${need.alias}:${need.name}`}
+          className="flex flex-wrap items-center gap-2 border-t border-(--color-border-primary) px-3 py-2 text-sm text-(--color-text-secondary)"
+          data-testid={`plugin-credential-optional-${need.alias}-${need.name}`}
+        >
+          <KeyIcon size={ICON_SIZE.SM} className="flex-none text-(--color-text-tertiary)" />
+          <span className="min-w-0 break-words">
+            <span className="font-medium">{need.alias}</span> can use{" "}
+            <code className="font-mono text-xs">{need.name}</code> — optional, and not set for this
+            project
+          </span>
+          <AddKeyAction consumerRepoUrl={consumerRepoUrl} />
+        </div>
+      ))}
+
+      {optionalHosts.map((need) => (
+        <HostNeedRow
+          key={`${need.alias}:${need.host}`}
+          alias={need.alias}
+          host={need.host}
+          reach={need.reach}
+          optional
+          onGranted={(outcome) => {
+            setFailedHost(null);
+            setGrant(outcome);
+          }}
+          onFailed={(host) => {
+            setGrant(null);
+            setFailedHost(host);
+          }}
+        />
+      ))}
 
       {refreshed && (
         <RefreshOutcomeRow outcome={refreshed} onDismiss={() => setRefreshed(null)} />
@@ -453,6 +492,25 @@ function PluginRepoCard({
 }
 
 /**
+ * plan §3's store trap, in one place because both credential rows need it:
+ * "Add key…" opens the CONSUMING project's secret store, never the plugin
+ * repository's — `setProjectSettingsRepoUrl` selects the store `/api/secrets`
+ * writes to, so the plugin's URL would save the key where nothing reads it.
+ * Absent when the session has no repository to save into.
+ */
+function AddKeyAction({ consumerRepoUrl }: { consumerRepoUrl: string | null }) {
+  if (!consumerRepoUrl) return null;
+  return (
+    <CardAction
+      className="ml-auto"
+      onClick={() => useUiStore.getState().setProjectSettingsRepoUrl(consumerRepoUrl, "secrets")}
+    >
+      Add key…
+    </CardAction>
+  );
+}
+
+/**
  * req 12 — what the Refresh press did, said where it was pressed.
  *
  * It exists because THREE of the four outcomes are invisible in the card the
@@ -535,15 +593,28 @@ function RefreshOutcomeRow({
  * planning#376 — the OUTCOME is reported after the click, by the card
  * (`onGranted`), rather than predicted in these tooltips. The two scopes behave
  * very differently and only the server knows which reload it ran.
+ *
+ * `optional` (reqs 23, 24) changes the sentence and the tone, and nothing else:
+ * a host the plugin can use rather than needs is still named, still carries its
+ * true `reach`, and still offers the grant — because the user may want it after
+ * all, and the requirement's affordance is not theirs to lose for having
+ * declared the host honestly. Where no grant would work (planning#383) the row
+ * says why instead of offering a button, exactly as the required rows do; that
+ * reason is stated per row here rather than collapsed into one, because an
+ * optional row is already the quiet case and there is at most a handful.
  */
 function HostNeedRow({
   alias,
   host,
+  reach,
+  optional,
   onGranted,
   onFailed,
 }: {
   alias: string;
   host: string;
+  reach: EgressHostReach;
+  optional: boolean;
   onGranted: (outcome: EgressHostGrantOutcome) => void;
   onFailed: (host: string) => void;
 }) {
@@ -566,40 +637,68 @@ function HostNeedRow({
     }
   };
 
+  const blocked = egressBlockedReason(reach);
   return (
     <div
-      className="flex flex-wrap items-center gap-2 border-t border-(--color-border-primary) px-3 py-2 text-sm"
-      data-testid={`plugin-host-need-${alias}-${host}`}
+      className={`flex flex-wrap items-center gap-2 border-t border-(--color-border-primary) px-3 py-2 text-sm${
+        optional ? " text-(--color-text-secondary)" : ""
+      }`}
+      data-testid={`plugin-host-${optional ? "optional" : "need"}-${alias}-${host}`}
     >
-      <GlobeIcon size={ICON_SIZE.SM} className="flex-none text-(--color-warning)" />
-      <span className="min-w-0 break-words">
-        <code className="font-mono text-xs">{host}</code> is not in this session's egress allowlist —{" "}
-        <span className="font-medium">{alias}</span> declares it
-      </span>
-      <span className="ml-auto flex flex-none items-center gap-2">
-        {/* Both tooltips state only WHERE the entry lands, which is a fact
-            about the write. Neither predicts which surfaces end up live: the
-            old "a running service may need a restart to pick it up" was wrong
-            in both directions (the agent is equally stale; a plugin's own
-            command container is created per invocation and is allowed at once),
-            and any replacement guess would be wrong for an unenforced
-            deployment, an Open session, or one with no container. That answer
-            is now reported after the click, from the server (planning#376). */}
-        <CardAction
-          disabled={busy}
-          title="Add it to this session's allowlist — this session only. What it took effect on is reported here afterwards."
-          onClick={() => void grant("session")}
-        >
-          Allow for session
-        </CardAction>
-        <CardAction
-          disabled={busy}
-          title="Add it to the instance-wide allowlist, for this and future sessions. What it took effect on is reported here afterwards."
-          onClick={() => void grant("global")}
-        >
-          Allow for ShipIt
-        </CardAction>
-      </span>
+      <GlobeIcon
+        size={ICON_SIZE.SM}
+        className={`flex-none ${optional ? "text-(--color-text-tertiary)" : "text-(--color-warning)"}`}
+      />
+      <div className="min-w-0 flex-1 space-y-0.5 break-words">
+        {optional ? (
+          // The second clause is worded from the VERDICT, not from one sentence
+          // that happens to be true of the grantable case. `blocked-by-deployment`
+          // is decided before the allowlist is consulted at all
+          // (`egress-host-reach.ts`), so an already-allowlisted host can carry
+          // it — and "not in this session's egress allowlist" would then be a
+          // plain falsehood, in the row whose whole job is to be quietly
+          // accurate. `blocked.headline` below says which limit it is.
+          <p>
+            <span className="font-medium">{alias}</span> can use{" "}
+            <code className="font-mono text-xs">{host}</code> — optional, and{" "}
+            {blocked ? "not reachable from this session" : "not in this session's egress allowlist"}
+          </p>
+        ) : (
+          <p>
+            <code className="font-mono text-xs">{host}</code> is not in this session's egress
+            allowlist — <span className="font-medium">{alias}</span> declares it
+          </p>
+        )}
+        {/* planning#383 — where no grant can reach the host, say so instead of
+            offering a button that writes an inert entry. */}
+        {blocked && <p className="text-xs text-(--color-text-tertiary)">{blocked.headline}</p>}
+      </div>
+      {!blocked && (
+        <span className="ml-auto flex flex-none items-center gap-2">
+          {/* Both tooltips state only WHERE the entry lands, which is a fact
+              about the write. Neither predicts which surfaces end up live: the
+              old "a running service may need a restart to pick it up" was wrong
+              in both directions (the agent is equally stale; a plugin's own
+              command container is created per invocation and is allowed at once),
+              and any replacement guess would be wrong for an unenforced
+              deployment, an Open session, or one with no container. That answer
+              is now reported after the click, from the server (planning#376). */}
+          <CardAction
+            disabled={busy}
+            title="Add it to this session's allowlist — this session only. What it took effect on is reported here afterwards."
+            onClick={() => void grant("session")}
+          >
+            Allow for session
+          </CardAction>
+          <CardAction
+            disabled={busy}
+            title="Add it to the instance-wide allowlist, for this and future sessions. What it took effect on is reported here afterwards."
+            onClick={() => void grant("global")}
+          >
+            Allow for ShipIt
+          </CardAction>
+        </span>
+      )}
     </div>
   );
 }

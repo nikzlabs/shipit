@@ -103,7 +103,7 @@ describe("plugin credential resolution — the consuming project's store (req 23
     );
 
     expect(collectPluginCredentialDeclarations(session.workspaceDir)).toEqual([
-      { repo: "art-kit", plugin: "palette", alias: "artk", credentials: ["FAL_KEY"] },
+      { repo: "art-kit", plugin: "palette", alias: "artk", credentials: [{ name: "FAL_KEY", optional: false }] },
     ]);
   });
 
@@ -132,7 +132,7 @@ describe("plugin credential resolution — the consuming project's store (req 23
       ),
     );
     expect(collectPluginCredentialDeclarations(session.workspaceDir)).toEqual([
-      { repo: "dev", plugin: "probe", alias: "probe", credentials: ["PROBE_KEY"] },
+      { repo: "dev", plugin: "probe", alias: "probe", credentials: [{ name: "PROBE_KEY", optional: false }] },
     ]);
   });
 
@@ -143,13 +143,13 @@ describe("plugin credential resolution — the consuming project's store (req 23
     secretStore.saveSecrets(PLUGIN_REPO_URL, { FAL_KEY: "fixture-from-the-wrong-store" });
 
     const declarations = [
-      { repo: "art-kit", plugin: "palette", alias: "artk", credentials: ["FAL_KEY"] },
+      { repo: "art-kit", plugin: "palette", alias: "artk", credentials: [{ name: "FAL_KEY", optional: false }] },
     ];
     const [group] = resolvePluginCredentials(
       declarations,
       loadSatisfiedPluginCredentialNames(secretStore, CONSUMER_URL),
     );
-    expect(group.credentials).toEqual([{ name: "FAL_KEY", satisfied: false }]);
+    expect(group.credentials).toEqual([{ name: "FAL_KEY", satisfied: false, optional: false }]);
 
     // …and it flips the moment the value lands in the CONSUMING project's store.
     secretStore.saveSecrets(CONSUMER_URL, { FAL_KEY: "fixture-live" });
@@ -157,7 +157,7 @@ describe("plugin credential resolution — the consuming project's store (req 23
       declarations,
       loadSatisfiedPluginCredentialNames(secretStore, CONSUMER_URL),
     );
-    expect(after.credentials).toEqual([{ name: "FAL_KEY", satisfied: true }]);
+    expect(after.credentials).toEqual([{ name: "FAL_KEY", satisfied: true, optional: false }]);
   });
 
   it("an empty stored value is not a value", () => {
@@ -221,7 +221,7 @@ describe("platform credentials are unreachable from a plugin's store (req 23)", 
           "LINEAR_API_KEY",
           "ANTHROPIC_API_KEY",
           "MCP_PLATFORM_NOTION",
-        ],
+        ].map((name) => ({ name, optional: false })),
       },
     ];
 
@@ -230,11 +230,11 @@ describe("platform credentials are unreachable from a plugin's store (req 23)", 
       loadSatisfiedPluginCredentialNames(secretStore, CONSUMER_URL),
     );
     expect(group.credentials).toEqual([
-      { name: "GITHUB_TOKEN", satisfied: false },
-      { name: "SHIPIT_GITHUB_TOKEN", satisfied: false },
-      { name: "LINEAR_API_KEY", satisfied: false },
-      { name: "ANTHROPIC_API_KEY", satisfied: false },
-      { name: "MCP_PLATFORM_NOTION", satisfied: false },
+      { name: "GITHUB_TOKEN", satisfied: false, optional: false },
+      { name: "SHIPIT_GITHUB_TOKEN", satisfied: false, optional: false },
+      { name: "LINEAR_API_KEY", satisfied: false, optional: false },
+      { name: "ANTHROPIC_API_KEY", satisfied: false, optional: false },
+      { name: "MCP_PLATFORM_NOTION", satisfied: false, optional: false },
     ]);
 
     // The platform store is genuinely populated — the gaps above are the
@@ -251,10 +251,10 @@ describe("platform credentials are unreachable from a plugin's store (req 23)", 
     // whatever it is called (req 23: "holds only values the user placed there").
     secretStore.saveSecrets(CONSUMER_URL, { GITHUB_TOKEN: "fixture-the-users-own-choice" });
     const [group] = resolvePluginCredentials(
-      [{ repo: "r", plugin: "p", alias: "p", credentials: ["GITHUB_TOKEN"] }],
+      [{ repo: "r", plugin: "p", alias: "p", credentials: [{ name: "GITHUB_TOKEN", optional: false }] }],
       loadSatisfiedPluginCredentialNames(secretStore, CONSUMER_URL),
     );
-    expect(group.credentials).toEqual([{ name: "GITHUB_TOKEN", satisfied: true }]);
+    expect(group.credentials).toEqual([{ name: "GITHUB_TOKEN", satisfied: true, optional: false }]);
   });
 });
 
@@ -280,7 +280,7 @@ describe("liveManifestReader", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-creds-flat-"));
     try {
       const selfExports = [
-        { name: "probe", cli: {}, installInputs: [], depDirs: [], credentials: ["PROBE_KEY"], hosts: [], settings: {} },
+        { name: "probe", cli: {}, installInputs: [], depDirs: [], credentials: [{ name: "PROBE_KEY", optional: false }], hosts: [], settings: {} },
       ];
       const repos: DeclaredPluginRepo[] = [{ name: "dev", source: { kind: "self" } }];
       // A self repo reads without any generation being resolvable at all.

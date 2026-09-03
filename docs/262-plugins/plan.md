@@ -272,11 +272,48 @@ exports:
                                                           # default — an empty list opts out
       credentials: [FAL_KEY]        # names only — values live with each project (req 23)
       hosts: [fal.run]              # informational; grants nothing (req 24)
+      # …and either list takes `{ name: X, optional: true }` for a name the
+      # plugin uses when given and works without (reqs 23, 24) — see below
       settings:                     # declared settings + defaults (req 26)
         root:
           description: Directory inside the project the plugin reads and writes
           default: docs
 ```
+
+**Optional credentials and hosts (reqs 23, 24).** Both lists take either a bare
+string or a mapping, parsed by ONE function (`parseRequirementList` in
+`plugin-repos.ts`) into `PluginRequirement {name, optional}`:
+
+```yaml
+      credentials: [FAL_KEY, { name: PIXELLAB_KEY, optional: true }]
+      hosts:       [fal.run, { name: pixellab.ai,  optional: true }]
+```
+
+Three properties chose that grammar. It is a **widening** — a plain list of
+strings still means a plain list of REQUIRED names, so no manifest written
+before this is re-read, which is the regression that mattered most. It is **one
+grammar for both lists**, down to the key being `name:` for a host rather than
+`host:`, because req 24 defines its visibility as req 23's and a second parser
+is how two grammars drift. And it is **legible without a legend**, where a
+sigil (`FAL_KEY?`) would be terser, unsearchable, and invisible in a diff. The
+strictness of the surrounding parser is preserved: a mapping's name is
+validated exactly as a bare one (hostname shape, env-var shape, the reserved
+`PLUGIN_CONTRACT_ENV_NAMES`), a non-boolean `optional` drops the plugin the way
+a non-boolean `autostart` drops a use entry, and an unknown key inside an entry
+warns without dropping.
+
+What optionality does is bounded on purpose: it changes **how an unsatisfied
+name is reported**, and nothing else. It grants nothing (req 24's second
+sentence), it is not consulted by either delivery surface — `plugin-compose.ts`
+and `plugin-cli-run.ts` read the NAMES, so an optional credential the project
+has set arrives exactly as a required one does — and `resolvePluginHosts` still
+asks the egress predicate about every declared host, so a surface that asks
+directly gets the true answer. The three reporting surfaces that DO read it:
+the card (a quiet "`assetgen` can use `pixellab.ai`" row, keeping its Allow /
+Add key affordance, outside the needs chip), the tab's warn dot
+(`pluginsAttention`), and `blockedHostsClause` in `plugin-install.ts` (an
+install failure never blames a host the plugin works without). A name declared
+both ways resolves to required — over-reporting a gap beats hiding one.
 
 The manifest is versioned with the repo, so a refresh (req 12) can change it;
 parsing is fail-closed per plugin with the generation rule above (req 13).

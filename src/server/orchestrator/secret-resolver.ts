@@ -150,6 +150,18 @@ export interface DeclaredSecret extends SecretRequirement {
    * appearing twice. Absent when no plugin claims it.
    */
   plugins?: string[];
+  /**
+   * docs/262 reqs 23, 24 — at least one plugin in {@link plugins} declares this
+   * name as one it cannot work without (the others merely use it if given).
+   *
+   * Deliberately NOT {@link SecretRequirement.required}, which belongs to
+   * compose: that one means a SERVICE will not run without a value and feeds
+   * the preview's blocking "configure secrets" banner, while a plugin's gap
+   * never blocks a project's preview. This one decides only how the settings
+   * row reads, so a key the Plugins card says a plugin NEEDS is not offered
+   * here as "value (optional)". Absent when no plugin claims the name.
+   */
+  pluginRequired?: boolean;
 }
 
 // ---------------------------------------------------------------------------
