@@ -65,13 +65,38 @@ server runs the repository's own `command:`/`build:`, which is exactly the
 execution docs/178 defers. An untrusted remote gets a standby container and
 nothing else, as today.
 
-### Recency (req 8)
+### Recency (reqs 8, 9)
 
-Gate the pre-start on `repo.lastUsedAt` being inside a cutoff. The stamp already
-exists and is already maintained on every claim (`claim-session.ts` —
-`deps.repoStore.touch(url)`), so this is a read, not new bookkeeping. The
-warm *session* itself is unchanged: every ready repo still gets one. Only the
-preview is limited, because only the preview has a standing cost.
+Gate the pre-start on `repo.lastUsedAt` being inside **7 days**
+(`WARM_PREVIEW_RECENCY_DAYS`). The stamp already exists and is maintained on
+every claim (`claim-session.ts` — `deps.repoStore.touch(url)`), so this is a
+read, not new bookkeeping. The warm *session* itself is unchanged: every ready
+repo still gets one. Only the preview is limited, because only the preview has a
+standing cost.
+
+**Why a cutoff does not punish a break (req 9).** Two properties of where the
+gate sits, both of which have to stay true if the number is ever changed:
+
+- **It is evaluated when ShipIt WARMS, not when the user claims.** The warm
+  paths are the boot re-warm (`scheduleStartupTasks`), a repo being added, the
+  claim re-warm, and graduation. So an overnight deploy — which retires the warm
+  tier and re-warms every ready repo — evaluates the gate at 3am against
+  yesterday's `lastUsedAt` and pre-starts the preview before the user arrives.
+  Nothing is decided at the moment the user shows up.
+- **Every claim re-stamps `lastUsedAt`.** An absence longer than the cutoff
+  therefore costs exactly ONE cold preview: the first session back warms the
+  next one, and the repo is recent again. The failure mode degrades by one
+  session, not by a mode change.
+
+7 days is the smallest window that clears a long weekend plus a public holiday
+with room to spare. It sits between the two windows that already exist: a repo
+untouched for 30 days loses its bare cache to the steady-state janitor
+(`DEFAULT_CACHE_DAYS`, `steady-state-reclaim.ts`) and cannot be warmed at all,
+so the gate is only ever choosing among repos that are still cached.
+
+The number is a coarse pre-filter, not the cost control. The real bound is req
+4: a warm preview is the first thing the idle enforcer stops under memory
+pressure, so a generous cutoff cannot starve a real session.
 
 ### Off the critical path (req 3)
 

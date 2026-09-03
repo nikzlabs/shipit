@@ -48,12 +48,26 @@ The trace behind that report:
    server's own boot.
 8. Only repos the user has opened recently get a pre-started preview. A repo
    nobody has touched carries no standing preview cost.
+9. An ordinary break away from work — a night, a weekend, a holiday — does not
+   change warming behaviour. Coming back on Monday is the same as coming back
+   after lunch.
 
 ## Open questions
 
 _None._
 
 ## Resolved questions
+
+- 2026-09-03 — *What is the recency cutoff, and does a break break it?* The
+  requirement was written without a number, which the human caught. The cutoff
+  is **7 days**, and the rule it has to satisfy is req 9: no ordinary absence
+  changes what a user comes back to. Two properties make that hold and are the
+  reason 7 days is enough rather than arbitrary: the gate is evaluated when
+  ShipIt WARMS (boot re-warm, repo add, claim re-warm, graduation), not when the
+  user claims — so an overnight deploy re-warms and pre-starts the preview
+  before the user arrives; and every claim stamps `lastUsedAt`, so an absence
+  longer than the cutoff costs exactly ONE cold preview, after which the repo is
+  recent again. → req 8, req 9.
 
 - 2026-09-03 — *Which repos get a pre-started warm preview?* Recently used repos
   only. `repoStore.touch(url)` already stamps `lastUsedAt` on every claim, so
