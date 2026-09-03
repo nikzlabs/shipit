@@ -14,7 +14,7 @@ import { overlayLiveScopeSource, pluginLiveArtifactSource } from "./disk-livenes
 import { DEFAULT_DISK_LADDER, assertDiskLadderOrdering, type DiskLadderThresholds } from "./sessions.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import { createKeepPreviewRestartSupervisor, restoreReservedPreviews } from "./keep-preview-running.js";
-import { createWarmTierSweep, WARM_SWEEP_INTERVAL_MS } from "./warm-tier-sweep.js";
+import { startWarmTierSweep } from "./warm-tier-sweep.js";
 
 /** Functions produced by {@link startStartupMonitors} that later steps need. */
 export interface StartupMonitors {
@@ -185,15 +185,10 @@ export async function startStartupMonitors(
   // Nothing else notices a standby container that died: it has no runner, so
   // the orphan reconciler above skips it, and `warmSessionForRepo` will not
   // rebuild while the warm session row exists. Without this pass a repo whose
-  // standby exits stays hollow forever, and every later claim pays the full
-  // cold cost while still reporting a warm hit.
-  //
-  // On the same guard as the reconciler above and for the same reason: a pass
-  // that is still running (a `docker create` + pre-install can take minutes)
-  // must not have a second one started on top of it.
-  let warmSweepInFlight = false;
-  const warmTierSweep = containerManager && !isTestMode
-    ? createWarmTierSweep({
+  // standby exits stays hollow, and every later claim pays the full cold cost
+  // while still reporting a warm hit.
+  const warmSweepInterval = containerManager && !isTestMode
+    ? startWarmTierSweep({
         repoStore, sessionManager, containerManager,
         warmSessionForRepo: rt.warmSessionForRepo,
         ensureStandbyForWarmSession: rt.ensureStandbyForWarmSession,
@@ -201,16 +196,6 @@ export async function startStartupMonitors(
         getMemoryStats: () => latestMemoryStats.value,
       })
     : null;
-  const warmSweepInterval = warmTierSweep ? setInterval(() => {
-    if (warmSweepInFlight) return;
-    warmSweepInFlight = true;
-    void warmTierSweep()
-      .catch((err: unknown) => { console.error("[warm-sweep] pass failed:", err); })
-      .finally(() => { warmSweepInFlight = false; });
-  }, WARM_SWEEP_INTERVAL_MS) : null;
-  if (warmSweepInterval && typeof warmSweepInterval.unref === "function") {
-    warmSweepInterval.unref();
-  }
 
   // ---- Disk janitor (startup-only CRASH-RECOVERY sweep) ----
   // Reclaims orphan ShipIt-labeled compose volumes/networks, the archived

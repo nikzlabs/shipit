@@ -57,6 +57,15 @@ export interface EnsureStandbyOptions {
   /** The clone, mounted at `/workspace`. */
   workspaceDir: string;
   repoUrl: string;
+  /**
+   * Re-checked immediately before the container is created, after the preflight
+   * awaits. The teardown epoch covers a DESTROY that lands mid-preflight; this
+   * covers the other order — a claim taking the session and activating it, so
+   * that a container already exists and is nobody's standby. Creating one then
+   * would label a live session's container `standby`, which is what the idle
+   * enforcer deletes first (review finding). Absent = always wanted.
+   */
+  stillWanted?: () => boolean;
 }
 
 /**
@@ -97,68 +106,76 @@ export function createWarmPool(
   const ensureStandbyForWarmSession = async (opts: EnsureStandbyOptions): Promise<void> => {
     const { sessionId, sessionDir, workspaceDir, repoUrl } = opts;
     if (!containerManager) return;
-    // Defense-in-depth — the breaker is the single authority on "should we make
-    // a container right now?". A session id that has OOM'd before must not get
-    // a speculative container just to OOM again.
-    if (oomBreaker?.isTripped(sessionId)) {
-      console.warn(`[warm] Skipping standby for ${sessionId}: OOM circuit breaker tripped`);
-      return;
-    }
-    // docs/284 — a standby is speculative work, so it is the first thing to skip
-    // when the machine is tight. This used to compare a container count against
-    // `maxIdleContainers`; now that ShipIt measures memory the real question is
-    // askable directly.
-    if (isUnderEvictionPressure(getMemoryStats?.() ?? null)) return;
-
-    // `buildConfigForWorkspace` reads shipit.yaml so the standby is provisioned
-    // with the repo's declared agent resources (memory/cpu/pids) and
-    // docker-access capability. Plain `buildConfig` would fall back to the
-    // manager's defaults, so a repo declaring `agent.memory: 3072` would get a
-    // 1.5 GB container and OOM on its first turn.
-    //
-    // docs/183 Phase 7 / docs/197 Part 2 — build it WITH the overlay specs (or,
-    // for pnpm, the shared store) so a warm-claimed session reuses an
-    // already-mounted container. This is the one container-creation path that
-    // does not go through `createContainerForRunner`, so without this a warm hit
-    // silently runs plain. Both helpers are inert when their flag is off.
-    const overlaySpecs = await containerManager.prepareOverlaySpecs({
-      sessionId,
-      workspaceDir,
-      session: { remoteUrl: repoUrl, kind: undefined },
-    });
-    const pnpmStoreDir = containerManager.preparePnpmStore({
-      workspaceDir,
-      session: { remoteUrl: repoUrl, kind: undefined },
-    });
-    const config = containerManager.buildConfigForWorkspace({
-      sessionId,
-      sessionDir,
-      workspaceDir,
-      credentialsDir,
-      depCacheDir: getDepCacheDir(repoUrl),
-      pnpmStoreDir,
-      overlaySpecs,
-    });
+    // Whole body guarded: every caller discards this promise, so a throw
+    // anywhere here — including the preflight below — would be an unhandled
+    // rejection rather than a session that merely stays cold (review finding).
     try {
-      const sc = await containerManager.createStandby(config);
+      // Defense-in-depth — the breaker is the single authority on "should we
+      // make a container right now?". A session that has OOM'd before must not
+      // get a speculative container just to OOM again.
+      if (oomBreaker?.isTripped(sessionId)) {
+        console.warn(`[warm] Skipping standby for ${sessionId}: OOM circuit breaker tripped`);
+        return;
+      }
+      // docs/284 — a standby is speculative work, so it is the first thing to
+      // skip when the machine is tight.
+      if (isUnderEvictionPressure(getMemoryStats?.() ?? null)) return;
+
+      // Snapshot the teardown counter BEFORE the preflight awaits below, which
+      // is what its docstring asks for: a destroy that lands while we prepare
+      // (a claim activating this session, the idle enforcer dropping the
+      // standby under pressure) is then newer than our intent, and `create`
+      // abandons rather than resurrecting a container nobody wants. Without it
+      // the sweep can rebuild a standby for a session a user has just claimed —
+      // and label a live session's container `standby`, which is what tier 0
+      // deletes first (review finding).
+      const intentEpoch = containerManager.teardownEpoch(sessionId);
+
+      // `buildConfigForWorkspace` reads shipit.yaml so the standby gets the
+      // repo's declared agent resources (memory/cpu/pids) and docker-access
+      // capability; plain `buildConfig` would hand a repo declaring
+      // `agent.memory: 3072` a 1.5 GB container that OOMs on its first turn.
+      // docs/183 / docs/197 — build it WITH the overlay specs (or, for pnpm, the
+      // shared store): this is the one container-creation path that does not go
+      // through `createContainerForRunner`, so without them a warm hit silently
+      // runs plain. Both helpers are inert when their flag is off.
+      const overlaySpecs = await containerManager.prepareOverlaySpecs({
+        sessionId,
+        workspaceDir,
+        session: { remoteUrl: repoUrl, kind: undefined },
+      });
+      const pnpmStoreDir = containerManager.preparePnpmStore({
+        workspaceDir,
+        session: { remoteUrl: repoUrl, kind: undefined },
+      });
+      const config = containerManager.buildConfigForWorkspace({
+        sessionId,
+        sessionDir,
+        workspaceDir,
+        credentialsDir,
+        depCacheDir: getDepCacheDir(repoUrl),
+        pnpmStoreDir,
+        overlaySpecs,
+      });
+      if (opts.stillWanted?.() === false) {
+        console.log(`[warm] Standby for ${sessionId} abandoned — the session is no longer warm`);
+        return;
+      }
+      const sc = await containerManager.createStandby(config, { intentEpoch });
       console.log(`[warm] Standby container ready for ${sessionId} at ${sc.workerUrl}`);
       // docs/178 — trust gate. Pre-running `agent.install` fires the repo's setup
       // shell before the user has ever opened the session, with zero
-      // interaction. Skip it for an untrusted remote. The standby itself runs no
-      // repo code (it idles until activation), so booting it is safe; only the
-      // install is deferred. Once trusted, the on-activation `runner.runInstall()`
-      // runs it (the success marker is simply absent), and the trust endpoint's
-      // `rerunServiceSetup` covers an already-open session.
+      // interaction. Skip it for an untrusted remote; the standby itself runs no
+      // repo code, so booting it is safe. Once trusted, the on-activation
+      // `runner.runInstall()` runs it (the marker is simply absent).
       if (!repoStore.isTrusted(repoUrl)) {
         console.log(`[warm:install:${sessionId}] Skipping pre-install for untrusted remote ${repoUrl} — awaiting first-clone trust`);
         return;
       }
-      // docs/246 — the success marker is written to the session's STATE dir
-      // (mounted at `/session-state`), not into the clone. The standby and the
-      // activated session are the same session, so it persists for the future
-      // runner: on activation `runner.runInstall()` sees the marker and
-      // short-circuits. If the user activates *during* pre-install, the worker's
-      // /install endpoint joins the in-flight run.
+      // docs/246 — the marker is written to the session's STATE dir, not the
+      // clone, so it persists for the future runner: on activation
+      // `runner.runInstall()` sees it and short-circuits. A user activating
+      // mid-install joins the in-flight run via the worker's /install endpoint.
       await runPreInstall(workspaceDir, sc.workerUrl, sessionId);
     } catch (err) {
       console.error(`[warm] Standby container failed for ${sessionId}:`, getErrorMessage(err));

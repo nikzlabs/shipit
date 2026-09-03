@@ -1,25 +1,16 @@
 /**
  * Periodic repair of the warm tier (planning#501, docs/288 req 10).
  *
- * Nothing else notices when a standby container dies. The health reconciler
- * walks `runnerRegistry.ids()` and skips standbys explicitly
- * (`app-lifecycle.ts`) — and a standby has no registered runner to walk in the
- * first place, nor a worker event stream to go quiet. The boot sweep checks
- * that the workspace CLONE exists and, when it does, declares the warm session
- * valid. And `warmSessionForRepo` declines to act while the warm session row
- * exists, so nothing can rebuild what died.
+ * Nothing else notices when a standby container dies: it has no runner, so the
+ * orphan reconciler skips it, and `warmSessionForRepo` will not rebuild while
+ * the warm session row exists. That made the state absorbing — a repo whose
+ * standby exited for ANY reason kept a warm session forever, and every later
+ * claim silently paid the full cold cost while still reporting a warm hit.
  *
- * The result is an absorbing state: a repo whose standby exits — an OOM inside
- * the pre-install, a Docker daemon restart (the agent container carries no
- * `RestartPolicy`), memory-budget reclaim, any external cleanup — keeps a warm
- * session forever, and every later claim silently pays the full cold cost while
- * still reporting a warm hit.
- *
- * This sweep compares state: what the warm tier should hold against what Docker
- * actually has. Deliberately NOT keyed on an event or a transition — a
- * transition is observed once, by whoever was listening, so a repair that
- * missed it never happens. A comparison gives the same answer however the
- * system got there.
+ * The sweep compares state — what the warm tier should hold against what Docker
+ * has — rather than reacting to an event. A transition is observed once, so a
+ * repair that missed it never happens; a comparison gives the same answer
+ * however the system got there.
  */
 
 import type { RepoStore } from "./repo-store.js";
@@ -45,6 +36,32 @@ export const WARM_SWEEP_INTERVAL_MS = 5 * 60_000;
  * loaded host.
  */
 export const WARM_REPAIR_GRACE_MS = 5 * 60_000;
+
+/**
+ * Run the sweep on a timer.
+ *
+ * The overlap guard is the reason this is here rather than inline at the call
+ * site: a pass can legitimately run for minutes (a `docker create` plus a
+ * pre-install), and a second one started on top of it would probe and rebuild
+ * the same repo twice.
+ */
+export function startWarmTierSweep(
+  deps: WarmTierSweepDeps,
+  opts: { intervalMs?: number } = {},
+): NodeJS.Timeout {
+  const runPass = createWarmTierSweep(deps);
+  let inFlight = false;
+  const timer = setInterval(() => {
+    if (inFlight) return;
+    inFlight = true;
+    void runPass()
+      .catch((err: unknown) => { console.error("[warm-sweep] pass failed:", err); })
+      .finally(() => { inFlight = false; });
+  }, opts.intervalMs ?? WARM_SWEEP_INTERVAL_MS);
+  // Never hold the event loop open for a speculative repair.
+  timer.unref?.();
+  return timer;
+}
 
 export interface WarmTierSweepDeps {
   repoStore: RepoStore;
@@ -146,6 +163,9 @@ export function createWarmTierSweep(deps: WarmTierSweepDeps): () => Promise<void
           sessionDir: path.dirname(session.workspaceDir),
           workspaceDir: session.workspaceDir,
           repoUrl: repo.url,
+          // Re-asked after the build's own preflight, which is the last moment
+          // before a container exists to mislabel.
+          stillWanted: () => repoStore.get(repo.url)?.warmSessionId === warmId,
         });
       } catch (err) {
         // One repo's failure must not end the pass — the next repo may be the

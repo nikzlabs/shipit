@@ -8,8 +8,8 @@
  * else and would pass a test that never notices.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { createWarmTierSweep, WARM_REPAIR_GRACE_MS } from "./warm-tier-sweep.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { createWarmTierSweep, startWarmTierSweep, WARM_REPAIR_GRACE_MS } from "./warm-tier-sweep.js";
 import type { RepoStore } from "./repo-store.js";
 import type { SessionManager } from "./sessions.js";
 import type { SessionContainerManager } from "./session-container.js";
@@ -44,7 +44,7 @@ function makeSweep(world: Partial<World> = {}) {
   };
 
   const warmSessionForRepo = vi.fn(async () => undefined);
-  const ensureStandbyForWarmSession = vi.fn(async () => undefined);
+  const ensureStandbyForWarmSession = vi.fn(async (_opts: unknown) => undefined);
   const destroy = vi.fn(async () => undefined);
   const setWarmSessionId = vi.fn();
   let memory: DockerMemoryStats | null = null;
@@ -85,6 +85,8 @@ function makeSweep(world: Partial<World> = {}) {
     destroy,
     setWarmSessionId,
     setMemory: (m: DockerMemoryStats | null) => { memory = m; },
+    /** Simulate a claim taking the session: the repo pointer is cleared. */
+    claim: () => { w.warmSessionId = undefined; },
   };
 }
 
@@ -110,15 +112,32 @@ describe("warm tier sweep", () => {
     await world.sweep();
 
     expect(world.destroy).toHaveBeenCalledWith(WARM_ID);
-    expect(world.ensureStandbyForWarmSession).toHaveBeenCalledWith({
-      sessionId: WARM_ID,
-      sessionDir: "/sessions/warm-1",
-      workspaceDir: "/sessions/warm-1/workspace",
-      repoUrl: URL,
-    });
+    expect(world.ensureStandbyForWarmSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: WARM_ID,
+        sessionDir: "/sessions/warm-1",
+        workspaceDir: "/sessions/warm-1/workspace",
+        repoUrl: URL,
+      }),
+    );
     // The row and the clone are fine — only the container died.
     expect(world.warmSessionForRepo).not.toHaveBeenCalled();
     expect(world.setWarmSessionId).not.toHaveBeenCalled();
+  });
+
+  it("hands the rebuild a live ownership check, not a snapshot", async () => {
+    // The epoch covers a DESTROY landing mid-build. This covers the other
+    // order: a claim takes the session and activates it, so a container already
+    // exists — building a second one would label a live session's container
+    // `standby`, which is what the idle enforcer deletes first.
+    world = makeSweep({ dockerRunning: false });
+
+    await world.sweep();
+
+    const opts = world.ensureStandbyForWarmSession.mock.calls[0]![0] as { stillWanted?: () => boolean };
+    expect(opts.stillWanted?.()).toBe(true);
+    world.claim();
+    expect(opts.stillWanted?.()).toBe(false);
   });
 
   it("rebuilds when the tracking map holds no container at all", async () => {
@@ -200,6 +219,83 @@ describe("warm tier sweep", () => {
     await world.sweep();
 
     expect(world.ensureStandbyForWarmSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("startWarmTierSweep — the timer", () => {
+  /** Deps that record each pass and can hold one open. */
+  function makeDeps(hold?: Promise<void>) {
+    const passes: string[] = [];
+    const warmSessionForRepo = vi.fn(async (url: string) => {
+      passes.push(url);
+      if (hold) await hold;
+    });
+    return {
+      passes,
+      deps: {
+        repoStore: {
+          list: () => [{ url: URL, status: "ready", warmSessionId: undefined }],
+          get: () => ({ url: URL, status: "ready", warmSessionId: undefined }),
+          setWarmSessionId: vi.fn(),
+        } as unknown as RepoStore,
+        sessionManager: { get: () => undefined } as unknown as SessionManager,
+        containerManager: {
+          get: () => undefined,
+          isTrackedContainerRunning: async () => false,
+          destroy: vi.fn(),
+        } as unknown as SessionContainerManager,
+        warmSessionForRepo,
+        ensureStandbyForWarmSession: vi.fn(async () => undefined),
+      },
+    };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("runs a pass on every tick until it is cleared", async () => {
+    const { passes, deps } = makeDeps();
+    const timer = startWarmTierSweep(deps, { intervalMs: 1000 });
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(passes).toHaveLength(2);
+
+    clearInterval(timer);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(passes).toHaveLength(2);
+  });
+
+  it("skips a tick while the previous pass is still running", async () => {
+    // A pass can legitimately run for minutes (a `docker create` plus a
+    // pre-install); a second one on top would probe and rebuild the same repo.
+    let release!: () => void;
+    const hold = new Promise<void>((r) => { release = r; });
+    const { passes, deps } = makeDeps(hold);
+    const timer = startWarmTierSweep(deps, { intervalMs: 1000 });
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(passes).toHaveLength(1);
+
+    release();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(passes).toHaveLength(2);
+
+    clearInterval(timer);
+  });
+
+  it("does not hold the event loop open", () => {
+    const { deps } = makeDeps();
+    const timer = startWarmTierSweep(deps, { intervalMs: 1000 });
+    expect(timer.hasRef()).toBe(false);
+    clearInterval(timer);
   });
 });
 

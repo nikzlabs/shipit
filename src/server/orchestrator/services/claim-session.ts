@@ -528,8 +528,14 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
       // line read as a warm hit either way — which is how the hollow-warm-tier
       // failure (planning#501) stayed invisible. Report both, so this line and
       // the `container.acquire` line that follows it can be compared.
-      const standby = deps.containerManager
-        ? (deps.containerManager.get(result.sessionId)?.status === "running" ? "ready" : "missing")
+      // Asked of DOCKER, not of the tracking map. A missed `die` event is the
+      // motivating failure here, and the map is exactly what such an event
+      // fails to update — reading it would report `ready` for the container
+      // that is gone (review finding). One inspect, against a claim that has
+      // already spent a git fetch.
+      const standbyRunning = await deps.containerManager?.isTrackedContainerRunning(result.sessionId);
+      const standby = standbyRunning === true ? "ready"
+        : standbyRunning === false ? "missing"
         : "unknown";
       console.log(
         `[timing] claim-session for ${url} path=${claimPath} standby=${standby} ` +

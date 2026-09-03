@@ -504,6 +504,13 @@ export function scheduleStartupTasks(
                 console.error(`[warm] Failed to destroy stale standby:`, getErrorMessage(err));
               });
             }
+            // Delete the rejected row, don't just unpoint it. The zombie scan
+            // above already ran and spared this id because the pointer still
+            // named it; clearing the pointer alone leaves an ungraduated warm
+            // session that `findUngraduatedWarm` hands to the next claim as a
+            // reusable draft — the very session this check just rejected
+            // (review finding).
+            deleteSession(sessionManager, repo.warmSessionId, chatHistoryManager, usageManager);
             repoStore.setWarmSessionId(repo.url, undefined);
             fireAndForgetWarm(repo.url);
           } else {

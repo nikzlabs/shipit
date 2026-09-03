@@ -134,7 +134,20 @@ The liveness question is asked of **Docker**, not of the tracking map
 (`isTrackedContainerRunning`). The map is fed by container events and by a
 health monitor that standbys are outside of, so trusting it would make the sweep
 blind to the exact failure it exists to catch. A `undefined` answer — the daemon
-could not say — is never read as death.
+could not say — is never read as death. The same reasoning put the claim's
+`standby=` field on a Docker probe rather than the cached status (req 11).
+
+**The repair runs beside live work, so it is guarded at three points**, and the
+two that matter are about the same hazard from opposite directions: rebuilding a
+standby for a session somebody has just claimed would label a LIVE session's
+container `standby`, and tier 0 deletes those first. The session's **teardown
+epoch** is snapshotted before the preflight — the mechanism
+`SessionContainerManager.teardownEpoch` exists for, whose docstring asks for
+exactly this — so a destroy landing mid-build (an activation, the enforcer)
+makes the create abandon. A **`stillWanted` predicate** is re-asked immediately
+before `createStandby`, covering the other order, where a claim activates and a
+container already exists. And nothing is judged at all while a warm is in flight
+or inside a five-minute grace after the row was created.
 
 "Running" is the check the boot sweep is missing — `containerManager.get(id)`
 with `status === "running"`, the same test the runner factory applies at claim
