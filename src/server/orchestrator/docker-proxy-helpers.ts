@@ -30,6 +30,24 @@ export interface DockerProxyDeps {
   getSessionByContainerIp: (ip: string) => SessionInfo | undefined;
   /** Docker daemon socket path. Defaults to /var/run/docker.sock. */
   socketPath?: string;
+  /**
+   * Opens a container-topology bracket, returning its closer
+   * (`SessionContainerManager.beginContainerTopologyChange`). Surfaced to route
+   * handlers as {@link RequestContext.beginTopologyChange}; the ones that can
+   * put a RUNNING container on a session network call it immediately before
+   * forwarding.
+   *
+   * `sanitizeContainerCreate` STAMPS `shipit-parent-session` on every container
+   * the agent creates here, so an agent-created container is a caller the API
+   * trust boundary must recognise (`api-container-guard.ts` denies it the whole
+   * surface). It recognises it through an index that answers from a
+   * periodically-refreshed snapshot, and a container that snapshot has not seen
+   * reads as "browser or host" — i.e. as MORE trusted than the agent that
+   * created it. A bracket, rather than a notification, because the agent chooses
+   * when its container starts: `/containers/{id}/start` returns with the process
+   * already running, so anything announced afterwards has already lost the race.
+   */
+  onTopologyChange?: () => () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +80,19 @@ export interface RequestContext {
   res: http.ServerResponse;
   session: SessionInfo;
   socketPath: string;
+  /**
+   * Open a container-topology bracket, returning its closer. Present only when
+   * the proxy was given {@link DockerProxyDeps.onTopologyChange}; a handler that
+   * does not bring a container up should not call it.
+   *
+   * Call it as late as the ordering allows — immediately before forwarding an
+   * AUTHORIZED request, never at dispatch. A bracket suspends the API guard's
+   * fast path for as long as it is open, and the proxy's own caller is the
+   * semi-trusted agent: opening one before the body has been read lets a
+   * deliberately-slow request hold the whole orchestrator's browser traffic on
+   * the Docker path.
+   */
+  beginTopologyChange?: () => () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +197,7 @@ export function pipeToDocker(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   overridePath?: string,
-): void {
+): Promise<void> {
   const reqHeaders: Record<string, string | string[] | undefined> = { ...req.headers };
   delete reqHeaders.host;
   delete reqHeaders.connection;
@@ -198,4 +229,15 @@ export function pipeToDocker(
   });
 
   req.pipe(dockerReq);
+
+  // Resolves when the exchange is over, whichever way it ended. Callers that
+  // only forward can ignore it (the historical `void` contract); a route that
+  // holds a topology bracket MUST await it, because that is the difference
+  // between holding the bracket across the daemon acting and closing it before
+  // the daemon has been asked.
+  return new Promise<void>((resolve) => {
+    res.on("close", resolve);
+    res.on("finish", resolve);
+    dockerReq.on("error", () => resolve());
+  });
 }

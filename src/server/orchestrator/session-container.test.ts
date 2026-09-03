@@ -563,9 +563,15 @@ describe("SessionContainerManager", () => {
       });
     }
 
-    await manager.prepareComposeServiceStart("test-session-1", ["web"]);
-    if (previousEnforce === undefined) delete process.env.SESSION_EGRESS_ENFORCE;
-    else process.env.SESSION_EGRESS_ENFORCE = previousEnforce;
+    // In a `finally`: the restore used to sit after the `await`, so anything that
+    // made this call reject left `SESSION_EGRESS_ENFORCE=1` set for the REST OF
+    // THE FILE — 35 unrelated failures downstream, none of them naming this test.
+    try {
+      await manager.prepareComposeServiceStart("test-session-1", ["web"]);
+    } finally {
+      if (previousEnforce === undefined) delete process.env.SESSION_EGRESS_ENFORCE;
+      else process.env.SESSION_EGRESS_ENFORCE = previousEnforce;
+    }
 
     expect(disconnect).toHaveBeenCalledTimes(2);
     expect(disconnect).toHaveBeenCalledWith({ Container: "web-id", Force: true });

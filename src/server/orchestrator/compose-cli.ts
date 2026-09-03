@@ -94,6 +94,24 @@ export interface ComposeCliOptions {
   composeRunner?: ComposeRunner;
   /** Optional override for querying compose commands (useful for testing). */
   composeQuery?: ComposeQuery;
+  /**
+   * Opens a container-topology bracket around `up` / `upService` — retry
+   * included — returning its closer
+   * (`SessionContainerManager.beginContainerTopologyChange`).
+   *
+   * A compose `up` starts containers carrying `shipit-parent-session`, which
+   * `api-container-guard.ts` denies the whole `/api/*` surface — but only once
+   * it recognises them, and it recognises them through an index that answers
+   * from a periodically-refreshed snapshot. `up` returns after the containers
+   * are already running, so nothing announced afterwards can beat a service's
+   * own entrypoint to the API. The bracket is opened before the command, for
+   * exactly that ordering. Absent (tests, callers with no container manager) the
+   * commands run unbracketed, as before.
+   *
+   * Only `up`: a bracket costs the guard its fast path for as long as it is
+   * open, and `stop` / `down` cannot bring a caller into existence.
+   */
+  onTopologyChange?: () => () => void;
 }
 
 export class ComposeCli {
@@ -105,6 +123,7 @@ export class ComposeCli {
   private readonly runner: ComposeRunner;
   /** Exposed so the poller / direct-spawn callers can run their own queries. */
   readonly query: ComposeQuery;
+  private readonly onTopologyChange?: () => () => void;
 
   constructor(opts: ComposeCliOptions) {
     this.sessionId = opts.sessionId;
@@ -114,6 +133,7 @@ export class ComposeCli {
     this.noProjectFile = opts.noProjectFile ?? false;
     this.runner = opts.composeRunner ?? defaultComposeRunner;
     this.query = opts.composeQuery ?? defaultComposeQuery;
+    this.onTopologyChange = opts.onTopologyChange;
   }
 
   /**
@@ -368,6 +388,26 @@ export class ComposeCli {
    * is blocking the create we're about to issue.
    */
   private async upWithConflictRecovery(
+    onOutput: ComposeOutputSink | undefined,
+    ...subArgs: string[]
+  ): Promise<void> {
+    // The bracket spans the WHOLE operation, retry included, and sits here
+    // rather than in `run` for two reasons. It has to cover the retry, because
+    // the first attempt can start some services before failing on a name
+    // conflict — a per-`run` bracket would close in the gap, with those services
+    // already running. And `up` is the only command that can create a caller:
+    // `stop` and `down` cannot, and `down` in particular waits out every
+    // service's stop grace period, which is a long time to suspend a fast path
+    // for nothing.
+    const endTopologyChange = this.onTopologyChange?.();
+    try {
+      await this.upAttempts(onOutput, ...subArgs);
+    } finally {
+      endTopologyChange?.();
+    }
+  }
+
+  private async upAttempts(
     onOutput: ComposeOutputSink | undefined,
     ...subArgs: string[]
   ): Promise<void> {

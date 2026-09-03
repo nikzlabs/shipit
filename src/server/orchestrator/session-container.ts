@@ -488,20 +488,39 @@ export const CONTAINER_BUILD_ID_LABEL = "shipit-build-id";
 // than {@link ORIGIN_INDEX_FRESH_MS} answers a lookup from memory. That is sound
 // in BOTH directions, which is the whole reason it is safe to skip the Docker
 // call: the snapshot enumerates every container carrying the label, so a miss is
-// as authoritative as a hit. The expensive path survives for the one case where
-// it is not — a cold or stale index — and every place ShipIt knows the topology
-// just changed marks the index stale ({@link SessionContainerManager.noteContainerTopologyChanged}),
-// so a service container cannot answer a request from inside the freshness
-// window it was created in.
+// as authoritative as a hit — but ONLY at the instant it was taken. Two things
+// keep it true afterwards, and neither is the refresh cadence:
+//
+//   * {@link SessionContainerManager.beginContainerTopologyChange} brackets
+//     every operation that can START a labelled container — a `docker compose`
+//     command, a mutating Docker API proxy request. A snapshot taken while a
+//     bracket is open publishes its map but NOT its freshness stamp, so it can
+//     never answer "absent" about a container the bracket is in the middle of
+//     creating. The bracket opens BEFORE Docker is called, which is what
+//     `noteContainerTopologyChanged` on its own could not do: an announcement
+//     made after the fact loses the race against the container's own entrypoint.
+//   * A miss inside a session's own subnet is not treated as absence at all
+//     ({@link SessionContainerManager.isLikelySessionContainerIp}): the address
+//     belongs to a session network, so an unindexed container is the likeliest
+//     explanation, and it costs a Docker round-trip rather than trust.
+//
+// A container that is not recognised is read as "browser or host" — i.e. MORE
+// trusted than the agent that started it. That is what all of this is for.
 
-/** Background cadence for the container-origin IP index refresh. */
-const ORIGIN_INDEX_REFRESH_MS = 3_000;
+/**
+ * Background cadence for the container-origin IP index refresh — a BACKSTOP,
+ * not the freshness signal. Correctness comes from the announcements into
+ * {@link SessionContainerManager.noteContainerTopologyChanged}; this pass is
+ * what covers a dropped Docker event stream, so it is paced to be cheap rather
+ * than to be prompt.
+ */
+const ORIGIN_INDEX_REFRESH_MS = 5_000;
 /**
  * How long a snapshot stays authoritative. Must exceed
  * {@link ORIGIN_INDEX_REFRESH_MS} by enough that one slow or failed pass does
  * not push every request back onto the Docker path.
  */
-const ORIGIN_INDEX_FRESH_MS = 10_000;
+const ORIGIN_INDEX_FRESH_MS = 15_000;
 /**
  * Docker timeout for the index query. The old 1 s sat below the observed p50 on
  * a loaded host; the query now runs off the request path, so it gets room to
@@ -532,7 +551,6 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private composeEgressRuns = new Map<string, Promise<void>>();
   private composeServiceNames = new Map<string, string[]>();
   private containerOriginSessions = new Map<string, string>();
-  private containerOriginNegative = new Map<string, number>();
   private containerOriginRefresh?: Promise<void>;
   private containerOriginRefreshStartedAt = 0;
   private containerOriginRefreshedAt = 0;
@@ -544,6 +562,14 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private originIndexTimer?: NodeJS.Timeout;
   private originIndexLastUsedAt = 0;
   private originRangeRefreshedAt = 0;
+  /**
+   * Bumped by every topology announcement. Monotonic on purpose — a wall-clock
+   * comparison ties when the announcement and a refresh land in the same
+   * millisecond, and ties the wrong way: the stale snapshot gets stamped fresh.
+   */
+  private containerTopologyGeneration = 0;
+  /** Open `beginContainerTopologyChange` brackets. */
+  private containerTopologyMutations = 0;
   private imageName: string;
   private networkName: string;
   private defaultMemoryLimit: number;
@@ -789,12 +815,10 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   /** Remove the NAT endpoint from stopped services before Compose starts them. */
   async prepareComposeServiceStart(sessionId: string, _serviceNames: string[]): Promise<void> {
     if (!this.isEgressContained(sessionId)) return;
-    try {
-      const networkInfo = await this.docker.getNetwork(`shipit-session-${sessionId}`).inspect();
-      this.sessionNetworkRanges.set(sessionId, (networkInfo.IPAM?.Config ?? [])
-        .filter((entry): entry is { Subnet: string; Gateway?: string } => Boolean(entry.Subnet))
-        .map((entry) => ({ subnet: entry.Subnet, ...(entry.Gateway ? { gateway: entry.Gateway } : {}) })));
-    } catch { /* containment later verifies the network and fails closed */ }
+    // Before the services start, which is the point: this is the one chance to
+    // learn a session's subnets before anything on them can send a packet, and
+    // `isLikelySessionContainerIp` is the guard's fail-closed branch.
+    await this.recordSessionNetworkRanges(sessionId);
     const containers = await this.docker.listContainers({
       all: true,
       filters: { label: [`shipit-parent-session=${sessionId}`] },
@@ -820,6 +844,26 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * containers while preserving service names.
    */
   async containComposeServices(sessionId: string, serviceNames: string[], refresh = false): Promise<void> {
+    // Bracketed even though it starts no service of its own: it ATTACHES an
+    // already-running service to `shipit-egress-<id>`, which gives that service
+    // a second address and makes it the preferred route. This runs AFTER the
+    // Compose command's own bracket has closed (`service-manager.ts` calls
+    // `containServicesFn` once `up` returns), so without a bracket here the
+    // origin index can be authoritative while missing the address the service
+    // is about to call from.
+    const endTopologyChange = this.beginContainerTopologyChange();
+    try {
+      await this.containComposeServicesInner(sessionId, serviceNames, refresh);
+    } finally {
+      endTopologyChange();
+    }
+  }
+
+  private async containComposeServicesInner(
+    sessionId: string,
+    serviceNames: string[],
+    refresh: boolean,
+  ): Promise<void> {
     if (!egressEnforceEnabled()) return;
     const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
     const sc = this.containers.get(sessionId);
@@ -1023,6 +1067,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       standbySessionIds: this.standbySessionIds,
       emitter: this,
       labelFilters: () => this.labelFilters(),
+      onLabelledContainerStarted: () => this.noteContainerTopologyChanged(),
     };
   }
 
@@ -1279,6 +1324,17 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   /**
    * Create and start a container for the given session.
    * Returns the SessionContainer with its bridge IP and worker URL.
+   *
+   * Deliberately NOT bracketed, unlike the Compose and Docker-proxy paths. A
+   * create takes seconds to minutes (image pull, overlay prep, health check) and
+   * a bracket suspends the origin index's fast path for its whole duration — so
+   * it would have to buy something. It buys nothing: the agent container is
+   * resolved from `this.containers` by address rather than from the index, and
+   * its egress sidecars share its network namespace, so they introduce no
+   * address of their own. (The window in which the agent's OWN address is
+   * unrecognised is planning#506, which predates this and is not closed by a
+   * bracket — the agent container carries no `shipit-parent-session` label, so
+   * the lookup a bracket forces would not find it either.)
    */
   async create(config: ContainerConfig, opts?: CreateContainerOpts): Promise<SessionContainer> {
     return createContainer(this.lifecycleDeps(), config, opts);
@@ -1456,27 +1512,114 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     return getSessionByContainerIp(this.containers, ip);
   }
 
-  /** Resolve agent, Compose-service, and sidecar IPs to their owning session. */
+  /**
+   * Resolve agent, Compose-service, and sidecar IPs to their owning session.
+   *
+   * Read the module-level note above {@link ORIGIN_INDEX_REFRESH_MS} first: the
+   * ordering below is a trust boundary, not a cache.
+   */
   async getSessionByAnyContainerIp(ip: string): Promise<{ sessionId: string } | undefined> {
     const agent = this.getSessionByContainerIp(ip);
     if (agent) return { sessionId: agent.sessionId };
+    // Before the loop is (re)started, so a snapshot the loop seeds for THIS
+    // lookup counts as having begun after the request arrived — the
+    // double-snapshot rule below would otherwise spend a second Docker call
+    // proving what the first one already covers.
     const arrivedAt = Date.now();
-    const cached = this.containerOriginSessions.get(ip);
-    if (cached && arrivedAt - this.containerOriginRefreshedAt <= 1_000) return { sessionId: cached };
-    if ((this.containerOriginNegative.get(ip) ?? 0) > arrivedAt) return undefined;
+    this.ensureOriginIndexLoop();
 
-    const refresh = async (): Promise<void> => {
-      if (Date.now() < this.containerOriginRefreshBackoffUntil) return;
-      if (!this.containerOriginRefresh) {
-        this.containerOriginRefreshStartedAt = Date.now();
-        this.containerOriginRefresh = (async () => {
+    // A snapshot this young enumerates EVERY container carrying
+    // `shipit-parent-session`, so a HIT needs nothing further. A MISS is a proof
+    // of absence only under the two conditions in the module note: no topology
+    // bracket was open while it was taken (or the stamp was withheld), and the
+    // address is one no session network can hold. An address inside a session
+    // subnet that the snapshot does not name is far likelier to be a container
+    // it has not seen than a browser, so it costs a Docker call, not trust.
+    if (arrivedAt - this.containerOriginRefreshedAt <= ORIGIN_INDEX_FRESH_MS) {
+      const known = this.containerOriginSessions.get(ip);
+      if (known) return { sessionId: known };
+      if (!this.isLikelySessionContainerIp(ip)) return undefined;
+    }
+
+    // Cold index, an open bracket, or an address a session subnet could hold —
+    // pay for a snapshot, but never hold the request open longer than
+    // ORIGIN_LOOKUP_DEADLINE_MS.
+    const joinedRefreshStartedAt = this.containerOriginRefresh
+      ? this.containerOriginRefreshStartedAt
+      : 0;
+    const deadline = arrivedAt + ORIGIN_LOOKUP_DEADLINE_MS;
+    let timedOut = !(await this.awaitOriginIndexRefresh(deadline));
+    // If this request joined a snapshot that had already started, take a second
+    // one. `<=` and not `<`: the two can land in the same `Date.now()`
+    // millisecond, and a tie resolved the other way answers the request from a
+    // snapshot that may predate it — the exact race the rest of this method is
+    // built to avoid, reintroduced by a comparison operator.
+    if (!timedOut && joinedRefreshStartedAt > 0 && joinedRefreshStartedAt <= arrivedAt
+      && Date.now() >= this.containerOriginRefreshBackoffUntil) {
+      timedOut = !(await this.awaitOriginIndexRefresh(deadline));
+    }
+    const refreshed = this.containerOriginSessions.get(ip);
+    if (refreshed) return { sessionId: refreshed };
+    // A miss HERE is absence, even mid-bracket, and that is not the same claim
+    // the fast path makes. The snapshot answering this request began after the
+    // request arrived (the rule above is what guarantees it), and a container
+    // has to be running to have sent the packet that produced the request — so
+    // it was running when the snapshot was taken, and a snapshot enumerates
+    // every container carrying the label. The bracket's job is to force this
+    // path, not to poison its result.
+    if (timedOut || this.containerOriginRefreshFailed) {
+      // Fire-and-forget: the ranges feed `isLikelySessionContainerIp`, which the
+      // guard consults AFTER this throws — and which decides fail-closed for an
+      // address inside a session subnet and fail-OPEN for everything else, the
+      // pre-existing availability choice. Awaiting the refresh here added a
+      // second Docker round-trip to a request that was usually about to be
+      // allowed anyway, which is most of what made the failure path cost ~2s.
+      void this.refreshSessionNetworkRanges();
+      throw new Error("container-origin index is unavailable");
+    }
+    return undefined;
+  }
+
+  /**
+   * Run (or join) an index refresh, giving up on the WAIT — never on the
+   * refresh — at `deadline`. Returns false when the deadline was reached with
+   * no usable snapshot, i.e. the caller must treat the index as unavailable.
+   */
+  private async awaitOriginIndexRefresh(deadline: number): Promise<boolean> {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    const refreshed = async (): Promise<boolean> => {
+      await this.refreshContainerOriginIndex();
+      return true;
+    };
+    return Promise.race([
+      refreshed(),
+      new Promise<false>((resolve) => { setTimeout(() => resolve(false), remaining).unref(); }),
+    ]);
+  }
+
+  /**
+   * Rebuild the IP→session index from one labelled `listContainers`. Never
+   * rejects: a failure is recorded on `containerOriginRefreshFailed` and backed
+   * off, so both the request path and the background loop can call it plainly.
+   * Concurrent callers share the in-flight promise.
+   */
+  private async refreshContainerOriginIndex(): Promise<void> {
+    if (this._disposed) return;
+    if (Date.now() < this.containerOriginRefreshBackoffUntil) return;
+    if (!this.containerOriginRefresh) {
+      this.containerOriginRefreshStartedAt = Date.now();
+      const generation = this.containerTopologyGeneration;
+      const bracketedAtStart = this.containerTopologyMutations > 0;
+      this.containerOriginRefresh = (async () => {
         try {
           const entries = await Promise.race([
             this.docker.listContainers({
               filters: { label: ["shipit-parent-session"] },
             }),
             new Promise<never>((_, reject) => {
-              setTimeout(() => reject(new Error("container-origin lookup timed out")), 1_000).unref();
+              setTimeout(() => reject(new Error("container-origin lookup timed out")),
+                ORIGIN_INDEX_TIMEOUT_MS).unref();
             }),
           ]);
           const next = new Map<string, string>();
@@ -1488,43 +1631,116 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
             }
           }
           this.containerOriginSessions = next;
-          this.containerOriginRefreshedAt = Date.now();
+          // The map always improves; the FRESHNESS STAMP is what is conditional,
+          // and withholding it is how a snapshot says "use me, but do not read
+          // my silence as absence". It is withheld when a topology bracket was
+          // open at either end of the query — the container being created may
+          // have started mid-flight — and when an announcement landed while the
+          // query ran. Compared by GENERATION, not by clock: same-millisecond
+          // ties and a wall-clock step both resolve wrongly, and wrongly here
+          // means stamping a snapshot that never saw the new container.
+          const authoritative = !bracketedAtStart
+            && this.containerTopologyMutations === 0
+            && this.containerTopologyGeneration === generation;
+          this.containerOriginRefreshedAt = authoritative ? Date.now() : 0;
           this.containerOriginRefreshBackoffUntil = 0;
           this.containerOriginRefreshFailed = false;
-          for (const [negativeIp, expiresAt] of this.containerOriginNegative) {
-            if (expiresAt <= this.containerOriginRefreshedAt) this.containerOriginNegative.delete(negativeIp);
-          }
         } catch (error) {
           console.warn("[container-guard] could not refresh container IP index:", error);
           this.containerOriginRefreshBackoffUntil = Date.now() + 5_000;
           this.containerOriginRefreshFailed = true;
-          this.containerOriginNegative.clear();
         } finally {
           this.containerOriginRefresh = undefined;
         }
-        })();
-      }
-      await this.containerOriginRefresh;
-    };
+      })();
+    }
+    await this.containerOriginRefresh;
+  }
 
-    const joinedRefreshStartedAt = this.containerOriginRefresh
-      ? this.containerOriginRefreshStartedAt
-      : 0;
-    await refresh();
-    // If this request joined a snapshot that started before the request, take a
-    // second snapshot. A service can appear between those two events.
-    if (joinedRefreshStartedAt > 0 && joinedRefreshStartedAt < arrivedAt
-      && Date.now() >= this.containerOriginRefreshBackoffUntil) {
-      await refresh();
-    }
-    const refreshed = this.containerOriginSessions.get(ip);
-    if (refreshed) return { sessionId: refreshed };
-    if (this.containerOriginRefreshFailed) {
-      await this.refreshSessionNetworkRanges();
-      throw new Error("container-origin index is unavailable");
-    }
-    this.containerOriginNegative.set(ip, Date.now() + 1_000);
-    return undefined;
+  /**
+   * Open a bracket around an operation that can START a container carrying
+   * `shipit-parent-session`, and return its closer. Pair it in a `finally`.
+   *
+   * **This is the ordering primitive; `noteContainerTopologyChanged` is not.**
+   * An announcement made after the fact races the new container's own
+   * entrypoint: `docker compose up` returns only once the container is running,
+   * so a malicious service can call the orchestrator API before ShipIt gets to
+   * say the topology changed — and until it does, a fresh snapshot answers
+   * "absent", which `api-container-guard.ts` reads as "browser or host", i.e. as
+   * MORE trusted than the agent. Opening the bracket BEFORE Docker is called is
+   * what removes that window: for as long as it is open, no snapshot may
+   * publish a freshness stamp, so no miss can be read as absence.
+   *
+   * Cost, stated plainly: while a bracket is open, an unrecognised address pays
+   * for a Docker lookup, which is the behaviour this whole change exists to get
+   * rid of. That is the intended trade — the bracket is held for the length of a
+   * Compose command, not for the length of a session.
+   */
+  beginContainerTopologyChange(): () => void {
+    this.containerTopologyMutations++;
+    this.containerTopologyGeneration++;
+    this.containerOriginRefreshedAt = 0;
+    let closed = false;
+    return () => {
+      if (closed) return;
+      closed = true;
+      this.containerTopologyMutations--;
+      this.noteContainerTopologyChanged();
+    };
+  }
+
+  /**
+   * Announce that the container topology has changed, for the callers that
+   * learn about it only afterwards — the Docker event stream, and the ShipIt
+   * paths whose containers are already running by the time they run. Drops the
+   * freshness stamp and starts rebuilding.
+   *
+   * Where the change is something ShipIt is about to DO, use
+   * {@link beginContainerTopologyChange} instead; this cannot order itself
+   * against a container's first packet.
+   */
+  noteContainerTopologyChanged(): void {
+    this.containerTopologyGeneration++;
+    this.containerOriginRefreshedAt = 0;
+    if (this._disposed) return;
+    // Only when nothing is in flight, which makes a burst of announcements cost
+    // one snapshot rather than a queue of them. A snapshot that started before
+    // the change cannot re-establish freshness anyway — it publishes unstamped
+    // — and the clean one is taken by the next lookup or the background loop.
+    if (!this.containerOriginRefresh) void this.refreshContainerOriginIndex();
+  }
+
+  /**
+   * Keep the index (and the subnet ranges the fail-closed check reads) warm off
+   * the request path. Started lazily by the first lookup and stopped again once
+   * lookups stop arriving, so an idle orchestrator polls dockerd for nothing.
+   */
+  private ensureOriginIndexLoop(): void {
+    this.originIndexLastUsedAt = Date.now();
+    if (this.originIndexTimer || this._disposed) return;
+    this.originIndexTimer = setInterval(() => {
+      if (Date.now() - this.originIndexLastUsedAt > ORIGIN_INDEX_IDLE_STOP_MS) {
+        this.stopOriginIndexLoop();
+        return;
+      }
+      void this.refreshContainerOriginIndex();
+      if (Date.now() - this.originRangeRefreshedAt >= SESSION_RANGE_REFRESH_MS) {
+        this.originRangeRefreshedAt = Date.now();
+        void this.refreshSessionNetworkRanges();
+      }
+    }, ORIGIN_INDEX_REFRESH_MS);
+    this.originIndexTimer.unref();
+    // Seed both immediately — the loop exists so the FIRST lookup after this one
+    // is already served from memory.
+    void this.refreshContainerOriginIndex();
+    this.originRangeRefreshedAt = Date.now();
+    void this.refreshSessionNetworkRanges();
+  }
+
+  private stopOriginIndexLoop(): void {
+    if (!this.originIndexTimer) return;
+    clearInterval(this.originIndexTimer);
+    this.originIndexTimer = undefined;
   }
 
   private async refreshSessionNetworkRanges(): Promise<void> {
@@ -1532,23 +1748,12 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     this.sessionNetworkRangeRefresh ??= (async () => {
         try {
           await Promise.race([
-            Promise.all([...this.containers.keys()].map(async (sessionId) => {
-              const inspected = await Promise.allSettled([
-                this.docker.getNetwork(`shipit-session-${sessionId}`).inspect(),
-                this.docker.getNetwork(`shipit-egress-${sessionId}`).inspect(),
-              ]);
-              const ranges = inspected.flatMap((result) => result.status === "fulfilled"
-                ? (result.value.IPAM?.Config ?? [])
-                  .filter((entry): entry is { Subnet: string; Gateway?: string } => Boolean(entry.Subnet))
-                  .map((entry) => ({ subnet: entry.Subnet, ...(entry.Gateway ? { gateway: entry.Gateway } : {}) }))
-                : []);
-              // Preserve the last-known-good ranges when Docker cannot inspect
-              // either network. This fallback exists for Docker outages, so an
-              // outage must never erase it and turn the API guard fail-open.
-              if (ranges.length > 0) this.sessionNetworkRanges.set(sessionId, ranges);
-            })),
+            Promise.all([...this.containers.keys()].map(
+              async (sessionId) => this.recordSessionNetworkRanges(sessionId),
+            )),
             new Promise<never>((_, reject) => {
-              setTimeout(() => reject(new Error("session-network range lookup timed out")), 1_000).unref();
+              setTimeout(() => reject(new Error("session-network range lookup timed out")),
+                SESSION_RANGE_TIMEOUT_MS).unref();
             }),
           ]);
           this.sessionNetworkRangeRefreshBackoffUntil = Date.now() + 1_000;
@@ -1560,6 +1765,43 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         }
       })();
     await this.sessionNetworkRangeRefresh;
+  }
+
+  /**
+   * Inspect every network a session's containers can be on and record their
+   * subnets, for {@link isLikelySessionContainerIp}.
+   *
+   * All THREE names, and the third is the one that was missing: the Docker-access
+   * bridge is named `shipit-session-<first 12 chars>` (`container-lifecycle.ts`),
+   * not with the full id like the Compose and egress networks. Asking only for
+   * the full-id names left an agent-created child's subnet absent from this map
+   * by construction — and that child is the one class of container a
+   * Docker-enabled agent starts itself, so the guard's fail-closed branch could
+   * never recognise it.
+   */
+  private async recordSessionNetworkRanges(sessionId: string): Promise<void> {
+    // Never throws. Its callers are a pre-start hook and a background loop, and
+    // neither has anything to do with a failure — the map's whole contract is
+    // "last known good", so an unreachable daemon leaves the previous answer
+    // standing. `allSettled` alone is not enough: building the array calls
+    // `getNetwork().inspect()`, which can throw before any promise exists.
+    let ranges: { subnet: string; gateway?: string }[] = [];
+    try {
+      const inspected = await Promise.allSettled([
+        this.docker.getNetwork(`shipit-session-${sessionId}`).inspect(),
+        this.docker.getNetwork(`shipit-egress-${sessionId}`).inspect(),
+        this.docker.getNetwork(`shipit-session-${sessionId.slice(0, 12)}`).inspect(),
+      ]);
+      ranges = inspected.flatMap((result) => result.status === "fulfilled"
+        ? (result.value.IPAM?.Config ?? [])
+          .filter((entry): entry is { Subnet: string; Gateway?: string } => Boolean(entry.Subnet))
+          .map((entry) => ({ subnet: entry.Subnet, ...(entry.Gateway ? { gateway: entry.Gateway } : {}) }))
+        : []);
+    } catch { /* containment later verifies the network and fails closed */ }
+    // Preserve the last-known-good ranges when Docker cannot inspect any of
+    // them. This fallback exists for Docker outages, so an outage must never
+    // erase it and turn the API guard fail-open.
+    if (ranges.length > 0) this.sessionNetworkRanges.set(sessionId, ranges);
   }
 
   /** Conservative bridge-origin check used only when Docker lookup is unavailable. */
@@ -1963,6 +2205,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     if (this._disposed) return;
     this._disposed = true;
     this.stopHealthMonitor();
+    this.stopOriginIndexLoop();
     this.removeAllListeners();
   }
 }

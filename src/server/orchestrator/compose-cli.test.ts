@@ -18,7 +18,13 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ComposeCli, composeUpPhaseOf, type ComposeOutputSink } from "./compose-cli.js";
+import {
+  ComposeCli,
+  composeUpPhaseOf,
+  type ComposeOutputSink,
+  type ComposeRunner,
+  type ComposeQuery,
+} from "./compose-cli.js";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 
@@ -522,6 +528,111 @@ describe("composeUpPhaseOf", () => {
   it("says nothing about a line that reports neither phase", () => {
     expect(composeUpPhaseOf("")).toBe(null);
     expect(composeUpPhaseOf("time=\"2026-09-03\" level=warning msg=\"version is obsolete\"")).toBe(null);
+  });
+});
+
+/**
+ * docs/201 — the container-topology bracket.
+ *
+ * A compose command starts containers carrying `shipit-parent-session`, which
+ * `api-container-guard.ts` denies the whole `/api/*` surface — but only once its
+ * IP index recognises them, and that index answers from a periodically-refreshed
+ * snapshot. `up` returns with the containers ALREADY RUNNING, so an announcement
+ * made afterwards loses the race to a service's own entrypoint; until it lands,
+ * an unrecognised source IP reads as "browser or host", i.e. as MORE trusted
+ * than the agent. The bracket therefore has to be open for the whole command.
+ */
+describe("ComposeCli — container-topology bracket", () => {
+  function makeCli(bracketed: boolean, runner?: ComposeRunner, query?: ComposeQuery) {
+    let open = 0;
+    const openWhileRunning: number[] = [];
+    const defaultRunner: ComposeRunner = async () => { openWhileRunning.push(open); };
+    const cli = new ComposeCli({
+      sessionId: SID,
+      workspaceDir: "/workspace",
+      composeFile: "docker-compose.yml",
+      overrideFile: "/state/compose.override.yml",
+      composeQuery: query ?? vi.fn(async () => ""),
+      composeRunner: runner ?? defaultRunner,
+      ...(bracketed ? { onTopologyChange: () => { open++; return () => { open--; }; } } : {}),
+    });
+    return { cli, openWhileRunning, open: () => open, observe: () => openWhileRunning.push(open) };
+  }
+
+  it("holds a bracket open across `up` and `upService`", async () => {
+    const { cli, openWhileRunning, open } = makeCli(true);
+
+    await cli.up(["web"]);
+    await cli.upService("db");
+
+    expect(openWhileRunning).toEqual([1, 1]);
+    expect(open()).toBe(0);
+  });
+
+  it("does not bracket `stop` or `down`", async () => {
+    // Neither can bring a caller into existence, and `down` waits out every
+    // service's stop grace period — a long time to suspend the API guard's fast
+    // path for nothing.
+    const { cli, openWhileRunning } = makeCli(true);
+
+    await cli.stop("dev");
+    await cli.down({ removeVolumes: false });
+
+    expect(openWhileRunning).toEqual([0, 0]);
+  });
+
+  it("holds ONE bracket across the conflict-recovery retry", async () => {
+    // The first attempt can start some services before failing on a container
+    // name conflict. A per-command bracket closes in that gap, with those
+    // services already running and able to call the API.
+    let attempt = 0;
+    const observed: number[] = [];
+    let open = 0;
+    const cli = new ComposeCli({
+      sessionId: SID,
+      workspaceDir: "/workspace",
+      composeFile: "docker-compose.yml",
+      overrideFile: "/state/compose.override.yml",
+      composeQuery: vi.fn(async () => ""),
+      composeRunner: vi.fn(async () => {
+        observed.push(open);
+        attempt++;
+        if (attempt === 1) {
+          throw new Error('Conflict. The container name "/web" is already in use by container "abc123def456".');
+        }
+      }),
+      onTopologyChange: () => { open++; return () => { open--; }; },
+    });
+
+    await cli.up(["web"]);
+
+    expect(observed).toEqual([1, 1]);
+    expect(open).toBe(0);
+  });
+
+  it("closes the bracket when the command fails for good", async () => {
+    // A leaked bracket pins the origin index non-authoritative for the life of
+    // the process — i.e. it silently restores the per-request Docker lookup this
+    // whole mechanism exists to remove.
+    let open = 0;
+    const cli = new ComposeCli({
+      sessionId: SID,
+      workspaceDir: "/workspace",
+      composeFile: "docker-compose.yml",
+      overrideFile: "/state/compose.override.yml",
+      composeQuery: vi.fn(async () => { throw new Error("no recovery"); }),
+      composeRunner: vi.fn(async () => { throw new Error("compose exploded"); }),
+      onTopologyChange: () => { open++; return () => { open--; }; },
+    });
+
+    await expect(cli.up()).rejects.toThrow(/compose exploded/);
+    expect(open).toBe(0);
+  });
+
+  it("runs unbracketed when no manager supplied one", async () => {
+    const { cli, openWhileRunning } = makeCli(false);
+    await expect(cli.up(["web"])).resolves.toBeUndefined();
+    expect(openWhileRunning).toEqual([0]);
   });
 });
 

@@ -467,6 +467,12 @@ export interface ServiceManagerOptions {
   composeRunner?: ComposeRunner;
   /** Optional override for querying compose commands (useful for testing). */
   composeQuery?: ComposeQuery;
+  /**
+   * Opens a container-topology bracket around every compose command — see
+   * `ComposeCliOptions.onTopologyChange`. Wired to the session container
+   * manager; absent when there is none (local/dogfood mode, tests).
+   */
+  onTopologyChange?: () => () => void;
   /** Status poll interval in ms. 0 disables polling. Default: 5000. */
   pollIntervalMs?: number;
   /**
@@ -940,6 +946,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       ...(opts.noProjectCompose ? { noProjectFile: true } : {}),
       ...(opts.composeRunner ? { composeRunner: opts.composeRunner } : {}),
       ...(opts.composeQuery ? { composeQuery: opts.composeQuery } : {}),
+      ...(opts.onTopologyChange ? { onTopologyChange: opts.onTopologyChange } : {}),
     });
     this.workspaceVolume = opts.workspaceVolume;
     this.workspaceSubpath = opts.workspaceSubpath;

@@ -45,17 +45,22 @@ describe("container-health: stale-incarnation guard", () => {
   let eventStream: EventEmitter;
   let deps: HealthDeps;
   let state: HealthMonitorState;
+  let labelledStart: ReturnType<typeof vi.fn<() => void>>;
+  let getEvents: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
     containers = new Map();
     emitter = new EventEmitter<SessionContainerManagerEvents>();
     eventStream = new EventEmitter();
+    labelledStart = vi.fn<() => void>();
+    getEvents = vi.fn(async () => eventStream);
     deps = {
-      docker: { getEvents: vi.fn(async () => eventStream) } as unknown as HealthDeps["docker"],
+      docker: { getEvents } as unknown as HealthDeps["docker"],
       containers,
       standbySessionIds: new Set<string>(),
       emitter,
       labelFilters: () => [],
+      onLabelledContainerStarted: labelledStart,
     };
     state = createHealthMonitorState();
     await startHealthMonitor(deps, state);
@@ -75,6 +80,79 @@ describe("container-health: stale-incarnation guard", () => {
       ),
     );
   }
+
+  /**
+   * A second consumer of the same stream, unrelated to crash handling: the API
+   * trust boundary's IP index (`api-container-guard.ts` →
+   * `getSessionByAnyContainerIp`), which answers from a periodically-refreshed
+   * snapshot and reads an unrecognised source IP as "browser or host" — i.e. as
+   * MORE trusted than a session container. The paths ShipIt drives bracket
+   * themselves; this is the BACKSTOP for the one nobody drives, a Compose
+   * service that Docker's own restart policy brings back on a new address.
+   *
+   * Its narrowness is the design, not an omission — an announcement drops the
+   * freshness stamp, so a signal that fires on unrelated daemon churn would
+   * reinstate the per-request Docker lookup this index exists to avoid.
+   */
+  describe("labelled-container start backstop", () => {
+    const SESSION_LABEL = "shipit-parent-session";
+
+    function emit(action: string, attributes: Record<string, string> = {}) {
+      eventStream.emit("data", Buffer.from(JSON.stringify({
+        Action: action,
+        Actor: { ID: "c1", Attributes: attributes },
+      })));
+    }
+
+    it("subscribes to start events, which the crash path has no use for", () => {
+      // The daemon-side filter decides whether the handler ever sees a `start`.
+      // Asserted at the subscription because a handler branch for an event
+      // filtered out upstream is dead code that still reads well.
+      const filters = getEvents.mock.calls[0]?.[0]?.filters as { event?: string[] } | undefined;
+      expect(filters?.event).toContain("start");
+    });
+
+    it("reports a labelled container coming up", () => {
+      emit("start", { [SESSION_LABEL]: "sess-1" });
+      expect(labelledStart).toHaveBeenCalledTimes(1);
+    });
+
+    it("ignores an unlabelled start — daemon churn must not cost the index", () => {
+      emit("start", { image: "postgres:16" });
+      expect(labelledStart).not.toHaveBeenCalled();
+    });
+
+    it("ignores die and oom, which cannot create a more-trusted caller", () => {
+      // A death can only REMOVE an index entry, and a stale positive fails
+      // toward denial. Reporting it would spend a Docker query for nothing.
+      emit("die", { [SESSION_LABEL]: "sess-1", exitCode: "0" });
+      emit("oom", { [SESSION_LABEL]: "sess-1" });
+      expect(labelledStart).not.toHaveBeenCalled();
+    });
+
+    it("reads every record in a chunk that carries several", () => {
+      // Docker streams newline-delimited JSON and a `data` chunk carries
+      // whatever the socket delivered, so a `compose up` that starts a stack
+      // arrives as one batch. Parsing the chunk as a single object threw and
+      // swallowed the WHOLE batch — crash events with it, which is why this
+      // matters beyond the backstop.
+      const record = (action: string, attrs: Record<string, string>, id = "c1") =>
+        JSON.stringify({ Action: action, Actor: { ID: id, Attributes: attrs } });
+      const exited = vi.fn();
+      containers.set("sess-1", makeContainer("b1", "sess-1"));
+      emitter.on("container_exited", exited);
+
+      eventStream.emit("data", Buffer.from([
+        record("start", { [SESSION_LABEL]: "sess-1" }),
+        record("start", { [SESSION_LABEL]: "sess-1" }),
+        record("die", { [CONTAINER_SESSION_ID_LABEL]: "sess-1", exitCode: "1" }, "b1"),
+        "",
+      ].join("\n")));
+
+      expect(labelledStart).toHaveBeenCalledTimes(2);
+      expect(exited).toHaveBeenCalledWith("sess-1", 1, undefined);
+    });
+  });
 
   it("drops a die event whose Actor.ID does not match the tracked container", () => {
     // Replacement container B is registered under the same session ID; a

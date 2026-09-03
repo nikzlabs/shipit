@@ -947,6 +947,12 @@ export function setupServiceManager(
     prepareContainedStartFn: containerManager?.isEgressContained(runner.sessionId)
       ? async (serviceNames: string[]) => containerManager.prepareComposeServiceStart(runner.sessionId, serviceNames)
       : undefined,
+    // Unconditional, unlike the containment hooks above: a compose command
+    // starts containers the API trust boundary must recognise whether or not
+    // this session's egress is contained (docs/201).
+    ...(containerManager
+      ? { onTopologyChange: () => containerManager.beginContainerTopologyChange() }
+      : {}),
   });
 
   serviceManagers.set(runner.sessionId, mgr);

@@ -120,6 +120,136 @@ no bridge network and no real container, so `getSessionByContainerIp` returns `u
 and the guard is inert — which is correct, since there is no untrusted container origin
 there.
 
+## How a caller is resolved, and what that resolution costs
+
+The hook is registered at the **root**, so it runs for every request the orchestrator
+serves — the browser's included, and the `/ws/sessions/:id` upgrade with them. Step 2
+above is therefore on the critical path of the whole UI, and its two halves have very
+different costs. `getSessionByContainerIp` is an in-memory map of the agent containers
+ShipIt created, so an agent's request is resolved with no I/O. Everything else —
+planning#371's *other* containers of a session, the Compose services and the sidecars
+sharing their namespaces — is resolved through `getSessionByAnyContainerIp`, which reads
+an IP → session index built from one `listContainers` filtered on `shipit-parent-session`.
+
+**A browser IP is in neither, so it is a miss in both.** Refreshing that index on the miss
+therefore put a Docker round-trip in front of every browser request. On a production host
+carrying 259 containers (35 live sessions, 128 of them egress sidecars) the query measured
+0.70–1.19 s against the 1 s timeout it was raced with, so it failed about as often as it
+succeeded; the failure path then cleared the negative cache and awaited a *second* Docker
+operation before giving up. Session switches showed "Reconnecting to server…" for a
+couple of seconds, and new-session creation was slow for the same reason.
+
+The index is kept warm by a background loop instead (`session-container.ts`,
+`ORIGIN_INDEX_REFRESH_MS`), and a snapshot younger than `ORIGIN_INDEX_FRESH_MS` answers a
+lookup from memory. **What makes that safe is that the snapshot is a proof of absence, not
+merely a cache**: it enumerates every container carrying the label, so a miss against a
+fresh snapshot is as authoritative as a hit — *at the instant it was taken*. Keeping that
+true afterwards is the whole design, and it rests on two things, neither of which is the
+refresh cadence.
+
+### 1. A bracket, not a notification
+
+`beginContainerTopologyChange()` is opened **before** an operation that can start a
+labelled container (or hand one a new address) and closed after it; while any bracket is
+open, a completing snapshot publishes its map but **not** its freshness stamp, so no miss
+can be read as absence. Comparison is by a monotonic **generation counter**, never by wall
+clock: a same-millisecond tie between an announcement and a snapshot resolves the wrong
+way, and a wall-clock step resolves it wrongly for as long as the step. The request path's
+own "did I join a snapshot that predates me?" test uses `<=` for the same reason.
+
+The ordering is the point. `docker compose up` and `POST /containers/{id}/start` both
+return with the container **already running**, so anything announced afterwards has
+already lost the race to that container's own entrypoint. Three callers open brackets:
+
+- **`ComposeCli`** — around `up` / `upService`, **retry included**. The bracket sits on
+  `upWithConflictRecovery` rather than on the single `run` beneath it because the first
+  attempt can start some services before failing on a container-name conflict, and a
+  per-command bracket closes in that gap with those services already running. `stop` and
+  `down` are deliberately outside it: neither can bring a caller into existence, and `down`
+  waits out every service's stop grace period.
+- **The Docker API proxy** (`docker-proxy.ts`) — around `containers/{id}/start`,
+  `containers/{id}/restart` and `networks/{id}/connect`, taken **inside the handler,
+  immediately before forwarding an already-authorised request**, never at dispatch. The
+  caller here is the semi-trusted agent, and a bracket opened before the body is read lets
+  a deliberately slow request hold every browser request on the Docker path.
+  `sanitizeContainerCreate` *stamps* the label on every container a Docker-enabled agent
+  creates, so those containers are callers this boundary denies, and the agent — not
+  ShipIt — chooses when they start. Those handlers **await** the daemon exchange;
+  `pipeToDocker` was fire-and-forget, which closed the bracket before the daemon had been
+  asked to start anything.
+
+  Which routes, not "every mutating method", and the scoping cuts both ways. A bracket
+  suspends the fast path, so bracketing `docker logs -f` or a long `exec` would put a
+  Docker round-trip back in front of every browser request for the length of the stream.
+  `containers/create` is excluded because a created container runs nothing and holds no
+  address until it is started; stops, kills and removals because they can only *remove* an
+  index entry, and a stale positive fails toward denial.
+- **`containComposeServices`** — it attaches an already-running service to
+  `shipit-egress-<id>`, giving that service a second address and making it the preferred
+  route. It runs *after* the Compose command's own bracket has closed, so it needs its own.
+
+`SessionContainerManager.create` is deliberately **not** bracketed. A create runs for
+seconds to minutes and a bracket suspends the fast path for its whole duration, so it would
+have to buy something — and it buys nothing: the agent container is resolved from
+`this.containers` by address rather than from the index, and its egress sidecars share its
+network namespace, so they add no address of their own.
+
+A miss returned by the **Docker path** (rather than by a warm snapshot) is absence even
+mid-bracket, and that is a different claim from the fast path's: the snapshot answering it
+began *after* the request arrived, and a container has to be running to have sent the
+packet that produced the request. The bracket's job is to force that path, not to poison
+its result.
+
+### 2. A miss inside a session subnet is not absence
+
+Even with no bracket and a fresh snapshot, an address that one of the session networks can
+hold is not evidence of a browser — an unindexed container is the likelier explanation, so
+it costs a Docker round-trip rather than trust. `isLikelySessionContainerIp` is used here
+as a **deny-side** signal only. It is emphatically *not* a pre-gate on the lookup: the
+ranges map is populated only for sessions whose networks have been inspected, so an empty
+or stale map used as an *allow* gate would hand a real service container the browser trust
+level. Used this way, an empty map costs nothing but the fast path.
+
+`recordSessionNetworkRanges` inspects **three** names per session, and the third was
+missing: the Docker-access bridge is `shipit-session-<first 12 chars>`
+(`container-lifecycle.ts`), not the full-id name the Compose and egress networks use. Asking
+only for the full-id names left an agent-created child's subnet out of the map by
+construction — and that child is the one class of container a Docker-enabled agent starts
+itself. The background loop also refreshes those ranges (`SESSION_RANGE_REFRESH_MS`), which
+is what finally gives the guard's `catch` branch something to be closed on; before, the
+ranges were refreshed only by the failure they were supposed to answer, so in production
+they were almost always empty.
+
+### The backstop, and what is honestly not covered
+
+The Docker event stream (`container-health.ts`) reports a **labelled container start** —
+nothing else. That covers the one case nobody drives: a Compose service that Docker's own
+restart policy brings back on a new address. It is a backstop, never the ordering
+mechanism, because event delivery is asynchronous with respect to the container's own
+process. `die` and unlabelled starts are deliberately not reported: they cannot create an
+unrecognised caller, and reporting them would let unrelated churn on a shared daemon drop
+the freshness stamp continuously. (Subscribing to `start` also surfaced a latent bug in
+that handler: Docker streams newline-delimited JSON and one chunk routinely carries several
+records, so `JSON.parse(chunk)` threw and swallowed the whole batch — crash events with it.
+The handler now splits on newlines.)
+
+Two things this does **not** cover, stated so they are not mistaken for covered. A hung
+`docker compose` leaks its bracket for as long as it hangs, which costs latency and nothing
+else — the bracket has no deadline on purpose, because an auto-close would reopen exactly
+the window it exists to close. And the agent container's own secondary (compose-network)
+address is in neither origin lookup, so it reads as browser/host; that predates this work
+and is filed as **planning#506**.
+
+The request path keeps the expensive lookup for a cold or stale index, but bounds its own
+wait at `ORIGIN_LOOKUP_DEADLINE_MS` — separately from the Docker timeout, which is now
+generous enough to actually complete. **Overrunning that deadline is not a deny.** The
+lookup reports the index unavailable, and the guard resolves that with
+`isLikelySessionContainerIp`: fail-closed for an address inside a session subnet, and an
+**allow** for everything else. That is the pre-existing availability choice — failing the
+whole browser UI closed whenever Docker is unreachable would be worse — and it is stated
+here because it is easy to read the throw as a denial. It is only a denial for callers the
+subnet ranges recognise, which is exactly why keeping those ranges warm matters.
+
 ## Keeping the boundary from eroding (durability)
 
 The guard is **fail-closed**: because container requests are default-denied, a newly-added

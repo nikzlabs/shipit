@@ -127,12 +127,21 @@ function buildRoutes(): Route[] {
     respond(ctx.res, 200, filtered);
   });
 
-  // Container operations that need label check
-  const containerLabelOps: { method: string; suffix: string }[] = [
+  // Container operations that need label check.
+  //
+  // `topologyChanging` marks the two that can put a RUNNING container on a
+  // session network — the ones the API trust boundary has to have seen before
+  // the container's own process can call it. `create` is NOT one: a created
+  // container runs nothing and holds no address until it is started. `/wait` is
+  // not one either, for the opposite reason — it blocks until the container
+  // exits, so a bracket around it would stay open for that container's whole
+  // life. Stops, kills and removals can only REMOVE an index entry, and a stale
+  // positive fails toward denial.
+  const containerLabelOps: { method: string; suffix: string; topologyChanging?: boolean }[] = [
     { method: "GET", suffix: "/json" },
-    { method: "POST", suffix: "/start" },
+    { method: "POST", suffix: "/start", topologyChanging: true },
     { method: "POST", suffix: "/stop" },
-    { method: "POST", suffix: "/restart" },
+    { method: "POST", suffix: "/restart", topologyChanging: true },
     { method: "POST", suffix: "/kill" },
     { method: "DELETE", suffix: "" },
     { method: "POST", suffix: "/wait" },
@@ -148,7 +157,19 @@ function buildRoutes(): Route[] {
       if (!(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
         forbidden(ctx.res, "Container does not belong to this session"); return;
       }
-      pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+      // Opened HERE — after the label check, immediately before forwarding —
+      // rather than at dispatch, so a deliberately slow or unauthorised request
+      // cannot hold the API guard's fast path open. Awaited for the same ops, so
+      // the bracket is still open while the daemon starts the container; the
+      // others keep the historical fire-and-forget behaviour, and `/wait` in
+      // particular would never resolve.
+      const endTopologyChange = op.topologyChanging ? ctx.beginTopologyChange?.() : undefined;
+      try {
+        const piped = pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+        if (op.topologyChanging) await piped;
+      } finally {
+        endTopologyChange?.();
+      }
     });
   }
 
@@ -160,7 +181,7 @@ function buildRoutes(): Route[] {
     if (!(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
       forbidden(ctx.res, "Container does not belong to this session"); return;
     }
-    pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+    void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
   // POST /containers/{id}/attach — streaming
@@ -169,7 +190,7 @@ function buildRoutes(): Route[] {
     if (!(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
       forbidden(ctx.res, "Container does not belong to this session"); return;
     }
-    pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+    void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
   // POST /containers/{id}/exec — create exec instance
@@ -178,7 +199,7 @@ function buildRoutes(): Route[] {
     if (!(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
       forbidden(ctx.res, "Container does not belong to this session"); return;
     }
-    pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+    void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
   // POST /exec/{id}/start — streaming, resolve exec → parent container
@@ -188,7 +209,7 @@ function buildRoutes(): Route[] {
     if (!containerId || !(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
       forbidden(ctx.res, "Exec instance does not belong to this session"); return;
     }
-    pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+    void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
   // GET /exec/{id}/json — resolve exec → parent container
@@ -198,7 +219,7 @@ function buildRoutes(): Route[] {
     if (!containerId || !(await containerBelongsToSession(ctx.socketPath, containerId, ctx.session.sessionId))) {
       forbidden(ctx.res, "Exec instance does not belong to this session"); return;
     }
-    pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+    void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
   // POST /containers/{id}/rename — explicitly unsupported
@@ -264,7 +285,7 @@ function buildRoutes(): Route[] {
     if (!(await networkBelongsToSession(ctx.socketPath, networkId, ctx.session.sessionId))) {
       forbidden(ctx.res, "Network does not belong to this session"); return;
     }
-    pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+    void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
   // DELETE /networks/{id} — label check
@@ -273,7 +294,7 @@ function buildRoutes(): Route[] {
     if (!(await networkBelongsToSession(ctx.socketPath, networkId, ctx.session.sessionId))) {
       forbidden(ctx.res, "Network does not belong to this session"); return;
     }
-    pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+    void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
   // POST /networks/{id}/connect — dual label check
@@ -291,13 +312,22 @@ function buildRoutes(): Route[] {
         forbidden(ctx.res, "Container does not belong to this session"); return;
       }
 
-      const dockerResult = await forwardToDocker(
-        ctx.socketPath,
-        "POST",
-        ctx.req.url!,
-        { "content-type": "application/json" },
-        bodyBuf,
-      );
+      // Attaching a container to a network gives it a NEW address, and the API
+      // trust boundary's index is keyed by address. Bracketed around the forward
+      // alone — the body has been read and both label checks have passed by now.
+      const endTopologyChange = ctx.beginTopologyChange?.();
+      let dockerResult;
+      try {
+        dockerResult = await forwardToDocker(
+          ctx.socketPath,
+          "POST",
+          ctx.req.url!,
+          { "content-type": "application/json" },
+          bodyBuf,
+        );
+      } finally {
+        endTopologyChange?.();
+      }
 
       ctx.res.writeHead(dockerResult.statusCode, dockerResult.headers);
       ctx.res.end(dockerResult.body);
@@ -405,7 +435,7 @@ function buildRoutes(): Route[] {
     if (!(await volumeBelongsToSession(ctx.socketPath, volumeName, ctx.session.sessionId))) {
       forbidden(ctx.res, "Volume does not belong to this session"); return;
     }
-    pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+    void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
   // DELETE /volumes/{name} — label check
@@ -414,13 +444,13 @@ function buildRoutes(): Route[] {
     if (!(await volumeBelongsToSession(ctx.socketPath, volumeName, ctx.session.sessionId))) {
       forbidden(ctx.res, "Volume does not belong to this session"); return;
     }
-    pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+    void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
   // ---- Images (unscoped) ----
 
   route("GET", /^(?:\/v[\d.]+)?\/images\/.*$/, async (ctx) => {
-    pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+    void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
   // POST /images/create — image pull passthrough.
@@ -429,7 +459,7 @@ function buildRoutes(): Route[] {
   // disk quotas, not at the proxy layer. If disk pressure becomes an issue,
   // consider adding a pull rate limit or image size cap here.
   route("POST", /^(?:\/v[\d.]+)?\/images\/create(\?.*)?$/, async (ctx) => {
-    pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+    void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
   // DELETE /images/{id} — blocked to prevent cross-session image deletion.
@@ -447,26 +477,26 @@ function buildRoutes(): Route[] {
   // Resource limits on child containers (injected via sanitizeContainerCreate)
   // bound the impact of builds.
   route("POST", /^(?:\/v[\d.]+)?\/build(\?.*)?$/, async (ctx) => {
-    pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+    void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
   // ---- System (unscoped) ----
 
   route("GET", /^\/_ping$/, async (ctx) => {
-    pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+    void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
   route("GET", /^(?:\/v[\d.]+)?\/version$/, async (ctx) => {
-    pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+    void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
   route("GET", /^(?:\/v[\d.]+)?\/info$/, async (ctx) => {
-    pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+    void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
   // HEAD /_ping (Docker CLI sends HEAD first)
   route("HEAD", /^\/_ping$/, async (ctx) => {
-    pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
+    void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
   return routes;
@@ -509,7 +539,10 @@ export function createDockerProxy(deps: DockerProxyDeps): http.Server {
       const url = req.url ?? "/";
       const method = (req.method ?? "GET").toUpperCase();
 
-      const ctx: RequestContext = { req, res, session, socketPath };
+      const ctx: RequestContext = {
+        req, res, session, socketPath,
+        ...(deps.onTopologyChange ? { beginTopologyChange: deps.onTopologyChange } : {}),
+      };
 
       // Find matching route
       for (const route of routes) {
