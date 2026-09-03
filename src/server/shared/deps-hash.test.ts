@@ -15,6 +15,7 @@ import {
   computeDepsHash,
   computeInstallDepsHash,
   depInputsForCommand,
+  hasInstallLifecycleScript,
   resolveDepsHashInputs,
 } from "./deps-hash.js";
 
@@ -162,5 +163,56 @@ describe("computeDepsHash + computeInstallDepsHash", () => {
     expect(computeInstallDepsHash(dir, ["npm run build"], null)).toBeNull();
     // Override opts back in even for the codegen command.
     expect(computeInstallDepsHash(dir, ["npm run build"], ["package.json"])).not.toBeNull();
+  });
+});
+
+/**
+ * The lifecycle-script rule (docs/183's "a rotation must be earned"). This is
+ * what separates the content key's two uses: a re-validated install SKIP may
+ * ride the key alone, a tree REUSE may not — `npm ci` runs the repository's own
+ * `postinstall`, whose output the hashed inputs do not describe.
+ */
+describe("hasInstallLifecycleScript", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "lifecycle-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const write = (pkg: unknown): void =>
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify(pkg));
+
+  it.each(["preinstall", "install", "postinstall", "prepare", "prepublish"])(
+    "detects %s — an install RUNS it, so its output is not a function of the hashed inputs",
+    (script) => {
+      write({ name: "x", scripts: { [script]: "node scripts/build.js" } });
+      expect(hasInstallLifecycleScript(dir)).toBe(true);
+    },
+  );
+
+  it("ignores scripts an install does NOT run", () => {
+    write({ name: "x", scripts: { build: "tsc", test: "vitest", start: "node ." } });
+    expect(hasInstallLifecycleScript(dir)).toBe(false);
+  });
+
+  it("an empty script value is not a lifecycle script", () => {
+    write({ name: "x", scripts: { postinstall: "" } });
+    expect(hasInstallLifecycleScript(dir)).toBe(false);
+  });
+
+  it.each([
+    ["no package.json at all", null],
+    ["no scripts block", { name: "x" } as unknown],
+    ["a non-object scripts value", { name: "x", scripts: "nope" } as unknown],
+  ])("reads %s as no — there is then no npm install to have a lifecycle", (_label, pkg) => {
+    if (pkg !== null) write(pkg);
+    expect(hasInstallLifecycleScript(dir)).toBe(false);
+  });
+
+  it("unparseable JSON reads as no rather than throwing", () => {
+    fs.writeFileSync(path.join(dir, "package.json"), "{not json");
+    expect(hasInstallLifecycleScript(dir)).toBe(false);
   });
 });

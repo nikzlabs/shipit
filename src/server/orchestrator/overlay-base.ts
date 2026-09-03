@@ -52,10 +52,21 @@
  *
  * ## GC contract (plan §4 / disk-janitor `sweepOrphanedOverlayBases`)
  *
- * The scope dir `overlay-base/<scope-hash>/` is long-lived; each publish creates
- * a new `g<N>` child, which bumps the scope dir's own mtime (POSIX direct-child
- * change), so the disk-janitor's mtime liveness fallback stays sound. We
- * additionally `utimes` the scope dir to be explicit.
+ * The scope dir `overlay-base/<scope-hash>/` is long-lived; each publish that
+ * MATERIALIZES creates a new `g<N>` child, which bumps the scope dir's own mtime
+ * (POSIX direct-child change), so the disk-janitor's mtime liveness fallback
+ * stays sound. We additionally `utimes` the scope dir to be explicit.
+ *
+ * A `lineage-advanced` publish materializes nothing and so refreshes neither —
+ * which is correct rather than an omission, and the reason is worth stating
+ * because the sentence above is no longer the whole GC story. Verified at
+ * `steady-state-reclaim.ts:sweepOrphanedOverlayBases` /
+ * `sweepStaleBaseGenerations`: nothing in the overlay-base sweep is decided by
+ * mtime. A whole scope dir survives on a LIVE MOUNT (plus resumable sessions),
+ * and within a live scope a generation survives on IDENTITY — `g0`, the
+ * pointer's current generation, or one a running/being-created container pins.
+ * A lineage-only publish leaves the current generation current, so it is
+ * protected by exactly the clause that protected it before.
  */
 
 import crypto from "node:crypto";
@@ -162,6 +173,27 @@ export interface PublishCandidate {
    * can match across commits.
    */
   markerStamp?: { runtimeKey: string; installCommands: string[]; depsHash?: string | null };
+  /**
+   * Whether this install's hashed inputs actually **describe its output tree** —
+   * the precondition for declining to publish because the content key matches
+   * (`isContentEqualPublish`). Resolved by the caller, which is the side holding
+   * the workspace: `deps-hash.ts:hasInstallLifecycleScript` plus the
+   * `agent.install-inputs` override (see `overlay-publish.ts`).
+   *
+   * Separate from `markerStamp.depsHash` because the two answer different
+   * questions, and docs/198 only ever answered the first. A content key is
+   * enough to skip an *install* (the worker's marker gate re-validates what it
+   * finds) and not enough to skip a *rebuild*: `npm ci` runs the repository's
+   * own `postinstall`, so a commit touching only `scripts/build.js` or a
+   * `patches/*.patch` yields a different installed tree under an identical key —
+   * and a `patch-package`-style script writes that difference into the very dep
+   * dir the base holds. `plugin-dep-store.ts` reached the same conclusion for
+   * the same reason; this is that rule, on the session path.
+   *
+   * **Absent reads as `false`** — a caller that does not resolve it gets today's
+   * conservative rotation, never a reuse it did not vouch for.
+   */
+  contentKeyDescribesTree?: boolean;
 }
 
 export type PublishOutcome =
@@ -513,12 +545,18 @@ export async function copySnapshotToBase(
  * carries the rest of the identity (repo URL, orchestrator runtime fingerprint,
  * dep dir), so anything not compared here cannot differ between the two.
  *
- * Every uncertainty is a `false` — a missing marker on either side, an absent or
- * `null` `depsHash` (content-keying off, or an install whose inputs aren't
- * recognized), a legacy pointer written before `depsHash` existed. Those keep the
- * conservative rotation, which is always correct and only ever wasteful.
+ * Every uncertainty is a `false` — a candidate whose caller did not vouch that
+ * the hashed inputs describe the output tree (`contentKeyDescribesTree`, the
+ * lifecycle-script rule), a missing marker on either side, an absent or `null`
+ * `depsHash` (content-keying off, or an install whose inputs aren't recognized),
+ * a legacy pointer written before `depsHash` existed. Those keep the conservative
+ * rotation, which is always correct and only ever wasteful.
  */
 function isContentEqualPublish(current: BasePointer, candidate: PublishCandidate): boolean {
+  // The key must be usable for REUSE, not merely for a re-validated skip — see
+  // the field doc. Checked first: it is the cheapest, and it is the one that says
+  // this publish never had the right to compare content in the first place.
+  if (!candidate.contentKeyDescribesTree) return false;
   const have = current.marker;
   const want = candidate.markerStamp;
   if (!have || !want) return false;

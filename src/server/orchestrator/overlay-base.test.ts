@@ -733,6 +733,10 @@ describe("overlay-base: content-equal forward publishes do not rotate the genera
       preUserInstall: true,
       sourceIsDefaultBranch: true,
       snapshotDir: snapshot(over.commit),
+      // The caller vouching that the hashed inputs describe the output tree —
+      // what `overlay-publish.ts` resolves from `hasInstallLifecycleScript` +
+      // `agent.install-inputs`. Overridable per-test via `over`.
+      contentKeyDescribesTree: true,
       markerStamp: {
         runtimeKey: RUNTIME_KEY,
         installCommands: INSTALL_COMMANDS,
@@ -839,6 +843,56 @@ describe("overlay-base: content-equal forward publishes do not rotate the genera
     const c2 = commit("next");
     const res = await publishBase({
       stateDir, scope: SCOPE, candidate: candidate({ commit: c2 }, stamp), isAncestor,
+    });
+    expect(res.outcome).toBe("advanced");
+    expect(res.pointer).toMatchObject({ commit: c2, generation: 2 });
+  });
+
+  // The lifecycle-script rule: `npm ci` runs the repo's own `postinstall`, so a
+  // commit changing only `scripts/build.js` or a `patches/*.patch` yields a
+  // different installed tree under an identical key. Skipping an INSTALL on that
+  // key is re-validated by the worker gate; declining to REPUBLISH is not, so the
+  // caller has to vouch. `overlay-publish.ts` resolves the flag; here we pin that
+  // an unvouched candidate keeps rotating.
+  it("rotates conservatively when the caller does not vouch that the key describes the tree", async () => {
+    const c1 = commit("deps land");
+    await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }), isAncestor });
+
+    const c2 = commit("change a postinstall input");
+    const res = await publishBase({
+      stateDir,
+      scope: SCOPE,
+      candidate: candidate({ commit: c2, contentKeyDescribesTree: false }),
+      isAncestor,
+    });
+    expect(res.outcome).toBe("advanced");
+    expect(res.pointer).toMatchObject({ commit: c2, generation: 2 });
+  });
+
+  it("rotates conservatively when the flag is absent entirely (absent means false)", async () => {
+    const c1 = commit("deps land");
+    await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }), isAncestor });
+
+    const c2 = commit("next");
+    const bare = { ...candidate({ commit: c2 }) };
+    delete bare.contentKeyDescribesTree;
+    const res = await publishBase({ stateDir, scope: SCOPE, candidate: bare, isAncestor });
+    expect(res.outcome).toBe("advanced");
+    expect(res.pointer).toMatchObject({ commit: c2, generation: 2 });
+  });
+
+  it("rotates conservatively when the CURRENT pointer's marker records depsHash: null", async () => {
+    // The mirror of the candidate-side null case: an existing base whose content
+    // is explicitly unknown must never compare equal to anything.
+    const c1 = commit("deps land");
+    await publishBase({
+      stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }, { depsHash: null }), isAncestor,
+    });
+    expect(readBasePointer(stateDir, SCOPE)?.marker?.depsHash).toBeNull();
+
+    const c2 = commit("next");
+    const res = await publishBase({
+      stateDir, scope: SCOPE, candidate: candidate({ commit: c2 }), isAncestor,
     });
     expect(res.outcome).toBe("advanced");
     expect(res.pointer).toMatchObject({ commit: c2, generation: 2 });

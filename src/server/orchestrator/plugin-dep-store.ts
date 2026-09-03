@@ -64,7 +64,7 @@ import type { SessionInfo } from "../shared/types.js";
 import type { PluginExport } from "../shared/plugin-repos.js";
 import { destinationKey, pluginCloneUrl } from "../shared/plugin-repos.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
-import { computeInstallDepsHash } from "../shared/deps-hash.js";
+import { computeInstallDepsHash, hasInstallLifecycleScript } from "../shared/deps-hash.js";
 import { overlayBaseGenDir, overlayScopeHash } from "./overlay-volume.js";
 import { repoUrlToHash } from "./git-utils.js";
 import {
@@ -256,32 +256,6 @@ export function planPluginDepStore(args: {
       return { depDir, scope, scopeHash: overlayScopeHash(scope.repoUrl, scope.runtimeKey, scope.depDir) };
     }),
   };
-}
-
-/**
- * The npm lifecycle scripts an install RUNS, as opposed to the ones a publish or
- * a test runs. Each of these executes repository code that the manifest and the
- * lockfile do not describe, so its output is not a function of the hashed
- * inputs. `prepublish` is here because npm still runs it on a plain install.
- */
-const INSTALL_LIFECYCLE_SCRIPTS = ["preinstall", "install", "postinstall", "prepare", "prepublish"];
-
-/**
- * Whether the checkout's own `package.json` declares one. Unreadable or absent
- * reads as "no" — there is then no npm install to have a lifecycle at all, and
- * the content key is decided by `computeInstallDepsHash` either way.
- */
-function hasInstallLifecycleScript(checkoutDir: string): boolean {
-  let pkg: unknown;
-  try {
-    pkg = JSON.parse(fs.readFileSync(path.join(checkoutDir, "package.json"), "utf-8"));
-  } catch {
-    return false;
-  }
-  if (typeof pkg !== "object" || pkg === null) return false;
-  const scripts = (pkg as { scripts?: unknown }).scripts;
-  if (typeof scripts !== "object" || scripts === null) return false;
-  return INSTALL_LIFECYCLE_SCRIPTS.some((name) => Boolean((scripts as Record<string, unknown>)[name]));
 }
 
 /**

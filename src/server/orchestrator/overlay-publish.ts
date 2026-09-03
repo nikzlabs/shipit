@@ -8,8 +8,11 @@
  *     `depDirsForSession`, `validDepDirsForOverlay`).
  *   - `overlay-snapshot.ts` — the worker pull + tar extraction (`fetchDepSnapshotStream`,
  *     `extractTarStream`, `fetchWorkspaceHeadInfo`).
- *   - `overlay-base.ts` — the publish compare-and-swap (`publishBase`), reused
- *     **unchanged**: only the caller and the per-dep-dir granularity are new here.
+ *   - `overlay-base.ts` — the publish compare-and-swap (`publishBase`). It was
+ *     reused unchanged when this module was written; it since grew the
+ *     content-equal branch (`lineage-advanced`), whose one precondition this
+ *     module supplies because only this side holds the workspace — see
+ *     `contentKeyDescribesTree` below.
  *
  * Wiring lives at the install-completion seam (`service-manager-setup.ts`): after a
  * session's `agent.install` resolves, the runner-adapting hook constructed in
@@ -50,7 +53,7 @@ import type { Readable } from "node:stream";
 
 import type { SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
-import { computeInstallDepsHash } from "../shared/deps-hash.js";
+import { computeInstallDepsHash, hasInstallLifecycleScript } from "../shared/deps-hash.js";
 import {
   isOverlayEnabled,
   isPnpmRepo,
@@ -275,6 +278,11 @@ export async function publishDepDirOverlayBases(
   // command-derived inputs. A null hash (content-keying off / no input files)
   // simply never content-matches — degrading to the exact-commit path.
   let markerStamp: { runtimeKey: string; installCommands: string[]; depsHash: string | null } | undefined;
+  // Whether that same key may be used to decline a REPUBLISH, not just an
+  // install — the lifecycle-script rule. Resolved here because this is the side
+  // holding the workspace; defaults to `false` so a path that cannot answer
+  // keeps rotating. See `PublishCandidate.contentKeyDescribesTree`.
+  let contentKeyDescribesTree = false;
   if (headInfo.runtimeKey && args.installCommands && args.installCommands.length > 0) {
     let installInputs: string[] | null = null;
     try {
@@ -287,6 +295,14 @@ export async function publishDepDirOverlayBases(
       installCommands: args.installCommands,
       depsHash: computeInstallDepsHash(workspaceDir, args.installCommands, installInputs),
     };
+    // A declared `agent.install-inputs` REPLACES the input set, so it is the
+    // author stating what their install actually consumes — the same escape the
+    // plugin store honors, and the reason the incident repo (which declares all
+    // four of its manifests and lockfiles) is covered despite its `--prefix`
+    // commands. Without one, a repo whose `npm ci` runs a lifecycle script has
+    // an output the hashed inputs do not describe, so it keeps rotating.
+    contentKeyDescribesTree =
+      (installInputs !== null && installInputs.length > 0) || !hasInstallLifecycleScript(workspaceDir);
   }
 
   const repoGit = deps.createRepoGit(deps.getBareCacheDir(scope.repoUrl));
@@ -338,6 +354,7 @@ export async function publishDepDirOverlayBases(
           preUserInstall: true,
           sourceIsDefaultBranch,
           snapshotDir: tmpDir,
+          contentKeyDescribesTree,
           ...(markerStamp ? { markerStamp } : {}),
         },
         isAncestor,

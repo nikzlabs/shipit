@@ -459,12 +459,28 @@ keep resolving, `overlayDriverOpts` produces the same string, `overlayVolumeStat
 
 **The equality test is the one docs/198 already trusts**, not a new one: the pointer's recorded
 `marker.depsHash` (the dependency-input content key), `marker.runtimeKey` (the worker-side runtime
-fingerprint) and `marker.installCommands`, all against the candidate's. That triple is exactly what
-`preStampInstallMarker` uses to let a fresh session **skip `agent.install` entirely** over a base built
-at a different commit — so if it is strong enough to decide "you do not need to install these deps", it
-is strong enough to decide "we do not need to republish them". Everything the triple omits is already
-in the scope hash (repo URL, orchestrator runtime fingerprint, dep dir), so it cannot differ between
-the two sides.
+fingerprint) and `marker.installCommands`, all against the candidate's. Everything the triple omits is
+already in the scope hash (repo URL, orchestrator runtime fingerprint, dep dir), so it cannot differ
+between the two sides.
+
+**But it needs one precondition docs/198's own use does not, because reusing a tree is a stronger
+claim than re-validating one** (review finding). `preStampInstallMarker` uses that triple to let a
+session **skip `agent.install`** — and a wrong skip is caught downstream, because the worker gate
+re-derives its own runtime key and re-checks the overlay-emptiness contradiction. Declining to
+*republish* has no such backstop: the candidate's freshly-installed snapshot is discarded and the old
+generation stands. That difference matters exactly where the hashed inputs stop describing the output:
+`npm ci` runs the repository's own `postinstall`, so a commit that changes only `scripts/build.js` or a
+`patches/*.patch` produces a different installed tree under an identical key — and a `patch-package`
+-style script writes that difference straight into the dep dir the base holds.
+
+This repo had already reached that conclusion once, on the plugin side (`plugin-dep-store.ts`, which
+declines the store outright for a lifecycle-script install with no declared inputs). So the detector
+moved to `shared/deps-hash.ts:hasInstallLifecycleScript` and both callers use it. On the session path
+it is carried as `PublishCandidate.contentKeyDescribesTree`, resolved by `overlay-publish.ts` (the side
+that holds the workspace) and **absent-means-false**, so a caller that cannot answer keeps rotating. A
+declared `agent.install-inputs` overrides it: that is the author stating what their install actually
+consumes, and it is why the incident repo qualifies despite its `npm ci --prefix …` commands, which
+the command allowlist alone rejects.
 
 Every uncertainty rotates, as before: a missing marker on either side, a `null`/absent `depsHash`
 (content-keying off, or an install whose inputs are not recognized), a pointer written before

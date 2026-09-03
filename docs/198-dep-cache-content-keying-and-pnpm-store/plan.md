@@ -109,6 +109,15 @@ weakens both; anything that makes a `null` hash match would let a session mount 
 base it was never checked against. See docs/183's plan, "a rotation must be
 earned".
 
+The two uses are **not** interchangeable, though, and the difference is the
+backstop. Skipping an install is re-validated downstream by the worker gate;
+declining to republish discards the candidate's snapshot and keeps the old
+generation, with nothing after it. So the reuse side additionally requires
+`hasInstallLifecycleScript` (now in `deps-hash.ts`, shared with
+`plugin-dep-store.ts`) to say no, or an explicit `agent.install-inputs` to say
+the author has declared what the install consumes — because `npm ci` runs the
+repository's own `postinstall`, whose output the hashed inputs do not describe.
+
 ## Part 2 — pnpm: shared store volume instead of overlay
 
 ### Design
