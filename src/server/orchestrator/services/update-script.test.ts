@@ -43,7 +43,10 @@ describe("deployment/vps/update.sh (host self-updater)", () => {
   /** Run the real update.sh with SHIPIT_DIR pointed at our temp checkout. */
   const runUpdate = (
     channel: string,
-    { deployExit = 0 }: { deployExit?: number } = {},
+    {
+      deployExit = 0,
+      env = {},
+    }: { deployExit?: number; env?: Record<string, string> } = {},
   ): { code: number; stdout: string } => {
     fs.writeFileSync(path.join(shipitDir, ".release-channel"), channel);
     // Stub deploy.sh: records that it ran, then exits with the requested code so
@@ -59,6 +62,7 @@ describe("deployment/vps/update.sh (host self-updater)", () => {
           ...process.env,
           SHIPIT_DIR: shipitDir,
           SHIPIT_DEPLOY_SCRIPT: deployStub,
+          ...env,
         },
         stdio: ["pipe", "pipe", "pipe"],
       }).toString();
@@ -67,6 +71,45 @@ describe("deployment/vps/update.sh (host self-updater)", () => {
       const e = err as { status?: number; stdout?: Buffer };
       return { code: e.status ?? 1, stdout: e.stdout?.toString() ?? "" };
     }
+  };
+
+  /**
+   * Put a `git` shim ahead of the real one on the script's PATH. It logs every
+   * `fetch` invocation (so a run's round-trips can be counted) and optionally
+   * fails the first one the way GitHub's intermittent 401 does; everything else
+   * execs the real git.
+   */
+  const installGitShim = ({ failFirstFetch = false } = {}) => {
+    const shimDir = path.join(root, "bin");
+    const fetchLog = path.join(root, "fetches");
+    const failedOnce = path.join(root, "failed-once");
+    const realGit = execSync("command -v git", { shell: "/bin/bash" }).toString().trim();
+    const failFirst = failFirstFetch
+      ? `  if [ ! -f "${failedOnce}" ]; then
+    touch "${failedOnce}"
+    echo "fatal: Authentication failed" >&2
+    exit 128
+  fi
+`
+      : "";
+    fs.mkdirSync(shimDir);
+    fs.writeFileSync(
+      path.join(shimDir, "git"),
+      `#!/bin/bash
+if [ "$1" = fetch ]; then
+  echo fetch >> "${fetchLog}"
+${failFirst}fi
+exec ${realGit} "$@"
+`,
+    );
+    fs.chmodSync(path.join(shimDir, "git"), 0o755);
+    return {
+      pathPrefix: `${shimDir}:${process.env.PATH ?? ""}`,
+      fetchCount: (): number =>
+        fs.existsSync(fetchLog)
+          ? fs.readFileSync(fetchLog, "utf8").trim().split("\n").length
+          : 0,
+    };
   };
 
   beforeEach(() => {
@@ -215,5 +258,63 @@ describe("deployment/vps/update.sh (host self-updater)", () => {
 
     expect(code).toBe(0);
     expect(fs.existsSync(path.join(shipitDir, ".update-failed"))).toBe(false);
+  });
+
+  it("fails closed when the origin keeps refusing", () => {
+    const before = head(shipitDir);
+    // An origin that can never answer stands in for GitHub refusing every
+    // attempt: the retry must run out, not loop forever or update anyway.
+    run(`git remote set-url origin ${path.join(root, "gone.git")}`, shipitDir);
+
+    const { code, stdout } = runUpdate("edge", {
+      env: { SHIPIT_FETCH_RETRY_DELAYS: "0 0" },
+    });
+
+    expect(code).toBe(128); // git's own exit code, not a swallowed one
+    expect(stdout.match(/retrying in/g)).toHaveLength(2); // 2 delays => 3 attempts
+    expect(head(shipitDir)).toBe(before); // HEAD moves only after a good fetch
+    expect(fs.existsSync(deployMarker)).toBe(false);
+    const marker = JSON.parse(
+      fs.readFileSync(path.join(shipitDir, ".update-failed"), "utf8"),
+    ) as { exitCode: number };
+    expect(marker.exitCode).toBe(128);
+  });
+
+  it("recovers when a retry succeeds, with a single fetch per run", () => {
+    fs.writeFileSync(path.join(seedDir, "v.txt"), "edge3\n");
+    run("git checkout main", seedDir);
+    run("git add -A && git commit -m c-edge3", seedDir);
+    run("git push origin main", seedDir);
+    const target = head(seedDir);
+
+    const shim = installGitShim({ failFirstFetch: true });
+
+    const { code, stdout } = runUpdate("edge", {
+      env: { SHIPIT_FETCH_RETRY_DELAYS: "0 0", PATH: shim.pathPrefix },
+    });
+
+    expect(code).toBe(0);
+    expect(stdout.match(/retrying in/g)).toHaveLength(1); // recovered on attempt 2
+    // Exactly two: one refused, one that worked. Pins the removal of the
+    // redundant per-channel fetch — a second round-trip would make this 3.
+    expect(shim.fetchCount()).toBe(2);
+    expect(head(shipitDir)).toBe(target);
+    expect(fs.existsSync(deployMarker)).toBe(true);
+  });
+
+  it("makes a single fetch on the stable channel too", () => {
+    run("git checkout -b stable", seedDir);
+    fs.writeFileSync(path.join(seedDir, "v.txt"), "1\n");
+    run("git add -A && git commit -m c1", seedDir);
+    run("git tag v1.0.0 && git push origin stable --tags", seedDir);
+    const target = head(seedDir);
+    const shim = installGitShim();
+
+    const { code } = runUpdate("stable", { env: { PATH: shim.pathPrefix } });
+
+    expect(code).toBe(0);
+    // origin/stable and the tags both come from the ONE `--tags --prune` fetch.
+    expect(shim.fetchCount()).toBe(1);
+    expect(head(shipitDir)).toBe(target);
   });
 });
