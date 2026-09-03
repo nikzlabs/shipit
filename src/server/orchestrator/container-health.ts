@@ -267,16 +267,18 @@ export async function startHealthMonitor(
           // An `oom` is NOT a container death, and must not be treated as one.
           //
           // Docker fires it when the cgroup's OOM-killer kills *a process* in the
-          // container. In a session container PID 1 is the worker and the agent CLI
-          // is a child, so the common case is precisely the one where the container
-          // SURVIVES: the CLI gets killed, the worker keeps running. Acting on the
+          // container. In a session container PID 1 is `docker-init` (planning#508),
+          // the worker is its direct child and the agent CLI a grandchild, so the
+          // common case is precisely the one where the container SURVIVES: the CLI
+          // gets killed, the worker keeps running. Acting on the
           // event would then delete a healthy container's map entry, emit
           // `container_exited`, finalize the live turn as crashed, dispose the
           // runner, and trip the OOM circuit breaker — all against a container that
           // is still up and serving.
           //
-          // If PID 1 *was* the victim, Docker emits `die` a few milliseconds later,
-          // and that event IS proof. So we record the OOM and let `die` do the work
+          // If the WORKER was the victim, Docker emits `die` a few milliseconds
+          // later — `docker-init` exits once the child it supervises does — and
+          // that event IS proof. So we record the OOM and let `die` do the work
           // — which also means the map entry survives until then, keeping `sc.id`
           // available to scope the reap on daemons that omit `Actor.ID`. (Deleting
           // it here used to strand the sidecars in exactly that case: the follow-up
