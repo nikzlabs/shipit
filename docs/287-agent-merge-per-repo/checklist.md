@@ -50,11 +50,24 @@ Revision 2 (2026-09-02), after two review rounds.
       local-HEAD mismatch, draft/closed, failing, pending, both zero-check cases
 - [ ] The live read replaces `getCheckStatus()` on the **sandbox** path too
 - [ ] Merge sends the expected `sha`
-- [ ] `--auto` arms GitHub-**native** auto-merge only; unavailable ⇒ refuse with
-      GitHub's reason, never a managed fallback
-- [ ] `enableAutoMerge()` sends `expectedHeadOid`
-- [ ] An agent arming is recorded, and revoking the grant calls `disableAutoMerge()`
-      for that repository's armed sessions (req 1); a user's own arming is untouched
+## `--auto` — the ShipIt arming (req 18–21)
+
+- [ ] Migration: `agent_merge_armings` (session, repo key, PR number, expected
+      SHA, method, armed_at, last_error) + repo index
+- [ ] `--auto` writes an arming; a second `--auto` replaces the first
+- [ ] No GitHub-native arming on the agent path at all
+- [ ] Executor runs in the poller's existing tick, behind the docs/266 busy gate
+- [ ] Executor runs the **same** merge-gate read as the direct path
+- [ ] Head no longer equal to `expected_sha` ⇒ delete the arming + persisted
+      notice; never re-point it at the new head (req 19)
+- [ ] Merge sends `expected_sha` as the REST expected `sha` (req 18)
+- [ ] Revocation deletes armings by `canonicalRepoKey`, in the same transaction
+      as the flag; executor re-reads arming **and** grant immediately before merging (req 20)
+- [ ] Armings survive a restart (req 21)
+- [ ] Cleared on merge, head change, PR close, untrack, docs/202 re-arm, reset,
+      unarchive, repository removal
+- [ ] A refused merge keeps the arming and records `last_error`, surfaced once
+- [ ] A user's card-armed auto-merge is untouched by any of this
 
 ## After the merge
 

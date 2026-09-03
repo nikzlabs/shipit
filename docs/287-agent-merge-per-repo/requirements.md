@@ -50,21 +50,21 @@ but cannot land it. This feature moves the permission to the **repository**.
     req 14 adds new commits, the checks for those new commits decide the merge.
 17. When the checks for those new commits are not complete, the merge command
     refuses. The refusal says that the push started the checks again, and that
-    the agent can merge when the checks pass. The command does not wait by
-    itself.
+    the agent can ask for the merge to happen when the checks pass. The command
+    does not wait by itself.
+18. The agent can ask for the merge to happen when the checks pass. ShipIt then
+    performs that merge itself, and only at the commit that was current when the
+    agent asked.
+19. If the branch moves after the agent asked, ShipIt does not merge. It cancels
+    the request and says so in the transcript.
+20. When the user withdraws the permission (req 1), every request that has not
+    merged is cancelled. A merge the user armed from the pull request card is
+    not affected.
+21. A request survives a restart of ShipIt.
 
 ## Open questions
 
-- Does the agent keep a way to say "merge this when the checks pass" (`--auto`),
-  or does this feature stop at "merge now, if the checks already passed"? Review
-  round 5 showed the safe version is a piece of work in itself: GitHub's own
-  arming is not bound to the commit it was granted for, so a later push can land
-  a commit nobody authorised, and a ShipIt arming that *is* bound needs durable
-  state, a revocation protocol and restart and race handling. Without any arming
-  the agent cannot land work in the same turn that produced it, because nothing
-  wakes a session when CI turns green. This is a scope decision, so it is the
-  user's. Blocks only the `--auto` part of req 17; the rest of the design is
-  settled.
+None.
 
 ## Resolved questions
 
@@ -93,3 +93,10 @@ but cannot land it. This feature moves the permission to the **repository**.
   pass. A command that waits would report success while nothing merged, and it
   would turn every merge into the auto-merge behaviour that was already
   rejected. (req 17)
+- 2026-09-03 — Review round 5 showed that "merge when the checks pass" cannot be
+  GitHub's own arming: it binds to the pull request, not to the commit it was
+  granted for, so a later push by anyone with write access lands code the agent
+  never authorised, and withdrawing the permission does not cancel it. The
+  choice was to drop the capability, to build a ShipIt arming bound to the exact
+  commit, or to accept the gap. **Answer: build the safe arming now.** (req 18,
+  19, 20, 21)

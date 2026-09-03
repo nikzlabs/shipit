@@ -9,13 +9,13 @@ description: Widen the docs/224 merge gate from a per-sandbox grant to a per-rep
 Implements [requirements.md](./requirements.md). Extends
 `docs/224-sandbox-merge-capability` (the shim, the route, the guardrails).
 
-> **Revision 5, 2026-09-02.** Five independent review rounds; every finding
+> **Revision 6, 2026-09-03.** Five independent review rounds; every finding
 > verified at the source before it was accepted. Round 1 rebuilt the ownership
 > check, round 2 replaced the status gate and caught a `cwd` rule that would have
 > broken every merge, round 3 replaced the query and the grace window, round 4
 > bound provenance to the repository, and round 5 closed a partial-response hole
-> and refuted round 4's `--auto` safeguard. Everything except `--auto` is settled;
-> that one is an open scope question in requirements.md. See
+> and refuted GitHub-native arming — which the user then answered by scoping in a
+> ShipIt arming bound to one commit (req 18–21). See
 > [What the reviews changed](#what-the-reviews-changed).
 
 ## What changes, in one line
@@ -286,51 +286,72 @@ session-keyed in `services/auto-push-scheduler.ts`, so cancelling one that no
 push replaced strands the commit. `push-failed` and `diverged` stay
 distinguishable in the message, which nothing branches on.
 
-### `--auto` in a repo-bound session (req 17)
+### `--auto`: a ShipIt arming, bound to one commit (req 18–21)
 
-It arms **GitHub-native** auto-merge only. An earlier revision reused the PR
-card's managed arming; round 3 showed that reintroduces both defects this design
-removed — `AutoMergeState` stores neither PR number nor SHA, the managed loop
-selects its pull request through the poller's branch-keyed map, and it merges
-`summary.prNumber` with no expected SHA. That breaks requirements 5 and 16 by the
-back door.
+`--auto` does **not** use GitHub's own merge-when-green. Round 5 refuted that:
+`expectedHeadOid` is a precondition checked when the arming is *enabled*, not a
+binding on the merge GitHub later performs, and GitHub keeps an arming alive
+across a push by anyone with write access. So a native arming can land a commit
+the agent never authorised, and withdrawing the grant cannot cancel it. The
+existing ShipIt-managed loop is no better on its own: `AutoMergeState` holds
+neither a pull-request number nor a SHA, and it selects through the poller's
+branch-keyed map.
 
-Native arming has neither problem: it is bound to the pull request by number,
-server-side at GitHub, and GitHub merges it only when its own required checks
-pass. If native arming is unavailable — no branch protection, or "Allow
-auto-merge" off (docs/077) — the command **refuses with GitHub's reason** rather
-than falling back to managed.
+So the agent's arming is its own record, and what makes it safe is that it names
+exactly what was authorised:
 
-> **Unsettled — see the open question in requirements.md.** Round 5 refuted the
-> safeguard below: `expectedHeadOid` is a precondition checked when the arming is
-> *enabled*, not a binding on the merge GitHub performs later, and GitHub keeps
-> an arming alive across a push by anyone with write access. So a native arming
-> can still land a commit the agent never authorised. A safe arming has to be
-> ShipIt's own, keyed by canonical repository, pull-request number **and**
-> expected SHA, with durable state, a revocation protocol, restart behaviour and
-> arm-versus-revoke serialisation — a piece of work in its own right. The rest of
-> this section describes the rejected shape and is kept only until that scope
-> decision is made.
+```sql
+CREATE TABLE agent_merge_armings (
+  session_id   TEXT PRIMARY KEY,   -- one arming per session; a session has one PR
+  repo_key     TEXT NOT NULL,      -- canonicalRepoKey(session.remoteUrl)
+  pr_number    INTEGER NOT NULL,
+  expected_sha TEXT NOT NULL,      -- the head the live read returned
+  method       TEXT NOT NULL,      -- merge | squash | rebase
+  armed_at     TEXT NOT NULL,
+  last_error   TEXT                -- surfaced once, not every tick
+);
+CREATE INDEX idx_agent_merge_armings_repo ON agent_merge_armings(repo_key);
+```
 
-Two additions were meant to make it safe, both from round 4:
+Durable, so it survives a restart (req 21). Keyed by session, so a second `--auto`
+replaces the first rather than accumulating.
 
-- **`expectedHeadOid`.** GitHub's `enablePullRequestAutoMerge` mutation accepts
-  it and `enableAutoMerge()` does not send it today. Passing the SHA from the
-  live read means an arming cannot outlive the commit it was granted for.
-- **Arming is revocable, because the permission is (req 1).** GitHub, not
-  ShipIt, performs the later merge, so turning the grant off would otherwise
-  leave an armed merge to land anyway — which is not what "withdraw the
-  permission" means to the person who clicked it. So an agent arming is recorded
-  on the session, and turning `allow_agent_merge` off for a repository calls the
-  existing `disableAutoMerge()` for each of that repository's sessions that
-  carries one. A *user's* own auto-merge, armed from the PR card, is untouched.
+**One gate, two callers.** The executor runs the *same* merge-gate read as the
+direct path — same query, same table of refusals — and adds one row of its own:
+`headRefOid` must still equal `expected_sha`. If the branch has moved, the
+arming is **deleted** and a persisted notice says so (req 19); it is not
+re-pointed at the new head, because nothing authorised that commit. The merge
+then goes out with that SHA as the REST merge's expected `sha`, so even a race
+inside the call cannot land anything else (req 18).
 
-**Why `--auto` is not simply deleted.** Round 4 proposed removing it, and
-requirement 17's words do not demand it. But nothing wakes a session when CI turns
-green, and an agent must not poll for a merge. Without arming, an agent whose
-checks take minutes cannot land its own work in the turn that produced it at all
-— which is requirement 4's whole purpose. The arming stays, with the two
-safeguards above.
+**Where it runs.** In the PR status poller's existing tick, beside the managed
+auto-merge loop — not a second timer. It obeys the same docs/266 busy gate: an
+arming does not merge while the session's agent is running, so a merge cannot
+land under a live turn. In practice it fires just after the turn that armed it.
+
+**Revocation is local, which is the point (req 20).** Turning
+`allow_agent_merge` off deletes every arming whose `repo_key` matches — one
+SQLite statement in the same transaction as the flag, resolved by
+`canonicalRepoKey`, not by exact URL equality. There is no network call that can
+fail and leave GitHub armed while ShipIt reports the permission off, which is
+exactly the failure the native path could not avoid. The executor re-reads both
+the arming row and the grant immediately before it merges, so a revocation that
+lands first always wins.
+
+The residual window is one HTTP call wide: a grant revoked *while* a merge
+request is in flight cannot recall it. That is stated rather than papered over —
+and the merge that lands is still exactly the commit the agent was authorised to
+merge.
+
+**Clearing.** The row is deleted on a successful merge, on a head that no longer
+matches, when the pull request closes, when the poller stops tracking the
+session, on the docs/202 re-arm and the reset and unarchive clears that also drop
+`pr_number`, on repository removal, and on revocation. A merge attempt that
+GitHub refuses (a conflict, branch protection) keeps the arming and records
+`last_error`, surfaced once rather than on every tick.
+
+**A user's own auto-merge is untouched** — different record, different loop, and
+the repository grant does not govern it (req 20).
 
 ## 4. After the merge (req 9, 10, 11)
 
@@ -386,7 +407,7 @@ repo-scoped agent permission exists.
 | 4 | the grace tracker is private and needs a preload | one `awaitCiGraceDecision()` facade on the poller |
 | 4 | a native arming outlived the permission | `expectedHeadOid`, recorded arming, cancelled on revocation — **refuted in round 5** |
 | 4 | the merge query asked for more than the gate uses | `number`, `mergeable` and `contexts` dropped |
-| 5 | `expectedHeadOid` binds the arming, not the merge | `--auto` is now an open scope question |
+| 5 | `expectedHeadOid` binds the arming, not the merge | `--auto` is a ShipIt arming bound to one commit (user decision, req 18–21) |
 | 5 | a partial GraphQL response reads as "no CI" | any `errors` refuses, before the gate table applies |
 | 5 | the CI grace was keyed by session + SHA | keyed by repository + PR + SHA; unknown CI starts the grace |
 
@@ -394,13 +415,15 @@ repo-scoped agent permission exists.
 
 | File | Change |
 |---|---|
-| `src/server/shared/database.ts` | migrations: `repos.allow_agent_merge`, `sessions.pr_number` |
+| `src/server/shared/database.ts` | migrations: `repos.allow_agent_merge`, `sessions.pr_number`, `agent_merge_armings` |
+| `src/server/orchestrator/agent-merge-armings.ts` | the arming store: arm, read, delete-by-session, delete-by-repo |
 | `src/server/orchestrator/repo-store.ts` | grant read/write, `canonicalRepoKey`-matched |
 | `src/server/orchestrator/api-routes-session-repos.ts` | grant on the existing `PATCH /api/repos/:url` |
 | `src/server/orchestrator/pr-target.ts` | `mergeDisposition()`; `--repo` refused, `cwd` ignored |
 | `src/server/orchestrator/services/github.ts` | flush outcome; the merge-gate query + gate; both merge paths; `quickCreatePr()` gains `alreadyExisted` |
 | `src/server/orchestrator/pr-status-poller.ts` | `awaitCiGraceDecision()` facade over the private `CiGraceTracker` |
-| `src/server/orchestrator/github-auth-prs.ts` | expected `sha` on the REST merge; `expectedHeadOid` on `enableAutoMerge()` |
+| `src/server/orchestrator/github-auth-prs.ts` | expected `sha` on the REST merge |
+| `src/server/orchestrator/pr-status-poller.ts` | the arming executor, in the existing tick, behind the docs/266 busy gate |
 | `src/server/orchestrator/services/branch-sync.ts` | `pushed` on the hold verdict |
 | `src/server/orchestrator/services/pr-lifecycle.ts`, `pr-rearm.ts`, `sessions.ts` | `prNumber` writers and clearers |
 | `src/server/orchestrator/api-routes-github.ts` | gate, ownership, settlement, notice |
