@@ -473,6 +473,55 @@ export const CONTAINER_STANDBY_LABEL = "shipit-standby";
 export const CONTAINER_BUILD_ID_LABEL = "shipit-build-id";
 
 // ---------------------------------------------------------------------------
+// Container-origin IP index (api-container-guard.ts's source of truth)
+// ---------------------------------------------------------------------------
+//
+// The index maps every non-agent container IP → its owning session, built from
+// one `listContainers` filtered on `shipit-parent-session`. It used to be
+// refreshed ON THE REQUEST PATH, on every miss — and a browser/host IP is a miss
+// by definition, so EVERY browser request paid for it. On a host with 259
+// containers that query measured 0.70–1.19 s, i.e. astride the 1 s timeout it
+// was raced against, so it failed constantly and the failure path cost a second
+// Docker round-trip on top. Session switches showed "Reconnecting to server…".
+//
+// So the index is kept warm by a background loop instead, and a snapshot younger
+// than {@link ORIGIN_INDEX_FRESH_MS} answers a lookup from memory. That is sound
+// in BOTH directions, which is the whole reason it is safe to skip the Docker
+// call: the snapshot enumerates every container carrying the label, so a miss is
+// as authoritative as a hit. The expensive path survives for the one case where
+// it is not — a cold or stale index — and every place ShipIt knows the topology
+// just changed marks the index stale ({@link SessionContainerManager.noteContainerTopologyChanged}),
+// so a service container cannot answer a request from inside the freshness
+// window it was created in.
+
+/** Background cadence for the container-origin IP index refresh. */
+const ORIGIN_INDEX_REFRESH_MS = 3_000;
+/**
+ * How long a snapshot stays authoritative. Must exceed
+ * {@link ORIGIN_INDEX_REFRESH_MS} by enough that one slow or failed pass does
+ * not push every request back onto the Docker path.
+ */
+const ORIGIN_INDEX_FRESH_MS = 10_000;
+/**
+ * Docker timeout for the index query. The old 1 s sat below the observed p50 on
+ * a loaded host; the query now runs off the request path, so it gets room to
+ * finish instead of a budget it fails.
+ */
+const ORIGIN_INDEX_TIMEOUT_MS = 8_000;
+/**
+ * The longest a REQUEST will wait on an in-flight refresh. Past it the lookup
+ * reports the index unavailable, which the guard resolves with the fail-closed
+ * `isLikelySessionContainerIp` check rather than by holding the request open.
+ */
+const ORIGIN_LOOKUP_DEADLINE_MS = 1_500;
+/** Stop the background loop once no lookup has needed it for this long. */
+const ORIGIN_INDEX_IDLE_STOP_MS = 60_000;
+/** Background cadence for the session-subnet ranges the fail-closed check reads. */
+const SESSION_RANGE_REFRESH_MS = 30_000;
+/** Docker timeout for the per-session network inspects (two per tracked session). */
+const SESSION_RANGE_TIMEOUT_MS = 10_000;
+
+// ---------------------------------------------------------------------------
 // SessionContainerManager
 // ---------------------------------------------------------------------------
 
@@ -492,6 +541,9 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private sessionNetworkRanges = new Map<string, { subnet: string; gateway?: string }[]>();
   private sessionNetworkRangeRefresh?: Promise<void>;
   private sessionNetworkRangeRefreshBackoffUntil = 0;
+  private originIndexTimer?: NodeJS.Timeout;
+  private originIndexLastUsedAt = 0;
+  private originRangeRefreshedAt = 0;
   private imageName: string;
   private networkName: string;
   private defaultMemoryLimit: number;
