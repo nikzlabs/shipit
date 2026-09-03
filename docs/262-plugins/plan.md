@@ -1958,9 +1958,29 @@ collector, which both surfaces share; the window is one request wide, the client
 is already polling while `activating` is true, and the next response is
 coherent. Recorded here rather than left for a reader to rediscover.
 
+**The card's host rows resolve TWO versions: what is live, and what the last
+attempt tried** (`orchestrator/plugin-hosts.ts`). Reading live generations alone
+made req 24's affordance unreachable in the one state that most needs it. A
+first activation whose install is denied the network the plugin declared
+publishes nothing, so the live reader answers "not knowable", the card rendered
+no host rows and no Allow buttons — while the install failure it *did* render
+told the user to press exactly those buttons (`blockedHostsClause`). The user's
+only way through was retyping the hostname into the global Settings editor,
+which is the "reverse-engineer them from failing calls" req 24 forbids. A failed
+attempt therefore carries its selected exports' declared hosts back out
+(`ActivationOutcome.declaredHosts`, in memory beside the failure reason —
+the staging checkout is deleted on that path, so nothing on disk remembers the
+version). The two versions are **unioned**, which also covers the second case:
+a refresh that adds a host and then fails, where the live manifest is the old
+commit's and does not name it. Reporting a host is still not granting it — reach
+is resolved per host by the same seam, so an attempted version can no more widen
+a session than a live one can.
+
 Settings → Network egress is **unchanged** (it is explicitly the global-only
 editor — `SettingsEgress.tsx:135`); the diagnostics panel addition and the
-multi-host `EgressPromptCard` variant were reviewed out of v1.
+multi-host `EgressPromptCard` variant were reviewed out of v1. It is the
+fallback, never the path: the card carries the affordance, and the failure text
+names the card.
 
 **How the client learns the declaration** — the `issues.trackers` precedent,
 copied: per-request config read behind `GET /api/plugin-repos`, the

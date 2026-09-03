@@ -500,13 +500,11 @@ async function runInstallOnce(
  * The clause that turns a package-manager DNS error into the guided onboarding
  * step req 24 asks for.
  *
- * A plugin's FIRST activation has no live generation, so the Plugins card cannot
- * show its declared hosts or the "Allow" buttons — the card resolves them from
- * live generations only (`plugin-hosts.ts`). Containing `install` made that
- * reachable: an install pulling from a vendor host now fails where it used to
- * succeed, and the failure the user sees is whatever `npm` printed. This appends
- * the declared hosts the session does not currently permit, so the reason on the
- * degraded card names them and says where to grant them.
+ * Containing `install` made this reachable: an install pulling from a vendor
+ * host now fails where it used to succeed, and the failure the user sees is
+ * whatever `npm` printed. This appends the declared hosts the session does not
+ * currently permit, so the reason on the degraded card names them and says where
+ * to grant them.
  *
  * Empty when nothing is denied, when the plugin declared nothing, or when every
  * declared host is already allowed — in which case the install failed for some
@@ -527,9 +525,18 @@ async function runInstallOnce(
  * new way. Leading with "Separately" costs nothing, needs no heuristic to
  * maintain, and tells the reader the same thing a correct classifier would.
  *
- * It is emitted whenever a declared host is denied, because a first activation
- * has no other place to learn that: the Plugins card resolves declared hosts
- * from LIVE generations, and a first install has none (`plugin-hosts.ts`).
+ * It is emitted whenever a declared host is denied, because the failure text is
+ * where a first activation is most likely to be read.
+ *
+ * **The last sentence names buttons on the card this text lands on, and that
+ * pair only holds because a failed attempt carries its declared hosts back out**
+ * (`plugin-generations.ts`'s `declaredHosts`). It did not: a first activation
+ * publishes no generation, the card resolved host rows from LIVE generations
+ * only (`plugin-hosts.ts`), and so the one state that most produces this clause
+ * was the one state where the "Allow" buttons it points at could not render —
+ * leaving the user to retype each hostname into the global Settings editor.
+ * Anything that stops an attempt carrying those hosts breaks this sentence, not
+ * just a row.
  */
 function blockedHostsClause(policy: PluginEgressPolicy, job: PluginInstallJob): string {
   const declared = job.exports.flatMap((e) => e.hosts ?? []);
@@ -539,8 +546,12 @@ function blockedHostsClause(policy: PluginEgressPolicy, job: PluginInstallJob): 
   const [is, it] = blocked.length === 1 ? ["is", "it"] : ["are", "them"];
   return `\n\nSeparately — this plugin declares ${names}, which ${is} not in this `
     + "session's egress allowlist. If the failure above is a network error against "
-    + `${blocked.length === 1 ? "that host" : "one of those hosts"}, allow ${it} in the `
-    + "Plugins tab (or Settings → Network egress) and refresh the plugin.";
+    + `${blocked.length === 1 ? "that host" : "one of those hosts"}, allow ${it} on this `
+    // Read on TWO surfaces — the card and `shipit plugin status` in a terminal —
+    // so it names the tab (which the terminal reader has to find) and the card
+    // (which the card reader is already looking at), and nothing that only one
+    // of them can see.
+    + "repository's card in the Plugins tab, then refresh the plugin.";
 }
 
 /**

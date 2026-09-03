@@ -631,13 +631,16 @@ describe("createPluginInstallRunner", () => {
   });
 
   /**
-   * req 24's guided-onboarding clause, at the one moment the Plugins card cannot
-   * cover it. A plugin's FIRST activation has no live generation, so the card
-   * resolves no declared hosts and shows no "Allow" buttons — and containing
-   * `install` is what made that reachable, by turning a working install into a
-   * failing one. Without this the user gets a package-manager DNS error and is
-   * left to reverse-engineer the host, which is the phrase req 24 uses for what
-   * must not happen.
+   * req 24's guided-onboarding clause. Containing `install` is what made it
+   * reachable, by turning a working install into a failing one: without the
+   * clause the user gets a package-manager DNS error and is left to
+   * reverse-engineer the host, which is the phrase req 24 uses for what must not
+   * happen.
+   *
+   * The clause tells the user to press the card's "Allow" buttons, and the other
+   * half of that promise is tested at `plugin-hosts.test.ts` — a first
+   * activation publishes no generation, so the buttons exist only because the
+   * failed attempt hands its declared hosts back to the snapshot.
    */
   it("names the declared hosts the session blocks when a contained install fails", async () => {
     const { docker } = fakeDocker({ exit: 1, logs: "npm ERR! getaddrinfo EAI_AGAIN\n" });

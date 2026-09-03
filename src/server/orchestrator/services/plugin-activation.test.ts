@@ -18,6 +18,8 @@ import {
   getPluginPrepareFailures,
 } from "./plugin-activation.js";
 import { createStagedGenerationGate } from "./plugin-preflight.js";
+import { assemblePluginSnapshot } from "../api-routes-plugin-repos.js";
+import type { ApiDeps } from "../api-routes.js";
 import { readActiveGeneration } from "../plugin-generations.js";
 import { expectInvalidShipitConfig } from "../../shared/shipit-config-test-guard.js";
 
@@ -379,6 +381,53 @@ describe("lifetime and selectors", () => {
     expect(state?.error).toContain("exited 1");
     expect(state?.generation).toBeUndefined();
     expect(fs.existsSync(path.join(sessionDir, "state", "plugins", "tools", "active"))).toBe(false);
+  });
+
+  /**
+   * req 24, end to end, at the ONE moment the requirement's affordance used to
+   * be unreachable: a first activation whose install is denied the network the
+   * plugin declared.
+   *
+   * The install failure tells the user to allow the hosts on this repository's
+   * card and refresh (`plugin-install.ts`'s `blockedHostsClause`) — and the card
+   * resolves host rows from LIVE generations, of which a failed first activation
+   * publishes none. So the one state that produces the message was the one state
+   * where the buttons it names could not render, and the user's only way through
+   * was retyping the hostname into the global Settings editor.
+   *
+   * Asserted through the snapshot the browser actually receives, not through the
+   * activation state: what the card renders is `uses[].hosts`, and a declaration
+   * dropped anywhere on the way out looks identical to the defect.
+   */
+  it("a failed first install still gives the card the hosts it declared (req 24)", async () => {
+    fs.writeFileSync(
+      path.join(originDir, "shipit.yaml"),
+      "exports:\n  plugins:\n    probe:\n      hosts: [downloads.vendor.example]\n"
+        + "      cli:\n        probe: bin/probe.mjs\n",
+    );
+    const git = simpleGit(originDir);
+    await git.add(".");
+    await git.commit("declare a host");
+
+    writeConfig(`${declareTools}  use:\n    - plugin: probe\n      from: tools\n`);
+    await activateDeclaredPlugins("sess", workspaceDir, {
+      ...deps(),
+      runInstall: async () => ({ ok: false, reason: "install for `probe` exited 1" }),
+    });
+    expect(getActivationState("sess", "tools")?.generation).toBeUndefined();
+
+    const snapshot = assemblePluginSnapshot("sess", workspaceDir, null, {
+      containerManager: {
+        isEgressContained: () => true,
+        resolveEgress: () => ({ contained: true, extraHosts: [] }),
+      },
+    } as unknown as ApiDeps);
+
+    // `grantable` and not merely present: the row carries the two Allow buttons,
+    // and any other verdict renders a sentence instead of them (planning#383).
+    expect(snapshot.repos[0]?.uses[0]?.hosts).toEqual([
+      { host: "downloads.vendor.example", reach: "grantable" },
+    ]);
   });
 
   it("an activation that finishes after disposal cannot repopulate the state map", async () => {
