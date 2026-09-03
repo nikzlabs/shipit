@@ -26,6 +26,7 @@ import { ChatHistoryManager } from "../chat-history.js";
 import { persistTurnInProgress } from "../chat-card-persistence.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
 import type { SubAgentConsultCard, SubAgentSpawnTarget } from "../../shared/types.js";
+import type { ConsultResultDeliveryRequest } from "./consult-result-delivery.js";
 import type * as InstalledHarnesses from "../../shared/installed-harnesses.js";
 import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../../shared/sub-agent-run.js";
 import { WorkerAbortedError, WorkerTimeoutError } from "../worker-http.js";
@@ -1898,6 +1899,131 @@ describe("runSubAgent — committing work a consult left after its turn ended (p
     expect(res.status).toBe("success");
     expect(res.text).toBe("done");
   });
+});
+
+/**
+ * docs/287 — the OTHER half of "the parent turn already ended": the work is
+ * committed (planning#301, above) and then the agent is actually told.
+ *
+ * On a ShipIt-started turn nothing else does that — the CLI ran one-shot, so it
+ * reaped its background job and exited, and `agent_self_wake` cannot happen. The
+ * consult finished, the card persisted, the user read the review, and the agent
+ * was never re-invoked. These pin the wiring: the terminal card and the
+ * originating turn's epoch reach the delivery, and they reach it AFTER the
+ * commit — a wake that beat the commit could start a turn which discards the
+ * consult's own edits.
+ */
+describe("runSubAgent — handing a finished consult back to the agent (docs/287)", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let git: GitManager;
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-sub-agent-deliver-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    initGlobalGitConfig(tmpDir);
+    setGitIdentity("Test", "test@test.com");
+    git = new GitManager(tmpDir);
+    await git.init();
+    fs.writeFileSync(path.join(tmpDir, "turn-work.txt"), "from the turn");
+    await git.autoCommit("Agent turn");
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function scenario(opts: { spawnResult?: Partial<SubAgentRunResult> } = {}) {
+    const runner = {
+      subAgentSpawnsThisTurn: 0,
+      sessionId: "s1",
+      sessionDir: tmpDir,
+      running: true,
+      turnEpoch: 4,
+      turnSummary: "Launching a Codex review in the background",
+      pendingCommitLink: null as unknown,
+      emitMessage: vi.fn(),
+      schedulePostTurnPush: vi.fn(),
+      chatMessageGroups: [] as never[],
+      steeredMessages: [] as never[],
+      recordedCards: [] as never[],
+      spawnSubAgent: vi.fn(async () => {
+        fs.writeFileSync(path.join(tmpDir, "consult.md"), "codex findings");
+        runner.running = false; // the launching turn ended while the consult ran
+        return {
+          status: "success" as const,
+          text: "done",
+          truncated: false,
+          durationMs: 1_100_000,
+          costUsd: 0,
+          ...opts.spawnResult,
+        };
+      }),
+    };
+    /** What the tree looked like at the instant the delivery was invoked. */
+    let treeCleanAtDelivery: boolean | undefined;
+    const deliverConsultResult = vi.fn(async (_req: ConsultResultDeliveryRequest) => {
+      treeCleanAtDelivery = await git.isClean();
+    });
+    const deps = {
+      sessionManager: { get: () => ({ id: "s1", kind: "repo", agentId: "claude", agentPinned: true }), list: () => [] },
+      credentialStore: { getEnableSubAgents: () => true },
+      agentRegistry: { refreshAuth: vi.fn(), get: () => ({ name: "Codex", installed: true, hasRunnableModels: true }) },
+      runnerRegistry: { get: () => runner },
+      usageManager: { record: vi.fn(), getSessionUsage: () => null, getSessionTokenTotals: () => null },
+      chatHistoryManager: { replaceInProgress: vi.fn(), append: vi.fn(), updateSubAgentConsultCard: vi.fn(() => true) },
+      createGitManager: (dir: string) => new GitManager(dir),
+      deliverConsultResult,
+    } as never;
+    return { runner, deps, deliverConsultResult, treeClean: () => treeCleanAtDelivery };
+  }
+
+  it("delivers the terminal card, with the turn that asked for it, after the commit", async () => {
+    const s = scenario();
+
+    const res = await runSubAgent(deps(s), "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+
+    expect(s.deliverConsultResult).toHaveBeenCalledTimes(1);
+    const req = s.deliverConsultResult.mock.calls[0][0];
+    expect(req.sessionId).toBe("s1");
+    expect(req.originatingTurnEpoch).toBe(4);
+    expect(req.card.status).toBe("success");
+    expect(req.card.spawnId).toBe(res.spawnId);
+    // The SAME text the caller got back, so the wake can point at the card
+    // instead of carrying a second copy (planning#247).
+    expect(req.card.outputMarkdown).toBe("done");
+    // Ordering, not sequence-by-inspection: the consult's own edits are already
+    // in git by the time a turn could be woken on top of them.
+    expect(s.treeClean()).toBe(true);
+  });
+
+  /** A failed run is still an answer the agent has to react to. */
+  it("delivers a failed consult too", async () => {
+    const s = scenario({ spawnResult: { status: "error", text: "", error: "boom" } });
+
+    await runSubAgent(deps(s), "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+
+    expect(s.deliverConsultResult).toHaveBeenCalledTimes(1);
+    expect(s.deliverConsultResult.mock.calls[0][0].card.status).toBe("error");
+  });
+
+  /** Delivery is a courtesy on top of the result — never a way to lose it. */
+  it("still returns the consult's result when the delivery throws", async () => {
+    const s = scenario();
+    s.deliverConsultResult.mockImplementation(async () => { throw new Error("registry exploded"); });
+
+    const res = await runSubAgent(deps(s), "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+
+    expect(res.status).toBe("success");
+    expect(res.text).toBe("done");
+  });
+
+  /** Narrow helper so the `as never` cast stays in one place. */
+  function deps(s: { deps: unknown }): Parameters<typeof runSubAgent>[0] {
+    return s.deps as Parameters<typeof runSubAgent>[0];
+  }
 });
 
 describe("sweepSubAgentCredentialsOnSignOut", () => {

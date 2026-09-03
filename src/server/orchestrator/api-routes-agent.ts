@@ -21,6 +21,7 @@ import {
   dispatchAgentMessage,
   materializeRunner,
   runSubAgent,
+  deliverConsultResultByWake,
   parseSubAgentSpawnTarget,
   getSubAgentResult,
   waitForSubAgentResult,
@@ -161,6 +162,26 @@ export async function registerAgentRoutes(
             // planning#301 — lets the service commit work a backgrounded consult left
             // behind once its parent turn has already ended.
             createGitManager: deps.createGitManager,
+            // docs/287 — …and then hand the result to the agent. On a
+            // ShipIt-started turn (a merge wake, a child report, CI fix) the
+            // turn is one-shot, so there is no resident CLI to notice the
+            // finished background job and no live shim to print its text; the
+            // consult completed, its card persisted, and nobody was told. Same
+            // wake deps `POST /:sessionId/report` passes for docs/233.
+            deliverConsultResult: (req) =>
+              deliverConsultResultByWake(
+                {
+                  sessionManager: deps.sessionManager,
+                  runnerRegistry: deps.runnerRegistry,
+                  chatHistoryManager: deps.chatHistoryManager,
+                  defaultAgentId: deps.defaultAgentId,
+                  credentialsDir: deps.credentialsDir,
+                  credentialStore: deps.credentialStore,
+                  providerAccountManager: deps.providerAccountManager,
+                  containerManager: deps.containerManager,
+                },
+                req,
+              ),
           },
           request.params.id,
           {

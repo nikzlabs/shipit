@@ -467,13 +467,13 @@ export function wireAgentListeners(
       // `session_agent_finished` — only from `turn-executor`'s
       // `rearmForCliStartedTurn`, which `beginRearm` refuses to run when the
       // turn is not streaming. On a one-shot turn the process's `done` reaches
-      // `broadcastFinishedIfIdle`, which is suppressed by the very `running`
-      // flag set above, so announcing the start would pin a green dot on every
-      // sidebar with nothing left to clear it. That stuck `running` is
-      // pre-existing (and, per the `agent_self_wake` branch below, not thought
-      // to be reachable through the one-shot adapter, which reaps its
-      // background tasks and exits at turn end); it is not this change's to fix,
-      // but it is a reason not to broadcast a start we cannot promise to retract.
+      // `broadcastFinishedIfIdle`, so announcing a start there would depend on
+      // that broadcast actually firing. docs/287 made it fire — the
+      // non-streaming `done` branch now clears the latched `running` first — but
+      // the retraction still says only "the session is idle again", never "that
+      // adopted turn ran and finished", because on a one-shot process it did
+      // not. Left streaming-only: this is a start we still cannot promise to
+      // retract meaningfully.
       if (startsTurn && opts.useStreaming === true) {
         deps.sseBroadcast("session_agent_started", { sessionId: turnSessionId });
       }
@@ -766,15 +766,21 @@ export function wireAgentListeners(
       //
       // NOT gated on `opts.useStreaming`, unlike the assistant edge below, and
       // that asymmetry is deliberate rather than an oversight. The executor
-      // refuses to re-arm a non-streaming turn, so in principle a wake arriving
-      // between a one-shot turn's `agent_result` and its `done` would set
-      // `running = true` with no flow left to clear it. That state needs an
-      // event the one-shot adapter does not produce — it reaps its background
-      // tasks and exits at turn end (docs/235 probe A) — and gating here would
-      // change docs/235's shipped contract, which
-      // `integration_tests/self-wake-midturn.test.ts` pins on a non-streaming
-      // session. Left as-is: pre-existing, unreachable through the adapter, and
-      // not this phase's to redefine.
+      // refuses to re-arm a non-streaming turn, so a wake arriving between a
+      // one-shot turn's `agent_result` and its `done` sets `running = true` with
+      // no flow left to clear it.
+      //
+      // docs/287 — that state used to be described here as "unreachable through
+      // the adapter", on the reasoning that a one-shot CLI reaps its background
+      // tasks and exits at turn end (docs/235 probe A). **Production disproves
+      // it**: on 2026-09-03 a `task_notification` arrived in the same second as
+      // process exit, twice, latching the runner busy until the next user action
+      // tripped the "stuck running=true" reset 45 and 5 minutes later. The fix is
+      // in `turn-executor.ts`'s non-streaming `done` branch, which now clears the
+      // flag exactly as the streaming branch does — NOT a gate here, which would
+      // change docs/235's shipped contract (pinned on a non-streaming session by
+      // `integration_tests/self-wake-midturn.test.ts`) and would also suppress
+      // the busy state for the window the notification legitimately covers.
       adoptCliStartedTurn("self-wake");
       // docs/109 reqs 10–11 — the SAME event is also the only completion signal
       // a backgrounded subagent ever produces. Its `tool_result` was written

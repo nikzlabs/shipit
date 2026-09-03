@@ -1501,6 +1501,92 @@ describe("post-turn flow for a self-woken turn", () => {
   });
 
   /**
+   * docs/287 — …and the same stray notification must not leave the session
+   * LATCHED BUSY. Production, 2026-09-03, twice in one session.
+   *
+   * The non-streaming `done` branch used to trust `agent_result` to have cleared
+   * `running`. `adoptCliStartedTurn` re-latches it on every `agent_self_wake`
+   * (that edge rides the CLI's `task_notification`, which fires whenever a
+   * background job reports back), and a one-shot process has no resident CLI
+   * left to run — or end — the turn it just adopted. So nothing cleared it
+   * again, and the three `running`-guarded steps in `done` all no-opped: no
+   * `session_agent_finished`, no idle signal, and the session read busy in every
+   * sidebar until the next user action tripped the "stuck running=true" reset —
+   * 45 minutes later in the first incident, 5 in the second. The comment in
+   * `ws-handlers/agent-listeners.ts` called this state unreachable through the
+   * one-shot adapter; the notification landed in the same second as process exit
+   * both times.
+   *
+   * This is what made a backgrounded `shipit agent run` consult undeliverable on
+   * a ShipIt-started turn: the session that owed the agent a wake never even
+   * looked idle.
+   */
+  it("clears the latched running flag when a task notification lands after a one-shot turn's result", async () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: repoDir,
+      defaultAgentId: "claude" as AgentId,
+    });
+    const agent = makeFakeAgent();
+    const sseBroadcast = vi.fn();
+    let idleSignals = 0;
+    runner.on("idle", () => { idleSignals += 1; });
+
+    const deps: SystemTurnDeps = {
+      agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
+      autoCommit: vi.fn(realAutoCommit),
+      scheduleAutoPush: vi.fn(),
+      listenerDeps: makeListenerDeps(sseBroadcast),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+
+    await executeAgentTurn(runner, deps, agent as never, {
+      agentId: "claude" as AgentId,
+      sessionId: "s1",
+      prompt: "p",
+      userText: "one-shot",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: null,
+      drainNext: vi.fn(async () => {}),
+      emit: () => {},
+      useStreaming: false,
+    });
+    await waitFor(() => agent.run.mock.calls.length === 1, "turn started");
+
+    // The production event order: result, then the backgrounded consult's
+    // notification, then process exit in the same second.
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await flush();
+    expect(runner.running).toBe(false);
+
+    await selfWake(agent);
+    // The latch itself is docs/235's shipped contract and is left alone…
+    expect(runner.running).toBe(true);
+
+    agent.emit("done", 0);
+
+    // …but `done` now unlatches it, so the session settles idle on its own
+    // instead of waiting for a "stuck running=true" reset on the next user
+    // action.
+    await waitFor(() => !runner.running, "one-shot turn settled idle");
+    await waitFor(
+      () => sseBroadcast.mock.calls.some(
+        ([type, payload]) => type === "session_agent_finished"
+          && (payload as { sessionId: string }).sessionId === "s1",
+      ),
+      "finished SSE broadcast",
+    );
+    // Last of all, after the commit — the remediation trigger that a latched
+    // `running` also silently swallowed.
+    await waitFor(() => idleSignals === 1, "idle signalled");
+
+    runner.dispose({ force: true });
+  });
+
+  /**
    * The re-arm's ninth hand-over, and the one it was missing: the adopted turn's
    * TURN-START HEAD.
    *
