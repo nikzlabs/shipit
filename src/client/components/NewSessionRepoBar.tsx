@@ -9,7 +9,7 @@ import { parseRepoLabel } from "../utils/repo-label.js";
 import type { RepoInfo } from "../../server/shared/types.js";
 
 /**
- * docs/259 — the mobile new-session screen's answer to "which repo am I in?".
+ * docs/259 — the new-session screen's answer to "which repo am I in?".
  *
  * Tapping `+` on the mobile tab bar starts a session in a repo the app picked
  * IMPLICITLY (the current session's repo, else the active repo) and lands on
@@ -24,8 +24,11 @@ import type { RepoInfo } from "../../server/shared/types.js";
  * `!showNewSessionView` — so the slot has one occupant at a time and the
  * handover on graduation is automatic, costing no steady-state vertical space.
  *
- * Mobile only. The desktop already answers the question in its always-visible
- * sidebar, where the group for this repo renders its `New session` row selected.
+ * Every viewport (req 1). The desktop sidebar names the repo as well, but it is
+ * across the window from the composer the user is typing in, and the bar is the
+ * switcher too (req 3). The only thing the viewport changes is the picker's
+ * shape: a bottom sheet under 768px (`useIsMobile`'s boundary, so `md:` is the
+ * desktop side), a centered dialog above it.
  */
 export function NewSessionRepoBar({
   repoSlug,
@@ -102,19 +105,21 @@ export function NewSessionRepoBar({
           the same way QuickCaptureOverlay does: the wrapper pushes a history
           entry and maps Back → onOpenChange(false). The bottom-sheet layout is
           kept bespoke rather than forced into DialogContent's fullscreen-on-
-          mobile mold — a three-row repo list does not warrant a whole screen. */}
+          mobile mold — a three-row repo list does not warrant a whole screen.
+          `md:` turns the same sheet into a centered card: a list anchored to the
+          bottom edge of a wide window reads as a mobile surface left on. */}
       {pickerOpen && (
         <Dialog open onOpenChange={(o) => { if (!o) setPickerOpen(false); }}>
           <div
             role="dialog"
             aria-modal="true"
             aria-label="Choose a repository"
-            className="fixed inset-0 z-50 flex flex-col justify-end bg-(--color-bg-overlay)"
+            className="fixed inset-0 z-50 flex flex-col justify-end bg-(--color-bg-overlay) md:items-center md:justify-center"
             onClick={(e) => {
               if (e.target === e.currentTarget) setPickerOpen(false);
             }}
           >
-            <div className="max-h-[70vh] overflow-y-auto rounded-t-xl border-t border-(--color-border-secondary) bg-(--color-bg-elevated) pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2">
+            <div className="max-h-[70vh] overflow-y-auto rounded-t-xl border-t border-(--color-border-secondary) bg-(--color-bg-elevated) pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 md:w-72 md:rounded-xl md:border md:pb-3 md:shadow-2xl">
               <h2 className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-(--color-text-tertiary)">
                 Start this session in
               </h2>

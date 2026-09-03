@@ -1,10 +1,10 @@
 ---
 issue: planning#336
-title: Repo context bar on the mobile new-session screen
+title: Repo context bar on the new-session screen
 description: A tappable repo bar in the PR-card slot on /{slug}/new, plus per-repo new-session drafts.
 ---
 
-# 259 — Repo context bar on the mobile new-session screen
+# 259 — Repo context bar on the new-session screen
 
 Implements [`requirements.md`](requirements.md). The treatment is option **B**
 in [`mocks/repo-context.html`](mocks/repo-context.html), chosen from five.
@@ -26,7 +26,7 @@ drawer (req 3).
 ### 1. The bar (reqs 1–3)
 
 A new `NewSessionRepoBar` renders in the chat panel exactly where
-`PrLifecycleCard` renders, gated on `showNewSessionView && isMobile`. The two
+`PrLifecycleCard` renders, gated on `showNewSessionView` alone. The two
 are mutually exclusive by construction — the PR card's condition already
 includes `!showNewSessionView` — so the slot has one occupant at a time and the
 handover on graduation is automatic, with no vertical space added to the steady
@@ -47,9 +47,10 @@ It is one full-width `<button>`:
   `newSessionRepoUrl` is found by matching `parseRepoLabel` against that slug.)
 - **A trailing caret**, and tapping anywhere opens the repo picker.
 
-Mobile only (req 6 is about the screen, and the desktop already answers the
-question in its always-visible sidebar). Desktop rendering is literally
-unchanged.
+Every viewport (req 1). The desktop sidebar names the repo as well — its group
+for this repo renders a selected `New session` row — but that is across the
+window from the composer the user is typing into, and it is not the switcher
+req 3 asks for. Req 6 still fences the change to this one screen.
 
 ### 2. The picker (req 3)
 
@@ -63,6 +64,11 @@ already in would reset the view and take the draft they just typed with it.
 Hidden repos (docs/222) are out of the list, since they are out of the sidebar —
 except the repo the user is currently in, which is listed and checked even when
 hidden, or the picker would claim they are somewhere they are not.
+
+The sheet is bottom-anchored under 768px and a centered card at or above it —
+`md:`, because that is where `useIsMobile`'s `(max-width: 767px)` stops. Purely
+responsive classes on the two elements the sheet already had; a list pinned to
+the bottom edge of a wide window reads as a mobile surface left switched on.
 
 The sheet layout is bespoke inside the shared `Dialog` wrapper, which is what
 `QuickCaptureOverlay` already does: the wrapper buys Back-button dismissal, and
@@ -148,7 +154,7 @@ non-fullscreen sheet primitive ever lands.
 - `MessageInput.test.tsx` — a draft typed under one new-session slug is restored
   after switching to another slug and back (req 4).
 
-The gating (`showNewSessionView && isMobile`, never alongside the PR lifecycle
-card) is a two-clause condition in `App.tsx` rather than component logic, and
-`App` has no render-level test harness to hang an assertion on. It is verified in
-the dogfood instance at a mobile viewport instead.
+The gating (`showNewSessionView`, never alongside the PR lifecycle card) is a
+condition in `App.tsx` rather than component logic, and `App` has no
+render-level test harness to hang an assertion on. It is verified in the dogfood
+instance at both viewports instead.

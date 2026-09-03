@@ -4,7 +4,7 @@ import { NewSessionRepoBar } from "./NewSessionRepoBar.js";
 import type { RepoInfo } from "../../server/shared/types.js";
 
 /**
- * docs/259 — the mobile new-session screen's repo bar.
+ * docs/259 — the new-session screen's repo bar, on every viewport.
  *
  * The bar answers "which repo will this session be created in?" (reqs 1, 2) and
  * its picker is the way to change that answer without backing out through the
