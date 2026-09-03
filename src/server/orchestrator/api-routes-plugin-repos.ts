@@ -336,7 +336,17 @@ export function assemblePluginSnapshot(
   // the report and never to the allowance: showing a host must not widen reach,
   // and granting one is a deliberate user act on the browser-only egress routes.
   const hostGroups = resolvePluginHosts(
-    pluginHostDeclarationsFor(config.plugins, config.pluginExports, live),
+    pluginHostDeclarationsFor(
+      config.plugins,
+      config.pluginExports,
+      live,
+      // The version the last attempt TRIED, which for a first activation that
+      // could not install is the ONLY version that ever declared anything. Its
+      // failure message points at the Allow buttons on this card, so without
+      // this the message named an affordance the card could not render.
+      (repoName) =>
+        (sessionId ? getActivationState(sessionId, repoName)?.declaredHosts : undefined) ?? null,
+    ),
     egressHostReach({
       contained: containEgress,
       // planning#383 — the deployment axis. Without it the card offers a grant

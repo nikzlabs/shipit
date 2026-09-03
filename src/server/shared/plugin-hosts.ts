@@ -62,6 +62,18 @@ export interface PluginHostDeclaration {
   hosts: string[];
 }
 
+/**
+ * The least an export has to be for its hosts to be collectable: a name to key
+ * it by and the hosts it declares.
+ *
+ * Narrower than `PluginExport` on purpose. A generation whose install FAILED has
+ * its checkout deleted (`plugin-generations.ts`), so the only record of what it
+ * declared is what the attempt kept in memory — and req 24's affordance has to
+ * work for exactly that version, since it is the one the user is about to grant
+ * hosts for and refresh.
+ */
+export type DeclaredHostsManifest = readonly Pick<PluginExport, "name" | "hosts">[];
+
 /** {@link PluginHostDeclaration} with each host resolved (req 24). */
 export interface PluginHostGroup {
   repo: string;
@@ -71,16 +83,19 @@ export interface PluginHostGroup {
 }
 
 /**
- * Collect the hosts every activated plugin declares, from the LIVE manifest —
- * so a refresh that adds a host is visible without recreating the session.
+ * Collect the hosts every activated plugin declares — so a refresh that adds a
+ * host is visible without recreating the session.
  *
- * `manifestFor` returns `null` for a repository with nothing live, and that is
- * reported as nothing rather than as "needs no network": a repository whose
- * version could not be read has not told us what it calls.
+ * `manifestFor` returns `null` for a repository that has declared nothing this
+ * session can see, and that is reported as nothing rather than as "needs no
+ * network": a repository whose version could not be read has not told us what it
+ * calls. Which versions it reads is the caller's decision, and the orchestrator
+ * reads two (`orchestrator/plugin-hosts.ts`): what is live, and what the last
+ * attempt tried to activate.
  */
 export function declaredPluginHosts(
   plugins: PluginReposConfig,
-  manifestFor: (repoName: string) => readonly PluginExport[] | null,
+  manifestFor: (repoName: string) => DeclaredHostsManifest | null,
 ): PluginHostDeclaration[] {
   return declaredPluginNeeds(plugins, manifestFor, (e) => e.hosts).map((d) => ({
     repo: d.repo,

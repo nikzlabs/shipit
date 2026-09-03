@@ -39,13 +39,20 @@ export interface PluginNeedDeclaration {
 /**
  * Walk every activated plugin and collect what `pick` reads off its export.
  *
- * `manifestFor` returns a repository's live manifest, or `null` when there is
- * none to read yet — a tracked repository that has never activated.
+ * `manifestFor` returns a repository's manifest, or `null` when there is none to
+ * read — a tracked repository that has never activated and whose last attempt
+ * said nothing either.
+ *
+ * Generic over the export shape so a caller that needs ONE field can answer from
+ * something smaller than a parsed manifest. Req 24's host collector uses that:
+ * the hosts of a generation that failed to install are remembered as names and
+ * hosts alone, because its checkout is deleted on the failure path and there is
+ * no manifest left to re-read (`orchestrator/plugin-hosts.ts`).
  */
-export function declaredPluginNeeds(
+export function declaredPluginNeeds<T extends Pick<PluginExport, "name">>(
   plugins: PluginReposConfig,
-  manifestFor: (repoName: string) => readonly PluginExport[] | null,
-  pick: (exported: PluginExport) => readonly string[],
+  manifestFor: (repoName: string) => readonly T[] | null,
+  pick: (exported: T) => readonly string[],
 ): PluginNeedDeclaration[] {
   const declarations: PluginNeedDeclaration[] = [];
 

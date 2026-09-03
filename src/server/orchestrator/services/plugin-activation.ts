@@ -37,6 +37,7 @@ import {
 } from "../plugin-state.js";
 import { resolveShipitConfig, type ShipitConfig } from "../../shared/shipit-config.js";
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
+import type { DeclaredHostsManifest } from "../../shared/plugin-hosts.js";
 import type { DeclaredPluginRepo } from "../../shared/plugin-repos.js";
 import { destinationKey, pluginCloneUrl } from "../../shared/plugin-repos.js";
 
@@ -55,6 +56,17 @@ export interface PluginRepoActivationState {
   warning?: string;
   /** Selected exports the declared version lacks, when that is why it failed (phase 2). */
   missingSelectors?: string[];
+  /**
+   * req 24 — the hosts the version that FAILED declares, when the attempt got
+   * far enough to read them. The card resolves these against the session's
+   * egress allowlist beside whatever is live, so a plugin whose very first
+   * install was denied still gets the Allow buttons its failure message points
+   * at (`orchestrator/plugin-hosts.ts`).
+   *
+   * Transient like everything else here, and for the same reason: the version
+   * this describes was never published, so nothing on disk remembers it.
+   */
+  declaredHosts?: DeclaredHostsManifest;
 }
 
 /**
@@ -578,6 +590,7 @@ export async function activateDeclaredPlugins(
           ...(outcome.previous ? { generation: outcome.previous } : {}),
           ...(outcome.warning ? { warning: outcome.warning } : {}),
           ...(outcome.missingSelectors?.length ? { missingSelectors: outcome.missingSelectors } : {}),
+          ...(outcome.declaredHosts?.length ? { declaredHosts: outcome.declaredHosts } : {}),
         });
         console.warn(`[plugins:${sessionId}] ${repo.name}: ${outcome.reason}`);
         return;

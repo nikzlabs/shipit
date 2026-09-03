@@ -57,6 +57,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { safeSimpleGit } from "../shared/git-hooks-guard.js";
 import { parse as parseYaml } from "yaml";
+import type { DeclaredHostsManifest } from "../shared/plugin-hosts.js";
 import type { DeclaredPluginRepo, PluginExport } from "../shared/plugin-repos.js";
 import { parsePluginExports, destinationKey, declaredRefLabel } from "../shared/plugin-repos.js";
 import { resolveDurablePin } from "./plugin-pins.js";
@@ -247,6 +248,20 @@ export type ActivationOutcome =
        * the dogfood instance: the card stated one fact twice).
        */
       missingSelectors?: string[];
+      /**
+       * req 24 — what the selected exports of the version that just failed
+       * declare they must reach, carried out of the attempt because nothing else
+       * can answer for it: the staging checkout is deleted on this path, so the
+       * manifest is gone by the time anyone asks.
+       *
+       * Without it a FIRST activation that fails has no live generation, the
+       * card's host rows resolve from live generations only, and req 24's
+       * "offer an affordance to add the declared hosts" had nothing to render —
+       * while the failure text told the user to press exactly that button. The
+       * declaration still grants nothing; this is only what makes the gap
+       * visible enough to act on.
+       */
+      declaredHosts?: DeclaredHostsManifest;
     };
 
 /**
@@ -1010,6 +1025,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
           return {
             status: "failed",
             reason: outcome.reason ?? "plugin install failed",
+            ...declaredHostsField(selected),
             ...withPrevious,
             ...warningField,
           };
@@ -1203,6 +1219,23 @@ function uncoveredInstalls(
 function missingSelectors(selected: readonly string[], available: readonly string[]): string[] {
   const have = new Set(available.map((n) => n.toLowerCase()));
   return selected.filter((n) => !have.has(n.toLowerCase()));
+}
+
+/**
+ * req 24 — the hosts a failed attempt's selected exports declared, kept only
+ * when there is something to keep.
+ *
+ * Selected exports and not the whole manifest: an export the consuming project
+ * never activated declares nothing this session needs, and offering to widen its
+ * network for one would be the report granting reach on its own.
+ */
+function declaredHostsField(
+  selected: readonly PluginExport[],
+): { declaredHosts?: DeclaredHostsManifest } {
+  const declared = selected
+    .filter((e) => e.hosts.length > 0)
+    .map((e) => ({ name: e.name, hosts: [...e.hosts] }));
+  return declared.length > 0 ? { declaredHosts: declared } : {};
 }
 
 function selectorError(missing: readonly string[]): string {
