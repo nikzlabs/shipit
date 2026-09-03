@@ -68,7 +68,15 @@ but cannot land it. This feature moves the permission to the **repository**.
 
 ## Open questions
 
-None.
+- **Sessions whose pull request predates this feature.** Requirement 4 says an
+  agent can merge the pull request its own session opened, with no exception for
+  time. But ShipIt only starts recording which pull request it opened when this
+  ships, so for a session that already has one there is no proof — and a lookup
+  by branch cannot tell ShipIt's pull request from one a person opened on the
+  same branch, which requirement 5 forbids claiming. Either requirement 4 gains
+  an explicit exception for pull requests opened before the feature (the session
+  merges normally again as soon as it opens its next one), or the design needs a
+  proof for historical pull requests that requirement 5 can live with.
 
 ## Resolved questions
 

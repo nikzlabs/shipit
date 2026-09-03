@@ -106,6 +106,17 @@ opened (`:721`). It gains an `alreadyExisted` discriminator, as `agentCreatePr()
 already has, and both of its callers pass the result through. Without that the
 implementation must either record nothing or claim a person's pull request.
 
+**A create that crashes must not lose the pull request it made.** GitHub creates
+the pull request before `agentCreatePr()` returns, so a crash in between leaves a
+real pull request and no provenance — and the retry then takes the
+already-exists path, which this design forbids recording. The session could never
+merge its own work. So a create writes a durable **intent** first —
+`pr_create_intents(session_id, repo_key, branch)` — and clears it when provenance
+is recorded. A create path that finds an existing pull request may adopt it as
+provenance **only** when an intent row exists for that exact repository and
+branch, and the found pull request's head branch matches it. No intent, no
+adoption: a person's pull request on the same branch still cannot be claimed.
+
 **"If the created repo matches" is load-bearing twice over.** `agentCreatePr()`
 accepts `--repo` and passes the retargeted remote through
 (`api-routes-github.ts:320`), so a pull request opened in repository B could
@@ -186,11 +197,18 @@ case:
 | `reviewDecision` review_required / changes_requested | refuse (req 8) | refuse |
 | **null rollup** (zero checks) inside the CI grace | refuse: waiting for checks to start | refuse |
 | checks **pending** | refuse, naming `--auto` (req 17) | **arm** at `headRefOid` (req 18) |
-| checks passed, or null rollup past the grace | merge now | merge now |
+| checks passed, or null rollup past the grace | merge now | **arm** at `headRefOid` |
 
 The zero-check grace refuses **both** modes on purpose: an empty check set inside
 the window means "not registered yet", and arming against it would authorise a
 commit whose checks nobody has seen.
+
+**`--auto` always defers; it never merges inline.** An earlier draft let it merge
+at once when the checks were already green, which made the same flag mean two
+different things and contradicted the agent-facing promise that an armed merge
+lands after the turn. One meaning: `--auto` records what to merge and ShipIt
+performs it, exactly as requirement 18 words it. An agent that wants the merge
+*now* calls `gh pr merge` without the flag.
 
 **"Every reported check", not "every required check".** The rollup is GitHub's
 *combined* status for the commit and does not say which checks the base branch
@@ -292,7 +310,7 @@ CREATE TABLE agent_merge_armings (
   method       TEXT NOT NULL,      -- merge | squash | rebase
   state        TEXT NOT NULL,      -- pending | merging | settling
   origin       TEXT NOT NULL,      -- auto | direct
-  last_error   TEXT
+  revoked      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_agent_merge_armings_repo ON agent_merge_armings(repo_key);
 ```
@@ -328,18 +346,22 @@ record of a merge that already happened:
 | Outcome | What it means | What happens to the row |
 |---|---|---|
 | **witnessed success** | a parsed response saying the merge landed | → `settling` |
-| **definitive refusal** | GitHub answered no — conflict, protection, moved head | `origin` decides (below) |
+| **definitive refusal** | GitHub answered no — conflict, protection, moved head | deleted, reason surfaced once |
 | **indeterminate** | a transport error, a timeout, an unparseable body | stays `merging`, reconciled from the tuple |
 
-Only a definitive refusal ends a claim, and then `origin` decides how: a failed
-**direct** claim is **deleted**, because a plain `gh pr merge` must never leave
-behind something that merges later; a failed **auto** claim returns to `pending`
-with `last_error`, surfaced once rather than on every tick.
+A definitive refusal **ends the claim**, whatever its origin: the row is deleted
+and GitHub's reason is surfaced once. The requirements ask ShipIt to wait for
+*checks*, not to keep an arming alive after GitHub has said no — a conflict or a
+branch-protection refusal at a fixed commit does not resolve itself, and a
+lingering arming that retries every tick is both surprising and noisy. A direct
+refusal reaches the agent as the command's answer; an arming's refusal reaches
+the transcript as a notice.
 
 An indeterminate outcome — and equally a crash — leaves the row `merging`, and it
 is resolved from its own tuple: read that pull request in that repository and ask
-whether `expected_sha` merged. Merged ⇒ `settling`; open ⇒ follow `origin` back
-to `pending` or to deletion. Nothing is decided from the shape of the error.
+whether `expected_sha` merged. Merged ⇒ `settling`. Still open ⇒ back to
+`pending` for an arming, deleted for a direct claim — unless the row is `revoked`,
+which terminates it instead. Nothing is decided from the shape of the error.
 
 **A `pending` row also needs terminal handling.** The observation table refuses
 every non-open pull request, so without this a row whose pull request was merged
@@ -401,6 +423,16 @@ already exists rather than starting a new one, startup already completes adoptio
 before later automation, and gating it could block the very turn that owns a
 persisted direct claim. The gate is for new work only.
 
+**Releasing the claim must actively restart the queue.** Draining is
+event-driven: a finished turn drains once, and a background merge has no owning
+turn whose completion could drain afterwards — so a message that arrived while
+the claim was held would sit there until some unrelated event. Every exit from a
+background claim — settlement, cancellation, a refusal, or recovery — calls the
+shared `releaseQueuedTurn()` (`queue-drain.ts`), which exists for exactly this
+case: work with no turn of its own. It is called **after** the durable state
+change, so a crash in between leaves a row that reconciliation resolves rather
+than a queue released against a claim that still exists.
+
 ### Revocation (req 20)
 
 Turning `allow_agent_merge` off deletes every **pending** arming whose `repo_key`
@@ -410,11 +442,23 @@ network-dependent can fail and leave a merge armed while ShipIt reports the
 permission off, which is exactly what the native path could not avoid.
 
 Requirement 20 says *every* request that has not merged is cancelled, so the
-in-flight case is not waived: revocation and the claim-to-REST interval share a
-**per-repository boundary**. Revocation either wins — cancelling before the
-request is issued — or waits for an already-issued request to resolve before it
-reports the permission withdrawn. The user is never told the permission is off
-while a merge it authorised is still in flight.
+in-flight case is not waived. Three parts, because "wait for it to resolve"
+cannot be the whole answer — an indeterminate outcome deliberately leaves a row
+`merging`, so waiting could hang:
+
+- **The grant is re-checked atomically at `pending → merging`.** A claim is never
+  issued under a permission that has already been withdrawn.
+- **Revocation marks in-flight rows `revoked`, durably**, rather than deleting
+  them: a `merging` row must survive to be reconciled, but it must also carry the
+  fact that its permission is gone, or a restart would lose that intent.
+- **A revoked row never returns to `pending`.** Reconciliation reads its tuple: if
+  `expected_sha` merged, it settles (the merge already happened, and requirement 9
+  still wants the record); otherwise it terminates with a notice. Either way
+  nothing further is merged.
+
+Revocation reports the permission withdrawn once every row is `pending`-free —
+deleted, or marked and therefore incapable of merging again — not once every
+network call has returned.
 
 ## 5. Settlement (req 9, 10, 11)
 

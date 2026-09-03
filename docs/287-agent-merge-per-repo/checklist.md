@@ -19,6 +19,10 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 - [ ] Requested number must equal `session.pr_number`, and `pr_repo_key` must
       equal `canonicalRepoKey(session.remoteUrl)` at merge time; absent refuses
 - [ ] `quickCreatePr()` gains an `alreadyExisted` discriminator
+- [ ] `pr_create_intents` written before the GitHub create and cleared when
+      provenance is recorded; an existing pull request may be adopted **only**
+      against a matching intent (repo + branch), so a crash mid-create cannot
+      orphan the session's own PR and a person's PR still cannot be claimed
 - [ ] Written by `agentCreatePr()`, `POST /pr`, `/pr/quick` and `pr-lifecycle.ts`,
       only on `alreadyExisted: false` **and** a matching canonical repository
 - [ ] Cleared by the docs/202 re-arm, `pr-rearm.ts`, unarchive, and an `origin`
@@ -30,6 +34,8 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
       `headRefOid`, rollup state + its `oid`)
 - [ ] Any GraphQL `errors` refuses before anything else applies
 - [ ] The read returns a structured **observation**; the caller's mode decides
+- [ ] `--auto` **always** arms and never merges inline, including when the checks
+      are already green
 - [ ] Observation table implemented for **both** modes, including: pending checks
       refuse a direct merge but arm `--auto`; the zero-check grace refuses both
 - [ ] Any non-passing reported check refuses, required or not (req 7)
@@ -60,12 +66,11 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
       unarchive, repository removal, revocation and a second `--auto` act on
       `pending` rows only
 - [ ] Three merge outcomes: witnessed success → `settling`; **definitive GitHub
-      refusal** → `origin` decides; **indeterminate** (transport error, timeout,
-      unparseable body) → stays `merging`
-- [ ] `origin` decides only on a definitive refusal: a failed **direct** claim is
-      deleted, a failed **auto** claim returns to `pending` with `last_error`
+      refusal** → row deleted, reason surfaced once, whatever the origin;
+      **indeterminate** (transport error, timeout, unparseable body) → stays `merging`
 - [ ] A `merging` row (indeterminate outcome or crash) is resolved from its own
-      tuple, never from the shape of the error
+      tuple, never from the shape of the error: merged → `settling`; still open →
+      `pending` for an arming, deleted for a direct claim, terminated if `revoked`
 - [ ] Terminal handling for `pending` rows, so one cannot wait for ever on a pull
       request somebody else merged or closed: merged at `expected_sha` → settle
       with the narrow attribution; terminal at another head → cancel as
@@ -88,16 +93,24 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 - [ ] Adoption after a restart is **not** gated — it resumes an existing turn,
       and gating it could block the turn that owns a persisted direct claim
 - [ ] A background claim makes a turn wait; released when the merge has settled
+- [ ] **Every** background-claim exit — settlement, cancellation, refusal,
+      recovery — calls the shared `releaseQueuedTurn()` (`queue-drain.ts`) after
+      the durable state change; a background merge has no turn whose completion
+      would otherwise drain the queue
 - [ ] One in-flight claim makes the executor exclusive with managed auto-merge
-- [ ] A test proves a queued turn does not start mid-merge through the drain path
+- [ ] A full lifecycle test: a turn queues, waits, is released, and **starts** —
+      for both the interactive and the dispatched path, and through the drain
 
 ## Revocation (req 20)
 
 - [ ] Deletes **pending** armings by `canonicalRepoKey`, in the same transaction
       as the flag
-- [ ] Shares a per-repository boundary with the claim-to-REST interval: it either
-      cancels before the request is issued, or waits for an issued request to
-      resolve before reporting the permission withdrawn
+- [ ] The grant is re-checked atomically at `pending → merging`
+- [ ] In-flight rows are marked `revoked` durably, not deleted; a revoked row
+      never returns to `pending` — it settles an already-merged `expected_sha` or
+      terminates with a notice
+- [ ] Revocation reports the permission withdrawn once no row can merge again,
+      not once every network call has returned; covered by a timeout + restart test
 - [ ] A user's card-armed auto-merge is untouched
 
 ## Settlement (req 9, 10, 11)
