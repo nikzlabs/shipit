@@ -32,6 +32,7 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 - [ ] The read returns a structured **observation**; the caller's mode decides
 - [ ] Observation table implemented for **both** modes, including: pending checks
       refuse a direct merge but arm `--auto`; the zero-check grace refuses both
+- [ ] Any non-passing reported check refuses, required or not (req 7)
 - [ ] The read replaces `getCheckStatus()` on the **sandbox** path too
 - [ ] `CiGraceTracker` gains a merge entry point keyed by repository + PR + head
       SHA, where an unknown CI history starts the grace; tests cover both modes
@@ -71,11 +72,15 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 
 ## Merge and turn are mutually exclusive (docs/266 req 2)
 
-- [ ] A session-scoped merge claim, taken only when the session is idle
-- [ ] Interactive admission (`ws-handlers/send-message.ts`) queues while it is held
-- [ ] Dispatched admission (`session-runner.ts`) queues while it is held
-- [ ] Released when the merge has settled
+- [ ] Two claim kinds: **turn-owned** (the direct merge, which runs inside the
+      active turn) and **background** (the executor: idle session, empty queue)
+- [ ] One authoritative admission gate consulted by **every** turn start:
+      interactive send (`ws-handlers/send-message.ts`), dispatched turns
+      (`session-runner.ts` → `dispatched-turn.ts`), the queue drain
+      (`ws-handlers/agent-execution.ts`), and adoption after a restart
+- [ ] A background claim makes a turn wait; released when the merge has settled
 - [ ] One in-flight claim makes the executor exclusive with managed auto-merge
+- [ ] A test proves a queued turn does not start mid-merge through the drain path
 
 ## Revocation (req 20)
 

@@ -182,7 +182,7 @@ case:
 | rollup `commit.oid !== headRefOid` | refuse (req 16) | refuse |
 | repo-bound and `headRefOid !== local HEAD` | refuse (req 14) | refuse |
 | `state !== "OPEN"`, or `isDraft` | refuse (req 7) | refuse |
-| a required check failing | refuse (req 7) | refuse |
+| the rollup is not `SUCCESS` and not pending — any reported check failing, errored or actioned | refuse (req 7) | refuse |
 | `reviewDecision` review_required / changes_requested | refuse (req 8) | refuse |
 | **null rollup** (zero checks) inside the CI grace | refuse: waiting for checks to start | refuse |
 | checks **pending** | refuse, naming `--auto` (req 17) | **arm** at `headRefOid` (req 18) |
@@ -191,6 +191,16 @@ case:
 The zero-check grace refuses **both** modes on purpose: an empty check set inside
 the window means "not registered yet", and arming against it would authorise a
 commit whose checks nobody has seen.
+
+**"Every reported check", not "every required check".** The rollup is GitHub's
+*combined* status for the commit and does not say which checks the base branch
+requires; the per-check `isRequired` flag would mean paging every check run, and
+the branch-protection API needs an Administration permission ShipIt's
+installation tokens deliberately omit (`github-app-token.ts:91`). Requirement 7
+was reworded to match what can actually be decided fail-closed from one field: a
+failing check blocks an agent merge whether or not GitHub calls it required. That
+is stricter than branch protection, and deliberately so — the user can still
+merge from the pull-request card, which is governed by GitHub's own rules.
 
 **Any GraphQL `errors` refuses before anything else applies.** `graphqlQuery()`
 logs non-rate-limit errors and still returns the body, so a partial response can

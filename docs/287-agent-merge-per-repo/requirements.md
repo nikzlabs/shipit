@@ -27,14 +27,17 @@ but cannot land it. This feature moves the permission to the **repository**.
 6. When the permission is off, an agent that tries to merge gets a refusal that
    says the permission is off for this repository and where the user turns it
    on.
-7. These guardrails apply to every agent merge, with the permission on:
-   required checks must pass, a draft pull request is refused, an administrator
-   override is refused, and GitHub's own refusal is shown word for word.
+7. These guardrails apply to every agent merge, with the permission on: **every
+   check GitHub reports** for the commit must pass, a draft pull request is
+   refused, an administrator override is refused, and GitHub's own refusal is
+   shown word for word.
 8. A merge that GitHub's review rules block is refused, and the refusal says
    that a review is missing or that changes were requested.
 9. Each agent merge is recorded in the chat transcript. The record names the
    pull request, says the agent merged it, and is still there after a page
-   reload.
+   reload. If ShipIt cannot prove that it performed the merge — a crash between
+   the merge and the record — the record says instead that the agent asked for
+   that commit to be merged and that it is now merged.
 10. After the agent merges its own pull request, the session can open the next
     pull request without help from the user.
 11. After an agent merge, the pull request card and the session state are the
@@ -65,23 +68,7 @@ but cannot land it. This feature moves the permission to the **repository**.
 
 ## Open questions
 
-- **Which checks must pass (req 7)?** The requirement says "required checks must
-  pass". A live read gives the *combined* status for the commit, which cannot say
-  which checks GitHub treats as required, and the API that could is behind a
-  permission ShipIt's installation tokens deliberately do not have. So either the
-  merge blocks on **every reported check** (stricter than the words: a failing
-  optional check would stop an agent merge), or the design reads each check's own
-  required flag and pages through them (faithful, more machinery, and it fails
-  closed on anything it cannot classify). This changes what the product does, so
-  it is not an implementation detail.
-- **What may a crash-recovery record claim (req 9)?** Requirement 9 says the
-  record "says the agent merged it". If ShipIt crashes between GitHub accepting a
-  merge and the record being written, recovery can prove that the agent
-  *authorised* that exact commit and that the commit is now merged — but not that
-  ShipIt performed the merge, because a user, the pull-request card or GitHub's
-  own auto-merge could have landed the same commit. Either requirement 9 allows
-  that narrower wording for the recovery case, or it needs a proof of performance
-  that survives a crash.
+None.
 
 ## Resolved questions
 
@@ -117,3 +104,16 @@ but cannot land it. This feature moves the permission to the **repository**.
   choice was to drop the capability, to build a ShipIt arming bound to the exact
   commit, or to accept the gap. **Answer: build the safe arming now.** (req 18,
   19, 20, 21)
+- 2026-09-03 — Requirement 7 said "required checks must pass", but a live read
+  returns GitHub's combined status for the commit and cannot say which checks are
+  required; the per-check flag needs paging every check run, and the
+  branch-protection API needs a permission ShipIt's tokens deliberately omit.
+  **Answer: every reported check must pass.** Stricter than the original wording
+  — a failing optional check stops an agent merge, though the user can still
+  merge from the pull-request card — and fail-closed from one field. (req 7)
+- 2026-09-03 — Requirement 9 said the record "says the agent merged it", but a
+  crash between GitHub accepting the merge and the record being written leaves
+  ShipIt able to prove only that the agent authorised that exact commit and that
+  the commit is now merged; a user, the card or GitHub's own auto-merge could
+  have landed it. **Answer: say what is provable.** A witnessed merge keeps the
+  full claim; a recovered record uses the narrower wording. (req 9)

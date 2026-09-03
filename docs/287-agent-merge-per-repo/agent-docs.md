@@ -8,7 +8,7 @@ description: The replacement "Merging PRs" section for shipit-docs/github.md, he
 
 This is the replacement for the **Merging PRs (`gh pr merge`)** section of
 `src/server/shipit-docs/github.md` (today at line 255), written against
-[requirements.md](./requirements.md) 14–21.
+[requirements.md](./requirements.md).
 
 **It is held here on purpose, and the implementing pull request moves it across
 verbatim.** `shipit-docs/` is baked into the session-worker image and every agent
@@ -74,11 +74,12 @@ commits and pushes nothing for you. Push your own work before you merge.
 
 #### The guardrails
 
-- **Required checks must be green.** These are GitHub's checks on the PR's head
-  commit — not anything ShipIt-local. A repo that configures **no checks merges
-  normally**; a *failing* or *still-running* check refuses. A check result that
-  describes an **earlier commit** than the PR's head also refuses: what was
-  tested is not what would merge.
+- **Every check GitHub reports must pass** — not only the ones branch protection
+  calls required. A repo that configures **no checks merges normally**; any
+  *failing* or *still-running* check refuses, advisory ones included. That is
+  stricter than merging by hand, on purpose. A check result that describes an
+  **earlier commit** than the PR's head also refuses: what was tested is not what
+  would merge.
 - **Branch protection and required reviews are respected.** If GitHub rejects the
   merge, its reason is surfaced — the shim never forces past it. `--admin` is
   rejected.
