@@ -425,8 +425,13 @@ describe("lifetime and selectors", () => {
 
     // `grantable` and not merely present: the row carries the two Allow buttons,
     // and any other verdict renders a sentence instead of them (planning#383).
+    //
+    // `optional: false` because the manifest above declares a BARE STRING, and
+    // that still means required (reqs 23, 24) — the backward-compatibility rule
+    // asserted here over the whole path, from a real commit's manifest to the
+    // snapshot the browser receives, rather than at the parser alone.
     expect(snapshot.repos[0]?.uses[0]?.hosts).toEqual([
-      { host: "downloads.vendor.example", reach: "grantable" },
+      { host: "downloads.vendor.example", reach: "grantable", optional: false },
     ]);
   });
 
