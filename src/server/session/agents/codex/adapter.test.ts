@@ -91,6 +91,16 @@ vi.mock("node:child_process", () => ({
   },
 }));
 
+// Real implementation, made observable. planning#509 — the app-server's
+// teardown must take its MCP servers' own children with it, so which helper the
+// adapter reaches for is the contract, not an implementation detail.
+vi.mock("../../../shared/kill-child.js", async (importOriginal) => {
+  // eslint-disable-next-line no-restricted-syntax -- the mock factory's signature requires the inline import type
+  const real = await importOriginal<typeof import("../../../shared/kill-child.js")>();
+  return { ...real, killProcessTree: vi.fn(real.killProcessTree) };
+});
+import { killProcessTree } from "../../../shared/kill-child.js";
+
 describe("CodexAdapter", () => {
   let adapter: CodexAdapter;
   let events: AgentEvent[];
@@ -1040,6 +1050,24 @@ describe("CodexAdapter", () => {
 
     adapter.kill();
     expect(fakeProc.killed).toBe(true);
+  });
+
+  /**
+   * planning#509 — Codex tears its app-server down at the end of EVERY turn, and
+   * a plain pid kill left the MCP servers' own descendants running: a Playwright
+   * browser outlived one production turn by ~19 minutes, burning CPU. Teardown
+   * must go through the tree helper, so assert the call rather than only that
+   * the root died.
+   */
+  it("tears down the whole process tree, not just the app-server pid", async () => {
+    await createAndInit("Hello");
+
+    adapter.kill();
+    expect(vi.mocked(killProcessTree)).toHaveBeenCalledWith(
+      fakeProc,
+      "SIGTERM",
+      expect.objectContaining({ label: "codex" }),
+    );
   });
 
   it("interrupts gracefully via turn/interrupt instead of killing the process", async () => {

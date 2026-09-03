@@ -26,6 +26,14 @@ vi.mock("../../../shared/strip-ansi.js", () => {
   };
 });
 
+// Real implementation, made observable — see the tree-teardown tests below.
+vi.mock("../../../shared/kill-child.js", async (importOriginal) => {
+  // eslint-disable-next-line no-restricted-syntax -- the mock factory's signature requires the inline import type
+  const real = await importOriginal<typeof import("../../../shared/kill-child.js")>();
+  return { ...real, killProcessTree: vi.fn(real.killProcessTree) };
+});
+import { killProcessTree } from "../../../shared/kill-child.js";
+
 
 import * as childProcess from "node:child_process";
 const mockChildSpawn = vi.mocked(childProcess.spawn);
@@ -912,6 +920,26 @@ describe("ClaudeProcess", () => {
       // Should not throw
       claude.kill();
     });
+
+    /**
+     * planning#509 — an MCP server's descendants (a Playwright browser above
+     * all) outlive a kill aimed at the CLI's pid alone, so teardown goes through
+     * the tree helper. Which helper is the contract, not a detail.
+     */
+    it("tears down the whole process tree", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test" });
+      claude.kill();
+
+      expect(vi.mocked(killProcessTree)).toHaveBeenCalledWith(
+        mockProc,
+        "SIGTERM",
+        expect.objectContaining({ label: "claude" }),
+      );
+    });
   });
 
   describe("error handling", () => {
@@ -1348,6 +1376,22 @@ describe("StreamingClaudeProcess", () => {
       const tools = args[args.indexOf("--allowedTools") + 1];
       expect(tools.split(",")).toContain("ExitPlanMode");
     });
+  });
+
+  /** planning#509 — see the ClaudeProcess tree-teardown test. */
+  it("tears down the whole process tree on kill", () => {
+    const mockProc = createMockChildProcess();
+    mockChildSpawn.mockReturnValue(mockProc as never);
+
+    const streaming = new StreamingClaudeProcess();
+    streaming.run({ prompt: "first" });
+    streaming.kill();
+
+    expect(vi.mocked(killProcessTree)).toHaveBeenCalledWith(
+      mockProc,
+      "SIGTERM",
+      expect.objectContaining({ label: "streaming-claude" }),
+    );
   });
 
   // docs/150 — same contract as ClaudeProcess: the resident streaming process

@@ -24,7 +24,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
-import { killChild } from "../../../shared/kill-child.js";
+import { killProcessTree } from "../../../shared/kill-child.js";
 import type {
   AgentId,
   AgentCapabilities,
@@ -560,9 +560,16 @@ export class CodexAdapter
     this.kill();
   }
 
+  /**
+   * Tear the app-server down — with its whole descendant tree. Codex is
+   * one-app-server-per-turn, so this runs at the end of EVERY turn, and it is
+   * the path that leaked: the MCP servers died with the app-server while a
+   * Playwright browser (spawned `detached` by playwright-core, so in a session
+   * of its own) survived reparented to pid 1. See `killProcessTree`.
+   */
   kill(): void {
     if (this.proc) {
-      killChild(this.proc, "SIGTERM");
+      killProcessTree(this.proc, "SIGTERM", { label: "codex" });
       this.proc = null;
     }
     this.pendingRequests.forEach(({ reject }) => reject(new Error("Process killed")));

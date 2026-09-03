@@ -61,7 +61,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { killChild } from "../../../shared/kill-child.js";
+import { killChild, killProcessTree } from "../../../shared/kill-child.js";
 import { OPENCODE_TOOL_NAMES } from "../../../shared/agent-registry.js";
 import { HARNESSES } from "../../../shared/catalogue/harnesses.js";
 import type {
@@ -540,7 +540,7 @@ export class OpencodeAdapter
       "request timeout of its own. Check what the turn had already done before retrying it.";
     console.warn(`[opencode] stall deadline (${minutes}m) reached — ending the turn`);
     this.emit("log", "server", this.stallReason);
-    killChild(proc, "SIGTERM");
+    killProcessTree(proc, "SIGTERM", { label: "opencode-stall" });
   }
 
   /**
@@ -752,10 +752,12 @@ export class OpencodeAdapter
       // The turn's final step completed. The CLI exits promptly on its own
       // when no MCP servers are configured — but with them it NEVER does
       // (see STOP_EXIT_GRACE_MS), so the adapter owns termination. The close
-      // handler synthesizes the (successful) result either way.
+      // handler synthesizes the (successful) result either way. Tree-wide
+      // (planning#509): this is the ordinary end of every OpenCode turn, and
+      // MCP servers are exactly what leaves a browser behind.
       this.stopKillTimer = setTimeout(() => {
         this.stopKillTimer = null;
-        if (this.proc) killChild(this.proc, "SIGTERM");
+        if (this.proc) killProcessTree(this.proc, "SIGTERM", { label: "opencode" });
       }, STOP_EXIT_GRACE_MS);
     }
     if (!this.emittedInit && typeof event.sessionID === "string") {
@@ -779,7 +781,7 @@ export class OpencodeAdapter
       if (!this.errorKillTimer && this.proc) {
         this.errorKillTimer = setTimeout(() => {
           this.errorKillTimer = null;
-          if (this.proc) killChild(this.proc, "SIGTERM");
+          if (this.proc) killProcessTree(this.proc, "SIGTERM", { label: "opencode-error" });
         }, ERROR_EXIT_GRACE_MS);
       }
     }
@@ -883,7 +885,7 @@ export class OpencodeAdapter
     // escalation timer: it is a plain HTTP server with no retry loop to get
     // stuck in, so SIGTERM is enough and there is no CLI to be gentle with.
     const compacting = this.compactionProc;
-    if (compacting) killChild(compacting, "SIGTERM");
+    if (compacting) killProcessTree(compacting, "SIGTERM", { label: "opencode-compaction" });
 
     const proc = this.proc;
     if (!proc) return;
@@ -903,17 +905,17 @@ export class OpencodeAdapter
     if (this.interruptKillTimer) clearTimeout(this.interruptKillTimer);
     this.interruptKillTimer = setTimeout(() => {
       this.interruptKillTimer = null;
-      if (this.proc === proc) killChild(proc, "SIGTERM");
+      if (this.proc === proc) killProcessTree(proc, "SIGTERM", { label: "opencode-interrupt" });
     }, 5_000);
   }
 
   kill(): void {
     this.clearErrorKillTimer();
-    if (this.proc) killChild(this.proc, "SIGTERM");
+    if (this.proc) killProcessTree(this.proc, "SIGTERM", { label: "opencode" });
     // docs/276 — a compaction has no `this.proc`; killing its server aborts the
     // in-flight summarize, which rejects and settles the turn through the
     // ordinary failure path.
-    if (this.compactionProc) killChild(this.compactionProc, "SIGTERM");
+    if (this.compactionProc) killProcessTree(this.compactionProc, "SIGTERM", { label: "opencode-compaction" });
     this.cleanupTurnFiles();
   }
 
