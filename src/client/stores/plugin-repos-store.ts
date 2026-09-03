@@ -318,6 +318,11 @@ export function pluginsTabVisible(snapshot: PluginReposSnapshot | null): boolean
  * wiring a plugin that calls external APIs should be "a known, guided
  * onboarding step rather than a surprise or a guessing game", which a gap
  * nobody is told about is not.
+ *
+ * An **optional** name is the one gap that does not (reqs 23, 24), by the same
+ * reasoning read the other way: the plugin CAN do its job, so there is nothing
+ * the user must act on, and a dot that never clears however much they set is a
+ * dot they stop reading. The card still shows it, with its affordance.
  */
 export function pluginsAttention(snapshot: PluginReposSnapshot | null): boolean {
   if (!snapshot) return false;
@@ -329,12 +334,15 @@ export function pluginsAttention(snapshot: PluginReposSnapshot | null): boolean 
         // `?? []` — a snapshot cached by an older client build has neither
         // `credentials` nor `hosts` on its use entries; a stale shape must not
         // throw here.
-        r.uses.some((u) => (u.credentials ?? []).some((c) => !c.satisfied)) ||
+        // `optional` is likewise absent from an older client's cached snapshot,
+        // where undefined is falsy and the name reads as required — which is
+        // what it meant before optionality existed.
+        r.uses.some((u) => (u.credentials ?? []).some((c) => !c.satisfied && !c.optional)) ||
         // Every verdict but `allowed` is a gap the user should know about —
         // including the two no grant closes (planning#383): a plugin that cannot
         // reach its host is exactly the "surprise" req 24 exists to prevent,
         // whether or not the fix is the user's to make.
-        r.uses.some((u) => (u.hosts ?? []).some((h) => h.reach !== "allowed")),
+        r.uses.some((u) => (u.hosts ?? []).some((h) => h.reach !== "allowed" && !h.optional)),
     )
   );
 }

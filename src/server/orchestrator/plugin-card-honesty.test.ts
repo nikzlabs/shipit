@@ -57,7 +57,7 @@ function cardHost(reachOf: (host: string) => ReturnType<ReturnType<typeof egress
     [],
   );
   const groups = resolvePluginHosts(
-    [{ repo: "dev", plugin: "probe", alias: "probe", hosts: [host] }],
+    [{ repo: "dev", plugin: "probe", alias: "probe", hosts: [{ name: host, optional: false }] }],
     reachOf,
   );
   const card = buildPluginReposSnapshot(plugins, [], null, [], {}, [], groups).repos[0];
@@ -175,10 +175,10 @@ describe("and the route the tab fetches says the same (planning#383)", () => {
     // `fal.run` IS in this session's resolved extras — the state that used to
     // read "not yet allowed, here are two buttons" and now cannot.
     expect(await hosts()).toEqual([
-      { host: "fal.run", reach: "blocked-by-deployment" },
+      { host: "fal.run", reach: "blocked-by-deployment", optional: false },
       // And the installer's own resolve list is still reachable, so the fix
       // does not name a gap where there is none.
-      { host: "registry.npmjs.org", reach: "allowed" },
+      { host: "registry.npmjs.org", reach: "allowed", optional: false },
     ]);
   });
 

@@ -644,7 +644,7 @@ describe("createPluginInstallRunner", () => {
    */
   it("names the declared hosts the session blocks when a contained install fails", async () => {
     const { docker } = fakeDocker({ exit: 1, logs: "npm ERR! getaddrinfo EAI_AGAIN\n" });
-    const probe = { ...exportWith("probe", "npm ci"), hosts: ["downloads.vendor.example"] };
+    const probe = { ...exportWith("probe", "npm ci"), hosts: [{ name: "downloads.vendor.example", optional: false }] };
 
     const result = await createPluginInstallRunner({
       docker, image: "worker:test", sessionId: "s1", stateDir,
@@ -672,7 +672,10 @@ describe("createPluginInstallRunner", () => {
       exit: 1,
       logs: "Error: EACCES: permission denied, mkdir '/opt/playwright-browsers/__dirlock'\n",
     });
-    const probe = { ...exportWith("probe", "npm ci"), hosts: ["api.vendor.example"] };
+    const probe = {
+      ...exportWith("probe", "npm ci"),
+      hosts: [{ name: "api.vendor.example", optional: false }],
+    };
 
     const result = await createPluginInstallRunner({
       docker, image: "worker:test", sessionId: "s1", stateDir,
@@ -689,11 +692,47 @@ describe("createPluginInstallRunner", () => {
     expect(result.reason).toContain("egress allowlist");
   });
 
+  // reqs 23, 24 — the clause earns its place by naming a host the plugin says
+  // it NEEDS. A host it works without is a gap the project may have decided to
+  // leave open, and naming it beside an unrelated install failure states a need
+  // that does not exist — the irrelevance above, made permanent. (The live
+  // case: `assetgen`'s pixellab hosts, reported beside an install failure they
+  // had nothing to do with.)
+  it("says nothing about an OPTIONAL declared host the session blocks", async () => {
+    const { docker } = fakeDocker({ exit: 1, logs: "npm ERR! syntax error\n" });
+    const probe = {
+      ...exportWith("probe", "npm ci"),
+      hosts: [{ name: "pixellab.ai", optional: true }],
+    };
+
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir,
+      egress: () => CONTAINED_EGRESS,
+    })(job([probe]));
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).not.toContain("pixellab.ai");
+    expect(result.reason).not.toContain("egress allowlist");
+    // …and the same host declared REQUIRED still is named, so the silence above
+    // comes from the flag and not from the fixture.
+    const required = {
+      ...exportWith("probe", "npm ci"),
+      hosts: [{ name: "pixellab.ai", optional: false }],
+    };
+    const strict = await createPluginInstallRunner({
+      docker: fakeDocker({ exit: 1, logs: "npm ERR! syntax error\n" }).docker,
+      image: "worker:test", sessionId: "s1", stateDir,
+      egress: () => CONTAINED_EGRESS,
+    })(job([required]));
+    expect(strict.ok).toBe(false);
+    expect(strict.reason).toContain("pixellab.ai");
+  });
+
   // Saying "egress" about an install that failed for another reason points the
   // user at the wrong thing, so a declared host that IS allowed stays silent.
   it("says nothing about egress when the declared host is already allowed", async () => {
     const { docker } = fakeDocker({ exit: 1, logs: "npm ERR! syntax error\n" });
-    const probe = { ...exportWith("probe", "npm ci"), hosts: ["ok.example"] };
+    const probe = { ...exportWith("probe", "npm ci"), hosts: [{ name: "ok.example", optional: false }] };
 
     const result = await createPluginInstallRunner({
       docker, image: "worker:test", sessionId: "s1", stateDir,

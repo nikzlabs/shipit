@@ -1151,6 +1151,21 @@ plugins:
     expect(build(services).services[0].credentials).toEqual(["FAL_KEY", "OPENAI_API_KEY"]);
   });
 
+  it("carries an OPTIONAL name too — delivery does not read the flag (reqs 23, 24)", () => {
+    // Optionality bounds how an UNSATISFIED name is reported. A value the
+    // project has provided must reach the service either way, so this surface
+    // strips the flag rather than filtering on it; filtering here would deliver
+    // nothing for a key the user deliberately set.
+    const { services } = collect(SELF_USE, `
+plugins:
+  probe:
+    compose: tools/probe/docker-compose.yml
+    credentials: [FAL_KEY, { name: PIXELLAB_KEY, optional: true }]
+`);
+    expect(services[0].credentials).toEqual(["FAL_KEY", "PIXELLAB_KEY"]);
+    expect(build(services).services[0].credentials).toEqual(["FAL_KEY", "PIXELLAB_KEY"]);
+  });
+
   it("a plugin that declares none carries none", () => {
     const { services } = collect(SELF_USE);
     expect(services[0].credentials).toEqual([]);

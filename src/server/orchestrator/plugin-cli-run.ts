@@ -529,7 +529,9 @@ async function runHeldPluginCommand(
     // values (including the browser baked at `/opt/playwright-browsers`) are
     // both safer and more useful than a ShipIt path that is always empty.
     ...(await pluginContainerEnv(deps.docker, deps.image, { toolchain: pinned !== null })),
-    ...declaredCredentialEnv(deps, exported.credentials),
+    // Names only — an optional credential the project has set is delivered
+    // exactly as a required one is (reqs 23, 24).
+    ...declaredCredentialEnv(deps, exported.credentials.map((c) => c.name)),
   ];
 
   try {

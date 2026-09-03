@@ -19,6 +19,11 @@ function manifest(raw: unknown): PluginExport[] {
   return parsePluginExports(raw, []);
 }
 
+/** A declared name, required unless said otherwise (reqs 23, 24). */
+function req(name: string, optional = false) {
+  return { name, optional };
+}
+
 const DECLARATION = {
   repos: [
     { repo: "a/b", name: "tools", branch: "main" },
@@ -44,7 +49,7 @@ describe("declaredPluginHosts", () => {
       name === "tools" ? TOOLS : null,
     );
     expect(declarations).toEqual([
-      { repo: "tools", plugin: "palette", alias: "artk", hosts: ["fal.run", "cdn.fal.run"] },
+      { repo: "tools", plugin: "palette", alias: "artk", hosts: [req("fal.run"), req("cdn.fal.run")] },
     ]);
   });
 
@@ -77,7 +82,7 @@ describe("declaredPluginHosts", () => {
 
 describe("resolvePluginHosts", () => {
   const declarations = [
-    { repo: "tools", plugin: "palette", alias: "artk", hosts: ["fal.run", "cdn.fal.run"] },
+    { repo: "tools", plugin: "palette", alias: "artk", hosts: [req("fal.run"), req("cdn.fal.run")] },
   ];
 
   it("asks the session's predicate for every host and carries its verdict through", () => {
@@ -88,8 +93,8 @@ describe("resolvePluginHosts", () => {
     });
     expect(asked).toEqual(["fal.run", "cdn.fal.run"]);
     expect(groups[0].hosts).toEqual([
-      { host: "fal.run", reach: "allowed" },
-      { host: "cdn.fal.run", reach: "grantable" },
+      { host: "fal.run", reach: "allowed", optional: false },
+      { host: "cdn.fal.run", reach: "grantable", optional: false },
     ]);
   });
 
@@ -99,6 +104,41 @@ describe("resolvePluginHosts", () => {
     // "not yet allowed" no matter what the manifest says.
     const groups = resolvePluginHosts(declarations, () => "grantable");
     expect(groups[0].hosts.every((h) => h.reach !== "allowed")).toBe(true);
+  });
+
+  it("asks the predicate about an OPTIONAL host too, and carries the flag through", () => {
+    // Optionality bounds how a gap is REPORTED. It must not suppress the
+    // reachability answer itself — a surface that asks directly still gets the
+    // truth (req 24 grants nothing, and hides nothing).
+    const asked: string[] = [];
+    const groups = resolvePluginHosts(
+      [{ repo: "tools", plugin: "assetgen", alias: "assetgen", hosts: [req("fal.run"), req("pixellab.ai", true)] }],
+      (h) => {
+        asked.push(h);
+        return "grantable";
+      },
+    );
+    expect(asked).toEqual(["fal.run", "pixellab.ai"]);
+    expect(groups[0].hosts).toEqual([
+      { host: "fal.run", reach: "grantable", optional: false },
+      { host: "pixellab.ai", reach: "grantable", optional: true },
+    ]);
+  });
+
+  it("collects an optional host from the manifest as optional", () => {
+    const declarations = declaredPluginHosts(
+      config({
+        repos: [{ repo: "a/b", name: "tools", branch: "main" }],
+        use: [{ plugin: "assetgen", from: "tools" }],
+      }),
+      () =>
+        manifest({
+          plugins: {
+            assetgen: { hosts: ["fal.run", { name: "pixellab.ai", optional: true }] },
+          },
+        }),
+    );
+    expect(declarations[0]?.hosts).toEqual([req("fal.run"), req("pixellab.ai", true)]);
   });
 
   it("passes a verdict no grant can close through unchanged", () => {

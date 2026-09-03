@@ -327,7 +327,7 @@ plugins:
       const snap = await snapshot();
       expect(snap.repos[0].uses[0]).toMatchObject({
         alias: "probe",
-        credentials: [{ name: "FAL_KEY", satisfied: false }],
+        credentials: [{ name: "FAL_KEY", satisfied: false, optional: false }],
       });
     });
 
@@ -338,7 +338,7 @@ plugins:
         FAL_KEY: "fixture-live",
       });
       const snap = await snapshot();
-      expect(snap.repos[0].uses[0].credentials).toEqual([{ name: "FAL_KEY", satisfied: true }]);
+      expect(snap.repos[0].uses[0].credentials).toEqual([{ name: "FAL_KEY", satisfied: true, optional: false }]);
     });
 
     // req 23's platform boundary, end to end: the app under test holds a real,
@@ -365,9 +365,9 @@ plugins:
 
       const snap = await snapshot();
       expect(snap.repos[0].uses[0].credentials).toEqual([
-        { name: "GITHUB_TOKEN", satisfied: false },
-        { name: "LINEAR_API_KEY", satisfied: false },
-        { name: "ANTHROPIC_API_KEY", satisfied: false },
+        { name: "GITHUB_TOKEN", satisfied: false, optional: false },
+        { name: "LINEAR_API_KEY", satisfied: false, optional: false },
+        { name: "ANTHROPIC_API_KEY", satisfied: false, optional: false },
       ]);
       // The platform store really is populated — the gaps are the boundary.
       expect(credentialStore.getGithubToken()).toBeTruthy();
@@ -383,7 +383,7 @@ plugins:
         FAL_KEY: "fixture-wrong-store",
       });
       const snap = await snapshot();
-      expect(snap.repos[0].uses[0].credentials).toEqual([{ name: "FAL_KEY", satisfied: false }]);
+      expect(snap.repos[0].uses[0].credentials).toEqual([{ name: "FAL_KEY", satisfied: false, optional: false }]);
     });
   });
 
@@ -410,7 +410,7 @@ plugins:
       const snap = await snapshot();
       expect(snap.repos[0].uses[0]).toMatchObject({
         alias: "probe",
-        hosts: [{ host: "fal.run", reach: "allowed" }],
+        hosts: [{ host: "fal.run", reach: "allowed", optional: false }],
       });
     });
 

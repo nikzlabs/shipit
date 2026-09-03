@@ -31,12 +31,25 @@
  */
 
 import { declaredPluginNeeds } from "./plugin-needs.js";
-import type { PluginExport, PluginReposConfig } from "./plugin-repos.js";
+import type { PluginExport, PluginReposConfig, PluginRequirement } from "./plugin-repos.js";
 import type { EgressHostReach } from "./types.js";
 
 /** One declared host and what this session's egress configuration says about it. */
 export interface PluginHostNeed {
   host: string;
+  /**
+   * The plugin declared it `optional: true` — it works without reaching this
+   * host ({@link PluginRequirement}).
+   *
+   * It bounds only the REPORTING of an unsatisfied host: an unallowed optional
+   * host is something the plugin *can use*, not a gap the session must close,
+   * so it is stated quietly and left out of the card's need count and out of
+   * an install failure's blocked-hosts clause. It changes nothing else — the
+   * `reach` beside it is the same unflinching egress answer, an optional host
+   * that IS allowed behaves exactly like a required one that is, and the grant
+   * affordance stays available for a user who wants it after all.
+   */
+  optional: boolean;
   /**
    * The one verdict every host surface reads (`orchestrator/egress-host-reach.ts`):
    * reachable, closable by a user grant, or closable by nobody the user can be.
@@ -58,8 +71,8 @@ export interface PluginHostDeclaration {
   plugin: string;
   /** The consumer's alias — unique across the project, so it keys the group. */
   alias: string;
-  /** Declared hostnames, in manifest order, de-duplicated. */
-  hosts: string[];
+  /** Declared hostnames, in manifest order, de-duplicated, each required or not. */
+  hosts: PluginRequirement[];
 }
 
 /**
@@ -122,6 +135,9 @@ export function resolvePluginHosts(
     repo: d.repo,
     plugin: d.plugin,
     alias: d.alias,
-    hosts: d.hosts.map((host) => ({ host, reach: reachOf(host) })),
+    // `reachOf` is asked about EVERY declared host, optional ones included:
+    // optionality is about how a gap reads, and a surface that asked directly
+    // must still get the true answer (req 24 grants nothing, and hides nothing).
+    hosts: d.hosts.map((h) => ({ host: h.name, reach: reachOf(h.name), optional: h.optional })),
   }));
 }

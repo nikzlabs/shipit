@@ -79,6 +79,25 @@ exports:
           default: docs
 ```
 
+**A declared credential or host is REQUIRED unless the manifest says
+otherwise.** A plugin that merely *uses* one when it is given says so with a
+mapping, and the same grammar covers both lists:
+
+```yaml
+      credentials: [FAL_KEY, { name: PIXELLAB_KEY, optional: true }]
+      hosts:       [fal.run, { name: pixellab.ai,  optional: true }]
+```
+
+Optionality changes only how an unsatisfied name is reported: the Plugins card
+says "`assetgen` can use `pixellab.ai`" instead of counting it as an unmet need,
+and an install failure never blames it. It grants nothing, and an optional name
+the project HAS provided behaves exactly like a required one — the credential is
+delivered, the host is reachable. An optional row keeps whatever affordance a
+required one in the same state would have, for a user who wants to close the gap
+after all: "Add key…" for a credential, and the grant buttons for a host the
+session could actually be given — a host in one of the two states below carries
+the reason instead, exactly as a required one does.
+
 A plugin reads its settings from the JSON file at `$SHIPIT_SETTINGS`, which
 ShipIt writes from the manifest's defaults merged with the consumer's
 `overrides.settings` above. Read a plugin's manifest to learn what it exports
@@ -439,6 +458,11 @@ something you or the user can fix from the session:
 
 If a plugin's host is in either state, stop trying to grant it: the entry saves
 and changes nothing. Say which of the two it is and what would have to change.
+
+A host the manifest marked `optional: true` is not a gap to close. The card
+lists it quietly — "`assetgen` can use `pixellab.ai`" — and it counts toward no
+warning. Leaving it unallowed is a supported configuration, so do not report it
+as a problem, and do not name it as the cause of an unrelated failure.
 
 ## Writing a plugin
 

@@ -152,7 +152,12 @@ export function DeclaredSecretRow({
             placeholder={
               isSet
                 ? "•••••••• saved — type to replace"
-                : requirement.required
+                : // `pluginRequired` (docs/262 reqs 23, 24) counts here and
+                  // nowhere else on this row: a plugin's gap blocks no preview,
+                  // but this field is what the Plugins card's "Add key…" opens,
+                  // and offering "value (optional)" for a key that card says a
+                  // plugin NEEDS is the two surfaces contradicting each other.
+                  requirement.required || requirement.pluginRequired
                   ? "Required — set a value"
                   : "value (optional)"
             }

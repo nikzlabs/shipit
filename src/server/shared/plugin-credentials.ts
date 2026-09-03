@@ -34,12 +34,24 @@
  */
 
 import { declaredPluginNeeds } from "./plugin-needs.js";
-import type { PluginExport, PluginReposConfig } from "./plugin-repos.js";
+import type { PluginExport, PluginReposConfig, PluginRequirement } from "./plugin-repos.js";
 
 /** One declared credential name and whether this project has a value for it. */
 export interface PluginCredentialNeed {
   name: string;
   satisfied: boolean;
+  /**
+   * The plugin declared it `optional: true` — it works without this key
+   * ({@link PluginRequirement}).
+   *
+   * Like req 24's host half, this bounds only the REPORTING of an unsatisfied
+   * name: an unset optional key is something the plugin *can use*, so it is
+   * stated quietly and left out of the card's need count. `satisfied` beside it
+   * is the same answer either way, and delivery is untouched — an optional
+   * credential the project HAS set reaches the plugin exactly as a required one
+   * does, which is why every delivery surface reads the names and not this flag.
+   */
+  optional: boolean;
 }
 
 /**
@@ -54,8 +66,8 @@ export interface PluginCredentialDeclaration {
   plugin: string;
   /** The consumer's alias — unique across the project, so it keys the group. */
   alias: string;
-  /** Declared credential names, in manifest order, de-duplicated. */
-  credentials: string[];
+  /** Declared credential names, in manifest order, de-duplicated, each required or not. */
+  credentials: PluginRequirement[];
 }
 
 /**
@@ -127,15 +139,26 @@ export function resolvePluginCredentials(
     repo: d.repo,
     plugin: d.plugin,
     alias: d.alias,
-    credentials: d.credentials.map((name) => ({ name, satisfied: satisfiedNames.has(name) })),
+    credentials: d.credentials.map((c) => ({
+      name: c.name,
+      satisfied: satisfiedNames.has(c.name),
+      optional: c.optional,
+    })),
   }));
 }
 
-/** Every credential name any activated plugin declares, de-duplicated, sorted. */
+/**
+ * Every credential name any activated plugin declares, de-duplicated, sorted.
+ *
+ * **Optional names are included**, because this feeds the Secrets settings row
+ * — the place a user goes to SET a key. A plugin that can use a key is exactly
+ * a plugin whose key someone may want to provide, and a row that never appears
+ * cannot be filled in.
+ */
 export function pluginCredentialNames(
   declarations: readonly PluginCredentialDeclaration[],
 ): string[] {
-  return [...new Set(declarations.flatMap((d) => d.credentials))].sort();
+  return [...new Set(declarations.flatMap((d) => d.credentials.map((c) => c.name)))].sort();
 }
 
 /**
@@ -148,5 +171,25 @@ export function pluginClaimantsOf(
   declarations: readonly PluginCredentialDeclaration[],
   name: string,
 ): string[] {
-  return declarations.filter((d) => d.credentials.includes(name)).map((d) => d.alias).sort();
+  return declarations
+    .filter((d) => d.credentials.some((c) => c.name === name))
+    .map((d) => d.alias)
+    .sort();
+}
+
+/**
+ * Whether any activated plugin claiming this name cannot work without it.
+ *
+ * The Secrets settings row is the destination the Plugins card's "Add key…"
+ * opens, so the two must not disagree about the same key: a card saying "`artk`
+ * needs `FAL_KEY`" beside a field offering "value (optional)" is one surface of
+ * this feature contradicting the other. One required claimant is enough —
+ * setting the value satisfies every claimant, and the strictest one decides how
+ * the row reads.
+ */
+export function pluginRequiresName(
+  declarations: readonly PluginCredentialDeclaration[],
+  name: string,
+): boolean {
+  return declarations.some((d) => d.credentials.some((c) => c.name === name && !c.optional));
 }

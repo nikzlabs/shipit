@@ -38,7 +38,7 @@ import {
   type DeclaredHostsManifest,
   type PluginHostDeclaration,
 } from "../shared/plugin-hosts.js";
-import type { PluginExport, PluginReposConfig } from "../shared/plugin-repos.js";
+import type { PluginExport, PluginReposConfig, PluginRequirement } from "../shared/plugin-repos.js";
 import { liveManifestReader } from "./plugin-credentials.js";
 import type { LiveGenerations } from "./plugin-generations.js";
 
@@ -101,9 +101,11 @@ function mergeDeclaredHosts(
 ): DeclaredHostsManifest | null {
   if (!attempted) return live;
   if (!live) return attempted;
-  const byName = new Map<string, { name: string; hosts: string[] }>();
+  const byName = new Map<string, { name: string; hosts: PluginRequirement[] }>();
   // Live first, so the name a card shows is the running version's spelling and
-  // its hosts keep manifest order; the walk de-duplicates the values itself.
+  // its hosts keep manifest order; the walk de-duplicates the values itself —
+  // including the case where the two versions disagree about whether a host is
+  // optional, which it settles as REQUIRED (`plugin-needs.ts`).
   for (const e of [...live, ...attempted]) {
     const existing = byName.get(e.name.toLowerCase());
     if (existing) existing.hosts.push(...e.hosts);

@@ -24,6 +24,7 @@ import {
 import type { ComposeService } from "./compose-generator.js";
 import {
   pluginClaimantsOf,
+  pluginRequiresName,
   pluginCredentialNames,
   resolvePluginCredentials,
   satisfiedCredentialNames,
@@ -599,7 +600,8 @@ function resolvePluginServiceEnv(
  *   - A name a compose service ALREADY declares gains plugin claimants; it
  *     stays one row, because it is one stored secret. The compose metadata
  *     (`required`, `agent`, description) is authoritative and untouched — a
- *     plugin never gets to mark a project's secret required.
+ *     plugin never gets to mark a project's secret required. Its own
+ *     `pluginRequired` rides alongside (reqs 23, 24) and gates nothing.
  *   - A name only a plugin declares becomes a new row with no consuming
  *     service, so the user can set it from the same panel instead of hunting
  *     for where a plugin's key is supposed to go.
@@ -613,11 +615,17 @@ function mergePluginClaimants(
   const merged = new Map(declared.map((d) => [d.name, { ...d, services: [...d.services] }]));
   for (const name of pluginCredentialNames(pluginDeclarations)) {
     const claimants = pluginClaimantsOf(pluginDeclarations, name);
+    // reqs 23, 24 — whether any claimant cannot work without it, so the field
+    // this row offers does not read "value (optional)" for a key the Plugins
+    // card says a plugin NEEDS. Carried beside the compose `required` and never
+    // written onto it: this one gates no preview.
+    const pluginRequired = pluginRequiresName(pluginDeclarations, name);
     const existing = merged.get(name);
     if (existing) {
       existing.plugins = claimants;
+      existing.pluginRequired = pluginRequired;
     } else {
-      merged.set(name, { name, services: [], plugins: claimants });
+      merged.set(name, { name, services: [], plugins: claimants, pluginRequired });
     }
   }
   return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));

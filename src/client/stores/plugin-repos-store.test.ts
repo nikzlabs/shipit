@@ -170,25 +170,28 @@ describe("tab gating and attention (plan §3)", () => {
   });
 
   it("an unsatisfied plugin credential fires the dot (req 23)", () => {
-    const use = (satisfied: boolean) => ({
+    const use = (satisfied: boolean, optional = false) => ({
       plugin: "palette",
       alias: "artk",
       found: true,
-      credentials: [{ name: "FAL_KEY", satisfied }],
+      credentials: [{ name: "FAL_KEY", satisfied, optional }],
       hosts: [],
     });
     // A closed tab may hide information, never a gap the user must close.
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use(false)] }] }))).toBe(true);
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use(true)] }] }))).toBe(false);
+    // reqs 23, 24 — an OPTIONAL key the project never set is not a gap the user
+    // must close, so it must not light a dot that can then never be cleared.
+    expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use(false, true)] }] }))).toBe(false);
   });
 
   it("a declared host the session may not reach fires the dot (req 24)", () => {
-    const use = (reach: EgressHostReach) => ({
+    const use = (reach: EgressHostReach, optional = false) => ({
       plugin: "palette",
       alias: "artk",
       found: true,
       credentials: [],
-      hosts: [{ host: "fal.run", reach }],
+      hosts: [{ host: "fal.run", reach, optional }],
     });
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("grantable")] }] }))).toBe(true);
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("allowed")] }] }))).toBe(false);
@@ -196,6 +199,11 @@ describe("tab gating and attention (plan §3)", () => {
     // user should be told about: the plugin cannot do its job either way.
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("blocked-by-deployment")] }] }))).toBe(true);
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("blocked-by-session")] }] }))).toBe(true);
+    // …and an optional host is not, whichever way it is unreachable.
+    expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("grantable", true)] }] }))).toBe(false);
+    expect(
+      pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("blocked-by-deployment", true)] }] })),
+    ).toBe(false);
   });
 
   it("a snapshot from an older client build has neither list and must not throw", () => {

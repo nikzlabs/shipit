@@ -537,9 +537,18 @@ async function runInstallOnce(
  * leaving the user to retype each hostname into the global Settings editor.
  * Anything that stops an attempt carrying those hosts breaks this sentence, not
  * just a row.
+ *
+ * **An OPTIONAL host is never named here** (reqs 23, 24), for the same reason
+ * the wording above is careful: the clause earns its place by naming a host the
+ * plugin says it NEEDS. A host it works without is a gap the project may have
+ * decided to leave open, so appending it states a need that does not exist —
+ * the irrelevance above, made permanent. The card still shows it, quietly, with
+ * whatever affordance a required host in the same state would have.
  */
 function blockedHostsClause(policy: PluginEgressPolicy, job: PluginInstallJob): string {
-  const declared = job.exports.flatMap((e) => e.hosts ?? []);
+  const declared = job.exports.flatMap((e) =>
+    (e.hosts ?? []).filter((h) => !h.optional).map((h) => h.name),
+  );
   const blocked = unreachableDeclaredHosts(policy, declared);
   if (blocked.length === 0) return "";
   const names = blocked.map((h) => `\`${h}\``).join(", ");
