@@ -9,7 +9,7 @@ description: Widen the docs/224 merge gate from a per-sandbox grant to a per-rep
 Implements [requirements.md](./requirements.md). Extends
 `docs/224-sandbox-merge-capability` (the shim, the route, the guardrails).
 
-> **Revision 10, 2026-09-03.** Nine independent review rounds; every finding
+> **Revision 11, 2026-09-03.** Ten independent review rounds; every finding
 > verified at the source before it was accepted. Round 1 rebuilt the ownership
 > check, round 2 replaced the status gate and caught a `cwd` rule that would have
 > broken every merge, round 3 replaced the query and the grace window, round 4
@@ -150,8 +150,8 @@ repo-bound only:
 both kinds:
  3. one live read of the pull request                          (req 7, 8, 16, 17)
       · repo-bound: the PR head SHA must equal local HEAD              (req 14)
- 4. merge with expected sha = the head SHA that read returned        (req 16)
- 5. awaitMergeHandling(sessionId) before reporting success       (req 10, 11)
+ 4. claim durably (`merging`), then merge with expected sha             (req 16)
+ 5. record the witnessed merge from the REST response             (req 9, 10, 11)
 ```
 
 Steps 1 and 2 are **repo-bound only**: a sandbox session has no ShipIt
@@ -322,7 +322,7 @@ CREATE TABLE agent_merge_armings (
   pr_number    INTEGER NOT NULL,
   expected_sha TEXT NOT NULL,      -- the head the live read returned
   method       TEXT NOT NULL,      -- merge | squash | rebase
-  state        TEXT NOT NULL,      -- 'pending' | 'settling' (durable, see below)
+  state        TEXT NOT NULL,      -- 'pending' | 'merging' | 'settling'
   last_error   TEXT                -- surfaced once, not every tick
 );
 CREATE INDEX idx_agent_merge_armings_repo ON agent_merge_armings(repo_key);
@@ -397,7 +397,25 @@ arming to **`settling`**, and it is deleted only once
 `awaitMergeHandling()` has settled — otherwise the gate can close before the
 card, `mergedAt` and the reset eligibility do (req 10, 11).
 
-**`settling` is a durable column, not an in-memory flag**, and that is what makes
+**The row is claimed *before* the REST call, not after it.** Round 10 found the
+gap: an executor that only writes `settling` on success has an unrepresentable
+window — the row it is merging can be replaced or cleared while the call is in
+flight, and then its own success has nowhere to land (or a crash loses it
+entirely). So the state machine is `pending → merging → settling → deleted`:
+
+| State | Written | Who may touch it |
+|---|---|---|
+| `pending` | when `--auto` arms | every lifecycle clear, revocation, a second `--auto` |
+| `merging` | durably, immediately **before** the REST call | nothing but the executor |
+| `settling` | on a witnessed REST success | nothing but settlement |
+
+A second `--auto` while a row is `merging` or `settling` is **refused**, not
+queued — one row per session stays true and the primary key can never collide.
+On restart, a `merging` row is reconciled from its own tuple: read that pull
+request in that repository and ask whether `expected_sha` merged, then move it to
+`settling` or back to `pending`.
+
+**The state column is durable, not an in-memory flag**, and that is what makes
 revocation safe to race. Round 8's case: revocation arriving during or just after
 the REST call would otherwise delete the only record that a merge is in flight —
 and neither of the alternatives can recover it, since a forced verification is
@@ -421,16 +439,26 @@ paths acts on `pending` rows only.** A `settling` row is untouched by all of
 them; the only thing that removes it is settlement completing, or the session
 being destroyed outright (hard delete / full reset, through the cascade).
 
-**And settlement reads the row's own tuple, not the session's current targeting.**
-`forceVerifySessionPrState()` resolves the *current* tracker repository and the
-*current* branch, and the terminal lookup underneath it picks the latest pull
-request **by branch**, not by number — so after an origin change, a branch reset
-or a restart it cannot reliably settle the pull request that actually merged. The
-executor therefore reconciles a `settling` row from its immutable
-`(repo_key, pr_number, expected_sha)`: it reads that pull request in that
-repository, confirms that SHA merged, records it, and only then deletes the row.
-Updating the *session's* card state stays best-effort and is skipped when the
-session's repository identity no longer matches the row's.
+**Settlement never calls `forceVerifySessionPrState()`.** That function resolves
+the *current* tracker repository and the *current* branch, and the lookup beneath
+it picks the latest pull request **by branch**, not by number — so a re-arm or an
+unarchive inside the *same* repository is enough to make it settle the wrong pull
+request. Round 9's "skip when the repository changed" was therefore not enough,
+and round 10 was right to reject it.
+
+Instead: **a performed merge is recorded from what was witnessed, not
+rediscovered.** The REST response already says the merge happened and at which
+commit, so the performer calls the poller's merge bookkeeping directly with
+`(sessionId, owner, repo, prNumber, mergeSha)` — the same work `verifyMissingPr`
+does when it *detects* a merge (the merged snapshot and `mergedHeadSha`) followed
+by the merged callback that stamps `merged_at`. Nothing is polled, so nothing can
+observe the pull request as still open and resolve immediately, which is exactly
+how `awaitMergeHandling()` could return before `merged_at` existed.
+
+Any write to *session* state is guarded by the **whole** tuple: the session's
+current `pr_repo_key` **and** `pr_number` must still equal the row's. If either
+has moved on, the merge is still recorded against the row, and the session's card
+is left alone.
 
 **Clearing (all of it `pending`-only, per the monotonicity rule above).** On a
 settled merge; on a head that no longer matches; when the
@@ -464,12 +492,18 @@ the repository grant does not govern it (req 20).
 
 ## 4. After the merge (req 9, 10, 11)
 
-- **Settlement before success.** `forceVerifySessionPrState()` records the
-  terminal snapshot and merged-head anchor, but the callback that stamps
-  `mergedAt` is deliberately not awaited, and the docs/218 reset gate keys off
-  `mergedAt`. So the route awaits `awaitMergeHandling(sessionId)` (docs/282)
-  before reporting success — otherwise the very next command the agent is told to
-  run, `shipit branch reset-to-base`, can still see `not-merged`.
+- **Settlement before success — through the same machine as the arming.** A
+  direct merge takes the identical path: a durable `merging` claim before the
+  REST call, and the witnessed bookkeeping after it. Round 10 showed why the
+  earlier "verify then `awaitMergeHandling()`" was not enough — a one-shot
+  verification can still read the pull request as open, in which case no merge
+  handling is created and the await resolves immediately, so the command could
+  report success before `merged_at` existed and the agent's very next command,
+  `shipit branch reset-to-base`, would see `not-merged`. Recording from the
+  witnessed response removes the race rather than timing it, and the durable row
+  means a crash mid-way is reconciled instead of lost. **One settlement machine,
+  two callers** — `forceVerifySessionPrState()` and `awaitMergeHandling()` are
+  not used by either.
 - **The record (req 9).** `emitNoticeInTurn()` from
   `orchestrator/chat-card-persistence.ts` — it routes through `emitChatCard`, so
   it emits, records in-band and persists in one call. No new card type, no
@@ -534,6 +568,9 @@ repo-scoped agent permission exists.
 | 8 | revocation could delete a settling arming | durable `state`; revocation deletes `pending` only |
 | 9 | other lifecycle paths could still erase `settling` | `settling` is monotonic; every clear acts on `pending` only |
 | 9 | settlement used current session targeting | reconciled from the row's own repo + PR + SHA |
+| 10 | a same-repo re-arm still mis-settled | no `forceVerifySessionPrState()` at all; session writes need the whole tuple |
+| 10 | the row was claimed only after the REST call | durable `merging` claim before it; a second `--auto` is refused meanwhile |
+| 10 | a direct merge could report success before `merged_at` | both paths record from the witnessed response, through one machine |
 
 ## Key files
 

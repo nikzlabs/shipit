@@ -58,7 +58,8 @@ Revision 2 (2026-09-02), after two review rounds.
 ## `--auto` — the ShipIt arming (req 18–21)
 
 - [ ] Migration: `agent_merge_armings` (session, repo key, PR number, expected
-      SHA, method, **state**, last_error) + repo index + `ON DELETE CASCADE`
+      SHA, method, **state** `pending|merging|settling`, last_error) + repo index
+      + `ON DELETE CASCADE`
 - [ ] Repo-bound only; a sandbox `--auto` keeps today's behaviour (req 12)
 - [ ] `--auto` writes an arming; a second `--auto` replaces the first
 - [ ] No GitHub-native arming on the agent path at all
@@ -81,18 +82,27 @@ Revision 2 (2026-09-02), after two review rounds.
 - [ ] A REST success writes `settling` even if the row was deleted meanwhile, so a
       revocation racing the call cannot strand settlement or the merge record
 - [ ] Armings survive a restart (req 21)
-- [ ] `settling` is monotonic: origin change, a second `--auto`, archive, re-arm,
-      reset, unarchive, repository removal and revocation all act on `pending`
-      rows only; only settlement or session destruction removes a `settling` row
-- [ ] Settlement reconciles from the row's own `(repo_key, pr_number,
-      expected_sha)`, never from current session targeting; session card state is
-      best-effort and skipped when repository identity changed
+- [ ] Durable `merging` claim written **before** the REST call, by both the
+      executor and the direct merge path
+- [ ] A second `--auto` is refused while a row is `merging` or `settling`
+- [ ] `merging` and `settling` are monotonic: origin change, archive, re-arm,
+      reset, unarchive, repository removal, revocation and a second `--auto` all
+      act on `pending` rows only; only settlement or session destruction removes
+      a `merging`/`settling` row
+- [ ] Restart reconciles a `merging` row from its own tuple (did `expected_sha`
+      merge?) → `settling` or back to `pending`
+- [ ] Settlement records from the **witnessed REST response** — merged snapshot,
+      `mergedHeadSha`, then the merged callback that stamps `merged_at`
+- [ ] `forceVerifySessionPrState()` and `awaitMergeHandling()` are used by neither
+      merge path
+- [ ] Any write to session state requires the session's current `pr_repo_key`
+      **and** `pr_number` to still equal the row's
 - [ ] Cleared on merge, head change, PR close, **archive**, hard delete / full
       reset, docs/202 re-arm, reset, unarchive, repository removal
 - [ ] Notices use `persistNoticeUnattached()` when there is no runner
 - [ ] A successful REST response marks the arming **settling**; it is deleted only
-      after `forceVerifySessionPrState()` sees terminal state and
-      `awaitMergeHandling()` settles (or the gate can close too early)
+      once the witnessed bookkeeping is written (or the polling gate can close
+      before the card, `merged_at` and reset eligibility settle)
 - [ ] Terminal reconciliation records before deleting, and says only what it can
       prove: recovery records "the agent armed this commit and it is now merged";
       "the agent merged it" needs a witnessed REST success
@@ -101,7 +111,8 @@ Revision 2 (2026-09-02), after two review rounds.
 
 ## After the merge
 
-- [ ] `awaitMergeHandling(sessionId)` awaited before success is reported
+- [ ] Success is reported only after the witnessed bookkeeping is written, so the
+      agent's next `shipit branch reset-to-base` cannot see `not-merged`
 - [ ] `emitNoticeInTurn()` record (persisted, survives a reload)
 - [ ] Result tells the agent to run `shipit branch reset-to-base`
 
