@@ -2641,6 +2641,82 @@ describe("ServiceManager install gate (x-shipit-depends-on-install)", () => {
     expect(mgr.getService("web")?.status).toBe("running");
   });
 
+  /**
+   * Capture the `[timing]` lines a block produces. The gate's wait is the phase
+   * that dominates a cold session's "Starting…", and it had no number at all.
+   */
+  async function timingLines(run: () => Promise<void> | void): Promise<string[]> {
+    const seen: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((msg: unknown) => {
+      if (typeof msg === "string" && msg.startsWith("[timing]")) seen.push(msg);
+    });
+    try {
+      await run();
+    } finally {
+      spy.mockRestore();
+    }
+    return seen;
+  }
+
+  it("reports how long the install gate held the preview services", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, setPsResponse } = makeManager(dir, "test-session-gate-timing");
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+
+    const seen = await timingLines(async () => {
+      mgr.setInstallRunning(false);
+      await flushMicrotasks();
+    });
+
+    const gate = seen.filter(l => l.includes("install-gate"));
+    expect(gate).toHaveLength(1);
+    expect(gate[0]).toContain("install-gate for test-session-gate-timing");
+    expect(gate[0]).toMatch(/held=\d+ms/);
+    expect(gate[0]).toContain("services=1 outcome=started");
+  });
+
+  it("reports the gate wait as install-failed when the install fails", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr } = makeManager(dir, "test-session-gate-timing-failed");
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+
+    const seen = await timingLines(async () => {
+      mgr.setInstallRunning(false, { failed: true });
+      await flushMicrotasks();
+    });
+
+    const gate = seen.filter(l => l.includes("install-gate"));
+    expect(gate).toHaveLength(1);
+    expect(gate[0]).toContain("outcome=install-failed");
+  });
+
+  it("says nothing about a gate that held no service", async () => {
+    const dir = setup();
+    // Opted out of the gate, so `start()` brings it up directly and the gate
+    // holds nothing. A line here would appear in every ungated session's boot.
+    writeCompose(
+      dir,
+      "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n    x-shipit-depends-on-install: false\n",
+    );
+    const { mgr } = makeManager(dir, "test-session-gate-timing-none");
+
+    const seen = await timingLines(async () => {
+      mgr.setInstallRunning(true);
+      await mgr.start();
+      mgr.setInstallRunning(false);
+      await flushMicrotasks();
+    });
+
+    expect(seen.filter(l => l.includes("install-gate"))).toHaveLength(0);
+  });
+
   it("holds the gated start behind an in-flight stack op instead of racing it", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");

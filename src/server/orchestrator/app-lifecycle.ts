@@ -768,6 +768,10 @@ export function buildRunnerFactory(
     // o.sessionDir is session.workspaceDir (e.g. /workspace/sessions/{uuid}/workspace).
     // Derive the parent session dir for container config (uploads mount, etc.).
     const parentSessionDir = path.dirname(o.sessionDir);
+    // Which of the three acquisition paths this activation took, and what it
+    // cost. `container.create` below times the cold create itself; this says
+    // whether the warm pool spared the user that cost at all.
+    const acquireStart = Date.now();
 
     // Check for an existing container (runner was disposed but container kept running).
     const existing = mgr.get(o.sessionId);
@@ -775,7 +779,12 @@ export function buildRunnerFactory(
     // Reconnect to running container — avoids expensive container restart cycle.
     // If this is a standby container, claim it (removes standby tracking).
     if (existing?.status === "running") {
+      const standby = mgr.isStandby(o.sessionId);
       mgr.claimStandby(o.sessionId);
+      console.log(
+        `[timing] container.acquire for ${o.sessionId} ` +
+          `path=${standby ? "standby-hit" : "reconnect"} took=${Date.now() - acquireStart}ms`,
+      );
       console.log(`[container] Reconnecting to existing container for ${o.sessionId} at ${existing.workerUrl}`);
       return new ContainerSessionRunner({
         sessionId: o.sessionId,
@@ -810,6 +819,10 @@ export function buildRunnerFactory(
           const sc = mgr.get(o.sessionId);
           if (sc?.status === "running") {
             mgr.claimStandby(o.sessionId);
+            console.log(
+              `[timing] container.acquire for ${o.sessionId} path=standby-wait ` +
+                `took=${Date.now() - acquireStart}ms`,
+            );
             console.log(`[container] Standby container ready for ${o.sessionId} at ${sc.workerUrl}`);
             runner.setWorkerUrl(sc.workerUrl);
             mgr.clearCreateError(o.sessionId);
@@ -849,6 +862,10 @@ export function buildRunnerFactory(
       ...(chatHistoryManager ? { chatHistoryManager } : {}),
     });
     console.log(`[container] ${existing ? "Replacing stale" : "Creating"} container for session ${o.sessionId}...`);
+    console.log(
+      `[timing] container.acquire for ${o.sessionId} path=cold took=${Date.now() - acquireStart}ms ` +
+        `(the create it starts is timed separately)`,
+    );
     void createContainerForRunner({
       mgr, runner,
       sessionId: o.sessionId,

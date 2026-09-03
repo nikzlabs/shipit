@@ -60,6 +60,7 @@ import type { PluginCredentialDeclaration } from "../shared/plugin-credentials.j
 import { ServicePoller } from "./service-poller.js";
 import { ServiceRetryManager } from "./service-retry-manager.js";
 import { serializeStackOp } from "./stack-op-queue.js";
+import { markStackUp, forgetStackUp } from "./preview-timing.js";
 import { removeSessionServiceEnvDir, removeSessionSecretsDir } from "./secret-resolver.js";
 import {
   ComposeCli,
@@ -890,6 +891,13 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
    */
   private _gateGeneration = 0;
   private _gatedTeardownGeneration = 0;
+
+  /**
+   * When the install gate started holding services, or `null` while it holds
+   * none. Read once, at the moment the gate resolves, to report how much of the
+   * user's "Starting…" was the install rather than the services themselves.
+   */
+  private _gateHeldSince: number | null = null;
 
   /**
    * Number of {@link releaseInstallGate} calls currently awaiting a teardown.
@@ -1947,6 +1955,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         startNow.push(svc);
       }
     }
+    // The gate set was just rebuilt, so the hold starts now (or there is none).
+    this._gateHeldSince = this.gatedServices.size > 0 ? Date.now() : null;
 
     try {
       // 1. Start non-gated auto services (named explicitly so manual and
@@ -1968,6 +1978,9 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
           await this.compose.up(autoNames, this.composeLogSink(autoNames));
           await this.containServicesFn?.([...this.services.keys()]);
         });
+        // Starts the clock the preview proxy stops on its first answered
+        // request — everything after this point is the dev server's own boot.
+        markStackUp(this.sessionId, autoNames);
       }
       this._started = true;
 
@@ -2502,6 +2515,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.cancelPluginPortProbes();
     this.postGateServices.clear();
     this._gatedTeardown = null;
+    this._gateHeldSince = null;
+    forgetStackUp(this.sessionId);
 
     // Kill all log streaming processes
     for (const [name, proc] of this.logProcesses) {
@@ -3242,6 +3257,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     console.log(
       `[compose:${this.sessionId}] install finished — starting ${names.length} gated service(s): ${names.join(", ")}${heldNote}`,
     );
+    this.reportGateHeld("started", names.length);
     for (const name of names) {
       this.updateServiceStatus(name, "starting");
       // Open a first-boot recovery window: if the service crashes shortly
@@ -3317,6 +3333,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         await this.compose.up(names, this.composeLogSink(names));
         await this.containServicesFn?.([...this.services.keys()]);
       });
+      markStackUp(this.sessionId, names);
       // First `up` for an otherwise all-gated/all-manual stack is the moment
       // the compose network materializes — attach the orchestrator + agent.
       await this.joinSessionNetwork();
@@ -3347,9 +3364,25 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     console.log(
       `[compose:${this.sessionId}] install failed — ${this.gatedServices.size} gated service(s) not started`,
     );
+    this.reportGateHeld("install-failed", this.gatedServices.size);
     for (const name of this.gatedServices) {
       this.updateServiceStatus(name, "error", INSTALL_FAILED_GATE_MESSAGE);
     }
+  }
+
+  /**
+   * Report how long the install gate held auto-preview services, then stop the
+   * clock. Silent when nothing was held — a session with no gated service has
+   * no wait to report, and a line in every boot is a line nobody reads.
+   */
+  private reportGateHeld(outcome: "started" | "install-failed", services: number): void {
+    const since = this._gateHeldSince;
+    this._gateHeldSince = null;
+    if (since === null) return;
+    console.log(
+      `[timing] install-gate for ${this.sessionId} held=${Date.now() - since}ms ` +
+        `services=${services} outcome=${outcome}`,
+    );
   }
 
   /**
@@ -3366,6 +3399,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     );
     if (gated.length === 0) return;
     this.gatedServices = new Set(gated.map(s => s.name));
+    this._gateHeldSince = Date.now();
     console.log(
       `[compose:${this.sessionId}] install re-running — holding ${gated.length} gated service(s): ${gated.map(s => s.name).join(", ")}`,
     );

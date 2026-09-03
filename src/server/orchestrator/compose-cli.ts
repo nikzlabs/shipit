@@ -154,7 +154,8 @@ export class ComposeCli {
    * pull output that otherwise reaches no one.
    */
   up(serviceNames?: string[], onOutput?: ComposeOutputSink): Promise<void> {
-    return this.upWithConflictRecovery(
+    return this.timedUp(
+      serviceNames ?? [],
       onOutput,
       "up", "-d", "--build", "--remove-orphans", ...(serviceNames ?? []),
     );
@@ -162,7 +163,49 @@ export class ComposeCli {
 
   /** Run `docker compose up -d --build` for a specific manual service. */
   upService(name: string, onOutput?: ComposeOutputSink): Promise<void> {
-    return this.upWithConflictRecovery(onOutput, "up", "-d", "--build", name);
+    return this.timedUp([name], onOutput, "up", "-d", "--build", name);
+  }
+
+  /**
+   * Run an `up` and report how long each phase of it took.
+   *
+   * The phases come from the command's own progress output, which is the only
+   * source that distinguishes them: `build` runs from the first build/pull line
+   * to the first container line, `create` from there to exit. A stack whose
+   * images are all present prints no build lines at all, and then only `total`
+   * and `create` are reported — an absent number beats an invented one.
+   */
+  private async timedUp(
+    serviceNames: string[],
+    onOutput: ComposeOutputSink | undefined,
+    ...subArgs: string[]
+  ): Promise<void> {
+    const start = Date.now();
+    let buildAt: number | undefined;
+    let createAt: number | undefined;
+    const observe: ComposeOutputSink = Object.assign(
+      (chunk: string) => {
+        for (const line of chunk.split("\n")) {
+          const phase = composeUpPhaseOf(line);
+          if (phase === "build") buildAt ??= Date.now();
+          else if (phase === "create") createAt ??= Date.now();
+        }
+        onOutput?.(chunk);
+      },
+      { flush: () => onOutput?.flush?.() },
+    );
+    try {
+      await this.upWithConflictRecovery(observe, ...subArgs);
+    } finally {
+      const end = Date.now();
+      const parts = [`total=${end - start}ms`];
+      if (buildAt !== undefined) parts.push(`build=${(createAt ?? end) - buildAt}ms`);
+      if (createAt !== undefined) parts.push(`create=${end - createAt}ms`);
+      console.log(
+        `[timing] compose.up for ${this.sessionId} ` +
+          `services=${serviceNames.join(",") || "all"} ${parts.join(" ")}`,
+      );
+    }
   }
 
   /** Run `docker compose stop <service>`. */
@@ -536,4 +579,31 @@ function defaultComposeQuery(args: string[], cwd: string): Promise<string> {
 export function extractConflictContainerId(message: string): string | undefined {
   const m = /already in use by container "([0-9a-f]{12,64})"/.exec(message);
   return m?.[1];
+}
+
+/** Container/network/volume lines — compose has the image and is now making things. */
+const COMPOSE_CREATE_LINE =
+  /\b(?:Container|Network|Volume)\b.*\b(?:Creating|Created|Starting|Started|Recreating|Recreated|Running)\b/;
+
+/**
+ * Image lines. A PULL counts as `build`: both answer "how long until compose
+ * had an image", which is the number an operator acts on, and a stack rarely
+ * does both for the same service.
+ */
+const COMPOSE_BUILD_LINE =
+  /(?:\bBuilding\b|\bBuilt\b|\bPulling\b|\bPulled\b|\bDownloading\b|\bExtracting\b|load build definition|exporting to image|naming to)/;
+
+/** BuildKit's own step output — `#5 [builder 2/6] RUN …`, `=> CACHED …`. */
+const BUILDKIT_STEP_LINE = /^\s*(?:#\d+\s|=>)/;
+
+/**
+ * Which phase of a `docker compose up` a progress line reports, or `null` when
+ * it reports neither. Exported for the unit test — the classification is the
+ * whole of the build/create split, and it is the part that can silently rot
+ * when Docker changes its progress format.
+ */
+export function composeUpPhaseOf(line: string): "build" | "create" | null {
+  if (COMPOSE_CREATE_LINE.test(line)) return "create";
+  if (COMPOSE_BUILD_LINE.test(line) || BUILDKIT_STEP_LINE.test(line)) return "build";
+  return null;
 }
