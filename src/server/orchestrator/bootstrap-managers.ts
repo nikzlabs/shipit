@@ -1449,7 +1449,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   });
 
   // ---- Warm session pool ----
-  const { warmSessionForRepo, waitForWarmSession } = createWarmPool({
+  const { warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession } = createWarmPool({
     repoStore, sessionManager, createRepoGit,
     githubAuthManager, containerManager,
     credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
@@ -1595,7 +1595,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     recordAgentRateLimits,
     markSessionAccountExhausted,
     createSessionDir,
-    warmSessionForRepo, waitForWarmSession,
+    warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession,
     migratedRepoUrls,
     startupTimer,
   };

@@ -1355,6 +1355,77 @@ describe("scheduleStartupTasks — warms every ready repo at boot (docs/148)", (
   });
 });
 
+/**
+ * planning#501 — the boot sweep used to validate the CLONE alone, and log
+ * "validated" for a warm session whose standby container had died. Nothing
+ * downstream re-checked, so the repo stayed hollow and every later claim paid
+ * the full cold cost while still reporting a warm hit.
+ */
+describe("scheduleStartupTasks — a warm session needs its standby, not just its clone", () => {
+  function runBootSweep(containerStatus: string | undefined) {
+    const calls: string[] = [];
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-startup-standby-"));
+    const clonePath = path.join(tmpDir, "clone");
+    fs.mkdirSync(clonePath); // the clone is FINE — only the container is not
+
+    const repoStore = {
+      list: () => [{ url: "repo", status: "ready" as const, warmSessionId: "warm-1" }],
+      setWarmSessionId: () => {},
+    } as unknown as Parameters<typeof scheduleStartupTasks>[0]["repoStore"];
+    const sessionManager = {
+      get: (id: string) => id === "warm-1" ? { workspaceDir: clonePath } : undefined,
+      allIds: () => [],
+    } as unknown as Parameters<typeof scheduleStartupTasks>[0]["sessionManager"];
+    const containerManager = {
+      get: () => containerStatus === undefined ? undefined : { status: containerStatus },
+      isStandby: () => true,
+      destroy: async () => undefined,
+    } as unknown as Parameters<typeof scheduleStartupTasks>[0]["containerManager"];
+
+    const noop = () => {};
+    const timer = scheduleStartupTasks(
+      {
+        repoStore,
+        sessionManager,
+        chatHistoryManager: { delete: noop } as unknown as Parameters<typeof scheduleStartupTasks>[0]["chatHistoryManager"],
+        usageManager: { delete: noop } as unknown as Parameters<typeof scheduleStartupTasks>[0]["usageManager"],
+        containerManager,
+        getBareCacheDir: (u: string) => path.join(tmpDir, "cache", u),
+        warmSessionForRepo: async (url: string) => { calls.push(url); },
+      },
+      [],
+    );
+    return { calls, timer, cleanup: () => fs.rmSync(tmpDir, { recursive: true, force: true }) };
+  }
+
+  it("re-warms when the clone exists but the standby is not running", async () => {
+    const { calls, timer, cleanup } = runBootSweep("exited");
+    await new Promise((r) => setTimeout(r, 0));
+    clearTimeout(timer);
+
+    expect(calls).toEqual(["repo"]);
+    cleanup();
+  });
+
+  it("re-warms when the clone exists and no container is tracked at all", async () => {
+    const { calls, timer, cleanup } = runBootSweep(undefined);
+    await new Promise((r) => setTimeout(r, 0));
+    clearTimeout(timer);
+
+    expect(calls).toEqual(["repo"]);
+    cleanup();
+  });
+
+  it("leaves a warm session whose clone and standby are both healthy", async () => {
+    const { calls, timer, cleanup } = runBootSweep("running");
+    await new Promise((r) => setTimeout(r, 0));
+    clearTimeout(timer);
+
+    expect(calls).toEqual([]);
+    cleanup();
+  });
+});
+
 describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
   let tmp: string;
 

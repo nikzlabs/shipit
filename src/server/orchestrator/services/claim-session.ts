@@ -522,8 +522,17 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
       // delete/re-clone loop against a repo somebody was trying to work in.
       deps.repoStore.touch(url);
 
+      // `claimPath` says which path MINTED the session; it has never said
+      // whether the warm tier could actually deliver one. A "warm" claim whose
+      // standby has died goes on to pay a full cold container create, and the
+      // line read as a warm hit either way — which is how the hollow-warm-tier
+      // failure (planning#501) stayed invisible. Report both, so this line and
+      // the `container.acquire` line that follows it can be compared.
+      const standby = deps.containerManager
+        ? (deps.containerManager.get(result.sessionId)?.status === "running" ? "ready" : "missing")
+        : "unknown";
       console.log(
-        `[timing] claim-session for ${url} path=${claimPath} ` +
+        `[timing] claim-session for ${url} path=${claimPath} standby=${standby} ` +
           `total=${Date.now() - claimStart}ms fetch=${result.fetchDurationMs}ms`,
       );
 

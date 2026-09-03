@@ -122,10 +122,19 @@ budget still gets there by every other route.
 With this feature the same night also takes the pre-started preview, so the
 benefit would disappear exactly when the user most expects it.
 
-**Fix: a periodic warm sweep that compares state.** Every few minutes, for each
-repo inside the recency window: if its warm session has no *running* container
-and there is memory headroom (`isUnderEvictionPressure` is false), rebuild the
-standby, pre-install, and pre-start the preview.
+**Fix (shipped): a periodic warm sweep that compares state.** Every five
+minutes, for each ready repo: if its warm session has no *running* container and
+there is memory headroom (`isUnderEvictionPressure` is false), rebuild the
+standby and re-run the pre-install. When the preview work lands, the same repair
+pre-starts the stack — it goes through one shared entry point,
+`ensureStandbyForWarmSession`, which the warm flow and the sweep both call so
+the two cannot drift (`warm-tier-sweep.ts`, `warm-pool-manager.ts`).
+
+The liveness question is asked of **Docker**, not of the tracking map
+(`isTrackedContainerRunning`). The map is fed by container events and by a
+health monitor that standbys are outside of, so trusting it would make the sweep
+blind to the exact failure it exists to catch. A `undefined` answer — the daemon
+could not say — is never read as death.
 
 "Running" is the check the boot sweep is missing — `containerManager.get(id)`
 with `status === "running"`, the same test the runner factory applies at claim
