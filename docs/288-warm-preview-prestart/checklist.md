@@ -11,9 +11,13 @@
       restart, no gate re-hold on a marker-skip install.
 - [ ] Idle enforcer tier 0: stop the warm stack before destroying the container,
       and credit `serviceBytes` as well as `agentBytes` (req 4).
-- [ ] Periodic warm sweep that rebuilds a warm session whose container was
-      reclaimed, state-compared rather than keyed on a pressure transition
+- [ ] Periodic warm sweep that rebuilds a warm session whose container is not
+      running, whatever killed it — state-compared, not keyed on a transition
       (req 10). Fixes a gap that exists today, without this feature.
+- [ ] Boot sweep validates the standby is RUNNING, not just that the clone
+      exists (`startup-tasks.ts`).
+- [ ] A claim that found no usable standby is reported as cold, not as a warm
+      hit (req 11) — `claimPath` and the `container.acquire` timing must agree.
 - [ ] Warm-tier retirement at boot removes the pre-started compose containers,
       not just the standby agent container (req 6).
 - [ ] Measure a warm claim before and after: `preview.first-connect` should stop

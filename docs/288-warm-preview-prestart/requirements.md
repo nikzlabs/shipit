@@ -53,10 +53,12 @@ The trace behind that report:
    after lunch. Concretely: a user who starts in the morning and opens a new
    session gets a warm one, already prepared, without knowing or caring what
    ShipIt did overnight.
-10. A warm session that loses its container or its preview to reclaim is
-    rebuilt while nobody is watching. ShipIt does not wait for the next claim to
-    notice that its warm tier is empty — the claim is the moment the user needs
+10. A warm session whose container or preview has died is rebuilt while nobody
+    is watching, whatever killed it. ShipIt does not wait for the next claim to
+    notice that its warm tier is hollow — the claim is the moment the user needs
     it, which is the one moment it is too late to start.
+11. A claim that could not use the warm tier says so. "Warm hit" must not be
+    reported for a session that then pays the full cold cost.
 
 ## Open questions
 
@@ -69,14 +71,23 @@ _None._
   the overnight-deploy path instead. The requirement is about the ordinary
   morning, with nothing unusual happening overnight — so it is written as req 9
   and req 10 rather than as a property of the deploy path. The gap it exposes is
-  real and exists TODAY, before this feature: the idle enforcer's tier 0
-  destroys standby containers first under memory pressure
-  (`idle-enforcer.ts:200-218`), nothing rebuilds one, and `warmSessionForRepo`
-  declines to act because the warm session ROW still exists
-  (`warm-pool-manager.ts:86-89`). Verified: `warmSessionForRepo` is called only
+  real and exists TODAY, before this feature: **nothing checks that a standby is
+  still alive.** The health reconciler skips standbys and only walks registered
+  runners, which a standby has none of (`app-lifecycle.ts:1025`); the boot sweep
+  validates the CLONE and nothing else, printing "warm session validated (clone
+  exists)" for a repo whose container died hours ago
+  (`startup-tasks.ts:487-500`); and `warmSessionForRepo` then declines to act
+  because the row still exists (`warm-pool-manager.ts:86-89`). It is called only
   from boot, repo add, repo trust, the claim re-warm and graduation — there is
-  no periodic sweep. So a night of memory pressure leaves a warm session with no
-  container, and the morning's claim pays the full cold cost. → req 10.
+  no periodic sweep. → reqs 10, 11.
+- 2026-09-03 — *"[memory pressure] literally never happens to me."* Stated
+  against a first diagnosis that blamed the idle enforcer's tier-0 reclaim.
+  Correct: that tier only runs over budget, and it is one cause among several,
+  not the mechanism. The mechanism is the missing liveness check above, which
+  turns ANY death of a standby — a container that exits, an OOM inside the
+  pre-install, a daemon restart (the agent container carries no `RestartPolicy`,
+  `compose-cli.ts:297`), an external cleanup — into a permanent hollow warm
+  session. → req 10 is written for any cause, not for memory pressure.
 - 2026-09-03 — *What is the recency cutoff, and does a break break it?* The
   requirement was written without a number, which the human caught. The cutoff
   is **7 days**, and the rule it has to satisfy is req 9: no ordinary absence

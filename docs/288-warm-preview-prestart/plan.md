@@ -86,32 +86,52 @@ gate sits, both of which have to stay true if the number is ever changed:
   next one, and the repo is recent again. The failure mode degrades by one
   session, not by a mode change.
 
-## The warm tier must heal itself (req 10)
+## The warm tier must heal itself (reqs 10, 11)
 
 The cutoff is not what threatens the morning. This is, and it is broken today,
-before this feature exists:
+before this feature exists: **nothing ever checks that a standby is still
+alive.** Three gaps compose into one permanent failure.
 
-1. Overnight the instance goes over its memory budget. The idle enforcer's tier
-   0 destroys standby containers FIRST — correctly, since they are speculative
-   (`idle-enforcer.ts:200-218`).
-2. Nothing rebuilds one. `warmSessionForRepo` declines because the warm session
-   ROW still exists — only its container was destroyed
-   (`warm-pool-manager.ts:86-89`).
-3. `warmSessionForRepo` is called only from the boot re-warm, a repo being
-   added, a repo being trusted, the claim re-warm, and graduation. **There is no
-   periodic sweep** (verified across the call sites in `api-routes-*.ts` and
-   `startup-tasks.ts`).
+1. **No liveness monitoring.** `createMissingContainerReconciler` walks
+   `runnerRegistry.ids()` and skips standbys explicitly
+   (`app-lifecycle.ts:1025`) — and a standby has no runner to walk in the first
+   place. A real session is watched through its worker's `/events` stream; a
+   standby has no stream and no watcher.
+2. **The boot sweep validates the wrong thing.** It checks that the workspace
+   clone exists and, when it does, logs `warm session … validated (clone
+   exists)` and moves on (`startup-tasks.ts:487-500`). A repo whose container
+   died hours ago passes that check.
+3. **Nothing can re-warm it afterwards.** `warmSessionForRepo` declines while
+   the warm session ROW exists (`warm-pool-manager.ts:86-89`), and it is called
+   only from the boot re-warm, repo add, repo trust, the claim re-warm and
+   graduation. **There is no periodic sweep.**
 
-So one night of pressure leaves the repo with a warm session that has no
-container, and the morning's claim pays the full cold cost: container create,
-`agent.install`, `compose up`, dev-server boot. With this feature the same night
-also takes the pre-started preview, so it would remove the whole benefit
-precisely when the user most expects it.
+So the state is absorbing: a repo whose standby dies keeps a warm session that
+can never be repaired, and every later claim silently pays the full cold cost —
+container create, `agent.install`, `compose up`, dev-server boot — while still
+being reported as a warm hit (req 11).
+
+The cause does not matter, which is the point. A container that exits, an OOM
+inside the pre-install (`npm install` in a memory-limited cgroup), a Docker
+daemon restart — the agent container carries no `RestartPolicy`
+(`compose-cli.ts:297`), so it does not come back — or any external cleanup all
+land in the same absorbing state. Memory-budget reclaim (`idle-enforcer.ts:207`)
+is one entry to it, not the mechanism, and an instance that never reaches its
+budget still gets there by every other route.
+
+With this feature the same night also takes the pre-started preview, so the
+benefit would disappear exactly when the user most expects it.
 
 **Fix: a periodic warm sweep that compares state.** Every few minutes, for each
-repo inside the recency window: if its warm session has no running container and
-there is memory headroom (`isUnderEvictionPressure` is false), rebuild the
+repo inside the recency window: if its warm session has no *running* container
+and there is memory headroom (`isUnderEvictionPressure` is false), rebuild the
 standby, pre-install, and pre-start the preview.
+
+"Running" is the check the boot sweep is missing — `containerManager.get(id)`
+with `status === "running"`, the same test the runner factory applies at claim
+time (`app-lifecycle.ts:777`). Asking it periodically instead of only at the
+claim is the whole fix; the boot sweep should ask it too, alongside its clone
+check.
 
 Deliberately **not** keyed on the pressure-release transition, though
 `startup-monitors.ts` already computes one. A transition is observed once, by
