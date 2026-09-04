@@ -177,6 +177,7 @@ export type MergeRefusalReason =
   | "draft"
   | "head-moved-since-checks"
   | "local-head-differs"
+  | "local-head-unreadable"
   | "checks-failing"
   | "checks-pending"
   | "awaiting-checks"
@@ -199,9 +200,21 @@ export type MergeDecision =
 export async function decideMerge(args: {
   observation: MergeObservation;
   prNumber: number;
-  /** A repo-bound session's local HEAD, or null for a sandbox (which owns its
-   * own git and has no ShipIt-managed branch to compare). */
-  localHead: string | null;
+  /**
+   * What this workspace's current commit is — as one of three DISTINCT answers,
+   * because two of them used to share `null`.
+   *
+   * A sandbox owns its own git and has no ShipIt-managed branch to compare, so
+   * it genuinely skips req 14's check. A repo-bound workspace whose HEAD could
+   * not be read has NOT passed that check — and collapsing the two meant a
+   * broken or evicted workspace merged with no local comparison at all
+   * (cross-agent review finding). They are separate cases now so that a caller
+   * cannot express the failure as the exemption.
+   */
+  localHead:
+    | { kind: "sandbox" }
+    | { kind: "head"; sha: string }
+    | { kind: "unreadable"; reason: string };
   graceSaysWait: () => Promise<boolean>;
 }): Promise<MergeDecision> {
   const { observation, prNumber } = args;
@@ -238,7 +251,16 @@ export async function decideMerge(args: {
   // and pushed. `guardMergeSync` cannot cover this: it compares against the
   // remote-TRACKING ref and proceeds whenever it cannot tell, while this
   // compares the live head and fails closed.
-  if (args.localHead !== null && observation.headRefOid !== args.localHead) {
+  if (args.localHead.kind === "unreadable") {
+    return {
+      action: "refuse",
+      reason: "local-head-unreadable",
+      message:
+        `Not merged — ShipIt could not read this workspace's current commit, so it cannot confirm `
+        + `PR #${prNumber} would ship it: ${args.localHead.reason}`,
+    };
+  }
+  if (args.localHead.kind === "head" && observation.headRefOid !== args.localHead.sha) {
     return {
       action: "refuse",
       reason: "local-head-differs",
@@ -280,13 +302,21 @@ export async function decideMerge(args: {
 
   // req 8 — a review gate GitHub is enforcing. Checked after CI so the more
   // actionable message wins when both apply.
-  if (observation.reviewDecision === "REVIEW_REQUIRED" || observation.reviewDecision === "CHANGES_REQUESTED") {
+  //
+  // A WHITELIST, not a list of the two refusals GitHub documents today. Naming
+  // the refusals means a value GitHub adds later falls through to the merge —
+  // the one direction this gate must never fail in — while naming the two that
+  // permit a merge makes an unrecognised value refuse on its own (cross-agent
+  // review finding). `null` is "no review is configured for this repository".
+  if (observation.reviewDecision !== null && observation.reviewDecision !== "APPROVED") {
+    const reason =
+      observation.reviewDecision === "CHANGES_REQUESTED" ? "changes requested"
+      : observation.reviewDecision === "REVIEW_REQUIRED" ? "a required review"
+      : `a review state ShipIt does not recognise (${observation.reviewDecision})`;
     return {
       action: "refuse",
       reason: "review-required",
-      message:
-        `Not merged — PR #${prNumber} needs review: GitHub reports `
-        + `${observation.reviewDecision === "CHANGES_REQUESTED" ? "changes requested" : "a required review"}.`,
+      message: `Not merged — PR #${prNumber} needs review: GitHub reports ${reason}.`,
     };
   }
 

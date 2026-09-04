@@ -1409,6 +1409,82 @@ describe("repo-aware PR brokering (docs/211)", () => {
   );
 
   it(
+    "revoking the grant DURING the merge stops it before the REST call (req 1)",
+    { timeout: 15_000 },
+    async () => {
+      // "Withdraw at any time" has to mean during a merge too. The route decides
+      // on the grant, then commits, pushes and reads GitHub twice before the
+      // irreversible call — and the grant was never re-read across any of it
+      // (cross-agent review finding). Revoked inside the gate's own round trip,
+      // which is the window rather than a proxy for it.
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      const head = execSync("git rev-parse HEAD", {
+        cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "SUCCESS" });
+      githubAuth.setOnMergeGateRead(() => { repoStore.setAllowAgentMerge(REPO, false); });
+      const before = githubAuth.mergePullRequestCalls.length;
+
+      const res = await withLiveTurn(sessionId, () => app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/7/merge`,
+        payload: {},
+      }));
+      githubAuth.setOnMergeGateRead(null);
+
+      expect(res.json()).toMatchObject({ success: false, message: expect.stringContaining("withdrawn") });
+      expect(githubAuth.mergePullRequestCalls).toHaveLength(before);
+      // And no claim was left behind for a merge that never happened.
+      expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toBeNull();
+    },
+  );
+
+  it(
+    "refuses a second merge while an earlier one is unresolved (req 9)",
+    { timeout: 15_000 },
+    async () => {
+      // Single-flight. Replacing the row loses a merge that is still in flight:
+      // the first attempt merges but answers slowly, the second replaces its
+      // row, is told "already merged", releases the row — and the first returns
+      // to find nothing to settle (cross-agent review finding).
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      const head = execSync("git rev-parse HEAD", {
+        cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "SUCCESS" });
+      // The first attempt goes indeterminate, which is exactly the state that
+      // leaves a row standing on purpose.
+      githubAuth.setMergeAttempt({
+        outcome: "indeterminate", message: "ShipIt did not hear back from GitHub",
+      });
+      await withLiveTurn(sessionId, () => app.inject({
+        method: "POST", url: `/api/sessions/${sessionId}/pr/7/merge`, payload: {},
+      }));
+      const outstanding = new AgentMergeClaimStore(dbManager).get(sessionId);
+      expect(outstanding).toMatchObject({ expectedSha: head, state: "merging" });
+
+      githubAuth.setMergeAttempt({ outcome: "merged", message: "Pull request merged", mergeCommitSha: "m" });
+      const before = githubAuth.mergePullRequestCalls.length;
+      const res = await withLiveTurn(sessionId, () => app.inject({
+        method: "POST", url: `/api/sessions/${sessionId}/pr/7/merge`, payload: {},
+      }));
+
+      expect(res.json()).toMatchObject({ success: false, message: expect.stringContaining("not been resolved") });
+      expect(githubAuth.mergePullRequestCalls).toHaveLength(before);
+      // The first attempt's row is untouched — it is still the only evidence.
+      expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toMatchObject({
+        expectedSha: head, state: "merging",
+      });
+    },
+  );
+
+  it(
     "agent merge is 403 for a sandbox without the dangerousGitHubOps grant",
     { timeout: 15_000 },
     async () => {

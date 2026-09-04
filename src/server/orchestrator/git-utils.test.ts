@@ -19,6 +19,8 @@ import {
   stripRemoteUrlCredentials,
   hasUrlCredentials,
   canonicalRepoKey,
+  ownerRepoFromRepoId,
+  parseGitHubRemote,
   repoId,
   repoUrlToHash,
   syncLocalDefaultBranchToOrigin,
@@ -481,5 +483,45 @@ describe("isGitAuthError", () => {
     expect(isGitAuthError(new Error("non-fast-forward update"))).toBe(false);
     expect(isGitAuthError(new Error("merge conflict in foo.ts"))).toBe(false);
     expect(isGitAuthError(undefined)).toBe(false);
+  });
+});
+
+/**
+ * docs/287-agent-merge-per-repo — the ACTION resolver and the AUTHORIZATION
+ * identity must agree on which repository a URL names. They did not: `repoId`
+ * accepts a dotted repository name and `parseGitHubRemote` truncated at the
+ * first dot, so a grant on `acme/foo.bar` authorised operations that all
+ * targeted `acme/foo` (cross-agent review finding).
+ */
+describe("parseGitHubRemote", () => {
+  it("keeps a dotted repository name whole, and agrees with repoId", () => {
+    expect(parseGitHubRemote("https://github.com/acme/foo.bar.git"))
+      .toEqual({ owner: "acme", repo: "foo.bar" });
+    expect(parseGitHubRemote("git@github.com:acme/foo.bar.git"))
+      .toEqual({ owner: "acme", repo: "foo.bar" });
+    expect(repoId("https://github.com/acme/foo.bar.git")).toBe("github:acme/foo.bar");
+  });
+
+  it("still strips a terminal .git and stops at a path separator", () => {
+    expect(parseGitHubRemote("https://github.com/acme/repo.git")).toEqual({ owner: "acme", repo: "repo" });
+    expect(parseGitHubRemote("https://github.com/acme/repo")).toEqual({ owner: "acme", repo: "repo" });
+    expect(parseGitHubRemote("https://github.com/acme/repo/pull/3")).toEqual({ owner: "acme", repo: "repo" });
+    expect(parseGitHubRemote("git@github.com:acme/repo.git")).toEqual({ owner: "acme", repo: "repo" });
+  });
+
+  it("answers null for a non-GitHub remote", () => {
+    expect(parseGitHubRemote("https://gitlab.com/acme/repo.git")).toBeNull();
+  });
+});
+
+describe("ownerRepoFromRepoId", () => {
+  it("inverts the identity, for the paths that must address a repository the session left", () => {
+    expect(ownerRepoFromRepoId("github:acme/foo.bar")).toEqual({ owner: "acme", repo: "foo.bar" });
+  });
+
+  it("refuses anything that is not one", () => {
+    expect(ownerRepoFromRepoId("github:acme/a/b")).toBeNull();
+    expect(ownerRepoFromRepoId("acme/repo")).toBeNull();
+    expect(ownerRepoFromRepoId("")).toBeNull();
   });
 });

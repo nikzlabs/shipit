@@ -189,7 +189,7 @@ describe("agentMergePullRequest", () => {
       });
       const res = await agentMergePullRequest(makeGit(), github, {
         number: 5, sessionId: "s1", remoteUrl: REMOTE,
-        onClaim: (sha) => { order.push(`claim:${sha}`); return true; },
+        beforeMerge: (sha: string) => { order.push(`claim:${sha}`); return null; },
         onMerged: async () => { order.push("settle"); return "settled" as const; },
         onRefused: async () => { order.push("refused"); },
         onIndeterminate: async () => { order.push("indeterminate"); },
@@ -200,12 +200,17 @@ describe("agentMergePullRequest", () => {
       expect(order).toEqual([`claim:${HEAD_SHA}`, "merge", "settle"]);
     });
 
-    it("refuses to merge at all when the claim cannot be written", async () => {
+    it("refuses to merge at all when the last gate says no, in the gate's own words", async () => {
+      // The gate covers two different facts — a withdrawn permission and an
+      // unresolved earlier attempt — so a caller told only "no" would have to
+      // guess which one to report. The message it returns is the answer.
       const github = makeGitHub();
       const res = await agentMergePullRequest(makeGit(), github, {
-        number: 5, sessionId: "s1", remoteUrl: REMOTE, onClaim: () => false,
+        number: 5, sessionId: "s1", remoteUrl: REMOTE,
+        beforeMerge: () => "Not merged — the permission was withdrawn.",
       });
       expect(res.success).toBe(false);
+      expect(res.message).toBe("Not merged — the permission was withdrawn.");
       expect(github.mergePullRequestAttempt).not.toHaveBeenCalled();
     });
 
@@ -220,7 +225,7 @@ describe("agentMergePullRequest", () => {
       });
       const res = await agentMergePullRequest(makeGit(), github, {
         number: 5, sessionId: "s1", remoteUrl: REMOTE,
-        onClaim: () => true,
+        beforeMerge: () => null,
         onMerged: async () => { calls.push("settle"); return "settled" as const; },
         onRefused: async () => { calls.push("refused"); },
         onIndeterminate: async () => { calls.push("indeterminate"); },
@@ -238,7 +243,7 @@ describe("agentMergePullRequest", () => {
       });
       await agentMergePullRequest(makeGit(), github, {
         number: 5, sessionId: "s1", remoteUrl: REMOTE,
-        onClaim: () => true,
+        beforeMerge: () => null,
         onMerged: async () => { calls.push("settle"); return "settled" as const; },
         onRefused: async () => { calls.push("refused"); },
         onIndeterminate: async () => { calls.push("indeterminate"); },

@@ -454,12 +454,12 @@ justify an otherwise empty navigation category.
 | `src/server/orchestrator/agent-merge-claims.ts` | the claim store, the turn identity, and the merge record's natural identity |
 | `src/server/orchestrator/services/agent-merge-settlement.ts` | settlement and the three reconciliation triggers |
 | `src/server/orchestrator/repo-store.ts` | grant read/write, keyed by the GitHub repository identity |
-| `src/server/orchestrator/git-utils.ts` | `repoId()` — parsed, case-normalised `github:<owner>/<repo>` |
+| `src/server/orchestrator/git-utils.ts` | `repoId()` — parsed, case-normalised `github:<owner>/<repo>`; `ownerRepoFromRepoId()` inverts it; `parseGitHubRemote()` no longer truncates a dotted repository name |
 | `src/server/orchestrator/api-routes-session-repos.ts` | grant on the existing `PATCH /api/repos/:url` |
 | `src/server/orchestrator/pr-target.ts` | `mergeDisposition()`; `--repo` refused, `cwd` ignored |
 | `src/server/orchestrator/services/github.ts` | flush outcome; the merge-gate read and observation; both merge paths; `quickCreatePr()` gains `alreadyExisted` |
 | `src/server/orchestrator/github-auth-prs.ts` | expected `sha` on the REST merge; typed three-way merge and create outcomes |
-| `src/server/orchestrator/pr-status-poller.ts` | `awaitCiGraceDecision()`; the canonical, re-enterable terminal promotion |
+| `src/server/orchestrator/pr-status-poller.ts` | `awaitCiGraceDecision()`; the canonical, re-enterable terminal promotion, with the caller's `guard` asked between the read and the first write; `readPrByNumber()` for the promote-nothing case |
 | `src/server/orchestrator/ci-grace-tracker.ts` | a merge entry point (repo + PR + SHA; unknown history waits) |
 | `src/server/orchestrator/services/branch-sync.ts` | `pushed` on the hold verdict |
 | `src/server/orchestrator/services/merge-gate.ts` | the merge-only read, the observation, and the decision table |
@@ -536,14 +536,23 @@ Two deliberate deviations from this document, both narrowing:
   the cost of shipping without `docs/288-agent-merge-arming`: until that lands, an
   agent whose CI takes minutes cannot land its work inside the turn that produced
   it.
-- **A concurrent second merge request in one turn is only partly guarded.**
-  Claims are keyed by session and head SHA, so two `gh pr merge` calls racing on
-  the same pull request claim the same row rather than one each. The damaging
-  half is closed — a refusal can no longer delete a row that has reached
-  `settling`, and a new claim cannot replace one — but there is no per-attempt
-  identity, so the losing request still resolves against the winner's row. A
-  turn is single-threaded from the agent's side, which is why this is recorded
-  rather than fixed with a schema change.
+- **A stale claim blocks the next merge until reconciliation clears it.** Claims
+  are single-flight: an outstanding row of either state refuses a new claim,
+  because replacing one loses a merge that is still in flight. The cost is the
+  other direction — an attempt whose outcome was never learned, on a session
+  ShipIt cannot resolve (GitHub unreachable), refuses the next merge with "an
+  earlier attempt is unresolved". That is the intended failure direction, and
+  the three reconciliation triggers (end of turn, session activation, startup)
+  are what clear it.
+- **A stale `OPEN` read spends a `merging` claim.** Reconciliation resolves an
+  unwitnessed claim from one read, so a GitHub read-after-write that still says
+  open — seconds after a merge whose answer was lost — deletes the row and
+  records nothing. Deliberately not defended with a minimum claim age: that
+  would add a blocking failure mode to protect a transcript line, while the
+  session's own state still converges through ordinary poller detection
+  (`merged_at`, the reset anchor, the card). Requirement 9's record is what is
+  lost in that window, and nothing else. A `settling` row is exempt — it is
+  proof a merge response came back, and no `OPEN` read may downgrade it.
 - **In `RUNTIME_MODE=local`, the grant is not out of the agent's reach** — and
   cannot be made so by anything in this feature. Requirement 3's guarantee rests
   on the PATCH route carrying no `containerAccessible` opt-in, which is a real
@@ -563,3 +572,12 @@ Two deliberate deviations from this document, both narrowing:
   made worse here." That is exactly this feature's position, and closing it is
   the same different problem. Recorded, not silently inherited (cross-agent
   review finding).
+- **A background process that writes during the merge can leave work off the
+  merged commit.** The flush commits and pushes the tree, then two GitHub round
+  trips happen before the REST call. Anything the agent started that keeps
+  writing tracked files in that window is committed by the ordinary post-turn
+  commit — after the merge — and lands on a branch that has already shipped.
+  Closing it would need an operation-level write exclusion over the workspace,
+  which this feature does not have a mechanism for and which nothing else in
+  ShipIt asserts either; a human merging from the card has exactly the same
+  exposure. Recorded rather than built (cross-agent review finding).

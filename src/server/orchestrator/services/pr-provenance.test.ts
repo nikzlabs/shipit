@@ -124,6 +124,32 @@ describe("provenance lifecycle", () => {
     expect(provenance()).toEqual({ prNumber: undefined, prRepoId: undefined });
   });
 
+  it("is cleared when the session's branch is repointed", () => {
+    sessions.setBranch(sessionId, "shipit/feature");
+    recordWitnessedPrCreate(sessions, sessionId, {
+      number: 42, alreadyExisted: false, owner: "acme", repo: "shipit",
+    });
+    // Same reason as a repointed `origin`: the recorded pull request was opened
+    // from the branch this session has just left. The release-branch adoption
+    // path repoints a live session's branch without going through any PR reset,
+    // so without this the old number stayed and kept authorising a merge of a
+    // pull request built from a branch the workspace no longer has out
+    // (cross-agent review finding).
+    sessions.setBranch(sessionId, "release/0.5.0");
+    expect(provenance()).toEqual({ prNumber: undefined, prRepoId: undefined });
+  });
+
+  it("survives setting the branch to the value it already has", () => {
+    // The many creation-time callers write the branch a session is born with.
+    // Clearing on a no-op would discard a valid record for nothing.
+    sessions.setBranch(sessionId, "shipit/feature");
+    recordWitnessedPrCreate(sessions, sessionId, {
+      number: 42, alreadyExisted: false, owner: "acme", repo: "shipit",
+    });
+    sessions.setBranch(sessionId, "shipit/feature");
+    expect(provenance()).toEqual({ prNumber: 42, prRepoId: "github:acme/shipit" });
+  });
+
   it("survives rewriting origin to another spelling of the SAME repository", () => {
     // A no-op rewrite must not discard a valid record — the session's pull
     // request is still exactly where it was.

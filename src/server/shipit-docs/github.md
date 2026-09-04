@@ -287,7 +287,12 @@ Consequences worth knowing before you hit them:
   refused. Check it out again first.
 - If the pull request's head on GitHub is not the commit your workspace is on,
   the merge is refused — merging would ship a state you did not produce. Push and
-  try again once the new head's checks report.
+  try again once the new head's checks report. A workspace whose current commit
+  ShipIt cannot read at all is refused for the same reason: it cannot show that
+  the two agree.
+- If an earlier merge on this session has not been resolved yet — one whose
+  answer never came back — a second one is refused rather than started over it.
+  ShipIt resolves the first at the end of the turn.
 
 #### It commits and pushes your work first (repo-bound sessions)
 
@@ -346,6 +351,12 @@ shipit branch reset-to-base
 
 Then continue. This is the same step a merge-wake turn begins with — see
 "Waiting for a PR to merge" above.
+
+Read the merge command's own answer first. A plain `Merged PR #N` means ShipIt
+has finished recording the merge and the reset is ready. If it instead says it
+could not finish recording, or reports the pull request as **already merged**,
+the session's state may not show the merge yet — wait a moment and run the reset
+then. ShipIt retries the recording by itself; you do not have to.
 
 ### Workflow runs
 

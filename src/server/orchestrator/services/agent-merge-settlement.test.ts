@@ -45,10 +45,37 @@ function facts(over: Partial<TerminalPrFacts> = {}): TerminalPrFacts {
   };
 }
 
-function poller(result: TerminalPrFacts | null = facts()) {
+/**
+ * A poller fake that PERFORMS the promotion decision rather than standing in for
+ * its result.
+ *
+ * It applies the caller's `guard` in the same place the real
+ * `promoteMergedPrByNumber` does — after the GitHub read, before the first write
+ * — and records what it promoted in `promoted`. Returning a bare value instead
+ * was how several of these tests came to pass against broken orderings: a
+ * settlement that promoted first and validated afterwards looked identical to
+ * one that validated first, because the fake had no write to observe.
+ *
+ * `onFetch` runs inside the simulated round trip, which is what makes "a turn
+ * started while GitHub was answering" reproducible rather than asserted.
+ */
+function poller(result: TerminalPrFacts | null = facts(), opts: { onFetch?: () => void } = {}) {
+  const promoted: TerminalPrFacts[] = [];
   return {
-    promoteMergedPrByNumber: vi.fn(async () => result),
-  } as unknown as PrStatusPoller;
+    promoted,
+    promoteMergedPrByNumber: vi.fn(async (args: { guard?: (pr: TerminalPrFacts) => boolean }) => {
+      opts.onFetch?.();
+      if (!result) return null;
+      if (result.merged_at === null && result.state !== "closed") return { pr: result, promoted: false };
+      if (args.guard && !args.guard(result)) return { pr: result, promoted: false };
+      promoted.push(result);
+      return { pr: result, promoted: true };
+    }),
+    readPrByNumber: vi.fn(async () => {
+      opts.onFetch?.();
+      return result;
+    }),
+  } as unknown as PrStatusPoller & { promoted: TerminalPrFacts[] };
 }
 
 function registry(runner: { running?: boolean; agentBusy?: boolean; turnEpoch?: number } | null) {
@@ -151,23 +178,54 @@ describe("settleAgentMerge", () => {
     expect(claims.get(SESSION)).not.toBeNull();
   });
 
-  it("does not write session state once the session's pull request has moved on", async () => {
+  it("records the merge in the transcript when the session's pull request has moved on", async () => {
     // Both halves of the tuple matter: `remoteUrl` is rewritten in place when
     // `origin` changes, and pull-request numbers coincide across repositories.
+    //
+    // This is the one path where a merge ShipIt may have performed has nowhere
+    // in the SESSION's state to go. That is not licence to drop it: the row is
+    // the last copy of the evidence, so the question is asked of GitHub against
+    // the claim's own repository and the answer goes in the transcript
+    // (cross-agent review finding — the previous code wrote a `console.warn`,
+    // which req 9 does not accept as a record).
     const claim = claimOne();
     sessions.recordPrProvenance(SESSION, 9, REPO_ID);
     const p = poller();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const out = await settleAgentMerge(deps({ prStatusPoller: p }), claim, { witnessed: true });
 
-    expect(out).toMatchObject({ result: "deferred" });
-    expect(p.promoteMergedPrByNumber).not.toHaveBeenCalled();
+    expect(out).toEqual({ result: "settled", merged: true });
+    // Nothing promoted: no `merged_at`, no re-anchoring, no merge callbacks on a
+    // session that has moved to a different pull request.
+    expect(p.promoted).toEqual([]);
+    const text = notices().join("\n");
+    expect(text).toContain("agent-merge:github:acme/shipit#7@sha-head");
+    expect(text).toContain("its own state is unchanged");
+    expect(claims.get(SESSION)).toBeNull();
+  });
+
+  it("records nothing for a moved-on session whose claimed commit did not merge", async () => {
+    const claim = claimOne();
+    sessions.recordPrProvenance(SESSION, 9, REPO_ID);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const out = await settleAgentMerge(
+      deps({ prStatusPoller: poller(facts({ merged_at: null, state: "open" })) }),
+      claim, { witnessed: true },
+    );
+    expect(out).toEqual({ result: "not-merged" });
     expect(notices()).toEqual([]);
-    // The session is left alone, but the merge is not dropped SILENTLY: this is
-    // the one path where a merge ShipIt may have performed has nowhere in the
-    // transcript to go (cross-agent review finding).
-    expect(warn.mock.calls.map((c) => String(c[0])).join("\n"))
-      .toContain("agent-merge:github:acme/shipit#7@sha-head");
+    expect(claims.get(SESSION)).toBeNull();
+  });
+
+  it("keeps the claim when GitHub cannot answer about a moved-on pull request", async () => {
+    // The row is the only evidence left on this path, so an unanswered read must
+    // not spend it.
+    const claim = claimOne();
+    sessions.recordPrProvenance(SESSION, 9, REPO_ID);
+    const out = await settleAgentMerge(
+      deps({ prStatusPoller: poller(null) }), claim, { witnessed: true },
+    );
+    expect(out).toMatchObject({ result: "deferred" });
+    expect(claims.get(SESSION)).not.toBeNull();
   });
 
   // The three states the review found could be resolved wrongly.
@@ -178,14 +236,38 @@ describe("settleAgentMerge", () => {
     // be a false record AND anchor the session's reset on the wrong commit.
     const claim = claimOne();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const out = await settleAgentMerge(
-      deps({ prStatusPoller: poller(facts({ head_sha: "somebody-elses-commit" })) }),
-      claim, { witnessed: false },
-    );
+    const p = poller(facts({ head_sha: "somebody-elses-commit" }));
+    const out = await settleAgentMerge(deps({ prStatusPoller: p }), claim, { witnessed: false });
 
     expect(out).toEqual({ result: "not-merged" });
     expect(notices()).toEqual([]);
     expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).toContain("not the claimed commit");
+    // And — the part the previous version of this test could not see — the
+    // session was never promoted. The check used to run AFTER the promotion, so
+    // `merged_at`, the reset anchor and the merge callbacks had all already
+    // fired for the wrong commit by the time it decided to record nothing.
+    expect(p.promoted).toEqual([]);
+    expect(sessions.get(SESSION)?.mergedAt ?? null).toBeNull();
+  });
+
+  it("does not promote when a turn starts WHILE GitHub is answering", async () => {
+    // The idle check the caller made is on the far side of an awaited round
+    // trip. Reproduced rather than asserted: the fake starts a turn inside the
+    // fetch, exactly where the real gap is (cross-agent review finding).
+    const claim = claimOne();
+    let turnRunning = false;
+    const p = poller(facts(), { onFetch: () => { turnRunning = true; } });
+    const out = await settleAgentMerge(deps({ prStatusPoller: p }), claim, {
+      witnessed: false,
+      stillSafeToSettle: () => !turnRunning,
+    });
+
+    expect(out).toMatchObject({ result: "deferred" });
+    expect(p.promoteMergedPrByNumber).toHaveBeenCalled();
+    expect(p.promoted).toEqual([]);
+    expect(sessions.get(SESSION)?.mergedAt ?? null).toBeNull();
+    // Nothing was written, so the row stays for the next pass.
+    expect(claims.get(SESSION)).not.toBeNull();
   });
 
   it("still settles a WITNESSED merge whose head reads differently afterwards", async () => {
@@ -243,13 +325,17 @@ describe("settleAgentMerge", () => {
     expect(p.promoteMergedPrByNumber).not.toHaveBeenCalled();
   });
 
-  it("does not write session state after origin moved to another repository", async () => {
+  it("asks the CLAIM's repository, not the session's new one, after origin moved", async () => {
     const claim = claimOne();
     sessions.setRemoteUrl(SESSION, "https://github.com/acme/other.git");
     const p = poller();
     const out = await settleAgentMerge(deps({ prStatusPoller: p }), claim, { witnessed: true });
-    expect(out).toMatchObject({ result: "deferred" });
-    expect(p.promoteMergedPrByNumber).not.toHaveBeenCalled();
+    expect(out).toEqual({ result: "settled", merged: true });
+    // Addressed from `claim.repoId`. Reading the session's current remote here
+    // would ask `acme/other` about a pull request that only exists in
+    // `acme/shipit`, and answer about a different repository's #7.
+    expect(p.readPrByNumber).toHaveBeenCalledWith("acme", "shipit", 7);
+    expect(p.promoted).toEqual([]);
   });
 
   it("records once, not once per settlement attempt", async () => {

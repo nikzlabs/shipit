@@ -56,7 +56,7 @@ describe("promoteMergedPrByNumber", () => {
       sessionId: "s1", owner: "o", repo: "r", prNumber: 7,
     });
 
-    expect(facts).toMatchObject({ number: 7, merged_at: MERGED_PR.merged_at });
+    expect(facts).toMatchObject({ promoted: true, pr: { number: 7, merged_at: MERGED_PR.merged_at } });
     expect(sessionManager.setMergedHeadSha).toHaveBeenCalledWith("s1", "sha-head");
     expect(onMergeDetectedCb).toHaveBeenCalledWith("s1");
   });
@@ -126,12 +126,62 @@ describe("promoteMergedPrByNumber", () => {
     });
 
     // The facts still come back, so the caller can see nothing merged…
-    expect(facts).toMatchObject({ number: 7, merged_at: null });
+    expect(facts).toMatchObject({ promoted: false, pr: { number: 7, merged_at: null } });
     // …but nothing was promoted.
     expect(sessionManager.setPrStatus).not.toHaveBeenCalled();
     expect(sessionManager.setMergedHeadSha).not.toHaveBeenCalled();
     expect(onMergeDetectedCb).not.toHaveBeenCalled();
     expect(sseBroadcast).not.toHaveBeenCalled();
+  });
+
+  it("asks the caller's guard AFTER the read and writes nothing when it says no", async () => {
+    // The guard exists because every precondition the caller checked was checked
+    // on the far side of an awaited GitHub request. Two of them can change
+    // inside it: a turn can start on the session, and the facts themselves
+    // decide whether this is the commit the caller meant. Before this the
+    // settlement promoted first and validated afterwards, so a pull request
+    // force-pushed and merged at ANOTHER head still got `merged_at`, the reset
+    // anchor and the merge callbacks — for a commit nobody claimed (cross-agent
+    // review finding).
+    const sessionManager = makeSessionManager([{ id: "s1", branch: "shipit/feature" }]);
+    const onMergeDetectedCb = vi.fn(async () => {});
+    const sseBroadcast = vi.fn();
+    const poller = new PrStatusPoller({
+      githubAuth: githubAuthFor(MERGED_PR),
+      sessionManager,
+      sseBroadcast,
+      onMergeDetectedCb,
+    });
+
+    const guard = vi.fn(() => false);
+    const res = await poller.promoteMergedPrByNumber({
+      sessionId: "s1", owner: "o", repo: "r", prNumber: 7, guard,
+    });
+
+    // Asked with the facts, so it can decide on them.
+    expect(guard).toHaveBeenCalledWith(expect.objectContaining({ number: 7, head_sha: "sha-head" }));
+    expect(res).toMatchObject({ promoted: false, pr: { number: 7 } });
+    expect(sessionManager.setPrStatus).not.toHaveBeenCalled();
+    expect(sessionManager.setMergedHeadSha).not.toHaveBeenCalled();
+    expect(onMergeDetectedCb).not.toHaveBeenCalled();
+    expect(sseBroadcast).not.toHaveBeenCalled();
+  });
+
+  it("promotes when the guard agrees", async () => {
+    const sessionManager = makeSessionManager([{ id: "s1", branch: "shipit/feature" }]);
+    const poller = new PrStatusPoller({
+      githubAuth: githubAuthFor(MERGED_PR),
+      sessionManager,
+      sseBroadcast: vi.fn(),
+      onMergeDetectedCb: vi.fn(async () => {}),
+    });
+
+    const res = await poller.promoteMergedPrByNumber({
+      sessionId: "s1", owner: "o", repo: "r", prNumber: 7, guard: () => true,
+    });
+
+    expect(res).toMatchObject({ promoted: true });
+    expect(sessionManager.setMergedHeadSha).toHaveBeenCalledWith("s1", "sha-head");
   });
 
   it("promotes a closed-without-merge pull request, which is terminal too", async () => {

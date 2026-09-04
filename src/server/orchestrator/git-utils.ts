@@ -185,9 +185,10 @@ const GITHUB_SSH_REMOTE = new RegExp(
  * there — and a grant written under one would silently not exist under another
  * (docs/287-agent-merge-per-repo).
  *
- * Also not {@link parseGitHubRemote}, which is unanchored (so `github.com` can
- * match inside another host's path) and whose `[^/.]+` repository group
- * truncates a legal name at its first dot.
+ * Also not {@link parseGitHubRemote}, which is unanchored, so `github.com` can
+ * match inside another host's path. The two now agree on where a repository
+ * name ends — a disagreement there put the grant on one repository and the
+ * merge on another — but only this one refuses a host it does not recognise.
  *
  * Refusing is the safe direction: a remote with no identity matches no grant,
  * so the capability is simply unavailable rather than mis-assigned.
@@ -561,13 +562,41 @@ export async function isWorkspaceCloneInSyncWithCache(
   }
 }
 
-/** Parse owner/repo from a GitHub remote URL. */
+/**
+ * Parse owner/repo from a GitHub remote URL — the ACTION resolver, used to
+ * address the GitHub API. {@link repoId} is the authorization identity; these
+ * two must agree on which repository a URL names.
+ *
+ * The repository group used to be `[^/.]+`, which truncated a legal dotted name
+ * at its first dot: `acme/foo.bar` resolved to `acme/foo`. Harmless-looking on
+ * its own — the API call simply 404s — but docs/287 made the disagreement an
+ * authorization one, since `repoId` accepts the dot. The grant would be checked
+ * against `acme/foo.bar` while every operation targeted `acme/foo`.
+ *
+ * So the name runs to the next path separator and only a TERMINAL `.git` is
+ * stripped, matching {@link repoId}. `github.com/acme/repo/pull/3` still yields
+ * `repo`, because the group stops at the `/`.
+ */
 export function parseGitHubRemote(url: string): { owner: string; repo: string } | null {
   // Handle HTTPS: https://github.com/owner/repo.git
-  const httpsMatch = /github\.com\/([^/]+)\/([^/.]+)/.exec(url);
-  if (httpsMatch) return { owner: httpsMatch[1], repo: httpsMatch[2] };
+  const httpsMatch = /github\.com\/([^/]+)\/([^/?#]+)/.exec(url);
+  if (httpsMatch) return { owner: httpsMatch[1], repo: httpsMatch[2].replace(/\.git$/i, "") };
   // Handle SSH: git@github.com:owner/repo.git
-  const sshMatch = /github\.com:([^/]+)\/([^/.]+)/.exec(url);
-  if (sshMatch) return { owner: sshMatch[1], repo: sshMatch[2] };
+  const sshMatch = /github\.com:([^/]+)\/([^/?#]+)/.exec(url);
+  if (sshMatch) return { owner: sshMatch[1], repo: sshMatch[2].replace(/\.git$/i, "") };
   return null;
+}
+
+/**
+ * `github:owner/repo` back to the pair the GitHub API takes.
+ *
+ * The inverse of {@link repoIdFromOwnerRepo}, for the paths that must address a
+ * repository the SESSION may no longer point at — settling a merge claim whose
+ * session has since been repointed. Deriving it from the session's current
+ * remote would ask GitHub about the wrong repository.
+ */
+export function ownerRepoFromRepoId(identity: string): { owner: string; repo: string } | null {
+  const match = /^github:([^/]+)\/([^/]+)$/.exec((identity ?? "").trim());
+  if (!match) return null;
+  return { owner: match[1], repo: match[2] };
 }

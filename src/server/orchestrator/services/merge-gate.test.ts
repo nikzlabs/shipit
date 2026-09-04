@@ -48,11 +48,13 @@ function observed(over: Partial<Extract<MergeObservation, { kind: "read" }>> = {
 
 const NO_GRACE = async () => false;
 
-async function decide(observation: MergeObservation, over: { localHead?: string | null; graceSaysWait?: () => Promise<boolean> } = {}) {
+type LocalHead = { kind: "sandbox" } | { kind: "head"; sha: string } | { kind: "unreadable"; reason: string };
+
+async function decide(observation: MergeObservation, over: { localHead?: LocalHead; graceSaysWait?: () => Promise<boolean> } = {}) {
   return decideMerge({
     observation,
     prNumber: 7,
-    localHead: over.localHead ?? null,
+    localHead: over.localHead ?? { kind: "sandbox" },
     graceSaysWait: over.graceSaysWait ?? NO_GRACE,
   });
 }
@@ -124,12 +126,25 @@ describe("decideMerge — the observation table", () => {
   });
 
   it("refuses when the pull request head is not this workspace's commit (req 14)", async () => {
-    const decision = await decide(observed(), { localHead: "sha-local" });
+    const decision = await decide(observed(), { localHead: { kind: "head", sha: "sha-local" } });
     expect(decision).toMatchObject({ action: "refuse", reason: "local-head-differs" });
   });
 
   it("does not apply the local-head check when there is no local head (sandbox)", async () => {
-    await expect(decide(observed(), { localHead: null })).resolves.toEqual({ action: "merge", sha: "sha-head" });
+    await expect(decide(observed(), { localHead: { kind: "sandbox" } })).resolves.toEqual({ action: "merge", sha: "sha-head" });
+  });
+
+  it("refuses when the workspace's own commit could not be read (req 14)", async () => {
+    // The case that used to share `null` with the sandbox exemption above, and
+    // therefore merged with no local comparison at all: a repo-bound workspace
+    // that is evicted, broken, or unreadable has NOT passed req 14's check
+    // (cross-agent review finding). The two are distinct values now, so this
+    // cannot regress into the exemption by accident.
+    const decision = await decide(observed(), {
+      localHead: { kind: "unreadable", reason: "not a git repository" },
+    });
+    expect(decision).toMatchObject({ action: "refuse", reason: "local-head-unreadable" });
+    expect(decision.action === "refuse" && decision.message).toContain("not a git repository");
   });
 
   it("reports an already-merged pull request as merged, not as a refusal", async () => {
@@ -141,7 +156,7 @@ describe("decideMerge — the observation table", () => {
     // "push and merge again" to someone whose work shipped is just wrong.
     const decision = await decide(
       observed({ prState: "MERGED", headRefOid: "sha-new", rollupCommitOid: "sha-old" }),
-      { localHead: "sha-local" },
+      { localHead: { kind: "head", sha: "sha-local" } },
     );
     expect(decision).toEqual({ action: "already-merged" });
   });
@@ -171,6 +186,16 @@ describe("decideMerge — the observation table", () => {
   it("merges when review is APPROVED or not configured", async () => {
     await expect(decide(observed({ reviewDecision: "APPROVED" }))).resolves.toMatchObject({ action: "merge" });
     await expect(decide(observed({ reviewDecision: null }))).resolves.toMatchObject({ action: "merge" });
+  });
+
+  it("refuses a review decision it does not recognise, rather than merging", async () => {
+    // The same rule as the rollup above, and it was missing here: naming the two
+    // refusals GitHub documents today lets a value it adds tomorrow fall through
+    // to a merge — the one direction this gate must never fail in (cross-agent
+    // review finding). Only APPROVED and null permit a merge.
+    const decision = await decide(observed({ reviewDecision: "SOMETHING_NEW" }));
+    expect(decision).toMatchObject({ action: "refuse", reason: "review-required" });
+    expect(decision.action === "refuse" && decision.message).toContain("SOMETHING_NEW");
   });
 
   it.each([["PENDING"], ["EXPECTED"]])("refuses a %s rollup without waiting (req 17)", async (state) => {

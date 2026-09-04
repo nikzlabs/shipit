@@ -1628,16 +1628,25 @@ export class PrStatusPoller {
    * pull request on that branch — so a re-arm or an unarchive is enough to make
    * it settle a different pull request than the one that merged.
    *
-   * Returns the facts it promoted from, so the caller can describe the merge
-   * without a second fetch; `null` when GitHub does not answer, which leaves
-   * the claim for another attempt.
+   * Returns the facts it read and whether it promoted from them, so the caller
+   * can describe the merge without a second fetch; `null` when GitHub does not
+   * answer, which leaves the claim for another attempt.
+   *
+   * `guard` is the caller's last word, asked AFTER the read and immediately
+   * before the first write. Every precondition a caller checked before calling
+   * was checked across an awaited GitHub request, and two of them can change
+   * inside it: a turn can start on the session, and the facts themselves decide
+   * whether this is the commit the caller meant. Checking them out here — where
+   * nothing has been written yet — is what makes "we decided not to promote"
+   * different from "we promoted and then noticed" (cross-agent review finding).
    */
   async promoteMergedPrByNumber(args: {
     sessionId: string;
     owner: string;
     repo: string;
     prNumber: number;
-  }): Promise<TerminalPrFacts | null> {
+    guard?: (pr: TerminalPrFacts) => boolean;
+  }): Promise<{ pr: TerminalPrFacts; promoted: boolean } | null> {
     const pr = await this.githubAuth.findPullRequestByNumber(args.owner, args.repo, args.prNumber);
     if (!pr) return null;
     // Promote ONLY a pull request that actually reached a terminal state. The
@@ -1647,7 +1656,8 @@ export class PrStatusPoller {
     // remediation and auto-merge state — after which polling skips it until it
     // is re-tracked (cross-agent review finding). The facts are still returned,
     // so the caller can see that nothing merged.
-    if (pr.merged_at === null && pr.state !== "closed") return pr;
+    if (pr.merged_at === null && pr.state !== "closed") return { pr, promoted: false };
+    if (args.guard && !args.guard(pr)) return { pr, promoted: false };
     this.promoteTerminal({
       sessionId: args.sessionId,
       owner: args.owner,
@@ -1656,6 +1666,17 @@ export class PrStatusPoller {
       pr,
       force: true,
     });
-    return pr;
+    return { pr, promoted: true };
+  }
+
+  /**
+   * Read one pull request by number, promoting nothing.
+   *
+   * For the settlement path that must ask about a pull request this session no
+   * longer owns: the merge may still have happened, and the answer belongs in
+   * the transcript, but no session state may move on the strength of it.
+   */
+  async readPrByNumber(owner: string, repo: string, prNumber: number): Promise<TerminalPrFacts | null> {
+    return this.githubAuth.findPullRequestByNumber(owner, repo, prNumber);
   }
 }

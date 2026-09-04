@@ -109,35 +109,50 @@ export class AgentMergeClaimStore {
   }
 
   /**
-   * Record a merge about to be attempted. Replaces any existing row for the
-   * session: a session has one turn and a turn has one merge, so an older row
-   * here is a settled-or-abandoned attempt, and keeping it would make
-   * reconciliation ask about a pull request nobody is merging any more.
+   * Record a merge about to be attempted. **Single-flight**: an existing row of
+   * either state refuses the new claim, and the caller refuses the merge.
+   *
+   * Replacing a row was the obvious reading of "one turn, one merge", and it was
+   * wrong in both states. A `settling` row is proof that a merge HAPPENED and
+   * its effects are still being written, so replacing it discards that proof. A
+   * `merging` row is an attempt whose outcome nobody has learned YET — replacing
+   * it loses a merge that is still in flight:
+   *
+   *   A claims and GitHub performs the merge, but A's response is slow. B claims
+   *   and replaces A's row. B gets "already merged", a definitive refusal, and
+   *   releases the row. A finally returns merged, finds no row of its own, and
+   *   reports the merge as already settled. The pull request merged; nothing
+   *   recorded it and nothing will (cross-agent review finding).
+   *
+   * Refusing instead makes that sequence impossible: B never reaches the REST
+   * call. A row left behind by a crashed or unresolved attempt does block the
+   * next merge, which is the intended direction — it is resolved by the three
+   * reconciliation triggers (end of turn, session activation, startup), and
+   * until then "an earlier attempt is unresolved" is the honest answer.
    */
   claim(claim: Omit<AgentMergeClaim, "state" | "createdAt">): boolean {
-    // A `settling` row is proof that a merge HAPPENED and its effects are still
-    // being written. Replacing it would discard that proof, so a second attempt
-    // arriving while one is settling is refused rather than served (cross-agent
-    // review finding). `merging` is replaceable: it is an attempt whose outcome
-    // nobody learned, and the newer one supersedes it.
-    const existing = this.get(claim.sessionId);
-    if (existing?.state === "settling") return false;
-    this.db.prepare(
-      `INSERT INTO agent_merge_claims
-         (session_id, repo_id, pr_number, expected_sha, turn_id, state, created_at)
-       VALUES (?, ?, ?, ?, ?, 'merging', ?)
-       ON CONFLICT(session_id) DO UPDATE SET
-         repo_id = excluded.repo_id,
-         pr_number = excluded.pr_number,
-         expected_sha = excluded.expected_sha,
-         turn_id = excluded.turn_id,
-         state = 'merging',
-         created_at = excluded.created_at`,
-    ).run(
-      claim.sessionId, claim.repoId, claim.prNumber, claim.expectedSha,
-      claim.turnId, new Date().toISOString(),
-    );
-    return true;
+    // A bare INSERT, so the primary key enforces single-flight rather than the
+    // read above it: `get` and `run` are both synchronous here, but a second
+    // orchestrator on the same database is not in this process's event loop, and
+    // a conflict there must refuse rather than throw its way out of the route.
+    try {
+      this.db.prepare(
+        `INSERT INTO agent_merge_claims
+           (session_id, repo_id, pr_number, expected_sha, turn_id, state, created_at)
+         VALUES (?, ?, ?, ?, ?, 'merging', ?)`,
+      ).run(
+        claim.sessionId, claim.repoId, claim.prNumber, claim.expectedSha,
+        claim.turnId, new Date().toISOString(),
+      );
+      return true;
+    } catch (err) {
+      // Every reason to land here refuses the merge, so none of them may be
+      // silent: a conflicting row, a session deleted under the foreign key, a
+      // read-only database. The route turns `false` into one refusal message;
+      // this line is what says which of them it was.
+      console.warn(`[agent-merge] claim refused for ${claim.sessionId}:`, err);
+      return false;
+    }
   }
 
   get(sessionId: string): AgentMergeClaim | null {
@@ -182,11 +197,11 @@ export class AgentMergeClaimStore {
   /**
    * Release a claim whose merge did NOT happen — a definitive refusal.
    *
-   * Refuses to touch a `settling` row, which is the concurrency case: two
-   * requests claim the same pull request at the same head, one merges and moves
-   * the row to `settling`, and the other gets GitHub's "already merged" refusal.
-   * An unconditional delete there would erase the winner's durable evidence and
-   * leave its merge with no record at all (cross-agent review finding).
+   * The `state = 'merging'` filter keeps the "only an unresolved attempt may be
+   * discarded" rule inside the statement rather than in the caller's argument.
+   * Single-flight {@link claim} already stops a second request from ever seeing
+   * another request's `settling` row, so this is the belt to that braces: a
+   * `settling` row means a merge HAPPENED, and no refusal path may delete one.
    */
   releaseUnmerged(sessionId: string, expectedSha: string): boolean {
     const res = this.db.prepare(

@@ -64,6 +64,15 @@ describe("mergePullRequestAttempt", () => {
     await expect(attempt()).resolves.toMatchObject({ outcome: "refused" });
   });
 
+  it("carries GitHub's own reason on an explicit merged:false (req 7)", async () => {
+    // Req 7 says GitHub's refusal is shown word for word. The generic sentence
+    // used to replace it unconditionally, throwing away the only part of the
+    // answer the agent could act on (cross-agent review finding).
+    respond(200, { merged: false, message: "Base branch was modified" });
+    const res = await attempt();
+    expect(res.message).toContain("Base branch was modified");
+  });
+
   it("treats an unparseable 2xx as indeterminate", async () => {
     respond(200, undefined);
     await expect(attempt()).resolves.toMatchObject({ outcome: "indeterminate" });

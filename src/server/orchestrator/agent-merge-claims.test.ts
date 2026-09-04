@@ -70,14 +70,43 @@ describe("AgentMergeClaimStore", () => {
     expect(claims.get(SESSION)).toBeNull();
   });
 
-  it("replaces an older claim rather than accumulating one per attempt", () => {
-    // A session runs one turn and a turn performs one merge, so an older row is
-    // a spent attempt — keeping it would make reconciliation ask about a pull
-    // request nobody is merging.
-    claimOne({ prNumber: 7, expectedSha: "sha-a" });
-    claimOne({ prNumber: 8, expectedSha: "sha-b" });
+  it("refuses a second claim while one is outstanding, and keeps the first", () => {
+    // Single-flight. Replacing the row was the obvious reading of "one turn,
+    // one merge", and it loses a merge that is still in flight: A claims and
+    // GitHub merges but A's answer is slow; B replaces A's row, is told "already
+    // merged", and releases it; A returns to find no row and reports the merge
+    // as settled. The pull request merged and nothing recorded it (cross-agent
+    // review finding).
+    expect(claims.claim({
+      sessionId: SESSION, repoId: REPO, prNumber: 7, expectedSha: "sha-a", turnId: "t",
+    })).toBe(true);
+    expect(claims.claim({
+      sessionId: SESSION, repoId: REPO, prNumber: 8, expectedSha: "sha-b", turnId: "t",
+    })).toBe(false);
     expect(claims.list()).toHaveLength(1);
-    expect(claims.get(SESSION)).toMatchObject({ prNumber: 8, expectedSha: "sha-b", state: "merging" });
+    expect(claims.get(SESSION)).toMatchObject({ prNumber: 7, expectedSha: "sha-a", state: "merging" });
+  });
+
+  it("refuses a claim over a `settling` row too", () => {
+    // A `settling` row is proof that a merge HAPPENED and its effects are still
+    // being written. Nothing may write over it.
+    claimOne();
+    claims.markSettling(SESSION, "sha-head");
+    expect(claims.claim({
+      sessionId: SESSION, repoId: REPO, prNumber: 9, expectedSha: "sha-c", turnId: "t",
+    })).toBe(false);
+    expect(claims.get(SESSION)).toMatchObject({ prNumber: 7, state: "settling" });
+  });
+
+  it("accepts a claim once the previous one is released", () => {
+    // The refusal is about an OUTSTANDING attempt, not about the session. A
+    // resolved claim must not lock the session out of merging again.
+    claimOne();
+    claims.release(SESSION, "sha-head");
+    expect(claims.claim({
+      sessionId: SESSION, repoId: REPO, prNumber: 8, expectedSha: "sha-b", turnId: "t",
+    })).toBe(true);
+    expect(claims.get(SESSION)).toMatchObject({ prNumber: 8, expectedSha: "sha-b" });
   });
 
   it("survives a database close and reopen", () => {

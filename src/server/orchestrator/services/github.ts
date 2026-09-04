@@ -532,7 +532,7 @@ export async function agentMergePullRequest(
      */
     repoBound?: boolean;
     /** The repo-bound session's local HEAD, for the req 14 comparison. */
-    localHead?: string | null;
+    localHead?: { kind: "head"; sha: string } | { kind: "unreadable"; reason: string };
     /**
      * The zero-check grace decision, supplied by the route (the tracker is
      * private to the poller). Called ONLY when the read reports no checks, so a
@@ -541,12 +541,16 @@ export async function agentMergePullRequest(
      */
     graceSaysWait?: (headSha: string) => Promise<boolean>;
     /**
-     * docs/287 req 9 — write the durable claim, immediately before the REST
-     * call. Returning false refuses the merge: performing one whose record
-     * cannot survive a crash is the failure this whole section exists to
-     * prevent. Synchronous so nothing can interleave between it and the call.
+     * docs/287 reqs 1 + 9 — the last gate before the REST call: re-check that
+     * the merge is still authorised, then write the durable claim.
+     *
+     * Returns a refusal message, or null to proceed. It owns the wording because
+     * the two refusals are different facts — "the permission was withdrawn" and
+     * "an earlier attempt is unresolved" — and a caller told only "no" would
+     * report the wrong one. Synchronous, so nothing can interleave between it
+     * and the call it guards.
      */
-    onClaim?: (expectedSha: string) => boolean;
+    beforeMerge?: (expectedSha: string) => string | null;
     /**
      * The merge landed and was witnessed — settle before reporting success.
      *
@@ -589,7 +593,7 @@ export async function agentMergePullRequest(
   const decision = await decideMerge({
     observation,
     prNumber: opts.number,
-    localHead: opts.repoBound ? (opts.localHead ?? null) : null,
+    localHead: opts.repoBound ? (opts.localHead ?? { kind: "unreadable", reason: "no local commit was supplied" }) : { kind: "sandbox" },
     graceSaysWait: async () => {
       if (!opts.graceSaysWait || observation.kind !== "read") return false;
       return opts.graceSaysWait(observation.headRefOid);
@@ -629,18 +633,19 @@ export async function agentMergePullRequest(
     return { success: false, message: decision.message };
   }
 
-  // docs/287 req 9 — the claim goes in BEFORE the call, because the call can
-  // reject after GitHub accepted it. `onClaim` returns false when the claim
-  // could not be written, and that refuses the merge rather than performing one
-  // whose outcome nothing would survive to record.
-  if (opts.onClaim && !opts.onClaim(decision.sha)) {
-    return {
-      success: false,
-      message:
-        `Not merged — ShipIt could not record the merge of PR #${opts.number} before performing `
-        + "it, and will not merge without a record it can recover. Try again.",
-    };
-  }
+  // docs/287 req 9 — the LAST gate before the irreversible call, and the only
+  // one on the far side of every await this function makes. It re-asks whether
+  // the merge is still authorised and writes the claim, and returns a refusal
+  // message when either answer is no.
+  //
+  // Everything above it — the grant, the ownership tuple, the flush, the push —
+  // was decided before a commit, a push and two GitHub round trips. A permission
+  // the user withdraws during that window has to stop the merge, or "withdraw at
+  // any time" (req 1) means "withdraw between merges" (cross-agent review
+  // finding). The claim is written here for the same reason: the call can reject
+  // after GitHub accepted it, so the record has to exist first.
+  const refusal = opts.beforeMerge?.(decision.sha);
+  if (refusal) return { success: false, message: refusal };
 
   // req 16 — merge the commit the gate examined, and nothing else. GitHub
   // refuses atomically if the head has moved since the read.

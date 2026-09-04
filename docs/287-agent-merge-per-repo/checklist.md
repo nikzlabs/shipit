@@ -134,8 +134,19 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 - [x] Each new guard proved red on its own before the fix
 - [x] `npm run lint:dev` and `npm run typecheck` green, and the full suite ran
       clean (963 files, 16,705 tests) for the widened interfaces
-- [x] A review of the implementation, not only of the design — round 1 on the
-      storage/grant slice (`shipit agent run --role reviewer`, Codex). Six of its
-      seven findings verified at source and fixed; the seventh (the grant is
-      reachable by a local-mode agent) is recorded in plan.md's Risks, since a
-      local agent can already merge without it
+- [x] A review of the implementation, not only of the design — three cold rounds
+      (`shipit agent run --role reviewer`), each given the work without being
+      told what an earlier round found. Round 1 (storage/grant): 6 of 7 findings
+      fixed, the 7th (a local-mode agent can reach the grant) recorded in
+      plan.md's Risks, since such an agent can already merge without it. Round 2
+      (claim/settlement): 10 of 10 real, all fixed. Round 3 (the whole branch):
+      9 of 10 fixed — a withdrawn grant not stopping an in-flight merge, claims
+      not being single-flight, the promotion writing before validating the
+      merged commit and the idle state, a moved-on session dropping its
+      evidence, an unreadable local HEAD reading as the sandbox exemption, the
+      two repository parsers disagreeing on dotted names, a branch change not
+      clearing provenance, and a `reviewDecision` blacklist
+- [x] Six tests round 3 judged unable to fail were rebuilt, not kept: the
+      settlement fake performs the promotion decision instead of standing in for
+      its result, the turn race is reproduced inside the simulated round trip,
+      and the promotion guard is tested on the real poller

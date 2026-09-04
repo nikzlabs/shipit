@@ -1544,6 +1544,26 @@ export async function registerGitHubRoutes(
       }
         const { gitDir, remoteUrl } = resolvePrTarget(session, dir, request.body ?? {});
         const git = createGitManager(gitDir);
+        // req 14 — the pull request's head must be the commit this workspace is
+        // on. A repo-bound session that cannot answer WHICH commit that is has
+        // not passed the check, so the failure is REPORTED rather than turned
+        // into an absent value: the gate used to read `null` as "a sandbox,
+        // which owns its own git and has nothing to compare", so a failed read
+        // here silently bought a merge with no local comparison at all
+        // (cross-agent review finding).
+        let localHead: { kind: "head"; sha: string } | { kind: "unreadable"; reason: string } | undefined;
+        if (repoBound) {
+          try {
+            const sha = await git.getHeadHash();
+            // `getHeadHash` answers null for an unborn or unreadable HEAD, which
+            // is the same "cannot confirm which commit this is" as a throw.
+            localHead = sha
+              ? { kind: "head", sha }
+              : { kind: "unreadable", reason: "the workspace reported no current commit" };
+          } catch (err) {
+            localHead = { kind: "unreadable", reason: getErrorMessage(err) };
+          }
+        }
         const result = await agentMergePullRequest(git, deps.githubAuthManager, {
           number: num,
           sessionId: request.params.id,
@@ -1551,10 +1571,9 @@ export async function registerGitHubRoutes(
           auto: request.body?.auto,
           remoteUrl,
           repoBound,
-          // req 14 — the pull request's head must be the commit this workspace
-          // is on, compared live. Read after the flush and push above, so it is
-          // the commit those two just produced.
-          localHead: repoBound ? await git.getHeadHash().catch(() => null) : null,
+          // Read after the flush and push above, so it is the commit those two
+          // just produced.
+          ...(localHead ? { localHead } : {}),
           ...(deps.prStatusPoller && session.remoteUrl && mergeRepoKey
             ? {
               graceSaysWait: async (headSha: string) =>
@@ -1572,20 +1591,37 @@ export async function registerGitHubRoutes(
               // docs/287 req 9 — the durable claim, written synchronously in the
               // instant before the REST call, and resolved by exactly one of the
               // three outcome hooks.
-              onClaim: (expectedSha: string) => {
-                try {
-                  claimDeps.claims.claim({
-                    sessionId: request.params.id,
-                    repoId: claimRepoId,
-                    prNumber: num,
-                    expectedSha,
-                    turnId: turnId ?? "n/a",
-                  });
-                  return true;
-                } catch (err) {
-                  console.error(`[agent-merge] could not claim the merge for ${request.params.id}:`, err);
-                  return false;
+              beforeMerge: (expectedSha: string) => {
+                // req 1 — the permission is withdrawable AT ANY TIME, and the
+                // decision to merge was taken before a commit, a push and two
+                // GitHub round trips. Re-read from ShipIt's own record, the same
+                // source the first check used.
+                const live = sessionManager.get(request.params.id);
+                if (!live) return "Not merged — this session no longer exists.";
+                if (mergeDisposition(live, deps.repoStore.allowsAgentMerge(live.remoteUrl ?? "")) !== "allowed") {
+                  return "Not merged — the permission to merge in this repository was withdrawn while "
+                    + "ShipIt was preparing the merge. Nothing was merged.";
                 }
+                // And the pull request must still be the one this session owns:
+                // a re-arm, an unarchive or a repointed `origin` during the same
+                // window clears the provenance this merge was authorised by.
+                if (live.prNumber !== num || live.prRepoId !== claimRepoId) {
+                  return `Not merged — PR #${num} is no longer the pull request ShipIt opened for `
+                    + "this session. Nothing was merged.";
+                }
+                if (!claimDeps.claims.claim({
+                  sessionId: request.params.id,
+                  repoId: claimRepoId,
+                  prNumber: num,
+                  expectedSha,
+                  turnId: turnId ?? "n/a",
+                })) {
+                  // Single-flight: a row is already outstanding for this session.
+                  return "Not merged — an earlier merge on this session has not been resolved yet, and "
+                    + "ShipIt will not start a second one over it. It resolves that attempt at the end "
+                    + "of the turn; try again after that.";
+                }
+                return null;
               },
               onMerged: async (expectedSha: string) => {
                 const claim = claimDeps.claims.get(request.params.id);

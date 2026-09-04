@@ -942,11 +942,28 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET branch_renamed = ? WHERE id = ?").run(renamed ? 1 : 0, id);
   }
 
-  /** Set the branch name on a session. */
+  /**
+   * Set the branch name on a session.
+   *
+   * docs/287 — a CHANGE of branch invalidates the merge provenance, for the same
+   * reason repointing `origin` does: the recorded pull request was opened from
+   * the old branch, and this session no longer has anything to do with it.
+   * Without this, repointing a session at another branch (the release-branch
+   * adoption path, which does not go through the PR reset) left the old number
+   * standing, and the agent could ask ShipIt to merge a pull request built from
+   * a branch its workspace had left (cross-agent review finding).
+   *
+   * Guarded on an actual change so the many creation-time callers — which set
+   * the branch a session is born with — clear nothing.
+   */
   setBranch(id: string, branch: string): void {
+    const previous = this.db
+      .prepare("SELECT branch FROM sessions WHERE id = ?")
+      .get(id) as { branch: string | null } | undefined;
     this.db.prepare(
       "UPDATE sessions SET branch = ? WHERE id = ?",
     ).run(branch, id);
+    if (previous !== undefined && previous.branch !== branch) this.clearPrProvenance(id);
   }
 
   /**

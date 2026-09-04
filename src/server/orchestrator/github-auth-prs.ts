@@ -311,7 +311,9 @@ export async function mergePullRequestAttempt(
     return { outcome: "refused", message };
   }
 
-  const parsed = await res.json().catch(() => null) as { merged?: unknown; sha?: string } | null;
+  const parsed = await res.json().catch(() => null) as {
+    merged?: unknown; sha?: string; message?: unknown;
+  } | null;
   if (!parsed) {
     // A 2xx we cannot read. Almost certainly merged — and "almost" is exactly
     // why this is not reported as one.
@@ -329,7 +331,16 @@ export async function mergePullRequestAttempt(
     return { outcome: "merged", message: "Pull request merged", mergeCommitSha: parsed.sha ?? null };
   }
   if (parsed.merged === false) {
-    return { outcome: "refused", message: "GitHub reported the pull request as not merged." };
+    // req 7 — GitHub's own reason, word for word, when it sent one. The generic
+    // sentence used to replace it unconditionally, which threw away the only
+    // part of the answer the agent could act on (cross-agent review finding).
+    const reason = typeof parsed.message === "string" && parsed.message.trim() ? parsed.message.trim() : null;
+    return {
+      outcome: "refused",
+      message: reason
+        ? `GitHub reported the pull request as not merged: ${reason}`
+        : "GitHub reported the pull request as not merged.",
+    };
   }
   return {
     outcome: "indeterminate",

@@ -36,8 +36,7 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { AgentMergeClaim, AgentMergeClaimStore } from "../agent-merge-claims.js";
 import { currentTurnId, mergeRecordId } from "../agent-merge-claims.js";
 import { persistNoticeUnattached } from "../chat-card-persistence.js";
-import { repoId } from "../git-utils.js";
-import { parseGitHubRemote } from "../git-utils.js";
+import { ownerRepoFromRepoId, repoId } from "../git-utils.js";
 
 export interface AgentMergeSettlementDeps {
   claims: AgentMergeClaimStore;
@@ -73,11 +72,16 @@ function sessionStillOwns(deps: AgentMergeSettlementDeps, claim: AgentMergeClaim
   return repoId(session.remoteUrl ?? "") === claim.repoId;
 }
 
-/** `github:owner/repo` back to the pair the GitHub API takes. */
-function ownerRepoFor(deps: AgentMergeSettlementDeps, claim: AgentMergeClaim): { owner: string; repo: string } | null {
-  const session = deps.sessionManager.get(claim.sessionId);
-  const parsed = session?.remoteUrl ? parseGitHubRemote(session.remoteUrl) : null;
-  return parsed ?? null;
+/**
+ * The pair the GitHub API takes, from the CLAIM's own repository identity.
+ *
+ * Derived from the claim rather than from the session's current `remoteUrl`,
+ * which is what a repointed session would answer. Everything asked about a claim
+ * has to be asked of the repository the merge was attempted in — that is the
+ * whole point of resolving a claim from its own tuple.
+ */
+function ownerRepoFor(claim: AgentMergeClaim): { owner: string; repo: string } | null {
+  return ownerRepoFromRepoId(claim.repoId);
 }
 
 /**
@@ -107,23 +111,13 @@ export async function settleAgentMerge(
     return { result: "deferred", reason: "the claim has already been resolved" };
   }
   if (!deps.prStatusPoller) return { result: "deferred", reason: "no pull-request poller" };
-  const target = ownerRepoFor(deps, claim);
-  if (!target) return { result: "deferred", reason: "the session has no GitHub remote" };
+  const target = ownerRepoFor(claim);
+  if (!target) return { result: "deferred", reason: "the claim has no readable repository" };
 
   // The tuple guard runs BEFORE the promotion, not after: the promotion is what
   // writes session state, so checking afterwards would already have written it.
   if (!sessionStillOwns(deps, claim)) {
-    // The merge may well have happened — it just is not this session's pull
-    // request any more, so the session is left alone. The fact is still put on
-    // the record rather than dropped silently: this is the one path where a
-    // merge ShipIt may have performed has nowhere in the transcript to go
-    // (cross-agent review finding).
-    console.warn(
-      `[agent-merge] ${mergeRecordId(claim)} — the session's pull request moved on before this `
-      + "could be settled; leaving the session untouched.",
-    );
-    deps.claims.release(claim.sessionId, claim.expectedSha);
-    return { result: "deferred", reason: "the session's pull request has moved on" };
+    return settleWithoutSession(deps, claim, target);
   }
 
   // docs/287 req 9 — the turn that owns this claim must still be the one
@@ -143,13 +137,28 @@ export async function settleAgentMerge(
     return { result: "deferred", reason: "a turn started on this session" };
   }
 
-  const facts = await deps.prStatusPoller.promoteMergedPrByNumber({
+  const read = await deps.prStatusPoller.promoteMergedPrByNumber({
     sessionId: claim.sessionId,
     owner: target.owner,
     repo: target.repo,
     prNumber: claim.prNumber,
+    // Asked after GitHub answered and before anything is written. Both halves
+    // were previously checked on the wrong side of this await: the turn check
+    // above it, and the commit check BELOW it — so a promotion could mark the
+    // session merged, re-anchor its reset and fire the merge callbacks for a
+    // commit the claim never asked about, and only then decide to record
+    // nothing (cross-agent review finding).
+    guard: (pr) => {
+      if (opts.stillSafeToSettle && !opts.stillSafeToSettle()) return false;
+      // A witnessed merge is exempt: the REST call pinned `expected_sha`, so
+      // GitHub already enforced the match — while `head_sha` can legitimately
+      // read differently afterwards on a repository that deletes the branch.
+      if (!opts.witnessed && pr.merged_at !== null && pr.head_sha !== claim.expectedSha) return false;
+      return true;
+    },
   });
-  if (!facts) return { result: "deferred", reason: "GitHub did not answer" };
+  if (!read) return { result: "deferred", reason: "GitHub did not answer" };
+  const facts = read.pr;
 
   if (facts.merged_at === null) {
     // A `settling` row was written because a merge response CAME BACK. GitHub's
@@ -170,13 +179,9 @@ export async function settleAgentMerge(
   // It merged — but was it THIS commit? A pull request can be force-pushed and
   // merged at a different head between an indeterminate attempt and this read,
   // and `merged_at` alone cannot tell those apart. Recording the claimed commit
-  // as merged when another one was would be a false record AND would anchor the
-  // session's reset on the wrong commit (cross-agent review finding).
-  //
-  // A witnessed merge is exempt: it was pinned to `expected_sha` by the REST
-  // call itself, so GitHub already enforced the match — while its `head_sha`
-  // can legitimately read differently afterwards on a repository that deletes
-  // the branch.
+  // as merged when another one was would be a false record. The `guard` above
+  // already stopped the promotion; this is the same condition deciding what to
+  // do with the row now that nothing has been written.
   if (!opts.witnessed && facts.head_sha !== claim.expectedSha) {
     console.warn(
       `[agent-merge] ${mergeRecordId(claim)} — PR #${claim.prNumber} merged at `
@@ -185,6 +190,11 @@ export async function settleAgentMerge(
     deps.claims.release(claim.sessionId, claim.expectedSha);
     return { result: "not-merged" };
   }
+
+  // The only remaining reason the guard can have refused: a turn started on the
+  // session while GitHub was answering. Nothing was written, and the row stays
+  // for the next reconciliation pass.
+  if (!read.promoted) return { result: "deferred", reason: "a turn started on this session" };
 
   const recordId = mergeRecordId(claim);
   const message = opts.witnessed
@@ -203,6 +213,60 @@ export async function settleAgentMerge(
     persistNoticeUnattached(deps.chatHistoryManager, claim.sessionId, message, "info");
   });
 
+  return { result: "settled", merged: true };
+}
+
+/**
+ * Resolve a claim whose session has moved on — a repointed `origin`, a re-arm, a
+ * replacement pull request.
+ *
+ * This is the one path where a merge ShipIt may have performed has nowhere in
+ * the session's state to go, and the previous code took that as licence to write
+ * a `console.warn` and delete the row. Requirement 9 asks for a record in the
+ * TRANSCRIPT, not in the process log, and a deleted row is the last copy of the
+ * evidence — so the question is asked of GitHub instead, against the claim's own
+ * repository (cross-agent review finding).
+ *
+ * Session state is still left completely alone: nothing here promotes, anchors
+ * or archives. The transcript gains one line saying what happened to a commit
+ * this session asked to merge, and the row goes.
+ */
+async function settleWithoutSession(
+  deps: AgentMergeSettlementDeps,
+  claim: AgentMergeClaim,
+  target: { owner: string; repo: string },
+): Promise<SettlementOutcome> {
+  const recordId = mergeRecordId(claim);
+  // A deleted session has no transcript to record into, and its claim row went
+  // with it under `ON DELETE CASCADE`. Nothing to ask GitHub about.
+  if (!deps.sessionManager.get(claim.sessionId)) {
+    deps.claims.release(claim.sessionId, claim.expectedSha);
+    return { result: "not-merged" };
+  }
+  const facts = await deps.prStatusPoller?.readPrByNumber(target.owner, target.repo, claim.prNumber);
+  if (facts === undefined || facts === null) {
+    // Keep the row: the answer is still available on the next pass, and this is
+    // the case where deleting it destroys the only evidence there is.
+    return { result: "deferred", reason: "GitHub did not answer about the moved pull request" };
+  }
+  if (facts.merged_at === null || facts.head_sha !== claim.expectedSha) {
+    console.warn(
+      `[agent-merge] ${recordId} — the session's pull request moved on, and the claimed commit is `
+      + "not merged. Nothing to record.",
+    );
+    deps.claims.release(claim.sessionId, claim.expectedSha);
+    return { result: "not-merged" };
+  }
+  deps.claims.releaseAfterRecording(claim.sessionId, claim.expectedSha, () => {
+    persistNoticeUnattached(
+      deps.chatHistoryManager,
+      claim.sessionId,
+      `The commit this session asked to merge (${claim.expectedSha.slice(0, 8)}) is now merged as `
+      + `pull request #${claim.prNumber} in ${target.owner}/${target.repo}. This session has since `
+      + `moved to a different pull request, so its own state is unchanged. (${recordId})`,
+      "info",
+    );
+  });
   return { result: "settled", merged: true };
 }
 

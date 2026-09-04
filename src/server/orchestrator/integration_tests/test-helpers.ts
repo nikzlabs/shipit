@@ -672,8 +672,22 @@ export class StubGitHubAuthManager extends EventEmitter {
    * that wires the wrong one.
    */
   async graphqlQuery<T>(query: string, _variables: Record<string, unknown>): Promise<T> {
-    if (query.includes("MergeGate")) return this._mergeGateResult as T;
+    if (query.includes("MergeGate")) {
+      // Runs INSIDE the gate's round trip, which is where the window the merge
+      // route has to survive actually is: everything the route decided — the
+      // grant, the ownership tuple — was decided before this call and can change
+      // during it. A test that mutates state before the request instead cannot
+      // reach that window at all.
+      await this._onMergeGateRead?.();
+      return this._mergeGateResult as T;
+    }
     return this._graphqlResult as T;
+  }
+
+  private _onMergeGateRead: (() => void | Promise<void>) | null = null;
+  /** Do something while the merge gate's GraphQL read is in flight. */
+  setOnMergeGateRead(fn: (() => void | Promise<void>) | null) {
+    this._onMergeGateRead = fn;
   }
 
   private _graphqlResult: unknown = null;
