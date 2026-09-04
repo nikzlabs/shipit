@@ -958,6 +958,87 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose({ force: true });
   });
 
+  // The same stranding, one event later and far more expensive: the live
+  // streaming process's own EXIT.
+  //
+  // `agent_event` re-adopts the tracked streaming proxy when a stale spawn's
+  // exit nulled the slot (the test above); `agent_done` did not, and dropped the
+  // exit with no log line at all. That loses the streaming abnormal-exit branch
+  // (drain → finished-SSE → `runCommitAndPr` → idle), so the turn's edits stay
+  // uncommitted — CLAUDE.md post-turn invariant 2 — and, because the executor's
+  // process-state teardown is additionally identity-gated on the slot, leaves
+  // the runner holding `isStreamingActive` and the dead CLI's background-task
+  // list: a spinner on every open and `agentBusy` true, so the container is
+  // never reclaimed.
+  it("delivers the live streaming process's own exit after a stale spawn nulled the slot", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-stream-done-readopt",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const proxyStream = runner.createAgent("claude");
+    proxyStream.run({ prompt: "streaming work", cwd: "/workspace", useStreaming: true });
+    await waitFor(() => lastAgent?.runCalled, 3000, "agent1.run()");
+    const agent1 = lastAgent;
+    runner.isStreamingActive = true;
+
+    let exitCode: number | null = null;
+    proxyStream.on("done", (code: number) => { exitCode = code; });
+
+    // A stale / one-shot spawn's identity-guarded done handler nulls the slot
+    // while the streaming process is still alive on the worker.
+    runner.setAgent(null);
+    expect(runner.getAgent()).toBeNull();
+
+    // Now the streaming process itself dies (crash / OOM / a kill).
+    agent1.emit("done", 137);
+    await waitFor(() => exitCode !== null, 3000, "streaming exit delivered");
+    expect(exitCode).toBe(137);
+    // Re-installed before the emit — the teardown the exit owns runs only if the
+    // slot points back at the exiting proxy.
+    expect(runner.getAgent()).toBe(proxyStream);
+
+    runner.dispose({ force: true });
+  });
+
+  // `agent_error` is the same shape and owns the same teardown (the `error`
+  // listener in `agent-listeners.ts` runs `setAgent(null)` /
+  // `isStreamingActive = false` / `clearBackgroundTasks()` behind the same
+  // identity guard, and some adapters emit `error` with no follow-up `done`).
+  // Leaving it asymmetric with `agent_done` would just be the next incident.
+  it("delivers the live streaming process's error after a stale spawn nulled the slot", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-stream-error-readopt",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const proxyStream = runner.createAgent("claude");
+    proxyStream.run({ prompt: "streaming work", cwd: "/workspace", useStreaming: true });
+    await waitFor(() => lastAgent?.runCalled, 3000, "agent1.run()");
+    const agent1 = lastAgent;
+    runner.isStreamingActive = true;
+
+    let seen: Error | null = null;
+    proxyStream.on("error", (err: Error) => { seen = err; });
+
+    runner.setAgent(null);
+    agent1.emit("error", new Error("stream died"));
+
+    await waitFor(() => seen !== null, 3000, "streaming error delivered");
+    expect((seen as unknown as Error).message).toContain("stream died");
+    expect(runner.getAgent()).toBe(proxyStream);
+
+    runner.dispose({ force: true });
+  });
+
   // The flip side: a GENUINELY-orphaned stream (turn finalized — no live
   // streaming turn) must still be dropped, not resurrected. `isStreamingActive`
   // is the discriminator: the streaming `done` clears it, so re-adoption only
@@ -979,6 +1060,8 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 
     const events: string[] = [];
     proxy.on("event", (e: { type?: string }) => { if (e.type) events.push(e.type); });
+    let sawDone = false;
+    proxy.on("done", () => { sawDone = true; });
 
     // Turn finalized: streaming inactive AND slot nulled (the normal end state).
     runner.isStreamingActive = false;
@@ -987,10 +1070,101 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     // A late event from the now-orphaned worker process must be dropped — there
     // is no live streaming turn to re-adopt into.
     agent1.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "stale" }] });
+    // …and so must its late EXIT, now that `agent_done` re-adopts too: running
+    // the terminal teardown for a turn the orchestrator already finalized is the
+    // docs/146 stale-exit hazard the re-adopt must not reopen.
+    agent1.emit("done", 0);
     await new Promise((r) => setTimeout(r, 300));
     expect(events).toHaveLength(0);
+    expect(sawDone).toBe(false);
     expect(runner.getAgent()).toBeNull();
 
+    runner.dispose({ force: true });
+  });
+
+  // The OTHER half: stopping the state from STAYING stale.
+  //
+  // Any path that loses a resident process's exit leaves the runner believing a
+  // streaming CLI is resident when the container has none — a spinner on every
+  // open and `agentBusy` true, so the container is never reclaimed. Both
+  // reconcilers used to return early unless `running` was true, and some of
+  // those paths clear `running` on their way past (the docs/179 auth recovery
+  // settles the adopted turn it kills), so the only repair path in the system
+  // could not see a fault whose own failure mode clears the flag it is gated on.
+  it("reconciles an idle runner that still believes a streaming process is resident", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-stale-resident-reconcile",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    // No turn is running, no agent occupies the worker's slot (none was ever
+    // started here), but the runner still holds a dead process's streaming flag
+    // and its background-task list.
+    runner.isStreamingActive = true;
+    runner.setBackgroundTasks([{ id: "bg-1", description: "npm test" }]);
+    expect(runner.running).toBe(false);
+    expect(runner.backgroundWorkDescriptions).toEqual(["npm test"]);
+
+    // The per-session message that clears the OPEN chat's status line. The
+    // sidebar's `session_attention` broadcast does not touch it, so without this
+    // the chat the user is looking at keeps saying "Waiting for: npm test".
+    const emitted: { type: string }[] = [];
+    runner.on("message", (m) => emitted.push(m as { type: string }));
+
+    const stillRunning = await runner.verifyRunningState();
+
+    expect(stillRunning).toBe(false);
+    expect(runner.isStreamingActive).toBe(false);
+    expect(runner.backgroundWorkDescriptions).toEqual([]);
+    expect(emitted.filter((m) => m.type === "background_tasks")).toEqual([
+      { type: "background_tasks", sessionId: "test-stale-resident-reconcile", count: 0, descriptions: [] },
+    ]);
+
+    runner.dispose({ force: true });
+  });
+
+  // …and it must not do that to a turn that is merely still STARTING.
+  //
+  // `/agent/status` reports an occupied slot, not an admitted turn, and a
+  // dispatch sets `running` synchronously while agent creation is still awaiting
+  // env-prep. So a probe answered `running: false` can be about a runner that
+  // acquired a turn while the request was in flight — and acting on it would
+  // abandon that turn (`turn_abandoned`, the queue released, the fresh agent
+  // pulled out of the slot). The reading is compared against the state it was
+  // taken from rather than trusted.
+  it("stands down when a turn starts while the worker probe is in flight", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-verify-race",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    runner.isStreamingActive = true;
+    runner.setBackgroundTasks([{ id: "bg-1", description: "npm test" }]);
+    let abandoned = false;
+    runner.on("turn_abandoned", () => { abandoned = true; });
+
+    const verifying = runner.verifyRunningState();
+    // The dispatch lands mid-probe: `running` first, the agent a few awaits later.
+    runner.running = true;
+    const fresh = runner.createAgent("claude");
+
+    await verifying;
+
+    expect(abandoned).toBe(false);
+    expect(runner.running).toBe(true);
+    expect(runner.getAgent()).toBe(fresh);
+    // Nothing was cleared, so the next tick looks again with a coherent reading.
+    expect(runner.isStreamingActive).toBe(true);
+
+    runner.running = false;
     runner.dispose({ force: true });
   });
 

@@ -273,6 +273,19 @@ export function wireAuthRequiredHandler(
         runner.setAgent(null);
         // docs/140 — streaming process is gone; reset the gate.
         runner.isStreamingActive = false;
+        // …and its background tasks died with it (the CLI reaps them on exit),
+        // exactly as the `error` teardown in `agent-listeners.ts` and the `done`
+        // teardown in `turn-executor.ts` already do. This path is the one that
+        // was missing it, and it is missing precisely BECAUSE it recovers: the
+        // executor's `done` handler stands down at `automaticRecoveryInProgress`
+        // — several statements before the `clearBackgroundTasks()` it would
+        // otherwise run — so on an auth failure nothing cleared the list at all.
+        // The stale list is invisible while `isStreamingActive` is false and
+        // comes back the moment the next turn sets it (turn-executor sets the
+        // flag at turn start, before the fresh process reports a list of its
+        // own): the dead process's tasks reappear in the chat status line and
+        // the sidebar dot, and pin `agentBusy` true.
+        runner.clearBackgroundTasks();
       }
       // docs/179 — on the recovery path leave `running` set: the turn is about
       // to be re-dispatched, so flipping it (and emitting running=false) would
