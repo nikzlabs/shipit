@@ -455,6 +455,40 @@ export class PrStatusPoller {
    * refresh, so a PR merged moments after a recheck would fall out of the bulk
    * view with the debounce already armed and never get REST-verified.
    */
+  /**
+   * docs/287-agent-merge-per-repo — the merge gate's zero-check decision.
+   *
+   * Reached through the poller rather than the tracker because the tracker is
+   * private to it AND because the decision depends on state the poll loop
+   * preloads: `ensureWorkflowsLoaded` is what makes the "no workflow can fire
+   * for this pull request" short-circuit available, and a merge may be the first
+   * thing that ever asks about this repository.
+   *
+   * It awaits the workflow LOAD, never the grace window. The command does not
+   * wait by itself (req 17): a `true` here is a refusal the agent retries.
+   *
+   * `prNumber` is explicit, not derived from the session, because a session can
+   * ask about a pull request the poller is not tracking for it, and because two
+   * pull requests in one repository can share a head SHA.
+   */
+  async awaitCiGraceDecision(args: {
+    repoUrl: string | undefined;
+    repoKey: string;
+    prNumber: number;
+    headSha: string;
+    headBranch?: string;
+    baseBranch?: string;
+  }): Promise<boolean> {
+    await this.graceTracker.ensureWorkflowsLoaded(args.repoKey, args.repoUrl).catch(() => {});
+    return this.graceTracker.shouldWaitForMergeChecks({
+      repoKey: args.repoKey,
+      prNumber: args.prNumber,
+      headSha: args.headSha,
+      ...(args.headBranch ? { headBranch: args.headBranch } : {}),
+      ...(args.baseBranch ? { baseBranch: args.baseBranch } : {}),
+    });
+  }
+
   async forceVerifySessionPrState(
     sessionId: string,
     opts: { armAbsentDebounce?: boolean } = {},

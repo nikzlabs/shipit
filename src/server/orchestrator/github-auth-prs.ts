@@ -163,6 +163,13 @@ export async function findPullRequestAnyState(
  * defaults to "Default to commit messages" — i.e., concatenates every original
  * commit. Callers should pass the PR title (and ideally body) so behavior is
  * independent of per-repo settings.
+ *
+ * docs/287-agent-merge-per-repo req 16 — `expectedSha` is GitHub's own
+ * optimistic-concurrency check: it merges only while the head is still that
+ * commit, and answers 409 otherwise. Any caller that decided to merge by
+ * looking at a commit must pass the commit it looked at, or everything between
+ * the check and this call merges unchecked. Omitted by callers with nothing to
+ * pin (the UI card merges what the card shows).
  */
 export async function mergePullRequest(
   token: string,
@@ -172,10 +179,12 @@ export async function mergePullRequest(
   method: "merge" | "squash" | "rebase" = "merge",
   commitTitle?: string,
   commitMessage?: string,
+  expectedSha?: string,
 ): Promise<{ success: boolean; message: string }> {
   const body: Record<string, string> = { merge_method: method };
   if (typeof commitTitle === "string") body.commit_title = commitTitle;
   if (typeof commitMessage === "string") body.commit_message = commitMessage;
+  if (expectedSha) body.sha = expectedSha;
 
   const res = await fetchGitHub(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}/merge`,
@@ -191,6 +200,18 @@ export async function mergePullRequest(
     const err = (await res.json()) as { message?: string };
     if (res.status === 405) {
       return { success: false, message: err.message || "PR is not mergeable" };
+    }
+    // 409 with an `expectedSha` is specifically "the head moved between the
+    // check and this call" — the case the parameter exists to catch, and worth
+    // naming, because GitHub's own wording ("Head branch was modified") does not
+    // tell the caller what to do next.
+    if (res.status === 409 && expectedSha) {
+      return {
+        success: false,
+        message:
+          `${err.message || "Head branch was modified"} — the branch moved after its checks were `
+          + "read, so nothing was merged. Merge again once the new head's checks report.",
+      };
     }
     return { success: false, message: err.message || `GitHub API returned ${res.status}` };
   }

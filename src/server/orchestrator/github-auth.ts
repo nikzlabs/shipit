@@ -632,6 +632,9 @@ export class GitHubAuthManager extends EventEmitter {
     repo: string,
     pullNumber: number,
     method: "merge" | "squash" | "rebase" = "merge",
+    /** docs/287 req 16 — the head the caller's check gate actually examined.
+     * GitHub refuses the merge if the branch has moved past it. */
+    expectedSha?: string,
   ): Promise<{ success: boolean; message: string }> {
     if (!this._token) return { success: false, message: "Not authenticated" };
     const pr = await viewPullRequestImpl(this._token, owner, repo, pullNumber);
@@ -643,6 +646,7 @@ export class GitHubAuthManager extends EventEmitter {
       method,
       pr?.title,
       pr?.body,
+      expectedSha,
     );
   }
 

@@ -40,39 +40,32 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 
 ## The live read and the observation
 
-- [ ] Merge-only GraphQL query by PR number (`state`, `isDraft`, `reviewDecision`,
-      `headRefOid`, rollup state + its `oid`)
-- [ ] Any GraphQL `errors` refuses before anything else applies
-- [ ] The read returns a structured **observation**, and the observation decides
-- [ ] A repo-bound `--auto` is refused with a message naming
+- [x] Merge-only GraphQL query by PR number (`state`, `isDraft`, `reviewDecision`,
+      `headRefOid`, rollup state + its `oid`) — `services/merge-gate.ts`
+- [x] Any GraphQL `errors` refuses before anything else applies
+- [x] The read returns a structured **observation**, and the observation decides
+- [x] A repo-bound `--auto` is refused with a message naming
       `docs/288-agent-merge-arming`; sandbox `--auto` is unchanged
-- [ ] Observation table implemented in full; pending checks and the zero-check
-      grace both refuse
-- [ ] Any non-passing reported check refuses, required or not (req 7)
-- [ ] The read replaces `getCheckStatus()` on the **sandbox** path too
-- [ ] `CiGraceTracker` gains a merge entry point keyed by repository + PR + head
+- [x] Observation table implemented in full; pending checks and the zero-check
+      grace both refuse, and an unrecognised rollup state refuses too
+- [x] Any non-passing reported check refuses, required or not (req 7)
+- [x] The read replaces `getCheckStatus()` on the **sandbox** path too
+- [x] `CiGraceTracker` gains a merge entry point keyed by repository + PR + head
       SHA, where an unknown CI history starts the grace; tests cover both modes
-- [ ] `awaitCiGraceDecision()` takes `prNumber` explicitly; a test covers two pull
+- [x] `awaitCiGraceDecision()` takes `prNumber` explicitly; a test covers two pull
       requests in one repository sharing a head SHA
 
 ## Merge sequence
 
-> The route currently answers **501** once a repo-bound merge clears every
-> ownership check, because this sequence is not built. Falling through would run
-> the merge under the sandbox path's guardrails — `getCheckStatus()`'s fail-open
-> `"none"`, no commit-and-push, no expected SHA — which is the set the design
-> rejected. Deleting that block is part of the first item below.
-
 - [x] `flushPendingTurnCommit()` returns a discriminated outcome — `committed` /
       `nothing-to-commit` / `blocked-secret` / `blocked-unreadable` /
       `blocked-conflict` / `partial-unreadable`
-- [ ] The merge proceeds on `committed` / `nothing-to-commit` only (needs the
-      merge route)
+- [x] The merge proceeds on `committed` / `nothing-to-commit` only
 - [x] `agentCreatePr()` adapts to the new return type and changes no behaviour
-- [ ] Steps 1–2 run for repo-bound sessions only, never for a sandbox
+- [x] Steps 1–2 run for repo-bound sessions only, never for a sandbox
 - [x] `guardMergeSync()` verdict carries `pushed: boolean` (no taxonomy)
-- [ ] `cancelAutoPush(sessionId)` only when the push landed
-- [ ] Merge sends the observed `headRefOid` as the REST expected `sha`
+- [x] `cancelAutoPush(sessionId)` only when the push landed
+- [x] Merge sends the observed `headRefOid` as the REST expected `sha`
 
 ## The durable claim and settlement (req 9, 10, 11)
 

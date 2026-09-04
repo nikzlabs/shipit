@@ -461,6 +461,7 @@ justify an otherwise empty navigation category.
 | `src/server/orchestrator/pr-status-poller.ts` | `awaitCiGraceDecision()`; the canonical, re-enterable terminal promotion |
 | `src/server/orchestrator/ci-grace-tracker.ts` | a merge entry point (repo + PR + SHA; unknown history waits) |
 | `src/server/orchestrator/services/branch-sync.ts` | `pushed` on the hold verdict |
+| `src/server/orchestrator/services/merge-gate.ts` | the merge-only read, the observation, and the decision table |
 | `src/server/orchestrator/services/pr-provenance.ts` | the one provenance path: witnessed creates only, repository matched by identity |
 | `src/server/orchestrator/services/pr-lifecycle.ts`, `pr-rearm.ts`, `services/git.ts`, `sessions.ts` | provenance writers and clearers |
 | `src/server/orchestrator/api-routes-github.ts` | gate, ownership, settlement, notice |
@@ -497,6 +498,22 @@ justify an otherwise empty navigation category.
   activation; and it does not settle while that session has an active turn.
 - The container-route snapshot must not gain the grant route.
 - Each new guard proved red on its own before the fix.
+
+## What is built, and what is not
+
+Requirements 1–8 and 12–17 are implemented: the grant, the gate, the ownership
+tuple, provenance, the flush, the sync guard, the single live read and its
+table, the expected-SHA merge, and the `--auto` refusal.
+
+**Section 4 — the durable claim and settlement — is not.** In its place the
+route awaits `forceVerifySessionPrState()` after a witnessed merge, which is
+what the UI merge route has always done and what keeps `merged_at` current for
+the agent's next `shipit branch reset-to-base`. That covers the ordinary path
+and not the crash window: a process that dies between GitHub accepting the merge
+and the response returning leaves no record that ShipIt performed it, and the
+merge is then picked up by ordinary poller detection rather than being recorded
+as the agent's. Requirements 9, 10 and 11 stay open for that reason, and the
+claim table already exists in the schema for them.
 
 ## Risks
 

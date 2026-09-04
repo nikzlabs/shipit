@@ -21,6 +21,7 @@ import { validateNonEmptyString } from "./validation.js";
 import { getErrorMessage } from "../validation.js";
 import type { GitHubStatus } from "./types.js";
 import { logMergePerformed } from "./merge-attribution.js";
+import { decideMerge, readMergeObservation } from "./merge-gate.js";
 import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./secret-scan-notice.js";
 import { freshenBaseRef } from "./freshen-base-ref.js";
@@ -493,51 +494,96 @@ export async function mergePullRequest(
 }
 
 /**
- * docs/224 — agent-driven merge backing `gh pr merge`, gated behind the sandbox
- * `dangerousGitHubOps` grant at the route. Distinct from {@link mergePullRequest}
+ * Agent-driven merge backing `gh pr merge` — for a sandbox with the
+ * `dangerousGitHubOps` grant (docs/224) and for a repo-bound session in a
+ * repository the user granted (docs/287). Distinct from {@link mergePullRequest}
  * (the UI card's current-branch merge): the agent passes an explicit PR number,
- * and because the agent is *mid-turn* the PR-status poller's cached checks/review
- * state is unavailable (sandbox PRs aren't tracked), so the guardrails are
- * enforced inline against the GitHub API:
- *   - Refuse a draft PR (mark it ready first).
- *   - Refuse unless required checks are green — unless `auto`, which enables
- *     GitHub auto-merge (merge-when-green) instead of merging now.
- *   - Branch protection / required reviews are enforced by GitHub server-side;
- *     its rejection message is surfaced verbatim rather than forced.
- *   - No admin/force path (the shim rejects `--admin` before it reaches here).
+ * and the guardrails are enforced inline because the poller's cached state
+ * cannot carry this decision (`services/merge-gate.ts` says why at length).
+ *
+ * **One live read decides everything**, for BOTH kinds. The `getCheckStatus()`
+ * gate this replaced mapped a swallowed API failure and "no checks configured"
+ * to the same `"none"` and merged on it — a live fail-open on the sandbox path,
+ * not just a gap in the new one. Requirement 7 says the guardrails apply to
+ * every agent merge, so both paths moved.
+ *
+ * The refusals are the caller's to relay verbatim; the merge itself pins the
+ * observed head SHA, so anything that advances the branch between the read and
+ * the merge is refused by GitHub rather than merged unchecked (req 16).
+ *
+ * Branch protection and required reviews stay enforced by GitHub server-side;
+ * its rejection is surfaced verbatim rather than forced, and there is no
+ * admin/force path (the shim rejects `--admin` before it reaches here).
  */
 export async function agentMergePullRequest(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
-  opts: { number: number; sessionId: string; method?: string; auto?: boolean; remoteUrl?: string },
-): Promise<{ success: boolean; message: string; autoMergeEnabled?: boolean; url?: string }> {
+  opts: {
+    number: number;
+    sessionId: string;
+    method?: string;
+    auto?: boolean;
+    remoteUrl?: string;
+    /**
+     * docs/287 — true for a session bound to a ShipIt-managed repository. It
+     * changes three things: the pull request's head must equal this workspace's
+     * HEAD (req 14), `--auto` is refused rather than arming (req 12/13), and the
+     * zero-check grace is consulted through the poller.
+     */
+    repoBound?: boolean;
+    /** The repo-bound session's local HEAD, for the req 14 comparison. */
+    localHead?: string | null;
+    /**
+     * The zero-check grace decision, supplied by the route (the tracker is
+     * private to the poller). Called ONLY when the read reports no checks, so a
+     * green merge never starts a grace timer as a side effect. Absent ⇒ no
+     * grace, which is the honest answer for a caller with no poller.
+     */
+    graceSaysWait?: (headSha: string) => Promise<boolean>;
+  },
+): Promise<{ success: boolean; message: string; autoMergeEnabled?: boolean }> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
   const resolved = await resolveGitHubRemote(git, opts.remoteUrl);
   if ("error" in resolved) return { success: false, message: resolved.error };
 
   const { owner, repo } = resolved;
-  const pr = await githubAuthManager.viewPullRequest(owner, repo, opts.number);
-  if (!pr) return { success: false, message: `PR #${opts.number} not found` };
-  if (pr.merged) return { success: true, message: `PR #${opts.number} is already merged`, url: pr.url };
-  if (pr.state === "closed") return { success: false, message: `PR #${opts.number} is closed` };
-  if (pr.isDraft) {
-    return { success: false, message: `PR #${opts.number} is a draft — mark it ready first (gh pr ready ${opts.number})` };
-  }
-
   const mergeMethod = (opts.method || "merge") as "merge" | "squash" | "rebase";
 
-  // Guardrail: required checks must be green. Checked directly against the PR
-  // head's combined status — the poller doesn't track sandbox PRs.
-  const checks = await githubAuthManager.getCheckStatus(owner, repo, pr.head);
-  if (checks.state === "failure") {
+  // docs/287 req 12/13 — `--auto` is arming, not merging, and arming for a
+  // repo-bound session is `docs/288-agent-merge-arming`. Refused before the read
+  // so the agent is told what to do rather than being handed a merge it did not
+  // ask for. Sandbox `--auto` is untouched, below.
+  if (opts.auto && opts.repoBound) {
     return {
       success: false,
-      message: `Cannot merge PR #${opts.number}: ${checks.failed} required check(s) failing. Fix CI before merging.`,
+      message:
+        `Not merged — \`--auto\` is not available for this session yet. \`gh pr merge\` merges when `
+        + "the checks have already passed; run it again once they report. "
+        + "(Merge-when-checks-pass is docs/288-agent-merge-arming.)",
     };
   }
-  if (checks.state === "pending") {
-    if (opts.auto) {
+
+  const observation = await readMergeObservation(githubAuthManager, owner, repo, opts.number);
+
+  const decision = await decideMerge({
+    observation,
+    prNumber: opts.number,
+    localHead: opts.repoBound ? (opts.localHead ?? null) : null,
+    graceSaysWait: async () => {
+      if (!opts.graceSaysWait || observation.kind !== "read") return false;
+      return opts.graceSaysWait(observation.headRefOid);
+    },
+  });
+
+  if (decision.action === "already-merged") {
+    return { success: true, message: `PR #${opts.number} is already merged` };
+  }
+
+  if (decision.action === "refuse") {
+    // A sandbox `--auto` on pending checks arms GitHub's own auto-merge, exactly
+    // as before. This is the one refusal a caller turns into something else.
+    if (decision.reason === "checks-pending" && opts.auto && !opts.repoBound) {
       const graphqlMethod =
         mergeMethod === "merge" ? ("MERGE" as const)
         : mergeMethod === "squash" ? ("SQUASH" as const)
@@ -549,17 +595,16 @@ export async function agentMergePullRequest(
           ? `Auto-merge enabled for PR #${opts.number} — it will merge once checks pass.`
           : autoResult.message,
         autoMergeEnabled: autoResult.success,
-        url: pr.url,
       };
     }
-    return {
-      success: false,
-      message: `Cannot merge PR #${opts.number}: ${checks.pending} check(s) still running. Wait for green, or pass --auto to merge when checks pass.`,
-    };
+    return { success: false, message: decision.message };
   }
 
-  // checks.state is "success" or "none" (no checks configured) → merge now.
-  const result = await githubAuthManager.mergePullRequest(owner, repo, opts.number, mergeMethod);
+  // req 16 — merge the commit the gate examined, and nothing else. GitHub
+  // refuses atomically if the head has moved since the read.
+  const result = await githubAuthManager.mergePullRequest(
+    owner, repo, opts.number, mergeMethod, decision.sha,
+  );
   if (result.success) {
     // docs/266 req 7 — the merge record for the agent's own `gh pr merge`. The
     // owner/repo field is load-bearing here in a way it is not on the UI route:
@@ -573,7 +618,7 @@ export async function agentMergePullRequest(
       via: "gh pr merge",
       method: mergeMethod,
     });
-    return { success: true, message: `Merged PR #${opts.number}`, url: pr.url };
+    return { success: true, message: `Merged PR #${opts.number}` };
   }
   // GitHub rejected the merge (branch protection, required review, conflicts).
   // Surface its reason verbatim — never force.

@@ -9,6 +9,7 @@ import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
 
 import {
+  flushPendingTurnCommit,
   getPrStatus,
   getRepoScopedGitCredential,
   searchGitHubRepos,
@@ -51,6 +52,7 @@ import {
 import { PR_LIST_STATES, type PrListState } from "./github-auth-prs.js";
 import { getErrorMessage } from "./validation.js";
 import { guardMergeSync } from "./services/branch-sync.js";
+import { mergeFlushRefusal } from "./services/merge-gate.js";
 import { parseGitHubRemote } from "./git-utils.js";
 import { resolvePrTarget, gitCredentialAllowed, mergeDisposition, agentMergeOwnership } from "./pr-target.js";
 import { recordWitnessedPrCreate } from "./services/pr-provenance.js";
@@ -1419,6 +1421,14 @@ export async function registerGitHubRoutes(
       // remote, no ShipIt-recorded branch and no provenance, and its own
       // `dangerousGitHubOps` grant already decided.
       const repoBound = session.kind !== "sandbox";
+      // The poller keys everything by `owner/repo`. Absent for a sandbox, whose
+      // repository is whatever it cloned — and which has no grace hook anyway.
+      const parsedRemote = session.remoteUrl ? parseGitHubRemote(session.remoteUrl) : null;
+      const mergeRepoKey = parsedRemote ? `${parsedRemote.owner}/${parsedRemote.repo}` : null;
+      // One try from here on: the ownership check, the flush and the sync guard
+      // all touch git, and a throw from any of them is the same "could not
+      // establish that this merge is safe" answer as one from the merge itself.
+      try {
       if (repoBound) {
         // A workspace that cannot be READ is its own answer, kept apart from the
         // branch comparison below: `null` there means "on no named branch", and
@@ -1445,37 +1455,79 @@ export async function registerGitHubRoutes(
           reply.code(refusal.status).send({ error: refusal.error });
           return;
         }
-        // docs/287 — THE FEATURE STOPS HERE FOR NOW, on purpose.
+        // docs/287 reqs 14 + 15 — the agent works INSIDE the turn and ShipIt's
+        // auto-commit runs after it, so without this the merge would ship the
+        // branch as it stood BEFORE this turn's edits and report success. The
+        // sandbox path never showed this because a sandbox has no ShipIt
+        // auto-commit; extending to repo-bound sessions is what exposes it.
         //
-        // The gate and the ownership tuple are built; the merge SEQUENCE
-        // (requirements 7, 14, 15, 16, 17) is not. Falling through would run a
-        // repo-bound merge under the sandbox path's guardrails, which is exactly
-        // the set the design rejected: `getCheckStatus()` maps both "no checks"
-        // and a failed API read to `"none"` and merges on it, nothing commits or
-        // pushes this turn's work first, and the merge sends no expected SHA. A
-        // reachable merge with those holes is worse than no merge at all, so the
-        // grant is honoured up to here and the last step refuses.
-        //
-        // Delete this block when the merge sequence lands — the checklist item
-        // "Steps 1–2 run for repo-bound sessions only" is the one that removes it.
-        reply.code(501).send({
-          error:
-            "Merging from the agent is granted for this repository, but ShipIt cannot run the "
-            + "merge safely yet: the commit-and-push step and the check gate are still being "
-            + "built. Merge from the PR lifecycle card in the ShipIt UI for now.",
+        // Only two outcomes may proceed. The other four each mean "this turn's
+        // work is not on the branch", and merging on any of them ships a branch
+        // missing the work the merge was asked to land.
+        const flush = await flushPendingTurnCommit(createGitManager(dir), {
+          sessionId: request.params.id,
+          runnerRegistry: deps.runnerRegistry,
+          chatHistory: deps.chatHistoryManager,
         });
-        return;
+        if (flush.kind !== "committed" && flush.kind !== "nothing-to-commit") {
+          reply.code(422).send({ error: mergeFlushRefusal(flush) });
+          return;
+        }
+
+        // docs/287 req 17 — and now the branch has to actually be on GitHub.
+        // `ahead` is repaired by pushing rather than refused, but the merge
+        // still does not proceed: the push moved the head, so every check the
+        // gate is about to read describes the previous commit.
+        const verdict = await guardMergeSync(createGitManager(dir));
+        if (verdict.action === "hold") {
+          // The debounced auto-push may be dropped ONLY when a synchronous push
+          // replaced it. It is session-keyed in `services/auto-push-scheduler.ts`
+          // and lives for the process, so cancelling one that nothing replaced
+          // strands the commit with no retry and no error.
+          if (verdict.pushed) deps.cancelAutoPush?.(request.params.id);
+          reply.code(409).send({
+            error: verdict.pushed
+              ? `${verdict.message} (Merge again once the checks on the new head report.)`
+              : verdict.message,
+          });
+          return;
+        }
       }
-      try {
         const { gitDir, remoteUrl } = resolvePrTarget(session, dir, request.body ?? {});
         const git = createGitManager(gitDir);
-        return await agentMergePullRequest(git, deps.githubAuthManager, {
+        const result = await agentMergePullRequest(git, deps.githubAuthManager, {
           number: num,
           sessionId: request.params.id,
           method: request.body?.method,
           auto: request.body?.auto,
           remoteUrl,
+          repoBound,
+          // req 14 — the pull request's head must be the commit this workspace
+          // is on, compared live. Read after the flush and push above, so it is
+          // the commit those two just produced.
+          localHead: repoBound ? await git.getHeadHash().catch(() => null) : null,
+          ...(deps.prStatusPoller && session.remoteUrl && mergeRepoKey
+            ? {
+              graceSaysWait: async (headSha: string) =>
+                deps.prStatusPoller!.awaitCiGraceDecision({
+                  repoUrl: session.remoteUrl,
+                  repoKey: mergeRepoKey,
+                  prNumber: num,
+                  headSha,
+                  ...(session.branch ? { headBranch: session.branch } : {}),
+                }),
+            }
+            : {}),
         });
+        // The same post-merge verification the UI merge route runs, for the same
+        // reason: the open-PR GraphQL view can report a just-merged pull request
+        // as open for a beat, so waiting for a poll tick would leave the card —
+        // and `merged_at`, which `shipit branch reset-to-base` reads — stale
+        // exactly when the agent's next step needs it.
+        if (result.success && !result.autoMergeEnabled && deps.prStatusPoller && session.remoteUrl) {
+          await deps.prStatusPoller.forceVerifySessionPrState(request.params.id).catch(() => {});
+        }
+        return result;
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
