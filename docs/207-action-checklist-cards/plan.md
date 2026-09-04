@@ -336,6 +336,71 @@ These were open questions; the following are the settled answers.
   (a backgrounded mobile socket can read OPEN after the OS killed it); closing
   that needs a server-side ack keyed on `requestId` — see *Still open*.
 
+- **The caps must be stated where the model reads them (fix, 2026-09-04).**
+  Reported from use: `propose_actions failed: actions[0].payload exceeds 4000
+  chars.` The `MAX_PAYLOAD_LEN` cap existed **only** in the orchestrator route —
+  it appeared in no tool description, no JSON schema, and no prompt, while both
+  the schema and `skeleton.md` pushed the other way ("the **full**,
+  self-contained instruction … must stand alone without relying on conversation
+  context"). A model told to write everything down and never told the ceiling
+  will hit it, so the failure was designed in. Two supporting defects made it
+  land badly: the tool's "fail-fast pre-check" checked only *is `actions` a
+  non-empty array*, so every length violation cost a full round trip through the
+  worker and the orchestrator; and the card is fired **LAST** by design, so the
+  rejection arrives with the closing prose already written and the card lost
+  unless the agent re-authors it. The fix keeps the cap and closes the
+  information gap: `validateProposeActions` and its bounds moved to
+  `shared/propose-actions-validation.ts` and now run **on both sides** (one
+  source, identical rejection, no round trip); the tool's JSON schema carries
+  `maxLength`/`minItems`/`maxItems` plus the cap in every field description; the
+  tool description and `skeleton.md` say the payload is capped and that standing
+  alone means *naming* files, docs and issues rather than pasting them; and each
+  length error now names the **measured** size, the cap and the repair
+  ("Rewrite it as a compact standalone instruction … and call propose_actions
+  again") instead of a bare "exceeds". Raising the cap was rejected — 4000 chars
+  is ~600 words for *one* optional follow-up, so a payload past it is context
+  that belongs in the repo, and every payload is concatenated into a single user
+  message the user has to read.
+
+- **Audit of the sibling MCP tools for the same defect class (2026-09-04).**
+  Every tool in `src/server/session/mcp-tools/` was traced through its
+  `/agent-ops` relay to its orchestrator route, asking one question: *is there a
+  bound the server enforces that the model cannot read before it calls?* The
+  relays enforce nothing — they are pure pass-throughs — so every bound is at
+  the route. Result:
+
+  | Tool | Enforced bound | Was it readable? |
+  |---|---|---|
+  | `propose_actions` | 5 actions; id 64, label 120, description 280, payload 4000, title 120 | No → fixed here |
+  | `AskUserQuestion` (`ask`) | non-empty `questions`; each question needs ≥1 option **whose `label` is a non-empty string** — `normalizeAskQuestions` drops the rest and the worker 400s on what is left | No. `options` was `required`, but an **empty array** satisfied that, and so did `[{ label: "" }]`. The pre-check re-implemented a weaker rule (array length only), so a blank label crossed the wire and came back a 400 — the very round trip this audit exists to remove. It now defers to `normalizeAskQuestions`, and the schema declares `minItems: 1` on both arrays plus `minLength: 1` on `label`. The "2–4 options" and "~12 char header" stay prose: nothing enforces them, and the schema must not claim otherwise. |
+  | `report_shipit_bug` | `title` and `body` non-empty **after trimming** | No — `required` admits `""`. Now `minLength: 1` on both. (The 200-char slice in `services/bug-report.ts` shapes the *outcome notice* read back to the agent; it does not cap the submitted title.) |
+  | `voice_note` | `summary` non-empty after trimming | No, same reason → `minLength: 1` |
+  | `present` | `file` non-empty (no size cap of any kind) | No for `file` → `minLength: 1`; and inverted for size — see below |
+  | `permission_prompt` | n/a | Out of scope: the CLI invokes it, the model never authors the call. |
+
+  **`required` is not `minLength`.** Four of the six tools declared a string as
+  `required` while their route rejected it for being blank — an empty string
+  satisfies `required`, so each of those was a real (if small) instance of the
+  same defect, found only by reading the routes rather than trusting the first
+  pass of this table.
+
+  `present` is the same defect pointing the other way, and it is worth naming
+  because a search for "enforced but unstated" would never have found it: the
+  tool description promised *"The file is capped at ~1 MB; larger artifacts will
+  be rejected."* No such cap exists. It belonged to the old `PresentBuffer` and
+  was deliberately deleted (docs/093-agent-present plan §6 — the registry keeps
+  metadata only and reads bytes from disk on demand, so there is nothing to
+  cap), and `src/server/shipit-docs/present.md` already told the agent the
+  opposite: *"Nothing is rejected for being big."* A stated limit that does not
+  exist costs the same as an unstated limit that does — the model splits or
+  withholds an artifact for no reason — so the sentence is gone and the real
+  guidance (keep an **inline** artifact small, because the card is bounded in
+  height) replaces it.
+
+  The general rule this audit is worth keeping for: **a tool's schema and
+  description must state exactly the bounds its route enforces — no fewer, and
+  no more.**
+
 ## Still open
 
 - **Server-side delivery ack** (tracked in planning#314). The delivery signal today is client-local
@@ -368,10 +433,17 @@ Server (tool → relay → orchestrator → persist):
   `…,bug,propose_actions`) in `agents/claude/adapter.ts` + `agents/codex/adapter.ts`.
 - `src/server/session/agent-ops-routes.ts` — worker relay `POST
   /agent-ops/propose-actions` → orchestrator `/propose-actions`.
+- `src/server/shared/propose-actions-validation.ts` — the bounds
+  (`MAX_PAYLOAD_LEN` &c.) and `validateProposeActions`, in `shared/` so the
+  session-side tool and the orchestrator route reject **identically**; the error
+  strings are written to be model-readable (measured size + cap + repair).
 - `src/server/orchestrator/api-routes-propose-actions.ts` — authoritative
-  validation (`validateProposeActions`), emit-time provenance (branch/HEAD via
-  `createGitManager`), and the single `emitChatCard` call. No `update*Card` path —
-  the card is immutable.
+  validation (it *imports* the shared validator; it exports only the route
+  registrar), emit-time provenance (branch/HEAD via `createGitManager`), and the
+  single `emitChatCard` call. No `update*Card` path — the card is immutable.
+  Driven end-to-end by `integration_tests/propose-actions-route.test.ts`, because
+  the session-side pre-check is a convenience and this route is the gate: the
+  endpoint is container-accessible, so the tool is not the only way in.
 - `src/server/orchestrator/chat-history.ts` + `shared/database.ts` —
   `actionChecklist` field + `action_checklist` column + `toRow`/`fromRow` +
   migration (written once on emit, never patched).

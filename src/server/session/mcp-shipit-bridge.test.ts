@@ -85,6 +85,48 @@ describe("createShipitBridgeServer — ListTools", () => {
     expect(tools.find((t) => t.name === "AskUserQuestion")).toBeUndefined();
   });
 
+  // A bound the tool ENFORCES but the advertised schema does not declare is
+  // invisible to the model, which is how propose_actions kept rejecting calls
+  // (docs/207). `AskUserQuestion` rejects a question with an empty `options`
+  // array, so the schema has to say so. The schema literal is hand-written, so
+  // this can drift and fail.
+  it("declares the option bound `AskUserQuestion` actually enforces", async () => {
+    bridge = await connect(selectTools("ask"));
+    const askSchema = (await bridge.client.listTools()).tools.find(
+      (t) => t.name === "AskUserQuestion",
+    )?.inputSchema as {
+      properties?: { questions?: { minItems?: number; items?: { properties?: { options?: { minItems?: number } } } } };
+    };
+
+    expect(askSchema?.properties?.questions?.minItems).toBe(1);
+    expect(askSchema?.properties?.questions?.items?.properties?.options?.minItems).toBe(1);
+
+    // …and that declared bound matches the rejection the model would hit.
+    const result = await bridge.client.callTool({
+      name: "AskUserQuestion",
+      arguments: { questions: [{ question: "Which?", header: "Pick", options: [] }] },
+    });
+    expect((result as { isError?: boolean }).isError).toBe(true);
+  });
+
+  // A blank label is DROPPED by `normalizeAskQuestions`, leaving the question
+  // with no options and the worker returning 400 — so a pre-check that only
+  // counts the array is weaker than what it pre-checks, and the round trip it
+  // exists to avoid happens anyway.
+  it("rejects a blank-labelled option in-box, not after a round trip", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    bridge = await connect(selectTools("ask"));
+
+    const result = await bridge.client.callTool({
+      name: "AskUserQuestion",
+      arguments: { questions: [{ question: "Which?", header: "Pick", options: [{ label: "" }] }] },
+    });
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("exposes a different subset for Codex (ask, no permission)", async () => {
     bridge = await connect(selectTools("present,voice,ask,bug,propose_actions"));
     const names = (await bridge.client.listTools()).tools.map((t) => t.name);
@@ -158,6 +200,26 @@ describe("createShipitBridgeServer — CallTool dispatch", () => {
     const result = await bridge.client.callTool({ name: "propose_actions", arguments: { actions: [] } });
     expect((result as { isError?: boolean }).isError).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // docs/207: the cap that trips in practice. The pre-check runs the same
+  // validator as the orchestrator, so an over-long payload is rejected in-box —
+  // no round trip — with a message naming the measured size and the repair.
+  it("fails `propose_actions` fast on an over-long payload, naming the size and the fix", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    bridge = await connect(selectTools("propose_actions"));
+
+    const result = await bridge.client.callTool({
+      name: "propose_actions",
+      arguments: { actions: [{ id: "a1", label: "Open a PR", payload: "x".repeat(4200) }] },
+    });
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(firstText(result)).toContain("4200 chars");
+    expect(firstText(result)).toContain("4000");
+    expect(firstText(result)).toMatch(/call propose_actions again/);
   });
 
   it("surfaces the orchestrator's validation error to the model", async () => {

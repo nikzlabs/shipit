@@ -21,80 +21,11 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
 import { emitChatCard } from "./chat-card-persistence.js";
-import type { ActionChecklistCard, ActionChecklistItem } from "../shared/types.js";
-
-/** Validation bounds — mirrored by the tool's fail-fast pre-check. */
-export const MAX_ACTIONS = 5;
-export const MIN_ACTIONS = 1;
-export const MAX_ID_LEN = 64;
-export const MAX_LABEL_LEN = 120;
-export const MAX_DESC_LEN = 280;
-export const MAX_PAYLOAD_LEN = 4000;
-export const MAX_TITLE_LEN = 120;
-
-interface RawAction {
-  id?: unknown;
-  label?: unknown;
-  description?: unknown;
-  defaultChecked?: unknown;
-  payload?: unknown;
-}
-
-export interface ValidatedActions {
-  title?: string;
-  actions: ActionChecklistItem[];
-}
-
-/**
- * Validate + normalize a `propose_actions` payload. Returns `{ error }` with a
- * model-readable message on any violation so both the tool's fail-fast check and
- * the authoritative route reject identically. The order of `actions` is
- * preserved exactly (deterministic render order).
- */
-export function validateProposeActions(body: {
-  title?: unknown;
-  actions?: unknown;
-}): ValidatedActions | { error: string } {
-  const rawActions = body.actions;
-  if (!Array.isArray(rawActions) || rawActions.length < MIN_ACTIONS) {
-    return { error: `\`actions\` must be a non-empty array (${MIN_ACTIONS}–${MAX_ACTIONS} items).` };
-  }
-  if (rawActions.length > MAX_ACTIONS) {
-    return { error: `Too many actions (${rawActions.length}); cap is ${MAX_ACTIONS}. Propose the most relevant follow-ups only.` };
-  }
-
-  const seenIds = new Set<string>();
-  const actions: ActionChecklistItem[] = [];
-  for (let i = 0; i < rawActions.length; i++) {
-    const a = rawActions[i] as RawAction;
-    if (typeof a !== "object" || a === null) {
-      return { error: `actions[${i}] must be an object with { id, label, payload }.` };
-    }
-    const id = typeof a.id === "string" ? a.id.trim() : "";
-    const label = typeof a.label === "string" ? a.label.trim() : "";
-    const payload = typeof a.payload === "string" ? a.payload.trim() : "";
-    if (!id) return { error: `actions[${i}].id is required and must be a non-empty string.` };
-    if (id.length > MAX_ID_LEN) return { error: `actions[${i}].id exceeds ${MAX_ID_LEN} chars.` };
-    if (seenIds.has(id)) return { error: `Duplicate action id "${id}" — ids must be unique within a card.` };
-    seenIds.add(id);
-    if (!label) return { error: `actions[${i}].label is required and must be a non-empty string.` };
-    if (label.length > MAX_LABEL_LEN) return { error: `actions[${i}].label exceeds ${MAX_LABEL_LEN} chars.` };
-    if (!payload) return { error: `actions[${i}].payload is required and must be a non-empty string.` };
-    if (payload.length > MAX_PAYLOAD_LEN) return { error: `actions[${i}].payload exceeds ${MAX_PAYLOAD_LEN} chars.` };
-    const description = typeof a.description === "string" ? a.description.trim() : "";
-    if (description.length > MAX_DESC_LEN) return { error: `actions[${i}].description exceeds ${MAX_DESC_LEN} chars.` };
-
-    const item: ActionChecklistItem = { id, label, payload };
-    if (description) item.description = description;
-    if (a.defaultChecked === true) item.defaultChecked = true;
-    actions.push(item);
-  }
-
-  const title = typeof body.title === "string" ? body.title.trim() : "";
-  if (title.length > MAX_TITLE_LEN) return { error: `\`title\` exceeds ${MAX_TITLE_LEN} chars.` };
-
-  return { ...(title ? { title } : {}), actions };
-}
+import type { ActionChecklistCard } from "../shared/types.js";
+// The validator and its bounds live in `shared/` so the session-side tool
+// pre-checks with the SAME code, and a rejection reads identically wherever it
+// is raised (docs/207).
+import { validateProposeActions } from "../shared/propose-actions-validation.js";
 
 export async function registerProposeActionsRoutes(
   app: FastifyInstance,

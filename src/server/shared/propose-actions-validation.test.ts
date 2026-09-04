@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateProposeActions, MAX_ACTIONS } from "./api-routes-propose-actions.js";
+import { validateProposeActions, MAX_ACTIONS, MAX_PAYLOAD_LEN } from "./propose-actions-validation.js";
 
 /**
  * docs/207 / planning#155 — input validation for the `propose_actions` payload. The
@@ -70,10 +70,32 @@ describe("validateProposeActions", () => {
     expect("error" in validateProposeActions({ actions: [action({ payload: "   " })] })).toBe(true);
   });
 
-  it("rejects over-length fields", () => {
+  it("rejects over-length fields, naming the measured size, the cap and the repair", () => {
     const long = "x".repeat(5000);
-    expect("error" in validateProposeActions({ actions: [action({ payload: long })] })).toBe(true);
+    const payloadResult = validateProposeActions({ actions: [action({ payload: long })] });
+    expect("error" in payloadResult).toBe(true);
+    if ("error" in payloadResult) {
+      // The message is the model's only chance to self-correct, so it must carry
+      // the actual length, the cap, and what to do — not just "exceeds".
+      expect(payloadResult.error).toContain("5000 chars");
+      expect(payloadResult.error).toContain(String(MAX_PAYLOAD_LEN));
+      expect(payloadResult.error).toMatch(/call propose_actions again/);
+    }
     expect("error" in validateProposeActions({ actions: [action({ label: long })] })).toBe(true);
+  });
+
+  // The caps are advertised through JSON Schema `maxLength`, which counts
+  // Unicode CODE POINTS. `String.length` counts UTF-16 code units, so an
+  // emoji-heavy payload would be schema-valid and rejected anyway — the two
+  // counts must agree or the advertised cap is a lie for astral text.
+  it("measures the cap in code points, matching the advertised `maxLength`", () => {
+    const emoji = "🚀".repeat(MAX_PAYLOAD_LEN); // 4000 code points, 8000 UTF-16 units
+    const atCap = validateProposeActions({ actions: [action({ payload: emoji })] });
+    expect("error" in atCap).toBe(false);
+
+    const overCap = validateProposeActions({ actions: [action({ payload: `${emoji}🚀` })] });
+    expect("error" in overCap).toBe(true);
+    if ("error" in overCap) expect(overCap.error).toContain(`${MAX_PAYLOAD_LEN + 1} chars`);
   });
 
   it("ignores a non-string description rather than throwing", () => {

@@ -33,6 +33,9 @@ const inputSchema = {
   properties: {
     summary: {
       type: "string",
+      // The route rejects a blank summary (it trims first), which `required`
+      // alone does not say.
+      minLength: 1,
       description:
         "A one-or-two-sentence spoken headline written for the ear. No markdown, code, file paths, commit hashes, or PR numbers. When asking a question, voice the actual question plus a brief gist of the options (a compressed version answerable by ear) — never just 'options are on screen'.",
     },

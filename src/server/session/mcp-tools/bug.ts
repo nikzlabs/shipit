@@ -29,12 +29,16 @@ const TOOL_DESCRIPTION = [
 const inputSchema = {
   type: "object" as const,
   properties: {
+    // Both are rejected by the route when blank (it trims first), which
+    // `required` alone does not say — an empty string satisfies `required`.
     title: {
       type: "string",
+      minLength: 1,
       description: "A short, specific issue title summarizing the ShipIt bug.",
     },
     body: {
       type: "string",
+      minLength: 1,
       description:
         "The report body: what happened and how to reproduce it, in the user's words. This is redacted server-side before the user reviews it.",
     },
