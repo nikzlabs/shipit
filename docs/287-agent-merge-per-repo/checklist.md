@@ -123,7 +123,8 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 - [x] Tests as listed in plan.md's Tests section, for everything built so far
       (the settlement tests wait on the claim slice)
 - [x] Each new guard proved red on its own before the fix
-- [ ] `npm run lint:dev` and `npm run typecheck` green
+- [x] `npm run lint:dev` and `npm run typecheck` green, and the full suite ran
+      clean (963 files, 16,705 tests) for the widened interfaces
 - [x] A review of the implementation, not only of the design — round 1 on the
       storage/grant slice (`shipit agent run --role reviewer`, Codex). Six of its
       seven findings verified at source and fixed; the seventh (the grant is
