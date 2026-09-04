@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateProposeActions, MAX_ACTIONS } from "./api-routes-propose-actions.js";
+import { validateProposeActions, MAX_ACTIONS, MAX_PAYLOAD_LEN } from "./propose-actions-validation.js";
 
 /**
  * docs/207 / planning#155 — input validation for the `propose_actions` payload. The
@@ -70,9 +70,17 @@ describe("validateProposeActions", () => {
     expect("error" in validateProposeActions({ actions: [action({ payload: "   " })] })).toBe(true);
   });
 
-  it("rejects over-length fields", () => {
+  it("rejects over-length fields, naming the measured size, the cap and the repair", () => {
     const long = "x".repeat(5000);
-    expect("error" in validateProposeActions({ actions: [action({ payload: long })] })).toBe(true);
+    const payloadResult = validateProposeActions({ actions: [action({ payload: long })] });
+    expect("error" in payloadResult).toBe(true);
+    if ("error" in payloadResult) {
+      // The message is the model's only chance to self-correct, so it must carry
+      // the actual length, the cap, and what to do — not just "exceeds".
+      expect(payloadResult.error).toContain("5000 chars");
+      expect(payloadResult.error).toContain(String(MAX_PAYLOAD_LEN));
+      expect(payloadResult.error).toMatch(/call propose_actions again/);
+    }
     expect("error" in validateProposeActions({ actions: [action({ label: long })] })).toBe(true);
   });
 

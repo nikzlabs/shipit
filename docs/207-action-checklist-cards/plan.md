@@ -336,6 +336,32 @@ These were open questions; the following are the settled answers.
   (a backgrounded mobile socket can read OPEN after the OS killed it); closing
   that needs a server-side ack keyed on `requestId` — see *Still open*.
 
+- **The caps must be stated where the model reads them (fix, 2026-09-04).**
+  Reported from use: `propose_actions failed: actions[0].payload exceeds 4000
+  chars.` The `MAX_PAYLOAD_LEN` cap existed **only** in the orchestrator route —
+  it appeared in no tool description, no JSON schema, and no prompt, while both
+  the schema and `skeleton.md` pushed the other way ("the **full**,
+  self-contained instruction … must stand alone without relying on conversation
+  context"). A model told to write everything down and never told the ceiling
+  will hit it, so the failure was designed in. Two supporting defects made it
+  land badly: the tool's "fail-fast pre-check" checked only *is `actions` a
+  non-empty array*, so every length violation cost a full round trip through the
+  worker and the orchestrator; and the card is fired **LAST** by design, so the
+  rejection arrives with the closing prose already written and the card lost
+  unless the agent re-authors it. The fix keeps the cap and closes the
+  information gap: `validateProposeActions` and its bounds moved to
+  `shared/propose-actions-validation.ts` and now run **on both sides** (one
+  source, identical rejection, no round trip); the tool's JSON schema carries
+  `maxLength`/`minItems`/`maxItems` plus the cap in every field description; the
+  tool description and `skeleton.md` say the payload is capped and that standing
+  alone means *naming* files, docs and issues rather than pasting them; and each
+  length error now names the **measured** size, the cap and the repair
+  ("Rewrite it as a compact standalone instruction … and call propose_actions
+  again") instead of a bare "exceeds". Raising the cap was rejected — 4000 chars
+  is ~600 words for *one* optional follow-up, so a payload past it is context
+  that belongs in the repo, and every payload is concatenated into a single user
+  message the user has to read.
+
 ## Still open
 
 - **Server-side delivery ack** (tracked in planning#314). The delivery signal today is client-local
@@ -368,10 +394,14 @@ Server (tool → relay → orchestrator → persist):
   `…,bug,propose_actions`) in `agents/claude/adapter.ts` + `agents/codex/adapter.ts`.
 - `src/server/session/agent-ops-routes.ts` — worker relay `POST
   /agent-ops/propose-actions` → orchestrator `/propose-actions`.
+- `src/server/shared/propose-actions-validation.ts` — the bounds
+  (`MAX_PAYLOAD_LEN` &c.) and `validateProposeActions`, in `shared/` so the
+  session-side tool and the orchestrator route reject **identically**; the error
+  strings are written to be model-readable (measured size + cap + repair).
 - `src/server/orchestrator/api-routes-propose-actions.ts` — authoritative
-  validation (`validateProposeActions`), emit-time provenance (branch/HEAD via
-  `createGitManager`), and the single `emitChatCard` call. No `update*Card` path —
-  the card is immutable.
+  validation (re-exports the shared validator), emit-time provenance (branch/HEAD
+  via `createGitManager`), and the single `emitChatCard` call. No `update*Card`
+  path — the card is immutable.
 - `src/server/orchestrator/chat-history.ts` + `shared/database.ts` —
   `actionChecklist` field + `action_checklist` column + `toRow`/`fromRow` +
   migration (written once on emit, never patched).

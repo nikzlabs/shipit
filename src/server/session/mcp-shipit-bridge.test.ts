@@ -160,6 +160,26 @@ describe("createShipitBridgeServer — CallTool dispatch", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  // docs/207: the cap that trips in practice. The pre-check runs the same
+  // validator as the orchestrator, so an over-long payload is rejected in-box —
+  // no round trip — with a message naming the measured size and the repair.
+  it("fails `propose_actions` fast on an over-long payload, naming the size and the fix", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    bridge = await connect(selectTools("propose_actions"));
+
+    const result = await bridge.client.callTool({
+      name: "propose_actions",
+      arguments: { actions: [{ id: "a1", label: "Open a PR", payload: "x".repeat(4200) }] },
+    });
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(firstText(result)).toContain("4200 chars");
+    expect(firstText(result)).toContain("4000");
+    expect(firstText(result)).toMatch(/call propose_actions again/);
+  });
+
   it("surfaces the orchestrator's validation error to the model", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(400, { error: "Duplicate action id \"dup\"" })));
     bridge = await connect(selectTools("propose_actions"));
