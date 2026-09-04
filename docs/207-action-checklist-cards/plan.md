@@ -362,6 +362,39 @@ These were open questions; the following are the settled answers.
   that belongs in the repo, and every payload is concatenated into a single user
   message the user has to read.
 
+- **Audit of the sibling MCP tools for the same defect class (2026-09-04).**
+  Every tool in `src/server/session/mcp-tools/` was traced through its
+  `/agent-ops` relay to its orchestrator route, asking one question: *is there a
+  bound the server enforces that the model cannot read before it calls?* The
+  relays enforce nothing — they are pure pass-throughs — so every bound is at
+  the route. Result:
+
+  | Tool | Enforced bound | Was it readable? |
+  |---|---|---|
+  | `propose_actions` | 5 actions; id 64, label 120, description 280, payload 4000, title 120 | No → fixed here |
+  | `AskUserQuestion` (`ask`) | non-empty `questions`; each question needs ≥1 option (`hasUsableQuestions`, mirroring `isWellFormedAskUserQuestion`) | Partly — `options` was `required` but an **empty array** passed the schema and failed the tool. Now `minItems: 1` on both. The "2–4 options" and "~12 char header" stay prose: nothing enforces them, and the schema must not claim otherwise. |
+  | `report_shipit_bug` | `title` and `body` non-empty only | Yes. (The 200-char slice in `services/bug-report.ts` shapes the *outcome notice* read back to the agent; it does not cap the submitted title.) |
+  | `voice_note` | `summary` non-empty | Yes |
+  | `present` | **none** | Inverted — see below |
+  | `permission_prompt` | n/a | Out of scope: the CLI invokes it, the model never authors the call. |
+
+  `present` is the same defect pointing the other way, and it is worth naming
+  because a search for "enforced but unstated" would never have found it: the
+  tool description promised *"The file is capped at ~1 MB; larger artifacts will
+  be rejected."* No such cap exists. It belonged to the old `PresentBuffer` and
+  was deliberately deleted (docs/093-agent-present plan §6 — the registry keeps
+  metadata only and reads bytes from disk on demand, so there is nothing to
+  cap), and `src/server/shipit-docs/present.md` already told the agent the
+  opposite: *"Nothing is rejected for being big."* A stated limit that does not
+  exist costs the same as an unstated limit that does — the model splits or
+  withholds an artifact for no reason — so the sentence is gone and the real
+  guidance (keep an **inline** artifact small, because the card is bounded in
+  height) replaces it.
+
+  The general rule this audit is worth keeping for: **a tool's schema and
+  description must state exactly the bounds its route enforces — no fewer, and
+  no more.**
+
 ## Still open
 
 - **Server-side delivery ack** (tracked in planning#314). The delivery signal today is client-local

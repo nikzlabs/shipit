@@ -46,7 +46,15 @@ const TOOL_DESCRIPTION = [
   "sees (markdown→HTML, SVG/image wrapping) and the raw file does not. Then fix",
   "any layout/contrast/clipping defects, edit the file, and call `present` again",
   "with the same path to update it in place.",
-  "The file is capped at ~1 MB; larger artifacts will be rejected.",
+  // The tool used to claim a ~1 MB cap that would reject larger artifacts. That
+  // cap was the old `PresentBuffer`'s and it is gone (docs/093 — the registry
+  // holds metadata only and reads bytes from disk on demand, so there is
+  // nothing to cap; `present-registry.ts` says so at its top). A stated limit
+  // that does not exist is the same defect as an enforced limit that is never
+  // stated: it makes the model split or withhold an artifact for no reason.
+  "Nothing is rejected for being big — there is no size cap. But keep an inline",
+  "artifact small: the chat card is bounded in height, so a large one reads",
+  "badly in a box. That is the reason to leave `inline` off, not a limit.",
   "Full guide (screenshot loop, MIME inference, limits): /shipit-docs/present.md.",
 ].join(" ");
 

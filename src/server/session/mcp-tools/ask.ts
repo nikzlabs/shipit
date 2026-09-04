@@ -29,6 +29,7 @@ const inputSchema = {
   properties: {
     questions: {
       type: "array",
+      minItems: 1,
       description: "One or more questions to ask the user.",
       items: {
         type: "object",
@@ -46,8 +47,13 @@ const inputSchema = {
             description: "Allow selecting multiple options instead of just one. Defaults to false.",
           },
           options: {
+            // `minItems` because `hasUsableQuestions` REJECTS an empty array —
+            // the card cannot render without an option, so this is an enforced
+            // bound, not advice. The 2–4 count in the text stays advice: nothing
+            // enforces it, and the schema must not claim otherwise.
             type: "array",
-            description: "The available choices (2-4 recommended).",
+            minItems: 1,
+            description: "The available choices (2-4 recommended; at least one is required).",
             items: {
               type: "object",
               properties: {

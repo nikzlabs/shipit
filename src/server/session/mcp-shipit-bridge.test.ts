@@ -85,6 +85,30 @@ describe("createShipitBridgeServer — ListTools", () => {
     expect(tools.find((t) => t.name === "AskUserQuestion")).toBeUndefined();
   });
 
+  // A bound the tool ENFORCES but the advertised schema does not declare is
+  // invisible to the model, which is how propose_actions kept rejecting calls
+  // (docs/207). `AskUserQuestion` rejects a question with an empty `options`
+  // array, so the schema has to say so. The schema literal is hand-written, so
+  // this can drift and fail.
+  it("declares the option bound `AskUserQuestion` actually enforces", async () => {
+    bridge = await connect(selectTools("ask"));
+    const askSchema = (await bridge.client.listTools()).tools.find(
+      (t) => t.name === "AskUserQuestion",
+    )?.inputSchema as {
+      properties?: { questions?: { minItems?: number; items?: { properties?: { options?: { minItems?: number } } } } };
+    };
+
+    expect(askSchema?.properties?.questions?.minItems).toBe(1);
+    expect(askSchema?.properties?.questions?.items?.properties?.options?.minItems).toBe(1);
+
+    // …and that declared bound matches the rejection the model would hit.
+    const result = await bridge.client.callTool({
+      name: "AskUserQuestion",
+      arguments: { questions: [{ question: "Which?", header: "Pick", options: [] }] },
+    });
+    expect((result as { isError?: boolean }).isError).toBe(true);
+  });
+
   it("exposes a different subset for Codex (ask, no permission)", async () => {
     bridge = await connect(selectTools("present,voice,ask,bug,propose_actions"));
     const names = (await bridge.client.listTools()).tools.map((t) => t.name);
