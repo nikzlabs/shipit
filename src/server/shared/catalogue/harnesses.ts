@@ -138,9 +138,10 @@ export const HARNESSES = [
       supportsPermissionModes: false,
       supportedPermissionModes: [],
       toolNames: [...CODEX_TOOL_NAMES],
-      // Codex CLI config `model_reasoning_effort`. Verified valid values by
-      // running `codex -c model_reasoning_effort=__bogus__`: "none, minimal,
-      // low, medium, high, xhigh". See docs/217.
+      // Codex CLI config `model_reasoning_effort`. A provider validation
+      // response during a Codex 0.153.2 probe verifies "none, minimal, low,
+      // medium, high, xhigh, max" as the accepted wire vocabulary. Individual catalogue rows can
+      // narrow this list; GPT-6 does not honour none or minimal. See docs/217.
       reasoning: {
         label: "Reasoning effort",
         options: [
@@ -150,6 +151,7 @@ export const HARNESSES = [
           { value: "medium", label: "Medium" },
           { value: "high", label: "High" },
           { value: "xhigh", label: "Extra high" },
+          { value: "max", label: "Max" },
         ],
       },
       // docs/266 item 15 — the chat-native review flow needs a shell tool and a

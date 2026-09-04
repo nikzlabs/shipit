@@ -672,8 +672,8 @@ function buildTarget(
  * *setting*: a setting cannot know which implementer it will later be ranked
  * against. But {@link selectReviewer} resolves each review on its own, so the
  * target a pinned slot lands on may be one the pinned level was never checked
- * against — and copying the level across verbatim is how a Claude-only `max`
- * reached Codex, which declares none.
+ * against — and copying a harness-specific level across verbatim can send a
+ * value the resolved target does not declare.
  *
  * So the pin is applied **partially**: the pinned model is kept, and only the
  * level is re-derived. The two alternatives are both worse. Refusing the review

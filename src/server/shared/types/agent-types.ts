@@ -37,7 +37,7 @@ export const GROK_PERMISSION_MODES: PermissionMode[] = ["auto", "plan", "guarded
 /**
  * Reasoning/effort options an agent exposes. The control's name and value set
  * differ per agent (Claude Code `--effort`: low…max; Codex
- * `model_reasoning_effort`: none…xhigh), so the registry owns the per-agent
+ * `model_reasoning_effort`: none…max), so the registry owns the per-agent
  * values and the client renders them. A stored selection absent from this set —
  * or no stored selection at all — means "pass no flag", i.e. the CLI's native
  * default. See docs/217-per-agent-reasoning.
@@ -1150,7 +1150,7 @@ export interface AgentRunParams {
   /**
    * Reasoning/effort level for this run, an agent-specific token from the
    * agent's `reasoning.options` (Claude: low…max via `--effort`; Codex:
-   * none…xhigh via `model_reasoning_effort`). Undefined = pass no flag (the
+   * none…max via `model_reasoning_effort`). Undefined = pass no flag (the
    * CLI's native default). See docs/217-per-agent-reasoning.
    */
   reasoningEffort?: string;

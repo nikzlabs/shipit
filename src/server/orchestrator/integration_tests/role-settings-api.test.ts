@@ -162,17 +162,17 @@ describe("Integration: role settings over HTTP (docs/264 phase 2)", () => {
 
   /**
    * Req 6 at the API edge — and the reason the harness is stored rather than
-   * derived. `max` is a level Claude Code declares and Codex does not, and
+   * derived. `minimal` is a level Codex declares and Claude Code does not, and
    * `deepseek-v4-flash` runs on both, so only a role that NAMES its harness can
    * be checked against the right level set.
    */
   it("refuses a level the named harness does not declare, naming the parameter", async () => {
     await addCredential("deepseek");
     const res = await put({
-      "deep dive": { params: { ...PINNED, harnessId: "codex", reasoningEffort: "max" } },
+      "deep dive": { params: { ...PINNED, reasoningEffort: "minimal" } },
     });
     expect(res.statusCode).toBe(400);
-    expect(res.json().error).toContain("max");
+    expect(res.json().error).toContain("minimal");
     expect(credentialStore.getRole("deep dive")).toBeUndefined();
   });
 
@@ -258,12 +258,12 @@ describe("Integration: role settings over HTTP (docs/264 phase 2)", () => {
   });
 
   it("still refuses a tuple fault while no credential exists", async () => {
-    // The save did not stop checking — `max` is Claude Code's level and not
-    // Codex's, and that is a fact about the catalogue rather than the account.
+    // The save did not stop checking — `minimal` is Codex's level and not
+    // Claude Code's, and that is a fact about the catalogue rather than the account.
     const res = await put({
-      "deep dive": { params: { ...PINNED, harnessId: "codex", reasoningEffort: "max" } },
+      "deep dive": { params: { ...PINNED, reasoningEffort: "minimal" } },
     });
     expect(res.statusCode).toBe(400);
-    expect(res.json().error).toContain("max");
+    expect(res.json().error).toContain("minimal");
   });
 });

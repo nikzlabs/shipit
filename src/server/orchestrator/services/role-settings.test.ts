@@ -15,7 +15,8 @@ import { ServiceError } from "./types.js";
  *
  * The dual-harness pair is real and is the fixture: `deepseek-v4-flash` is
  * carried by both `claude` and `codex` (`services.ts` declares all three styles
- * on it), and their level sets differ — `max` is Claude Code's and not Codex's.
+ * on it), and their level sets differ — `minimal` is Codex's and not Claude
+ * Code's.
  * That pair is what makes the harness a *choice* a role has to express (req 6)
  * rather than something derivable from the model.
  */
@@ -261,19 +262,19 @@ describe("applyRoleWrites — the reviewer is present, editable, and neither ren
 
 describe("applyRoleWrites — params are refused at SAVE, naming the parameter (req 6)", () => {
   it("refuses a level the named harness does not declare, for a model both harnesses carry", () => {
-    // `max` is Claude Code's level and not Codex's, and `deepseek-v4-flash` runs
+    // `minimal` is Codex's level and not Claude Code's, and `deepseek-v4-flash` runs
     // on both — so this is refusable only because the role NAMES its harness.
     const err = refusal(() =>
-      apply({ "deep-dive": write({ params: { ...PINNED, harnessId: "codex", reasoningEffort: "max" } }) }),
+      apply({ "deep-dive": write({ params: { ...PINNED, reasoningEffort: "minimal" } }) }),
     );
-    expect(err.message).toContain("max");
+    expect(err.message).toContain("minimal");
   });
 
-  it("accepts that same tuple when the role names Claude Code", () => {
+  it("accepts that same tuple when the role names Codex", () => {
     const { byName } = apply({
-      "deep-dive": write({ params: { ...PINNED, reasoningEffort: "max" } }),
+      "deep-dive": write({ params: { ...PINNED, harnessId: "codex", reasoningEffort: "minimal" } }),
     });
-    expect(byName.get("deep-dive")?.params).toMatchObject({ reasoningEffort: "max" });
+    expect(byName.get("deep-dive")?.params).toMatchObject({ reasoningEffort: "minimal" });
   });
 
   it("accepts an OMITTED level — Default is a level a role may name (req 1)", () => {
@@ -376,10 +377,10 @@ describe("applyRoleWrites — a disconnected role is still editable (req 5)", ()
     // changes without anyone editing a role.
     const err = refusal(() =>
       applyWithoutCredentials({
-        "deep-dive": write({ params: { ...PINNED, harnessId: "codex", reasoningEffort: "max" } }),
+        "deep-dive": write({ params: { ...PINNED, reasoningEffort: "minimal" } }),
       }),
     );
-    expect(err.message).toContain("max");
+    expect(err.message).toContain("minimal");
   });
 });
 

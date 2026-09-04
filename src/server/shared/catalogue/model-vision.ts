@@ -91,6 +91,10 @@ export const MODEL_VISION: Record<CanonicalModelKey, VisionSupport> = {
   "claude-fable-5.1": "yes",
 
   // OpenAI's line — image on both sources for every row that a gateway serves.
+  // GPT-6 Astra is verified from OpenAI's model page and Codex 0.153.2's
+  // embedded model metadata (2026-09-04); gateway coverage is not needed for
+  // this first-party row.
+  "gpt-6-astra": "yes",
   "gpt-5.6-sol": "yes",
   "gpt-5.6-terra": "yes",
   "gpt-5.6-luna": "yes",

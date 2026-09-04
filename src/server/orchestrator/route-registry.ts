@@ -1820,8 +1820,8 @@ export async function registerRoutes(
               // (the picker fires set_agent + set_model, but they can race or
               // set_agent's guard can bail, and QuickCapture sends set_model
               // alone). Reasoning is per-agent, so self-heal it here too —
-              // otherwise a stale Claude `max` could ride a Codex spawn as
-              // `-c model_reasoning_effort=max`. Mirrors the set_agent path.
+              // otherwise a stale harness-specific level could ride a spawn
+              // whose target does not offer it. Mirrors the set_agent path.
               // docs/274 req 14 — against what the model being MOVED TO honours,
               // not the new harness's vocabulary. The two differ for grok, so a
               // `high` carried over from another harness would survive onto a

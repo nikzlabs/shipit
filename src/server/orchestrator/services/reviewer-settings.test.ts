@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { CredentialRoute, ReviewerPin, ReviewerSlot } from "../../shared/types.js";
+import { reasoningOptionsFor } from "../../shared/catalogue/index.js";
 
 /**
  * A refusal, asserted by its CONTRACT rather than by `instanceof ServiceError`.
@@ -177,8 +178,8 @@ describe("buildReviewerSettings (req 8)", () => {
    *
    * The tab names one harness (its derivation is implementer-independent) while
    * a review derives its own, so the note cannot be scoped to what this view
-   * resolved onto: on this very row a pin accepted at `max` against Claude Code
-   * runs on Codex, which declares no `max`. Reporting the level flat here is
+   * resolved onto: on this very row a stale pin at Codex-only `minimal` resolves
+   * on Claude Code. Reporting the level flat here is
    * what made the substitution silent.
    */
   it("names, on a pinned slot, every harness the pinned level does not survive onto", async () => {
@@ -188,23 +189,28 @@ describe("buildReviewerSettings (req 8)", () => {
       serviceId: "deepseek",
       billingMode: "key",
       modelId: "deepseek-v4-flash",
-      reasoningEffort: "max",
+      reasoningEffort: "minimal",
     };
     const views = buildReviewerSettings({
       credentialStore: storeWith([DEEPSEEK_KEY], { first: pin }),
       env: {},
     });
 
-    // This view's own harness offers `max`, so the level it reports is the pin's.
+    // This view resolves on Claude Code, so it derives a supported replacement.
     expect(views[0].resolved?.harnessId).toBe("claude");
-    expect(views[0].resolved?.reasoningEffort).toBe("max");
+    expect(views[0].resolved?.reasoningEffort).not.toBe("minimal");
+    expect(reasoningOptionsFor("claude", {
+      serviceId: "deepseek",
+      billingMode: "key",
+      modelId: "deepseek-v4-flash",
+    }).map((option) => option.value)).toContain(views[0].resolved?.reasoningEffort);
     const subs = views[0].resolved?.effortSubstitutions ?? [];
-    const codex = subs.find((s) => s.harnessId === "codex");
-    expect(codex, "a review on Codex runs at another level and the tab is not told").toBeDefined();
+    const claude = subs.find((s) => s.harnessId === "claude");
+    expect(claude, "a review on Claude runs at another level and the tab is not told").toBeDefined();
     // Named for the user, not by id — this string is rendered.
-    expect(codex?.harnessName).toBeTruthy();
-    expect(codex?.reasoningEffort).not.toBe("max");
-    expect(subs.map((s) => s.harnessId)).not.toContain("claude");
+    expect(claude?.harnessName).toBeTruthy();
+    expect(claude?.reasoningEffort).not.toBe("minimal");
+    expect(subs.map((s) => s.harnessId)).not.toContain("codex");
   });
 
   /** Nothing to say on a slot nobody pinned: there is no level to substitute. */

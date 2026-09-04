@@ -610,12 +610,11 @@ describe("a pinned level does not cross onto a selection that refuses it (planni
 
   /**
    * The issue's own reproduction, on the real catalogue: a DeepSeek key is the
-   * only credential, the pin is accepted at `max` (validated against `claude`,
-   * which offers it), and a review of Claude Code's work bends onto `codex`,
-   * whose levels stop at `xhigh`.
+   * only credential, a stored Codex-only `minimal` pin is reviewed from Codex,
+   * so the review bends onto Claude Code, which does not offer that level.
    *
-   * Before the fix this produced `-c model_reasoning_effort=max` on a CLI that
-   * declares no such level. The pin still applies — same service, same model —
+   * Before the fix this could send a level to a CLI that does not declare it.
+   * The pin still applies — same service, same model —
    * which is the decision: partially, never refused, never silently.
    */
   it("keeps the pinned MODEL and re-derives the level when the review lands elsewhere", async () => {
@@ -623,8 +622,8 @@ describe("a pinned level does not cross onto a selection that refuses it (planni
     const { selectReviewer } = await import("./reviewer-model.js");
     const result = selectReviewer(
       {
-        harnessId: "claude",
-        selection: { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+        harnessId: "codex",
+        selection: { serviceId: "openai", billingMode: "key", modelId: "gpt-5.4" },
       },
       {
         // BOTH slots, so the winner is a pinned one whichever way the ranking
@@ -635,13 +634,13 @@ describe("a pinned level does not cross onto a selection that refuses it (planni
             serviceId: "deepseek",
             billingMode: "key",
             modelId: "deepseek-v4-flash",
-            reasoningEffort: "max",
+            reasoningEffort: "minimal",
           },
           second: {
             serviceId: "deepseek",
             billingMode: "key",
             modelId: "deepseek-v4-flash",
-            reasoningEffort: "max",
+            reasoningEffort: "minimal",
           },
         }),
         env: {},
@@ -650,13 +649,13 @@ describe("a pinned level does not cross onto a selection that refuses it (planni
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // The crossing the defect needs: validated on claude, resolved on codex.
-    expect(result.target.harnessId).toBe("codex");
+    // The crossing the defect needs: a Codex-only level resolved on Claude.
+    expect(result.target.harnessId).toBe("claude");
     expect(result.target.selection.modelId).toBe("deepseek-v4-flash");
     expect(result.target.source).toBe("pinned");
-    expect(result.target.reasoningEffort).not.toBe("max");
+    expect(result.target.reasoningEffort).not.toBe("minimal");
     expect(
-      reasoningOptionsFor("codex", result.target.selection).map((o) => o.value),
+      reasoningOptionsFor("claude", result.target.selection).map((o) => o.value),
     ).toContain(result.target.reasoningEffort);
   });
 
@@ -666,8 +665,8 @@ describe("a pinned level does not cross onto a selection that refuses it (planni
     const { selectReviewer } = await import("./reviewer-model.js");
     const result = selectReviewer(
       {
-        harnessId: "codex",
-        selection: { serviceId: "openai", billingMode: "key", modelId: "gpt-5.4" },
+        harnessId: "claude",
+        selection: { serviceId: "anthropic", billingMode: "key", modelId: "claude-opus-5" },
       },
       {
         credentialStore: storeWith([DEEPSEEK_KEY], {
@@ -675,7 +674,7 @@ describe("a pinned level does not cross onto a selection that refuses it (planni
             serviceId: "deepseek",
             billingMode: "key",
             modelId: "deepseek-v4-flash",
-            reasoningEffort: "max",
+            reasoningEffort: "minimal",
           },
         }),
         env: {},
@@ -684,8 +683,8 @@ describe("a pinned level does not cross onto a selection that refuses it (planni
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.target.harnessId).toBe("claude");
-    expect(result.target.reasoningEffort).toBe("max");
+    expect(result.target.harnessId).toBe("codex");
+    expect(result.target.reasoningEffort).toBe("minimal");
   });
 
   /**
@@ -791,24 +790,24 @@ describe("reviewerEffortSubstitutions", () => {
         serviceId: "deepseek",
         billingMode: "key",
         modelId: "deepseek-v4-flash",
-        reasoningEffort: "max",
+        reasoningEffort: "minimal",
       },
       { credentialStore: storeWith([DEEPSEEK_KEY]), env: {} },
     );
 
-    // Claude Code offers `max` and is absent; Codex does not and is named with
+    // Codex offers `minimal` and is absent; Claude does not and is named with
     // the level a review there would actually use.
-    expect(subs.map((s) => s.harnessId)).not.toContain("claude");
-    const codex = subs.find((s) => s.harnessId === "codex");
-    expect(codex).toBeDefined();
+    expect(subs.map((s) => s.harnessId)).not.toContain("codex");
+    const claude = subs.find((s) => s.harnessId === "claude");
+    expect(claude).toBeDefined();
     expect(
-      reasoningOptionsFor("codex", {
+      reasoningOptionsFor("claude", {
         serviceId: "deepseek",
         billingMode: "key",
         modelId: "deepseek-v4-flash",
       }).map((o) => o.value),
-    ).toContain(codex?.reasoningEffort);
-    expect(codex?.reasoningLabel).toBeTruthy();
+    ).toContain(claude?.reasoningEffort);
+    expect(claude?.reasoningLabel).toBeTruthy();
   });
 
   /**

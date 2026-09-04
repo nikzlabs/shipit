@@ -118,11 +118,14 @@ const ANTHROPIC_PRICES = {
 } as const;
 
 /**
- * OpenAI list rates, per million tokens (2026-08-09). `cacheRead` is the
+ * OpenAI list rates, per million tokens (GPT-6 Astra checked 2026-09-04; the
+ * other rows checked 2026-08-09). `cacheRead` is the
  * published cached-input rate; `cacheWrite` is 1.25× input for the GPT-5.6
  * family and **0** (free) for everything older.
  */
 const OPENAI_PRICES = {
+  // GPT-6 Astra — $10 / $50, $1 cached input, $12.50 cache write.
+  gpt6astra: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
   sol: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
   terra: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2.5 },
   luna: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
@@ -322,10 +325,11 @@ const XAI_PRICES = {
 } as const;
 
 /**
- * What Codex's app-server assigns the GPT-5 family, which is what ShipIt
- * reports and therefore what the dial must show on the first frame. OpenAI
- * advertises larger maxima (400K for GPT-5.2/5.3-codex/5.4-mini, 1.05M for the
- * rest); those are deliberately not used here.
+ * What Codex's app-server assigns GPT-6 Astra and the GPT-5 family, which is
+ * what ShipIt reports and therefore what the dial must show on the first
+ * frame. Codex CLI 0.153.2 embeds a 272K GPT-6 Astra window (and an optional
+ * 872K maximum); OpenAI advertises a 1.05M API maximum. The CLI assignment is
+ * deliberately used here, as it is for the GPT-5 family.
  */
 const CODEX_WINDOW = { default: 272_000 } as const;
 const ONE_M = { default: 1_000_000 } as const;
@@ -444,6 +448,10 @@ export const SERVICES = [
         retired: [{ id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-5.6-sol" } }],
         models: [
           { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
+          // Codex 0.153.2 carries GPT-6 Astra but hides it when the account is
+          // not entitled yet. Keep Sol first so a fresh install does not
+          // default to a model its account may not be able to run.
+          { id: "gpt-6-astra", label: "GPT-6 Astra", ...MODEL_IDENTITIES.gpt6astra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt6astra, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
           { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", ...MODEL_IDENTITIES.gpt56luna, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.luna },
           // OpenAI lists Spark after the GPT-5.6 family in its recommended Codex
@@ -464,6 +472,10 @@ export const SERVICES = [
         retired: [{ id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-5.6-sol" } }],
         models: [
           { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
+          // GPT-6 tool use requires the Responses API. Do not advertise the
+          // Chat Completions transport even though the model accepts plain
+          // non-tool chat requests there.
+          { id: "gpt-6-astra", label: "GPT-6 Astra", ...MODEL_IDENTITIES.gpt6astra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt6astra, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
           { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", ...MODEL_IDENTITIES.gpt56luna, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.luna },
           { id: "gpt-5.4", label: "GPT-5.4", ...MODEL_IDENTITIES.gpt54, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54 },

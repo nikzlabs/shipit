@@ -162,6 +162,15 @@ published rate as an explicitly documented provisional estimate. The row keeps
 Codex's existing 272K first-frame fallback; runtime telemetry remains
 authoritative after a turn starts.
 
+**Catalogue maintenance (2026-09-04): GPT-6 Astra.** OpenAI's published model
+ID is `gpt-6-astra`; Codex 0.153.2 embeds the same ID with a minimum client
+version of 0.153.0, a 272K default Codex window, image input, and reasoning from
+low through max. The row is available under both OpenAI billing modes and uses
+the Responses transport because GPT-6 tool use requires that API. GPT-5.6
+Sol stays first because Astra access is still rolling out and catalogue order
+sets the default. The exact 0.153.2 CLI pin has a time-limited dependency-age
+waiver approved for this model launch.
+
 **The rows themselves are written out in [`catalogue.md`](./catalogue.md)**, including the
 types. So this phase is transcription for what the repo already settles, research for each 🔍
 marker. **Two** shape questions stay open on purpose, both from the survey and neither

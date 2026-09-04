@@ -42,6 +42,7 @@ import {
   harnessCredentialTarget,
   harnessServiceSupport,
   harnessSupportsMode,
+  harnessSendsReasoningEffort,
   harnessSupportsService,
   isSelectionEligible,
   resolveSpawnShaping,
@@ -704,8 +705,9 @@ describe("the harness\u00d7service join", () => {
       "haiku",
       "claude-fable-5-1",
     ]);
-    expect(catalogueModelIdsForHarness("codex").slice(0, 9)).toEqual([
+    expect(catalogueModelIdsForHarness("codex").slice(0, 10)).toEqual([
       "gpt-5.6-sol",
+      "gpt-6-astra",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
       "gpt-5.3-codex-spark",
@@ -715,6 +717,39 @@ describe("the harness\u00d7service join", () => {
       "gpt-5.3-codex",
       "gpt-5.2",
     ]);
+  });
+
+  it("offers GPT-6 Astra through both OpenAI billing modes without making it the default", () => {
+    const selections = (["sub", "key"] as const).map((billingMode) => ({
+      billingMode,
+      model: getModel({ serviceId: "openai", billingMode, modelId: "gpt-6-astra" }),
+    }));
+
+    for (const { billingMode, model } of selections) {
+      expect(model, `openai/${billingMode}`).toMatchObject({
+        label: "GPT-6 Astra",
+        canonicalModelKey: "gpt-6-astra",
+        family: "gpt",
+        contextWindow: { default: 272_000 },
+        price: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+        reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+      });
+      expect(model?.styles).toEqual(["openai-responses"]);
+    }
+    const keySelection = {
+      serviceId: "openai",
+      billingMode: "key" as const,
+      modelId: "gpt-6-astra",
+    };
+    expect(reasoningOptionsFor("codex", keySelection).map((option) => option.value))
+      .toEqual(["low", "medium", "high", "xhigh", "max"]);
+    // Grok does not send a reasoning level for key-billed turns. A model row
+    // may therefore name levels outside Grok's unused vocabulary without
+    // making those levels available on Grok.
+    expect(reasoningOptionsFor("grok", keySelection)).toEqual([]);
+    expect(catalogueModelIdsForHarness("codex")[0]).toBe("gpt-5.6-sol");
+    expect(visionSupportFor({ serviceId: "openai", billingMode: "sub", modelId: "gpt-6-astra" }))
+      .toBe("yes");
   });
 
   it("offers Codex Spark only through the OpenAI subscription", () => {
@@ -1074,6 +1109,7 @@ describe("spawn shaping", () => {
     expect(windows["claude-fable-5-1"]).toBe(1_000_000);
     expect(windows.haiku).toBe(200_000);
     // Codex's assignment, deliberately not OpenAI's advertised maximum.
+    expect(windows["gpt-6-astra"]).toBe(272_000);
     expect(windows["gpt-5.6-sol"]).toBe(272_000);
     expect(windows["gpt-5.2"]).toBe(272_000);
   });
@@ -1647,6 +1683,12 @@ describe("credentials", () => {
         const vocabulary = new Set(harness.capabilities.reasoning?.options.map((o) => o.value) ?? []);
         for (const entry of catalogueEntriesForHarness(harness.id)) {
           if (!harnessSupportsMode(harness.id, entry.service.id, entry.mode.kind)) continue;
+          if (!harnessSendsReasoningEffort(harness.id, entry.mode.kind)) {
+            expect(reasoningOptionsFor(harness.id, entry.selection),
+              `${harness.id}/${entry.model.id} exposes reasoning in a mode that sends no effort`)
+              .toEqual([]);
+            continue;
+          }
           for (const level of entry.model.reasoningEfforts ?? []) {
             expect(
               vocabulary.has(level),

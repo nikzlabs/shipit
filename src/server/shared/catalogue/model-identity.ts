@@ -113,8 +113,9 @@ export const MODEL_IDENTITIES = {
   // live Fable 5 row there (see `services.ts`).
   fable51: identity("claude-fable-5.1", "claude"),
 
-  // OpenAI's line. The `gpt-5.6-*` variants are distinct models of one family,
-  // as are the older 5.2–5.5 rows.
+  // OpenAI's line. GPT-6 Astra and the `gpt-5.6-*` variants are distinct
+  // models of one family, as are the older 5.2–5.5 rows.
+  gpt6astra: identity("gpt-6-astra", "gpt"),
   gpt56sol: identity("gpt-5.6-sol", "gpt"),
   gpt56terra: identity("gpt-5.6-terra", "gpt"),
   gpt56luna: identity("gpt-5.6-luna", "gpt"),

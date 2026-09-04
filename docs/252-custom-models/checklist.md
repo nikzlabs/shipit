@@ -19,6 +19,8 @@ table — a phase is checked off when its PR has merged.
 - [x] Catalogue invariants under test
 - [x] Add GPT-5.3-Codex-Spark as an OpenAI subscription-only model, with its
       provisional pricing basis recorded
+- [x] Add GPT-6 Astra under both OpenAI billing modes, keep GPT-5.6 Sol as the
+      access-safe default, and update the Codex CLI to the required 0.153.2
 
 ## Phase 2 — Credentials and Settings
 

@@ -75,8 +75,8 @@ const agents: AgentOption[] = [
       },
     ],
     supportsReview: true,
-    // Deliberately a DIFFERENT level set from Claude Code's — `max` is Claude
-    // Code's and not Codex's, mirroring the shipped harnesses. This is what
+    // Deliberately a DIFFERENT level set from Claude Code's — `minimal` is
+    // Codex's and not Claude Code's, mirroring the shipped harnesses. This is what
     // makes "the level is validated against the harness the role names" a real
     // rule rather than a formality.
     reasoning: {
@@ -84,6 +84,7 @@ const agents: AgentOption[] = [
       options: [
         { value: "minimal", label: "Minimal" },
         { value: "high", label: "High" },
+        { value: "max", label: "Max" },
       ],
     },
   },
@@ -151,18 +152,22 @@ describe("RoleEditor — the harness is a real control where the model has a cho
   });
 
   it("drops to Default when the new harness does not declare the level", async () => {
-    const { onSave } = open(roleOn(DUAL_HARNESS));
+    const { onSave } = open(roleOn({
+      ...DUAL_HARNESS,
+      harnessId: "codex",
+      reasoningEffort: "minimal",
+    }));
     await userEvent.click(screen.getByTestId("role-editor-harness-trigger"));
-    await userEvent.click(screen.getByTestId("role-editor-harness-option-codex"));
+    await userEvent.click(screen.getByTestId("role-editor-harness-option-claude"));
     await userEvent.click(screen.getByTestId("role-editor-save"));
 
-    // `max` is Claude Code's level and not Codex's, so the draft cannot keep it
+    // `minimal` is Codex's level and not Claude Code's, so the draft cannot keep it
     // — it would show a tuple the server refuses. It drops to **Default**, not
-    // to Codex's first level: the user picked `max` on a harness that is going
-    // away, and Codex not declaring `max` says nothing about which of ITS levels
+    // to Claude's first level: the user picked `minimal` on a harness that is going
+    // away, and Claude not declaring `minimal` says nothing about which of ITS levels
     // they would have wanted. Default is the one answer that needs no guess.
     const saved = savedParams(onSave);
-    expect(saved).toMatchObject({ harnessId: "codex", modelId: "deepseek-v4-flash" });
+    expect(saved).toMatchObject({ harnessId: "claude", modelId: "deepseek-v4-flash" });
     expect(saved).not.toHaveProperty("reasoningEffort");
   });
 
@@ -369,12 +374,12 @@ describe("RoleEditor — the whole role in one place", () => {
         role={roleOn(DUAL_HARNESS)}
         agentList={agents}
         busy={false}
-        error='The role "deep-dive" cannot run: "max" is not a reasoning level Codex offers.'
+        error='The role "deep-dive" cannot run: "minimal" is not a reasoning level Claude Code offers.'
         onCancel={vi.fn()}
         onSave={vi.fn()}
       />,
     );
-    expect(screen.getByTestId("role-editor-error").textContent).toContain("Codex offers");
+    expect(screen.getByTestId("role-editor-error").textContent).toContain("Claude Code offers");
   });
 
   it("says so when the install has nothing to run a role on", () => {
