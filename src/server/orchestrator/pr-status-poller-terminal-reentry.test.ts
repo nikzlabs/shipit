@@ -24,7 +24,7 @@ const MERGED_PR = {
   base: "main",
   title: "A pull request",
   body: "",
-  state: "closed" as const,
+  state: "closed" as "open" | "closed",
   merged_at: "2026-09-04T12:00:00Z",
   merge_commit_sha: "merge-sha",
   head_sha: "sha-head",
@@ -33,7 +33,7 @@ const MERGED_PR = {
   deletions: 0,
 };
 
-function githubAuthFor(pr: typeof MERGED_PR | null): GitHubAuthManager {
+function githubAuthFor(pr: (Omit<typeof MERGED_PR, "merged_at"> & { merged_at: string | null }) | null): GitHubAuthManager {
   const auth = makeGitHubAuth() as GitHubAuthManager & {
     findPullRequestByNumber: ReturnType<typeof vi.fn>;
   };
@@ -103,6 +103,50 @@ describe("promoteMergedPrByNumber", () => {
 
     expect(facts).toBeNull();
     expect(onMergeDetectedCb).not.toHaveBeenCalled();
+  });
+
+  it("does NOT terminal-promote a pull request that is still open", async () => {
+    // Reconciliation can reach here for an attempt that never got to GitHub, so
+    // the pull request may simply be open. Forcing it through the terminal path
+    // would overwrite its status with the placeholder summary, add the session
+    // to `mergedSessions`, and drop its remediation and auto-merge state — after
+    // which polling skips it until it is re-tracked (cross-agent review finding).
+    const sessionManager = makeSessionManager([{ id: "s1", branch: "shipit/feature" }]);
+    const onMergeDetectedCb = vi.fn(async () => {});
+    const sseBroadcast = vi.fn();
+    const poller = new PrStatusPoller({
+      githubAuth: githubAuthFor({ ...MERGED_PR, state: "open", merged_at: null }),
+      sessionManager,
+      sseBroadcast,
+      onMergeDetectedCb,
+    });
+
+    const facts = await poller.promoteMergedPrByNumber({
+      sessionId: "s1", owner: "o", repo: "r", prNumber: 7,
+    });
+
+    // The facts still come back, so the caller can see nothing merged…
+    expect(facts).toMatchObject({ number: 7, merged_at: null });
+    // …but nothing was promoted.
+    expect(sessionManager.setPrStatus).not.toHaveBeenCalled();
+    expect(sessionManager.setMergedHeadSha).not.toHaveBeenCalled();
+    expect(onMergeDetectedCb).not.toHaveBeenCalled();
+    expect(sseBroadcast).not.toHaveBeenCalled();
+  });
+
+  it("promotes a closed-without-merge pull request, which is terminal too", async () => {
+    const sessionManager = makeSessionManager([{ id: "s1", branch: "shipit/feature" }]);
+    const poller = new PrStatusPoller({
+      githubAuth: githubAuthFor({ ...MERGED_PR, state: "closed", merged_at: null }),
+      sessionManager,
+      sseBroadcast: vi.fn(),
+    });
+
+    await poller.promoteMergedPrByNumber({ sessionId: "s1", owner: "o", repo: "r", prNumber: 7 });
+
+    expect(sessionManager.setPrStatus).toHaveBeenCalled();
+    // Closed is not merged, so the merge-only writes stay untouched.
+    expect(sessionManager.setMergedHeadSha).not.toHaveBeenCalled();
   });
 
   it("addresses the pull request by number, never by branch", async () => {

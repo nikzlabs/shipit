@@ -157,11 +157,90 @@ describe("settleAgentMerge", () => {
     const claim = claimOne();
     sessions.recordPrProvenance(SESSION, 9, REPO_ID);
     const p = poller();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const out = await settleAgentMerge(deps({ prStatusPoller: p }), claim, { witnessed: true });
 
     expect(out).toMatchObject({ result: "deferred" });
     expect(p.promoteMergedPrByNumber).not.toHaveBeenCalled();
     expect(notices()).toEqual([]);
+    // The session is left alone, but the merge is not dropped SILENTLY: this is
+    // the one path where a merge ShipIt may have performed has nowhere in the
+    // transcript to go (cross-agent review finding).
+    expect(warn.mock.calls.map((c) => String(c[0])).join("\n"))
+      .toContain("agent-merge:github:acme/shipit#7@sha-head");
+  });
+
+  // The three states the review found could be resolved wrongly.
+  it("refuses to record a merge that landed at a DIFFERENT commit", async () => {
+    // A pull request can be force-pushed and merged at another head between an
+    // indeterminate attempt and this read. `merged_at` alone cannot tell that
+    // apart from our own commit merging, and recording the claimed commit would
+    // be a false record AND anchor the session's reset on the wrong commit.
+    const claim = claimOne();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const out = await settleAgentMerge(
+      deps({ prStatusPoller: poller(facts({ head_sha: "somebody-elses-commit" })) }),
+      claim, { witnessed: false },
+    );
+
+    expect(out).toEqual({ result: "not-merged" });
+    expect(notices()).toEqual([]);
+    expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).toContain("not the claimed commit");
+  });
+
+  it("still settles a WITNESSED merge whose head reads differently afterwards", async () => {
+    // A witnessed merge was pinned to `expected_sha` by the REST call, so GitHub
+    // already enforced the match — and a repository that deletes the branch can
+    // legitimately report a different head afterwards.
+    const claim = claimOne();
+    const out = await settleAgentMerge(
+      deps({ prStatusPoller: poller(facts({ head_sha: null })) }),
+      claim, { witnessed: true },
+    );
+    expect(out).toEqual({ result: "settled", merged: true });
+  });
+
+  it("never downgrades a `settling` claim to not-merged", async () => {
+    // The row reached `settling` because a merge response CAME BACK. GitHub's
+    // read-after-write is not instant, so a follow-up GET that still says open
+    // is a stale read — deleting the row on it destroys the durable proof.
+    const claim = claimOne();
+    claims.markSettling(SESSION, "sha-head");
+    const out = await settleAgentMerge(
+      deps({ prStatusPoller: poller(facts({ merged_at: null, state: "open" })) }),
+      { ...claim, state: "settling" }, { witnessed: true },
+    );
+
+    expect(out).toMatchObject({ result: "deferred" });
+    expect(claims.get(SESSION)).not.toBeNull();
+  });
+
+  it("stands down when the turn that claimed the merge has ended", async () => {
+    // The merge and the settlement are separated by a GitHub round trip. A turn
+    // that ended in between no longer owns the session state this would write.
+    const claim = claimOne();
+    const p = poller();
+    const out = await settleAgentMerge(
+      deps({ prStatusPoller: p, runnerRegistry: registry({ running: true, turnEpoch: 99 }) }),
+      claim, { witnessed: true },
+    );
+
+    expect(out).toMatchObject({ result: "deferred" });
+    expect(p.promoteMergedPrByNumber).not.toHaveBeenCalled();
+  });
+
+  it("re-asks whether it is safe to settle, after the caller's own await", async () => {
+    // A caller that awaited I/O to get here cannot rely on a check it made
+    // before that await — a turn may have started during it.
+    const claim = claimOne();
+    const p = poller();
+    const out = await settleAgentMerge(deps({ prStatusPoller: p }), claim, {
+      witnessed: false,
+      stillSafeToSettle: () => false,
+    });
+
+    expect(out).toMatchObject({ result: "deferred" });
+    expect(p.promoteMergedPrByNumber).not.toHaveBeenCalled();
   });
 
   it("does not write session state after origin moved to another repository", async () => {

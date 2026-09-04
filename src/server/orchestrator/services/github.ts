@@ -547,8 +547,15 @@ export async function agentMergePullRequest(
      * prevent. Synchronous so nothing can interleave between it and the call.
      */
     onClaim?: (expectedSha: string) => boolean;
-    /** The merge landed and was witnessed — settle before reporting success. */
-    onMerged?: (expectedSha: string) => Promise<void>;
+    /**
+     * The merge landed and was witnessed — settle before reporting success.
+     *
+     * Returns whether settlement actually completed. `"deferred"` means the
+     * merge happened but the session state that `shipit branch reset-to-base`
+     * reads may not be current yet, and the agent is told exactly that instead
+     * of a bare success (cross-agent review finding).
+     */
+    onMerged?: (expectedSha: string) => Promise<"settled" | "deferred">;
     /** GitHub answered no; the claim is spent. */
     onRefused?: (expectedSha: string) => Promise<void>;
     /** No answer we can trust; the claim STAYS for reconciliation. */
@@ -667,8 +674,18 @@ export async function agentMergePullRequest(
   });
   // docs/287 req 11 — success is reported only after settlement, so the agent's
   // next `shipit branch reset-to-base` cannot read `not-merged` for work that
-  // shipped a moment ago.
-  await opts.onMerged?.(decision.sha);
+  // shipped a moment ago. When settlement could not finish, the merge is still
+  // reported — it really happened — but the follow-up step is not promised.
+  const settlement = await opts.onMerged?.(decision.sha);
+  if (settlement === "deferred") {
+    return {
+      success: true,
+      message:
+        `Merged PR #${opts.number} — but ShipIt could not finish recording it, so this session's `
+        + "state may not show the merge yet. Wait a moment before running "
+        + "`shipit branch reset-to-base`; ShipIt retries the recording on its own.",
+    };
+  }
   return { success: true, message: `Merged PR #${opts.number}` };
 }
 

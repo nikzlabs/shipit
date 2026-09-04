@@ -89,7 +89,15 @@ function ownerRepoFor(deps: AgentMergeSettlementDeps, claim: AgentMergeClaim): {
 export async function settleAgentMerge(
   deps: AgentMergeSettlementDeps,
   claim: AgentMergeClaim,
-  opts: { witnessed: boolean },
+  opts: {
+    witnessed: boolean;
+    /**
+     * Re-asked immediately before the promotion, which is the first thing that
+     * writes. A caller that awaited I/O to get here cannot rely on a check it
+     * made before that await.
+     */
+    stillSafeToSettle?: () => boolean;
+  },
 ): Promise<SettlementOutcome> {
   // Settlement operates on the ROW, not on the object handed in: the caller's
   // copy can be stale, and re-promoting a claim that has already been settled
@@ -106,9 +114,33 @@ export async function settleAgentMerge(
   // writes session state, so checking afterwards would already have written it.
   if (!sessionStillOwns(deps, claim)) {
     // The merge may well have happened — it just is not this session's pull
-    // request any more, so the row is dropped without touching the session.
+    // request any more, so the session is left alone. The fact is still put on
+    // the record rather than dropped silently: this is the one path where a
+    // merge ShipIt may have performed has nowhere in the transcript to go
+    // (cross-agent review finding).
+    console.warn(
+      `[agent-merge] ${mergeRecordId(claim)} — the session's pull request moved on before this `
+      + "could be settled; leaving the session untouched.",
+    );
     deps.claims.release(claim.sessionId, claim.expectedSha);
     return { result: "deferred", reason: "the session's pull request has moved on" };
+  }
+
+  // docs/287 req 9 — the turn that owns this claim must still be the one
+  // running, for a settlement that runs INSIDE a turn. Recorded at claim time
+  // and compared here rather than merely stored: the merge and the settlement
+  // are separated by a GitHub round trip, and a turn that ended in between no
+  // longer owns the session state this is about to write. Reconciliation, which
+  // runs with no turn at all, is exempt — its own rule is stronger.
+  if (opts.witnessed && deps.runnerRegistry) {
+    const active = activeTurnIdFor(deps.runnerRegistry, claim.sessionId);
+    if (active !== null && active !== claim.turnId) {
+      return { result: "deferred", reason: "the turn that claimed this merge has ended" };
+    }
+  }
+
+  if (opts.stillSafeToSettle && !opts.stillSafeToSettle()) {
+    return { result: "deferred", reason: "a turn started on this session" };
   }
 
   const facts = await deps.prStatusPoller.promoteMergedPrByNumber({
@@ -120,8 +152,36 @@ export async function settleAgentMerge(
   if (!facts) return { result: "deferred", reason: "GitHub did not answer" };
 
   if (facts.merged_at === null) {
+    // A `settling` row was written because a merge response CAME BACK. GitHub's
+    // read-after-write is not instant, so a follow-up GET that still says open
+    // is a stale read, not a contradiction — and deleting the row on it would
+    // destroy the durable proof of a merge this process witnessed. Only a
+    // `merging` row, whose outcome was never learned, may be resolved as
+    // not-merged (cross-agent review finding).
+    if (live.state === "settling") {
+      return { result: "deferred", reason: "the pull request does not read as merged yet" };
+    }
     // Resolved from the claim's own tuple, never from the shape of an error:
     // the pull request is still open, so nothing merged and the claim is spent.
+    deps.claims.release(claim.sessionId, claim.expectedSha);
+    return { result: "not-merged" };
+  }
+
+  // It merged — but was it THIS commit? A pull request can be force-pushed and
+  // merged at a different head between an indeterminate attempt and this read,
+  // and `merged_at` alone cannot tell those apart. Recording the claimed commit
+  // as merged when another one was would be a false record AND would anchor the
+  // session's reset on the wrong commit (cross-agent review finding).
+  //
+  // A witnessed merge is exempt: it was pinned to `expected_sha` by the REST
+  // call itself, so GitHub already enforced the match — while its `head_sha`
+  // can legitimately read differently afterwards on a repository that deletes
+  // the branch.
+  if (!opts.witnessed && facts.head_sha !== claim.expectedSha) {
+    console.warn(
+      `[agent-merge] ${mergeRecordId(claim)} — PR #${claim.prNumber} merged at `
+      + `${facts.head_sha ?? "an unknown commit"}, not the claimed commit. Recording nothing.`,
+    );
     deps.claims.release(claim.sessionId, claim.expectedSha);
     return { result: "not-merged" };
   }
@@ -166,7 +226,14 @@ export async function reconcileAgentMergeClaims(
   for (const claim of claims) {
     if (hasActiveTurn(deps, claim)) continue;
     try {
-      const outcome = await settleAgentMerge(deps, claim, { witnessed: false });
+      const outcome = await settleAgentMerge(deps, claim, {
+        witnessed: false,
+        // Checked again immediately before anything is written, not only here:
+        // this loop awaits a GitHub round trip, and a turn that starts during it
+        // would otherwise be settled behind its back — the exact hazard the
+        // check exists for (cross-agent review finding).
+        stillSafeToSettle: () => !hasActiveTurn(deps, claim),
+      });
       if (outcome.result === "deferred") {
         console.warn(
           `[agent-merge] claim for ${claim.sessionId} PR #${claim.prNumber} deferred: ${outcome.reason}`,

@@ -1430,6 +1430,18 @@ export async function registerGitHubRoutes(
       // is not the session's own, has no provenance, and no session state to
       // settle into, so there is nothing for a claim to protect.
       const claimRepoId = repoBound ? repoId(session.remoteUrl ?? "") : null;
+      // A repo-bound merge without a claim store cannot be recorded, and a merge
+      // ShipIt cannot record is one it will not perform. `route-registry.ts`
+      // always supplies one; this refuses rather than failing open on a
+      // hand-built or degraded server (cross-agent review finding).
+      if (repoBound && !deps.agentMergeClaims) {
+        reply.code(503).send({
+          error:
+            "Not merged — ShipIt cannot record an agent merge on this server, and will not perform "
+            + "one it could not recover. Merge from the PR lifecycle card in the ShipIt UI.",
+        });
+        return;
+      }
       const claimDeps = deps.agentMergeClaims && repoBound
         ? {
           claims: deps.agentMergeClaims,
@@ -1577,13 +1589,18 @@ export async function registerGitHubRoutes(
               },
               onMerged: async (expectedSha: string) => {
                 const claim = claimDeps.claims.get(request.params.id);
-                if (claim?.expectedSha !== expectedSha) return;
+                if (claim?.expectedSha !== expectedSha) return "settled";
                 claimDeps.claims.markSettling(request.params.id, expectedSha);
-                await settleAgentMerge(claimDeps, { ...claim, state: "settling" }, { witnessed: true });
+                const outcome = await settleAgentMerge(
+                  claimDeps, { ...claim, state: "settling" }, { witnessed: true },
+                );
+                return outcome.result === "settled" ? "settled" : "deferred";
               },
-              // A definitive refusal merged nothing, so the claim is spent.
+              // A definitive refusal merged nothing — but `releaseUnmerged`
+              // refuses to drop a row that has reached `settling`, which is a
+              // concurrent request's merge that DID happen.
               onRefused: (expectedSha: string) => {
-                claimDeps.claims.release(request.params.id, expectedSha);
+                claimDeps.claims.releaseUnmerged(request.params.id, expectedSha);
                 return Promise.resolve();
               },
               // Deliberately does NOT release: the merge may have happened, and

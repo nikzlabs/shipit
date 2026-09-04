@@ -1101,25 +1101,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // here. It must run AFTER the docs/240 turn-adoption sweep (see the
   // `reattachInFlightTurns` block below), which is what chains it.
 
-  // docs/287-agent-merge-per-repo req 9 — the startup reconciliation trigger,
-  // the first of three. A claim left `merging` by a crash mid-merge is resolved
-  // here from its own tuple. Deliberately off the boot path (`void`): a merge
-  // that may or may not have happened is not a reason to delay serving, and the
-  // other two triggers cover a pass that fails.
-  //
-  // Reconciliation itself refuses to settle a session with an active turn, so
-  // this cannot race the docs/240 adoption sweep: an adopted turn's claim is
-  // skipped here and picked up when that turn ends.
-  void reconcileAgentMergeClaims({
-    claims: agentMergeClaims,
-    sessionManager,
-    chatHistoryManager,
-    prStatusPoller,
-    ...(registryHolder.ref ? { runnerRegistry: registryHolder.ref } : {}),
-  }).catch((err: unknown) => {
-    console.error("[agent-merge] startup reconciliation failed:", err);
-  });
-
   // ---- Release Status Poller (docs/171) ----
   // Reflects the inline release lifecycle card: gate/CI status + the published
   // GitHub Release, off the agent-pushed tag. Reuses the PR poller's global gate
@@ -1565,6 +1546,28 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   } catch (err: unknown) {
     console.error("[turn-reattach] startup sweep failed:", err);
   }
+  // docs/287-agent-merge-per-repo req 9 — the startup reconciliation trigger,
+  // the first of three. A claim left `merging` by a crash mid-merge is resolved
+  // from its own tuple.
+  //
+  // Ordered AFTER the adoption sweep above, for the same reason the docs/196
+  // reconcile below is: until those turns are adopted the registry is EMPTY, so
+  // "does this session have an active turn?" answers no for every session and
+  // the guard passes vacuously. A claim belonging to a surviving turn would then
+  // be settled while that turn is still editing and pushing — marking the
+  // session merged and deleting its remote branch underneath it. (An earlier
+  // draft ran this before the sweep with a comment asserting it could not race;
+  // the assertion was never checked, and was wrong — cross-agent review finding.)
+  void reconcileAgentMergeClaims({
+    claims: agentMergeClaims,
+    sessionManager,
+    chatHistoryManager,
+    prStatusPoller,
+    runnerRegistry,
+  }).catch((err: unknown) => {
+    console.error("[agent-merge] startup reconciliation failed:", err);
+  });
+
   void (async () => {
     // docs/196 — re-derive any watch whose child PR reached a terminal state
     // while the orchestrator was down. Ordered AFTER the sweep above, on

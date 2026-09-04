@@ -190,7 +190,7 @@ describe("agentMergePullRequest", () => {
       const res = await agentMergePullRequest(makeGit(), github, {
         number: 5, sessionId: "s1", remoteUrl: REMOTE,
         onClaim: (sha) => { order.push(`claim:${sha}`); return true; },
-        onMerged: async () => { order.push("settle"); },
+        onMerged: async () => { order.push("settle"); return "settled" as const; },
         onRefused: async () => { order.push("refused"); },
         onIndeterminate: async () => { order.push("indeterminate"); },
       });
@@ -221,7 +221,7 @@ describe("agentMergePullRequest", () => {
       const res = await agentMergePullRequest(makeGit(), github, {
         number: 5, sessionId: "s1", remoteUrl: REMOTE,
         onClaim: () => true,
-        onMerged: async () => { calls.push("settle"); },
+        onMerged: async () => { calls.push("settle"); return "settled" as const; },
         onRefused: async () => { calls.push("refused"); },
         onIndeterminate: async () => { calls.push("indeterminate"); },
       });
@@ -239,7 +239,7 @@ describe("agentMergePullRequest", () => {
       await agentMergePullRequest(makeGit(), github, {
         number: 5, sessionId: "s1", remoteUrl: REMOTE,
         onClaim: () => true,
-        onMerged: async () => { calls.push("settle"); },
+        onMerged: async () => { calls.push("settle"); return "settled" as const; },
         onRefused: async () => { calls.push("refused"); },
         onIndeterminate: async () => { calls.push("indeterminate"); },
       });

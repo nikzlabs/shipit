@@ -114,7 +114,14 @@ export class AgentMergeClaimStore {
    * here is a settled-or-abandoned attempt, and keeping it would make
    * reconciliation ask about a pull request nobody is merging any more.
    */
-  claim(claim: Omit<AgentMergeClaim, "state" | "createdAt">): void {
+  claim(claim: Omit<AgentMergeClaim, "state" | "createdAt">): boolean {
+    // A `settling` row is proof that a merge HAPPENED and its effects are still
+    // being written. Replacing it would discard that proof, so a second attempt
+    // arriving while one is settling is refused rather than served (cross-agent
+    // review finding). `merging` is replaceable: it is an attempt whose outcome
+    // nobody learned, and the newer one supersedes it.
+    const existing = this.get(claim.sessionId);
+    if (existing?.state === "settling") return false;
     this.db.prepare(
       `INSERT INTO agent_merge_claims
          (session_id, repo_id, pr_number, expected_sha, turn_id, state, created_at)
@@ -130,6 +137,7 @@ export class AgentMergeClaimStore {
       claim.sessionId, claim.repoId, claim.prNumber, claim.expectedSha,
       claim.turnId, new Date().toISOString(),
     );
+    return true;
   }
 
   get(sessionId: string): AgentMergeClaim | null {
@@ -167,6 +175,22 @@ export class AgentMergeClaimStore {
   release(sessionId: string, expectedSha: string): boolean {
     const res = this.db.prepare(
       "DELETE FROM agent_merge_claims WHERE session_id = ? AND expected_sha = ?",
+    ).run(sessionId, expectedSha);
+    return res.changes > 0;
+  }
+
+  /**
+   * Release a claim whose merge did NOT happen — a definitive refusal.
+   *
+   * Refuses to touch a `settling` row, which is the concurrency case: two
+   * requests claim the same pull request at the same head, one merges and moves
+   * the row to `settling`, and the other gets GitHub's "already merged" refusal.
+   * An unconditional delete there would erase the winner's durable evidence and
+   * leave its merge with no record at all (cross-agent review finding).
+   */
+  releaseUnmerged(sessionId: string, expectedSha: string): boolean {
+    const res = this.db.prepare(
+      "DELETE FROM agent_merge_claims WHERE session_id = ? AND expected_sha = ? AND state = 'merging'",
     ).run(sessionId, expectedSha);
     return res.changes > 0;
   }

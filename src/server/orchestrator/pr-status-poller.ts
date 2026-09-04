@@ -1640,6 +1640,14 @@ export class PrStatusPoller {
   }): Promise<TerminalPrFacts | null> {
     const pr = await this.githubAuth.findPullRequestByNumber(args.owner, args.repo, args.prNumber);
     if (!pr) return null;
+    // Promote ONLY a pull request that actually reached a terminal state. The
+    // caller may be resolving an attempt that never reached GitHub, and forcing
+    // an OPEN pull request through here would overwrite its status with the
+    // terminal placeholder, add the session to `mergedSessions`, and drop its
+    // remediation and auto-merge state — after which polling skips it until it
+    // is re-tracked (cross-agent review finding). The facts are still returned,
+    // so the caller can see that nothing merged.
+    if (pr.merged_at === null && pr.state !== "closed") return pr;
     this.promoteTerminal({
       sessionId: args.sessionId,
       owner: args.owner,

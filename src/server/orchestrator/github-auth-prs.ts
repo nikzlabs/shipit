@@ -311,7 +311,7 @@ export async function mergePullRequestAttempt(
     return { outcome: "refused", message };
   }
 
-  const parsed = await res.json().catch(() => null) as { merged?: boolean; sha?: string } | null;
+  const parsed = await res.json().catch(() => null) as { merged?: unknown; sha?: string } | null;
   if (!parsed) {
     // A 2xx we cannot read. Almost certainly merged — and "almost" is exactly
     // why this is not reported as one.
@@ -320,10 +320,21 @@ export async function mergePullRequestAttempt(
       message: `GitHub accepted the merge of PR #${pullNumber} but returned a body ShipIt could not read.`,
     };
   }
+  // `merged === true` and nothing else. GitHub documents a 200 here only for a
+  // performed merge with a boolean `merged`, so anything else readable — `{}`,
+  // a bare string, `merged: null`, `merged: "false"` — is a response ShipIt does
+  // not understand, and reading an unrecognised body as a merge is how a merge
+  // that never happened gets recorded as one (cross-agent review finding).
+  if (parsed.merged === true) {
+    return { outcome: "merged", message: "Pull request merged", mergeCommitSha: parsed.sha ?? null };
+  }
   if (parsed.merged === false) {
     return { outcome: "refused", message: "GitHub reported the pull request as not merged." };
   }
-  return { outcome: "merged", message: "Pull request merged", mergeCommitSha: parsed.sha ?? null };
+  return {
+    outcome: "indeterminate",
+    message: `GitHub accepted the merge of PR #${pullNumber} but its answer did not say whether it merged.`,
+  };
 }
 
 /**

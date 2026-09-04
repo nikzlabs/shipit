@@ -1097,6 +1097,15 @@ describe("repo-aware PR brokering (docs/211)", () => {
         cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
       }).toString().trim();
       githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "SUCCESS" });
+      // Settlement reads the pull request back by number. Without this the merge
+      // succeeds but settlement DEFERS, and the test would pass while proving
+      // nothing about it (cross-agent review finding).
+      githubAuth.setPullRequestByNumber(7, {
+        url: "https://github.com/test-user/test-repo/pull/7",
+        number: 7, base: "main", title: "T", body: "", state: "closed",
+        merged_at: "2026-09-04T12:00:00Z", merge_commit_sha: "merge-sha",
+        head_sha: head, head_ref: "shipit/test-feature", additions: 1, deletions: 0,
+      });
 
       const res = await withLiveTurn(sessionId, () => app.inject({
         method: "POST",
@@ -1109,6 +1118,46 @@ describe("repo-aware PR brokering (docs/211)", () => {
       // advances the branch in between is refused rather than merged unchecked.
       expect(githubAuth.mergePullRequestCalls.at(-1)).toMatchObject({
         pullNumber: 7, expectedSha: head,
+      });
+      // req 11 — settlement really ran: the claim is gone and the merge is in
+      // the transcript, so the agent's next `reset-to-base` sees a merged session.
+      expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toBeNull();
+      const history = chatHistoryManager.load(sessionId)
+        .map((m) => (m as { text?: string }).text ?? "").join("\n");
+      expect(history).toContain("agent-merge:github:test-user/test-repo#7@");
+    },
+  );
+
+  it(
+    "reports the merge but not a clean success when settlement cannot finish",
+    { timeout: 15_000 },
+    async () => {
+      // The merge happened; only the recording did not. Telling the agent a bare
+      // "merged" here would send it straight to `shipit branch reset-to-base`
+      // against a session whose state does not show the merge yet.
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      const head = execSync("git rev-parse HEAD", {
+        cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "SUCCESS" });
+      // No by-number facts: the read settlement needs does not answer.
+
+      const res = await withLiveTurn(sessionId, () => app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/7/merge`,
+        payload: {},
+      }));
+
+      expect(res.json()).toMatchObject({
+        success: true,
+        message: expect.stringContaining("could not finish recording"),
+      });
+      // The claim stays, so one of the three reconciliation triggers finishes it.
+      expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toMatchObject({
+        prNumber: 7, state: "settling",
       });
     },
   );

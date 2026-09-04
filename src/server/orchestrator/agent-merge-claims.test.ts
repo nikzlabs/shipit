@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseManager } from "../shared/database.js";
 import { SessionManager } from "./sessions.js";
+import { ChatHistoryManager } from "./chat-history.js";
 import { AgentMergeClaimStore, currentTurnId, mergeRecordId } from "./agent-merge-claims.js";
 
 /**
@@ -122,24 +123,76 @@ describe("AgentMergeClaimStore", () => {
     expect(claims.get(SESSION)).toBeNull();
   });
 
-  it("keeps the claim when recording throws", () => {
+  it("rolls the RECORD back when it throws, not just the release", () => {
+    // The previous version of this test asserted only that the row survived,
+    // which plain `record(); release();` also satisfies. The claim being made is
+    // that the two share a transaction, so the record's own database write has
+    // to be shown rolling back (cross-agent review finding).
     claimOne();
+    const chatHistory = new ChatHistoryManager(dbManager);
     expect(() => claims.releaseAfterRecording(SESSION, "sha-head", () => {
-      throw new Error("history unavailable");
+      chatHistory.append(SESSION, {
+        id: "m1", role: "system", text: "the record", timestamp: new Date().toISOString(),
+      } as never);
+      throw new Error("something later failed");
     })).toThrow();
-    // Neither happened, so the row is still there to try again.
+
     expect(claims.get(SESSION)).not.toBeNull();
+    // …and the write inside the callback is gone with it.
+    expect(chatHistory.load(SESSION)).toHaveLength(0);
+  });
+
+  it("records nothing when the row is already gone", () => {
+    // Two settlements can overlap — a turn's own and the reconciliation that
+    // fires at the end of that turn. The row is the permission to record.
+    claimOne();
+    claims.release(SESSION, "sha-head");
+    const written: string[] = [];
+    expect(claims.releaseAfterRecording(SESSION, "sha-head", () => { written.push("record"); })).toBe(false);
+    expect(written).toEqual([]);
+  });
+
+  it("refuses a new claim while one is settling", () => {
+    // A `settling` row is proof a merge HAPPENED and its effects are still being
+    // written. Replacing it would discard that proof.
+    claimOne();
+    claims.markSettling(SESSION, "sha-head");
+    expect(claims.claim({
+      sessionId: SESSION, repoId: REPO, prNumber: 8, expectedSha: "sha-b", turnId: "t",
+    })).toBe(false);
+    expect(claims.get(SESSION)).toMatchObject({ prNumber: 7, state: "settling" });
+  });
+
+  it("will not let a refusal delete a settling row", () => {
+    // The concurrency case: two requests claim the same pull request at the same
+    // head, one merges and moves the row to `settling`, and the other gets
+    // GitHub's "already merged" refusal. An unconditional delete there erases
+    // the winner's evidence and leaves its merge with no record at all.
+    claimOne();
+    claims.markSettling(SESSION, "sha-head");
+    expect(claims.releaseUnmerged(SESSION, "sha-head")).toBe(false);
+    expect(claims.get(SESSION)).not.toBeNull();
+  });
+
+  it("still lets a refusal drop a `merging` row", () => {
+    // The ordinary case: an attempt whose outcome nobody learned, refused by
+    // GitHub. Nothing merged, so nothing needs recovering.
+    claimOne();
+    expect(claims.releaseUnmerged(SESSION, "sha-head")).toBe(true);
+    expect(claims.get(SESSION)).toBeNull();
   });
 });
 
 describe("turn identity", () => {
-  it("does not repeat across processes for the same epoch", () => {
-    // `turnEpoch` restarts at 0 whenever a runner is recreated. A bare epoch
-    // would let a claim from a previous process read as the currently active
-    // turn, and a stale claim would write session state into an unrelated turn.
+  it("is the epoch plus a prefix, and is stable within a process", () => {
+    // What this can honestly assert. `turnEpoch` restarts at 0 whenever a runner
+    // is recreated, so the identity carries a prefix that a NEW process cannot
+    // reproduce — but a single test process has exactly one prefix, so the
+    // cross-process property is not observable from here and is not claimed.
     expect(currentTurnId(0)).not.toBe("0");
     expect(currentTurnId(0)).not.toBe(currentTurnId(1));
     expect(currentTurnId(3)).toBe(currentTurnId(3));
+    expect(currentTurnId(3).endsWith(":3")).toBe(true);
   });
 });
 

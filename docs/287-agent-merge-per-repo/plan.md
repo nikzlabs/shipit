@@ -536,6 +536,14 @@ Two deliberate deviations from this document, both narrowing:
   the cost of shipping without `docs/288-agent-merge-arming`: until that lands, an
   agent whose CI takes minutes cannot land its work inside the turn that produced
   it.
+- **A concurrent second merge request in one turn is only partly guarded.**
+  Claims are keyed by session and head SHA, so two `gh pr merge` calls racing on
+  the same pull request claim the same row rather than one each. The damaging
+  half is closed — a refusal can no longer delete a row that has reached
+  `settling`, and a new claim cannot replace one — but there is no per-attempt
+  identity, so the losing request still resolves against the winner's row. A
+  turn is single-threaded from the agent's side, which is why this is recorded
+  rather than fixed with a schema change.
 - **In `RUNTIME_MODE=local`, the grant is not out of the agent's reach** — and
   cannot be made so by anything in this feature. Requirement 3's guarantee rests
   on the PATCH route carrying no `containerAccessible` opt-in, which is a real
