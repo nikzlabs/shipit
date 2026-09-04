@@ -87,8 +87,13 @@ export function NewSessionRepoBar({
         aria-haspopup="dialog"
         aria-expanded={pickerOpen}
         // `min-h-11` is the app's 44px mobile touch floor (see MicButton) — the
-        // padding alone lands at 41px, which is under it.
-        className="flex min-h-11 w-full items-center gap-2 border-b border-(--color-border-primary) bg-(--color-bg-primary) px-3 py-2.5 text-left"
+        // padding alone lands at 41px, which is under it. From `md:` up there is
+        // no touch floor to respect and there IS a row to line up with: the bar
+        // sits at the top of the chat panel, level with the sidebar header and
+        // the right panel's tab strip, both of which are `h-10.25` (41px). At
+        // 44px it overhung both by 3px, so the three top borders did not meet.
+        // Fixed height rather than `min-h`, since the content is one line.
+        className="flex min-h-11 w-full items-center gap-2 border-b border-(--color-border-primary) bg-(--color-bg-primary) px-3 py-2.5 text-left md:h-10.25 md:min-h-0"
         style={{
           ...(color
             ? { borderLeftWidth: 3, borderLeftStyle: "solid", borderLeftColor: color, backgroundColor: groupBandFill(color) }
