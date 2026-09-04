@@ -6,6 +6,7 @@
 - [x] Claude adapter: `--effort` in PTY + streaming arg builders (`claude/process.ts`, `adapter.ts`)
 - [x] Codex adapter: `-c model_reasoning_effort=` at app-server spawn (`codex/adapter.ts`)
 - [x] Tests: registry metadata distinct per agent; claude arg-build; codex arg-build
+- [x] Codex 0.153.2 maintenance: expose the `max` reasoning level verified by its provider probe
 
 ## Control A — Sub-agent defaults (per-agent Settings tab → sub-agents)
 - [x] `agentSubAgentDefaults` map (`Record<agentId, SubAgentDefaults>`, `{ reasoningEffort?, model? }`) + per-field merge accessors on `CredentialStore`

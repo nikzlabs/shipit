@@ -86,6 +86,7 @@ const agents: AgentOption[] = [
       options: [
         { value: "minimal", label: "Minimal" },
         { value: "high", label: "High" },
+        { value: "max", label: "Max" },
       ],
     },
   },
@@ -378,7 +379,7 @@ describe("RoleEditor — one place editing the whole role (req 17)", () => {
   });
 
   it("keeps the server's refusal beside the controls, and the editor open", async () => {
-    const fetchMock = refusingFetch('The role "deep dive" cannot run: "max" is not a level Codex offers.');
+    const fetchMock = refusingFetch('The role "deep dive" cannot run: "minimal" is not a level Claude Code offers.');
     vi.stubGlobal("fetch", fetchMock);
     render(<RolesTab agentList={agents} />);
 
@@ -387,7 +388,7 @@ describe("RoleEditor — one place editing the whole role (req 17)", () => {
     await userEvent.click(screen.getByTestId("role-editor-save"));
 
     await waitFor(() =>
-      expect(screen.getByTestId("role-editor-error").textContent).toContain("Codex offers"),
+      expect(screen.getByTestId("role-editor-error").textContent).toContain("Claude Code offers"),
     );
     expect(screen.getByTestId("role-editor")).toBeTruthy();
   });
@@ -406,20 +407,32 @@ describe("RolesTab — the harness the user picked is what gets written", () => 
   it("writes the chosen harness, with a level that harness declares", async () => {
     const fetchMock = okFetch([REVIEWER]);
     vi.stubGlobal("fetch", fetchMock);
-    useSettingsStore.getState().setRoles([REVIEWER, pinnedRole()]);
+    useSettingsStore.getState().setRoles([
+      REVIEWER,
+      pinnedRole({
+        params: {
+          kind: "pinned",
+          harnessId: "codex",
+          serviceId: "deepseek",
+          billingMode: "key",
+          modelId: "deepseek-v4-flash",
+          reasoningEffort: "minimal",
+        },
+      }),
+    ]);
     render(<RolesTab agentList={agents} />);
 
     await userEvent.click(screen.getByTestId("role-open-deep-dive"));
     await userEvent.click(screen.getByTestId("role-editor-harness-trigger"));
-    await userEvent.click(screen.getByTestId("role-editor-harness-option-codex"));
+    await userEvent.click(screen.getByTestId("role-editor-harness-option-claude"));
     await userEvent.click(screen.getByTestId("role-editor-save"));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    // `max` is Claude Code's level and not Codex's, so the draft cannot keep it.
-    // It drops to **Default** (omitted) rather than to an arbitrary Codex level
+    // `minimal` is Codex's level and not Claude Code's, so the draft cannot keep it.
+    // It drops to **Default** (omitted) rather than to an arbitrary Claude level
     // — see the RoleEditor test of the same move for why.
     const params = writtenRole(fetchMock).write?.params;
-    expect(params).toMatchObject({ harnessId: "codex" });
+    expect(params).toMatchObject({ harnessId: "claude" });
     expect(params).not.toHaveProperty("reasoningEffort");
   });
 });

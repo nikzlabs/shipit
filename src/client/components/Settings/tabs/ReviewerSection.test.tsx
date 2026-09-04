@@ -544,13 +544,13 @@ describe("ReviewerSection", () => {
    * levels and honours none of them on a key-billed row (docs/274 req 14). A
    * fixture cannot answer that question, and one that disagrees with the
    * catalogue would assert something ShipIt does not do — so the distinguishing
-   * levels below are real ones. Codex has `minimal` and Claude does not; Claude
-   * has `max` and Codex does not.
+   * levels below are real ones. Codex has `minimal`, while Claude does not;
+   * both now offer `max`.
    */
   it("offers the derived harness's own reasoning levels", async () => {
     const user = userEvent.setup();
     useSettingsStore.getState().setReviewers([
-      // Resolves on Codex, whose level set includes `minimal` and excludes `max`.
+      // Resolves on Codex, whose level set includes both `minimal` and `max`.
       autoSlot("first", {
         resolved: {
           serviceId: "deepseek",
@@ -570,7 +570,7 @@ describe("ReviewerSection", () => {
     render(<ReviewerSection agentList={agents} />);
     await user.click(screen.getByTestId("reviewer-reasoning-trigger-first"));
     expect(screen.getByTestId("reviewer-reasoning-option-first-minimal")).toBeTruthy();
-    expect(screen.queryByTestId("reviewer-reasoning-option-first-max")).toBeNull();
+    expect(screen.getByTestId("reviewer-reasoning-option-first-max")).toBeTruthy();
   });
 
   /**

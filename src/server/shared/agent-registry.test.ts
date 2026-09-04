@@ -163,18 +163,18 @@ describe("reasoning capability metadata (docs/217)", () => {
 
   it("exposes the verified Codex model_reasoning_effort levels", () => {
     const values = getAgentCapabilities("codex")?.reasoning?.options.map((o) => o.value);
-    expect(values).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"]);
+    expect(values).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
   });
 
   it("gives each agent a distinct option set (named differently per backend)", () => {
     const claude = getAgentCapabilities("claude")?.reasoning;
     const codex = getAgentCapabilities("codex")?.reasoning;
     expect(claude?.label).not.toBe(codex?.label);
-    // Codex has "none"/"minimal" that Claude lacks; Claude has "max" that Codex lacks.
+    // Codex has "none"/"minimal" that Claude lacks. Both CLIs now accept max.
     expect(codex?.options.some((o) => o.value === "none")).toBe(true);
     expect(claude?.options.some((o) => o.value === "max")).toBe(true);
     expect(claude?.options.some((o) => o.value === "none")).toBe(false);
-    expect(codex?.options.some((o) => o.value === "max")).toBe(false);
+    expect(codex?.options.some((o) => o.value === "max")).toBe(true);
   });
 });
 
@@ -186,9 +186,9 @@ describe("model capability metadata", () => {
     expect(claudeModels).toContain("claude-sonnet-5");
     expect(codexModels?.slice(0, 4)).toEqual([
       "gpt-5.6-sol",
+      "gpt-6-astra",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
-      "gpt-5.3-codex-spark",
     ]);
     expect(codexModels).not.toContain("gpt-5.6");
   });

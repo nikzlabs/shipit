@@ -13,8 +13,8 @@ import type { AgentRole, CredentialRoute, ReviewerPin, ReviewerSlot } from "../.
  * The dual-harness case that used to need fabricating is **real**:
  * `deepseek-v4-flash` and `deepseek-v4-pro` declare `[openai-chat-completions,
  * openai-responses, anthropic-messages]`, and `resolveStyle` needs one style in
- * common — so both harnesses carry them. Their level sets differ (`max` is
- * Claude Code's and not Codex's; `none` and `minimal` are Codex's and not
+ * common — so both harnesses carry them. Their level sets differ (`none` and
+ * `minimal` are Codex's and not
  * Claude Code's), which is exactly the pair the validator has to tell apart.
  * docs/261's plan said no shipped model was dual-harness; that stopped being
  * true and the row is now the fixture.
@@ -109,22 +109,22 @@ const DEEPSEEK_ON_CLAUDE = {
 // ---- The harness-explicit validator (reqs 6, 7) -----------------------------
 
 describe("checkRolePinnedParams — the level follows the harness the ROLE names (req 6)", () => {
-  it("refuses a Claude-only level on a role that names Codex, for a model both carry", async () => {
+  it("refuses a Codex-only level on a role that names Claude, for a model both carry", async () => {
     const { checkRolePinnedParams } = await import("./roles.js");
     const result = checkRolePinnedParams(
-      { kind: "pinned", ...DEEPSEEK_ON_CLAUDE, harnessId: "codex", reasoningEffort: "max" },
+      { kind: "pinned", ...DEEPSEEK_ON_CLAUDE, reasoningEffort: "minimal" },
       { credentialStore: storeWith({ routes: [DEEPSEEK_KEY] }), env: EMPTY_ENV, isInstalled: ALL_INSTALLED },
     );
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.field).toBe("reasoningEffort");
-    expect(result.message).toContain("max");
+    expect(result.message).toContain("minimal");
   });
 
-  it("accepts the same Claude-only level when the role names Claude Code", async () => {
+  it("accepts the same Codex-only level when the role names Codex", async () => {
     const { checkRolePinnedParams } = await import("./roles.js");
     const result = checkRolePinnedParams(
-      { kind: "pinned", ...DEEPSEEK_ON_CLAUDE, reasoningEffort: "max" },
+      { kind: "pinned", ...DEEPSEEK_ON_CLAUDE, harnessId: "codex", reasoningEffort: "minimal" },
       { credentialStore: storeWith({ routes: [DEEPSEEK_KEY] }), env: EMPTY_ENV, isInstalled: ALL_INSTALLED },
     );
     expect(result.ok).toBe(true);
@@ -185,7 +185,7 @@ describe("checkRolePinnedParams — the level follows the harness the ROLE names
   it("still refuses a level the named harness does not declare, and says Default is available", async () => {
     const { checkRolePinnedParams } = await import("./roles.js");
     const result = checkRolePinnedParams(
-      { kind: "pinned", ...DEEPSEEK_ON_CLAUDE, harnessId: "codex", reasoningEffort: "max" },
+      { kind: "pinned", ...DEEPSEEK_ON_CLAUDE, reasoningEffort: "minimal" },
       { credentialStore: storeWith({ routes: [DEEPSEEK_KEY] }), env: EMPTY_ENV, isInstalled: ALL_INSTALLED },
     );
     expect(result.ok).toBe(false);
@@ -198,8 +198,8 @@ describe("checkRolePinnedParams — the level follows the harness the ROLE names
    *
    * That function derives a harness (`harnessesForSelection(patch, …)[0]`,
    * catalogue order ⇒ Claude Code) and validates the level against whichever it
-   * picked — so the *same* tuple it accepts here is one the role validator
-   * refuses for Codex. Asserting both halves in one test is what makes the
+   * picked — so it can replace a level that the explicitly named role harness
+   * accepts. Asserting both halves in one test is what makes the
    * difference impossible to lose: delete the harness input from the role
    * validator and this test goes red on the first expectation, not on a
    * hypothetical future catalogue.
@@ -212,19 +212,19 @@ describe("checkRolePinnedParams — the level follows the harness the ROLE names
       serviceId: "deepseek",
       billingMode: "key" as const,
       modelId: "deepseek-v4-flash",
-      reasoningEffort: "max",
+      reasoningEffort: "minimal",
     };
 
-    // The reviewer path accepts it: it derives Claude Code, which declares `max`.
-    expect(resolveReviewerPinPatch(triple, store, EMPTY_ENV).reasoningEffort).toBe("max");
+    // The reviewer path derives Claude Code and replaces its unsupported level
+    // with that selection's default.
+    expect(resolveReviewerPinPatch(triple, store, EMPTY_ENV).reasoningEffort).not.toBe("minimal");
 
-    // The role path, told the harness is Codex, refuses the very same tuple.
+    // The role path, told the harness is Codex, accepts the very same tuple.
     const asRole = checkRolePinnedParams(
       { kind: "pinned", harnessId: "codex", ...triple },
       { credentialStore: store, env: EMPTY_ENV, isInstalled: ALL_INSTALLED },
     );
-    expect(asRole.ok).toBe(false);
-    if (!asRole.ok) expect(asRole.field).toBe("reasoningEffort");
+    expect(asRole.ok).toBe(true);
   });
 });
 
@@ -368,12 +368,11 @@ describe("checkRolePinnedParams — compatibility only, never live availability"
       env: EMPTY_ENV,
       isInstalled: ALL_INSTALLED,
     };
-    // `max` is Claude Code's level and not Codex's. Both faults at once, and the
+    // `minimal` is Codex's level and not Claude Code's. Both faults at once, and the
     // editable one is still what a save reports — the ordering is untouched.
     const broken = pinnedRole("deep-dive", {
       ...DEEPSEEK_ON_CLAUDE,
-      harnessId: "codex",
-      reasoningEffort: "max",
+      reasoningEffort: "minimal",
     }).params as never;
     const checked = checkRolePinnedParams(broken, deps, "save");
     expect(checked.ok).toBe(false);
@@ -619,18 +618,18 @@ describe("resolveRoleByName — a pinned role (reqs 6, 7, 10)", () => {
   it("refuses an incoherent override, naming the parameter, rather than dropping it", async () => {
     const { resolveRoleByName } = await import("./roles.js");
     const role = pinnedRole("deep-dive", DEEPSEEK_ON_CLAUDE);
-    // `max` is Claude Code's; the override moves the role onto Codex.
+    // `minimal` is Codex's; this override leaves the role on Claude Code.
     expect(() =>
       resolveRoleByName(
         "deep-dive",
-        { harnessId: "codex", reasoningEffort: "max" },
+        { reasoningEffort: "minimal" },
         CLAUDE_IMPLEMENTER,
         deps([role]),
       ),
-    ).toThrow(/max.*not a reasoning level Codex offers|Codex/);
+    ).toThrow(/minimal.*not a reasoning level Claude Code offers|Claude Code/);
     // And it is refused rather than silently run at the role's own level.
     expect(() =>
-      resolveRoleByName("deep-dive", { harnessId: "codex", reasoningEffort: "max" }, CLAUDE_IMPLEMENTER, deps([role])),
+      resolveRoleByName("deep-dive", { reasoningEffort: "minimal" }, CLAUDE_IMPLEMENTER, deps([role])),
     ).toThrow(/cannot run/);
   });
 
@@ -984,14 +983,14 @@ describe("resolveRoleByName — the reviewer, overridden (reqs 10, 16)", () => {
       env: EMPTY_ENV,
       isInstalled: ALL_INSTALLED,
     });
-    // The same incoherent override — `max` is not a level Codex declares —
+    // The same incoherent override — `minimal` is not a level Claude declares —
     // aimed at each params kind in turn.
     const override = {
-      harnessId: "codex" as const,
+      harnessId: "claude" as const,
       serviceId: "deepseek",
       billingMode: "key" as const,
       modelId: "deepseek-v4-flash",
-      reasoningEffort: "max",
+      reasoningEffort: "minimal",
     };
     const messages = ["reviewer", "deep-dive"].map((name) => {
       try {
@@ -1005,8 +1004,8 @@ describe("resolveRoleByName — the reviewer, overridden (reqs 10, 16)", () => {
     expect(messages.every((m) => typeof m === "string")).toBe(true);
     // …both naming the parameter at fault and the harness it is wrong for…
     for (const message of messages) {
-      expect(message).toContain("max");
-      expect(message).toContain("Codex");
+      expect(message).toContain("minimal");
+      expect(message).toContain("Claude Code");
     }
     // …and identically apart from the role's own name, which is the "exactly as"
     // the requirement asks for.

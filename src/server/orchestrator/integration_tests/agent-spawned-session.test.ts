@@ -984,8 +984,8 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
   });
 
   it("docs/217 — a level the child's harness doesn't offer is dropped, not forwarded", { timeout: 15_000 }, async () => {
-    // `max` is a Claude level; Codex's set stops at `xhigh`. The child is routed
-    // to Codex by the model, so forwarding the parent's level verbatim would put
+    // `minimal` is a Codex level that Claude Code does not offer. The child is
+    // kept on Claude by the model, so forwarding the parent's level verbatim would put
     // an unknown value on the CLI's config flag. Dropping falls back to the
     // harness default, which is the same rule the connect param follows.
     //
@@ -993,26 +993,28 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     // same shape: without that contrast this passes under "inherit nothing at
     // all", which is the behaviour the test above exists to forbid.
     const parentId = await createParentSession();
-    sessionManager.setReasoning(parentId, "max");
+    sessionManager.setAgentId(parentId, "codex");
+    sessionManager.setModel(parentId, "gpt-5.5");
+    sessionManager.setReasoning(parentId, "minimal");
 
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "x", title: "Cross-harness reasoning", model: "gpt-5.5" },
+      payload: { prompt: "x", title: "Cross-harness reasoning", agent: "claude" },
     });
     expect(res.statusCode).toBe(200);
     const childId = (res.json() as { sessionId: string }).sessionId;
-    expect(sessionManager.get(childId)?.agentId).toBe("codex");
+    expect(sessionManager.get(childId)?.agentId).toBe("claude");
     expect(sessionManager.get(childId)?.reasoningEffort).toBeUndefined();
 
     // `high` is in BOTH sets — same spawn, same cross-harness route, and it
-    // carries. So the `undefined` above is the validation rejecting `max`, not
+    // carries. So the `undefined` above is the validation rejecting `minimal`, not
     // the spawn dropping every level it is handed.
     sessionManager.setReasoning(parentId, "high");
     const ok = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "x", title: "Cross-harness reasoning ok", model: "gpt-5.5" },
+      payload: { prompt: "x", title: "Cross-harness reasoning ok", agent: "claude" },
     });
     expect(ok.statusCode).toBe(200);
     const okChildId = (ok.json() as { sessionId: string }).sessionId;
@@ -1519,20 +1521,28 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(child?.model).toBe("claude-opus-4-7");
   });
 
-  it("refuses a NAMED level the child's harness does not declare, rather than dropping it", { timeout: 15_000 }, async () => {
+  it("refuses a NAMED harness level the child's model does not offer", { timeout: 15_000 }, async () => {
     // The contrast with the inherited case above is the point: an inherited
     // level is dropped when it does not fit (the caller merely happens to have
     // it), and a level the caller NAMED is refused (a dropped override runs
-    // something other than what was asked for). `max` is Claude's; Codex stops
-    // at `xhigh`.
+    // something other than what was asked for). `minimal` is valid for Codex,
+    // but the GPT-6 Astra row starts at `low`.
     const parentId = await createParentSession();
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "x", title: "Bad level", agentId: "codex", reasoningEffort: "max" },
+      payload: {
+        prompt: "x",
+        title: "Bad level",
+        agentId: "codex",
+        serviceId: "openai",
+        billingMode: "key",
+        modelId: "gpt-6-astra",
+        reasoningEffort: "minimal",
+      },
     });
     expect(res.statusCode).toBe(400);
-    expect((res.json() as { error: string }).error).toContain("max");
+    expect((res.json() as { error: string }).error).toContain("minimal");
   });
 
   it("POST /spawn rejects an unknown agent id with 400", { timeout: 15_000 }, async () => {

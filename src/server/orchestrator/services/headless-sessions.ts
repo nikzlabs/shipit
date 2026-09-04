@@ -1,5 +1,9 @@
 import path from "node:path";
-import { catalogueModelLabels, type BillingMode } from "../../shared/catalogue/index.js";
+import {
+  catalogueModelLabels,
+  selectionHonoursEffort,
+  type BillingMode,
+} from "../../shared/catalogue/index.js";
 import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
@@ -399,13 +403,17 @@ export async function createHeadlessSession(
     );
   }
 
-  // docs/217 — validate the requested reasoning effort against the resolved
-  // agent's options; drop silently if invalid (mirrors the WS connect-param
-  // path in route-registry.ts). Persisted onto the session row by
-  // graduateSession so the first dispatched turn runs with it.
-  const reasoningOpts = getAgentCapabilities(agentId)?.reasoning?.options;
+  // docs/217 + docs/274 req 14 — validate against the resolved selection when
+  // the request carries its complete triple, not only against the harness's
+  // wider vocabulary. This matters for GPT-6 Astra: Codex accepts `minimal`,
+  // but that model starts at `low`. Drop silently if invalid, matching the WS
+  // connect-param path. `undefined` keeps the old harness-wide check for a bare
+  // model or forward-compatible id that the request cannot place yet.
+  const reasoningSelection = opts.model && opts.serviceId && opts.billingMode
+    ? { serviceId: opts.serviceId, billingMode: opts.billingMode, modelId: opts.model }
+    : undefined;
   const reasoning =
-    opts.reasoning && reasoningOpts?.some((o) => o.value === opts.reasoning)
+    opts.reasoning && selectionHonoursEffort(agentId, reasoningSelection, opts.reasoning)
       ? opts.reasoning
       : undefined;
 

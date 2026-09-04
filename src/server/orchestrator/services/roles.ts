@@ -546,7 +546,8 @@ export function resolveRoleByName(
     // landed on offers it, and re-derived there otherwise
     // (`reviewer-model.ts`'s `effortFor`). It used to be validated against the
     // *settings-time derived* harness and then copied onto whichever harness the
-    // ranking chose, which is how a Claude-only `max` could reach Codex.
+    // ranking chose, which is how a harness-specific level could reach a target
+    // that does not offer it.
     //
     // Running the role validator here would still be wrong, and for the reason
     // it always was: it would refuse the review rather than run it, which is a

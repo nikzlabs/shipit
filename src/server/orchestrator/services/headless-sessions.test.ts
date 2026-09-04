@@ -569,9 +569,9 @@ describe("createHeadlessSession", () => {
     expect(sessionManager.get("quick-1")?.reasoningEffort).toBe("high");
   });
 
-  it("drops a reasoning effort that isn't valid for the resolved agent", async () => {
-    // "max" is a Claude-only level; with a Codex model the agent resolves to
-    // codex, whose options stop at xhigh — so it must be ignored, not pinned.
+  it("drops a harness level that the resolved model does not offer", async () => {
+    // `minimal` is valid Codex vocabulary, but GPT-6 Astra starts at `low`.
+    // The quick session must validate the model row, not only the harness.
     await createHeadlessSession(
       sessionManager,
       registry as unknown as SessionRunnerRegistry,
@@ -579,8 +579,10 @@ describe("createHeadlessSession", () => {
       {
         repoUrl: "https://github.com/acme/app.git",
         prompt: "reason hard",
-        model: "gpt-5.4",
-        reasoning: "max",
+        model: "gpt-6-astra",
+        serviceId: "openai",
+        billingMode: "key",
+        reasoning: "minimal",
       },
       "claude",
       undefined,

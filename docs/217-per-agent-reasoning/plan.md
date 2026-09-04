@@ -16,9 +16,9 @@ knob, named and valued differently per agent:
   (omit the flag → the model's adaptive default). *Verified by running `claude --effort __bogus__`,
   which printed `Valid values: low, medium, high, xhigh, max`.*
 - **Codex CLI** — config key `model_reasoning_effort`; valid values
-  `none, minimal, low, medium, high, xhigh` (omit → Codex's own default). *Verified by running
-  `codex -c model_reasoning_effort=__bogus__`, which printed `expected one of none, minimal, low,
-  medium, high, xhigh`.*
+  `none, minimal, low, medium, high, xhigh, max` (omit → Codex's own default). *Verified with
+  Codex 0.153.2 by sending an invalid sentinel; the provider rejected it and listed
+  `none, minimal, low, medium, high, xhigh, max` as the supported values.*
 
 There is currently **zero** reasoning handling anywhere in the codebase.
 
@@ -74,7 +74,7 @@ reasoning?: {
 ```
 
 - `claude`: `low, medium, high, xhigh, max`
-- `codex`: `none, minimal, low, medium, high, xhigh`
+- `codex`: `none, minimal, low, medium, high, xhigh, max`
 
 Both UIs prepend a **"Default"** entry (selected when no value is stored) → stores
 nothing / passes no CLI flag, so each backend uses its own native default.
@@ -180,7 +180,7 @@ overlay therefore sends the chosen level as a `reasoning` field on the
 resolved agent's options and persists it onto the session row in
 `graduateSession` (alongside `model`), so the server-dispatched first turn reads
 it from the row via `getSelectedReasoning` (`runner-registry-factory.ts`). An
-invalid level (e.g. Claude-only `max` with a Codex model) is dropped, mirroring
+invalid level is dropped, mirroring
 the connect-param validation in `route-registry.ts`. Key files:
 `QuickCaptureOverlay.tsx`, `stores/actions/session-actions.ts`,
 `api-routes-session-crud.ts`, `services/headless-sessions.ts`,
@@ -198,7 +198,7 @@ silently dropped to it.
 
 The level is validated against the **child's** harness, not the parent's:
 `--agent` / `--model` can route the child to a backend whose option set differs
-(Claude's `max` has no Codex equivalent), and an unlisted value would reach the
+(Codex's `minimal` has no Claude equivalent), and an unlisted value would reach the
 CLI as a bad flag. A level that doesn't fit is dropped, not remapped — the same
 rule the connect param and the quick-capture path follow. There is no
 `--reasoning` spawn flag: the parent's level is the only source. Guarded in
@@ -247,7 +247,7 @@ the same characteristic model selection already has. Acceptable; no special hand
 Full suite / integration tests OOM in-session — verify with `npm run typecheck`, `npm run lint:dev`,
 and targeted co-located unit tests (`npx vitest run <file>.test.ts`). Browser-check both controls:
 the Settings per-agent default and the composer control beside the model selector, each showing
-Claude's `low…max` vs Codex's `none…xhigh`. Spot-check spawned commands: a Claude turn includes
+Claude's `low…max` vs Codex's `none…max`. Spot-check spawned commands: a Claude turn includes
 `--effort <level>`; a Codex turn spawns with `-c model_reasoning_effort=<level>`; "Default" passes
 neither. Confirm a Claude session that invokes Codex as a sub-agent uses the **global** Codex
 reasoning (control A), independent of the composer value (control B).
