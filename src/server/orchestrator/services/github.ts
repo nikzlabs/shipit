@@ -384,7 +384,15 @@ export async function createPullRequest(
   base: string,
   draft?: boolean,
   remoteUrl?: string,
-): Promise<{ success: boolean; url?: string; number?: number; message?: string }> {
+): Promise<{
+  success: boolean;
+  url?: string;
+  number?: number;
+  message?: string;
+  /** docs/287 — the repository the create resolved to, for provenance. */
+  owner: string;
+  repo: string;
+}> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
   const trimmedTitle = title.trim();
   const trimmedBase = base.trim();
@@ -405,7 +413,14 @@ export async function createPullRequest(
     base: trimmedBase,
     draft,
   });
-  return { success: result.success, url: result.url, number: result.number, message: result.message };
+  return {
+    success: result.success,
+    url: result.url,
+    number: result.number,
+    message: result.message,
+    owner: resolved.owner,
+    repo: resolved.repo,
+  };
 }
 
 /**
@@ -1084,6 +1099,14 @@ export async function agentCreatePr(
   deletions: number;
   alreadyExisted: boolean;
   /**
+   * docs/287 — the repository the pull request actually lives in, as GitHub
+   * resolved it. `--repo` retargets the create away from the session's own
+   * remote, so provenance is recorded against this, never against the URL the
+   * request asked for.
+   */
+  owner: string;
+  repo: string;
+  /**
    * Which of the two short-circuits returned an existing PR. Set only when
    * `alreadyExisted` — a discriminator, so the caller never parses prose.
    *
@@ -1206,6 +1229,8 @@ export async function agentCreatePr(
         insertions: stats.insertions,
         deletions: stats.deletions,
         alreadyExisted: true as const,
+        owner: resolved.owner,
+        repo: resolved.repo,
         alreadyExistedReason,
         ...(notProgressedBecause ? { notProgressedBecause } : {}),
         labelWarning,
@@ -1358,6 +1383,11 @@ export async function agentCreatePr(
     insertions: stats.insertions,
     deletions: stats.deletions,
     alreadyExisted: false,
+    // docs/287 — where the pull request actually landed. `--repo` can retarget
+    // the create away from the session's own remote, so provenance is recorded
+    // against this rather than against what the caller asked for.
+    owner: resolved.owner,
+    repo: resolved.repo,
     labelWarning,
   };
 }

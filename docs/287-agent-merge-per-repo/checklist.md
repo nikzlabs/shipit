@@ -18,22 +18,25 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 ## Ownership and provenance
 
 - [x] Migration: `sessions.pr_number` + `sessions.pr_repo_id`
-- [ ] `mergeDisposition()`: sandbox / ops (`not-sandbox`, unchanged) / repo-bound
-- [ ] `--repo` refused on a repo-bound merge; `cwd` **ignored, not refused**
-- [ ] An ordinary `gh pr merge` (which always sends `cwd`) is allowed
-- [ ] Branch check uses `currentBranchOrNull()` against `session.branch`
-- [ ] Requested number must equal `session.pr_number`, and `pr_repo_id` must
+- [x] `mergeDisposition()`: sandbox / ops (`not-sandbox`, unchanged) / repo-bound,
+      with the grant a REQUIRED parameter so no call site can default to allowed
+- [x] `--repo` refused on a repo-bound merge; `cwd` **ignored, not refused**
+- [x] An ordinary `gh pr merge` (which always sends `cwd`) is allowed
+- [x] Branch check uses `currentBranchOrNull()` against `session.branch`
+- [x] Requested number must equal `session.pr_number`, and `pr_repo_id` must
       equal `repoId(session.remoteUrl)` at merge time; absent refuses
 - [x] `quickCreatePr()` gains an `alreadyExisted` discriminator (and the resolved
       `owner`/`repo`, since `--repo` can retarget where the PR lands)
-- [ ] Only a **witnessed create** records provenance; a discovered pull request is
+- [x] Only a **witnessed create** records provenance; a discovered pull request is
       never adopted, on any path — no nonce, no intent table, no heuristic
-- [ ] Every discovery route goes through one provenance path, including
-      `pr-lifecycle.ts`, which can return an existing PR straight from the poller
-- [ ] Written by `agentCreatePr()`, `POST /pr`, `/pr/quick` and `pr-lifecycle.ts`,
+- [x] Every discovery route goes through one provenance path
+      (`services/pr-provenance.ts`), including `pr-lifecycle.ts`, whose recovery
+      branch discovers by branch name and deliberately records nothing
+- [x] Written by `agentCreatePr()`, `POST /pr`, `/pr/quick` and `pr-lifecycle.ts`,
       only on `alreadyExisted: false` **and** a matching canonical repository
-- [ ] Cleared by the docs/202 re-arm, `pr-rearm.ts`, unarchive, and an `origin`
-      change; never backfilled from `pr_status`
+- [x] Cleared by the docs/202 re-arm (both `pr-rearm.ts` paths go through
+      `clearMerged`), unarchive, and an `origin` change that moves to a different
+      repository identity; never backfilled from `pr_status`
 
 ## The live read and the observation
 
@@ -53,6 +56,12 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
       requests in one repository sharing a head SHA
 
 ## Merge sequence
+
+> The route currently answers **501** once a repo-bound merge clears every
+> ownership check, because this sequence is not built. Falling through would run
+> the merge under the sandbox path's guardrails — `getCheckStatus()`'s fail-open
+> `"none"`, no commit-and-push, no expected SHA — which is the set the design
+> rejected. Deleting that block is part of the first item below.
 
 - [x] `flushPendingTurnCommit()` returns a discriminated outcome — `committed` /
       `nothing-to-commit` / `blocked-secret` / `blocked-unreadable` /

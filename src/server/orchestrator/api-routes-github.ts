@@ -52,7 +52,8 @@ import { PR_LIST_STATES, type PrListState } from "./github-auth-prs.js";
 import { getErrorMessage } from "./validation.js";
 import { guardMergeSync } from "./services/branch-sync.js";
 import { parseGitHubRemote } from "./git-utils.js";
-import { resolvePrTarget, gitCredentialAllowed, mergeDisposition } from "./pr-target.js";
+import { resolvePrTarget, gitCredentialAllowed, mergeDisposition, agentMergeOwnership } from "./pr-target.js";
+import { recordWitnessedPrCreate } from "./services/pr-provenance.js";
 import type { FastifyReply } from "fastify";
 import type { SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
@@ -236,6 +237,9 @@ export async function registerGitHubRoutes(
           session.remoteUrl,
         );
 
+        // docs/287 — provenance, for a pull request this call actually opened.
+        recordWitnessedPrCreate(sessionManager, request.params.id, result);
+
         // Track the new PR in the poller
         if (deps.prStatusPoller && session.remoteUrl) {
           deps.prStatusPoller.trackSession(request.params.id, session.remoteUrl);
@@ -274,6 +278,16 @@ export async function registerGitHubRoutes(
           request.body.title, request.body.body, request.body.base, request.body.draft,
           session?.remoteUrl,
         );
+        // docs/287 — this route always CREATES (it has no discovery path), so a
+        // success is a witnessed create and records provenance.
+        if (result.success && result.number !== undefined) {
+          recordWitnessedPrCreate(sessionManager, request.params.id, {
+            number: result.number,
+            alreadyExisted: false,
+            owner: result.owner,
+            repo: result.repo,
+          });
+        }
         if (result.success && deps.prStatusPoller && session?.remoteUrl) {
           deps.prStatusPoller.trackSession(request.params.id, session.remoteUrl);
           void deps.prStatusPoller.forceRefreshSession(request.params.id);
@@ -338,6 +352,9 @@ export async function registerGitHubRoutes(
           ...(deps.cancelAutoPush ? { cancelAutoPush: deps.cancelAutoPush } : {}),
           chatHistory: deps.chatHistoryManager,
         });
+        // docs/287 — provenance. Skipped for a pull request that was already
+        // open on the branch, and for one `--repo` opened somewhere else.
+        recordWitnessedPrCreate(sessionManager, request.params.id, result);
         if (deps.prStatusPoller && session.remoteUrl) {
           deps.prStatusPoller.trackSession(request.params.id, session.remoteUrl);
           await activatePendingAutoMergeForPr(
@@ -1328,8 +1345,10 @@ export async function registerGitHubRoutes(
     },
   );
 
-  // POST /api/sessions/:id/pr/:number/merge — agent-driven merge (docs/224),
-  // backing `gh pr merge`. Gated behind the sandbox `dangerousGitHubOps` grant.
+  // POST /api/sessions/:id/pr/:number/merge — agent-driven merge, backing
+  // `gh pr merge`. Two grants reach it, one per session kind: a sandbox's
+  // `dangerousGitHubOps` capability (docs/224) and, for a repo-bound session,
+  // the repository's `allow_agent_merge` plus the ownership tuple (docs/287).
   //
   // Deliberately separate from the UI merge route above: it merges an explicit
   // PR number (repo-aware via cwd/repo), and it does NOT apply that route's
@@ -1350,8 +1369,17 @@ export async function registerGitHubRoutes(
         return;
       }
       // docs/224 — gate the dangerous verb. Distinct messages so the agent knows
-      // whether this is a "wrong session kind" (use the PR card) or "not opted in".
-      const disposition = mergeDisposition(session);
+      // whether this is a "wrong session kind" (use the PR card), "not opted in"
+      // for this sandbox, or "not granted in this repository" (docs/287).
+      //
+      // The grant is read here, from ShipIt's own repository record, and is
+      // never derived from anything inside the workspace: the agent can write
+      // `shipit.yaml`, so a permission declared there would be one it could give
+      // itself. A session with no remote resolves to no identity and no grant.
+      const disposition = mergeDisposition(
+        session,
+        deps.repoStore.allowsAgentMerge(session.remoteUrl ?? ""),
+      );
       if (disposition === "not-sandbox") {
         reply.code(403).send({
           error:
@@ -1366,11 +1394,76 @@ export async function registerGitHubRoutes(
         });
         return;
       }
+      if (disposition === "not-granted-repo") {
+        reply.code(403).send({
+          error:
+            "Agents cannot merge pull requests in this repository. The user turns this on in "
+            + "Project Settings → Agent permissions. Until then, merge from the PR lifecycle card "
+            + "in the ShipIt UI.",
+        });
+        return;
+      }
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       const num = Number(request.params.number);
       if (!Number.isFinite(num) || num <= 0) {
         reply.code(400).send({ error: "Invalid PR number" });
+        return;
+      }
+      // docs/287 req 5 — a repo-bound merge may only touch the pull request this
+      // session opened. Checked BEFORE `resolvePrTarget`, because that call is
+      // what a `--repo` override would retarget: validating after it would check
+      // this session's repository and then act on a different one.
+      //
+      // Sandbox merges skip this entirely (req 12): a sandbox has no session
+      // remote, no ShipIt-recorded branch and no provenance, and its own
+      // `dangerousGitHubOps` grant already decided.
+      const repoBound = session.kind !== "sandbox";
+      if (repoBound) {
+        // A workspace that cannot be READ is its own answer, kept apart from the
+        // branch comparison below: `null` there means "on no named branch", and
+        // reporting an evicted or broken workspace as a detached HEAD would send
+        // the agent to check out a branch in a directory it cannot open.
+        let currentBranch: string | null;
+        try {
+          currentBranch = await createGitManager(dir).currentBranchOrNull();
+        } catch (err) {
+          reply.code(409).send({
+            error:
+              "Not merged — ShipIt could not read this session's workspace to confirm the pull "
+              + `request belongs to it: ${getErrorMessage(err)}`,
+          });
+          return;
+        }
+        const refusal = agentMergeOwnership({
+          session,
+          requestedNumber: num,
+          currentBranch,
+          repoOverride: request.body?.repo,
+        });
+        if (refusal) {
+          reply.code(refusal.status).send({ error: refusal.error });
+          return;
+        }
+        // docs/287 — THE FEATURE STOPS HERE FOR NOW, on purpose.
+        //
+        // The gate and the ownership tuple are built; the merge SEQUENCE
+        // (requirements 7, 14, 15, 16, 17) is not. Falling through would run a
+        // repo-bound merge under the sandbox path's guardrails, which is exactly
+        // the set the design rejected: `getCheckStatus()` maps both "no checks"
+        // and a failed API read to `"none"` and merges on it, nothing commits or
+        // pushes this turn's work first, and the merge sends no expected SHA. A
+        // reachable merge with those holes is worse than no merge at all, so the
+        // grant is honoured up to here and the last step refuses.
+        //
+        // Delete this block when the merge sequence lands — the checklist item
+        // "Steps 1–2 run for repo-bound sessions only" is the one that removes it.
+        reply.code(501).send({
+          error:
+            "Merging from the agent is granted for this repository, but ShipIt cannot run the "
+            + "merge safely yet: the commit-and-push step and the check gate are still being "
+            + "built. Merge from the PR lifecycle card in the ShipIt UI for now.",
+        });
         return;
       }
       try {

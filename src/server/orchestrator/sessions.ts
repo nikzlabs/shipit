@@ -6,7 +6,7 @@ import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { AgentId } from "../shared/types/agent-types.js";
 import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
 import { resolveModelSelection, sameCredentialOwner } from "../shared/catalogue/index.js";
-import { stripRemoteUrlCredentials } from "./git-utils.js";
+import { repoId, stripRemoteUrlCredentials } from "./git-utils.js";
 
 /**
  * docs/252 — how a credential route is BILLED, derived from the route itself.
@@ -118,6 +118,15 @@ interface SessionRow {
   merged_head_sha: string | null;
   /** docs/221 — one-shot `[System] …` line the next interactive turn prepends. NULL = nothing owed. */
   pending_agent_notice: string | null;
+  /**
+   * docs/287 — the pull request ShipIt itself opened for this session, and the
+   * repository identity it was opened in. Always read as a PAIR: a number is
+   * unique only inside a repository, and `remote_url` can be repointed after
+   * the fact. Both NULL for every session that predates the columns, and for
+   * every pull request ShipIt merely discovered.
+   */
+  pr_repo_id: string | null;
+  pr_number: number | null;
 }
 
 /**
@@ -414,6 +423,15 @@ export class SessionManager {
     }
     if (row.merged_head_sha) info.mergedHeadSha = row.merged_head_sha;
     if (row.pending_agent_notice) info.pendingAgentNotice = row.pending_agent_notice;
+    // docs/287 — surfaced only as a PAIR. Half a provenance record cannot
+    // authorise anything: a number with no repository names a pull request in
+    // whatever repository the session happens to point at now, and a repository
+    // with no number names none. A row carrying one and not the other is a bug
+    // upstream, and reading it as absent is the answer that refuses the merge.
+    if (row.pr_number && row.pr_repo_id) {
+      info.prNumber = row.pr_number;
+      info.prRepoId = row.pr_repo_id;
+    }
     return info;
   }
 
@@ -612,7 +630,54 @@ export class SessionManager {
    */
   setRemoteUrl(id: string, remoteUrl: string | undefined): void {
     const stored = remoteUrl === undefined ? null : stripRemoteUrlCredentials(remoteUrl);
+    const previous = this.db
+      .prepare("SELECT remote_url FROM sessions WHERE id = ?")
+      .get(id) as { remote_url: string | null } | undefined;
     this.db.prepare("UPDATE sessions SET remote_url = ? WHERE id = ?").run(stored, id);
+    // docs/287 — repointing `origin` invalidates the merge provenance. The
+    // recorded pull request lives in the OLD repository, so leaving it would let
+    // a number from repository A authorise a merge that now resolves against
+    // repository B. Cleared here rather than at the callers because this is the
+    // single place the column moves, and comparing identities (not strings)
+    // keeps a no-op rewrite — the same remote in another spelling — from
+    // discarding a valid record.
+    if (previous !== undefined && repoId(previous.remote_url ?? "") !== repoId(stored ?? "")) {
+      this.clearPrProvenance(id);
+    }
+  }
+
+  /**
+   * docs/287 — record the pull request ShipIt just WITNESSED itself opening.
+   *
+   * Written as a pair, and only from a create whose outcome said it created
+   * something. Every discovery path — the poller finding a pull request by
+   * branch name, a create that returned one already open — deliberately calls
+   * nothing here: a discovered pull request may be a person's, and adopting it
+   * would grant the agent merge rights over their work (req 5).
+   *
+   * `repoIdentity` is the repository the create actually landed in, not the one
+   * the caller asked for. Callers resolve it from the create's own answer.
+   */
+  recordPrProvenance(id: string, prNumber: number, repoIdentity: string): void {
+    if (!Number.isInteger(prNumber) || prNumber <= 0 || !repoIdentity) return;
+    this.db
+      .prepare("UPDATE sessions SET pr_number = ?, pr_repo_id = ? WHERE id = ?")
+      .run(prNumber, repoIdentity, id);
+  }
+
+  /**
+   * docs/287 — forget the recorded pull request, as a pair.
+   *
+   * Called wherever the session's relationship to its pull request ends: the
+   * docs/202 re-arm, an explicit PR reset, unarchive deciding the old pull
+   * request no longer applies, and a change of `origin`. Clearing is always
+   * safe — the worst outcome is that the agent is told to merge from the card —
+   * while a stale record is an authorisation over the wrong pull request.
+   */
+  clearPrProvenance(id: string): void {
+    this.db
+      .prepare("UPDATE sessions SET pr_number = NULL, pr_repo_id = NULL WHERE id = ?")
+      .run(id);
   }
 
   /**
@@ -727,8 +792,14 @@ export class SessionManager {
     // docs/218 — also drop the merged-tip anchor: once un-merged there is no
     // merged tip, and a stale value must never let the auto-reset feature fire
     // against a session that is no longer in the merged state.
+    // docs/287 — and the merge provenance, in the same statement. The re-arm
+    // means this session's relationship to that pull request has ended: the
+    // recorded number now names a MERGED pull request, and leaving it would let
+    // the agent ask ShipIt to merge one that already shipped. A new pull request
+    // records a new number when ShipIt opens it.
     const result = this.db.prepare(
-      "UPDATE sessions SET merged_at = NULL, previous_merged_pr = ?, merged_head_sha = NULL WHERE id = ? AND merged_at IS NOT NULL",
+      "UPDATE sessions SET merged_at = NULL, previous_merged_pr = ?, merged_head_sha = NULL, "
+      + "pr_number = NULL, pr_repo_id = NULL WHERE id = ? AND merged_at IS NOT NULL",
     ).run(json, id);
     return result.changes > 0;
   }
@@ -759,7 +830,8 @@ export class SessionManager {
    */
   clearPriorPrRecord(id: string): void {
     this.db.prepare(
-      "UPDATE sessions SET merged_at = NULL, merged_head_sha = NULL, previous_merged_pr = NULL WHERE id = ?",
+      "UPDATE sessions SET merged_at = NULL, merged_head_sha = NULL, previous_merged_pr = NULL, "
+      + "pr_number = NULL, pr_repo_id = NULL WHERE id = ?",
     ).run(id);
   }
 

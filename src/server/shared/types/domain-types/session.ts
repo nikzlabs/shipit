@@ -437,6 +437,24 @@ export interface SessionInfo {
    * notice is delivered exactly once.
    */
   pendingAgentNotice?: string;
+  /**
+   * docs/287 — the pull request ShipIt **witnessed itself opening** for this
+   * session, with the repository identity it landed in. Present only as a pair.
+   *
+   * This is a provenance claim, and the only thing that answers "is this the
+   * agent's own pull request?" for the merge grant. It is deliberately NOT
+   * derived from `prStatus`, which also carries pull requests a person opened
+   * on the branch — adopting one of those would hand the agent merge rights
+   * over someone else's work, which requirement 5 excludes by name. A session
+   * that predates the columns, or whose pull request ShipIt merely discovered,
+   * carries neither field and cannot merge.
+   *
+   * The repository is stored beside the number because neither alone is stable:
+   * a number is unique only within a repository, and `remoteUrl` is rewritten
+   * in place when `origin` changes.
+   */
+  prNumber?: number;
+  prRepoId?: string;
 }
 
 /**

@@ -461,6 +461,7 @@ justify an otherwise empty navigation category.
 | `src/server/orchestrator/pr-status-poller.ts` | `awaitCiGraceDecision()`; the canonical, re-enterable terminal promotion |
 | `src/server/orchestrator/ci-grace-tracker.ts` | a merge entry point (repo + PR + SHA; unknown history waits) |
 | `src/server/orchestrator/services/branch-sync.ts` | `pushed` on the hold verdict |
+| `src/server/orchestrator/services/pr-provenance.ts` | the one provenance path: witnessed creates only, repository matched by identity |
 | `src/server/orchestrator/services/pr-lifecycle.ts`, `pr-rearm.ts`, `services/git.ts`, `sessions.ts` | provenance writers and clearers |
 | `src/server/orchestrator/api-routes-github.ts` | gate, ownership, settlement, notice |
 | `src/client/components/ProjectSettings.tsx` | Agent permissions section + toggle |

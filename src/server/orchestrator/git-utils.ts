@@ -207,11 +207,30 @@ export function repoId(url: string): string | null {
   const trimmed = stripRemoteUrlCredentials((url ?? "").trim());
   const match = GITHUB_HTTPS_REMOTE.exec(trimmed) ?? GITHUB_SSH_REMOTE.exec(trimmed);
   if (!match) return null;
-  const owner = match[1];
   // Strip a TERMINAL `.git` only — `my.git.tools` keeps its dots.
-  const repo = match[2].replace(/\.git$/i, "");
-  if (!repo || repo === "." || repo === "..") return null;
-  return `github:${owner.toLowerCase()}/${repo.toLowerCase()}`;
+  return repoIdFromOwnerRepo(match[1], match[2].replace(/\.git$/i, ""));
+}
+
+/**
+ * The same identity, from an owner and repository name that have **already**
+ * been resolved — what a create returns after GitHub answered.
+ *
+ * Exists so provenance is recorded against the repository the pull request
+ * actually landed in, rather than the URL the caller hoped it would use. Those
+ * differ in a real case: a create with no explicit remote reads the clone's own
+ * `origin`, so re-deriving the identity from the request would record a
+ * repository nobody verified.
+ *
+ * Validated, not merely lower-cased: these strings reach an authorization key,
+ * and an empty or path-bearing value would forge one (`github:a/b/../c`).
+ */
+export function repoIdFromOwnerRepo(owner: string, repo: string): string | null {
+  const o = (owner ?? "").trim();
+  const r = (repo ?? "").trim();
+  if (!new RegExp(String.raw`^${GITHUB_OWNER}$`).test(o)) return null;
+  if (!new RegExp(String.raw`^${GITHUB_REPO}$`).test(r)) return null;
+  if (r === "." || r === "..") return null;
+  return `github:${o.toLowerCase()}/${r.toLowerCase()}`;
 }
 
 /** Why `pushToOrigin` returned without pushing anything. */

@@ -256,6 +256,45 @@ describe("agent-driven PR creation (Phase 2)", () => {
       expect(call.body).not.toContain("[harness-generated description]");
       expect(call.head).toBe("shipit/test-feature");
       expect(call.base).toBe("main");
+
+      // docs/287 — ShipIt witnessed this create, so it records the pull request
+      // as this session's. That record is the only thing that later answers
+      // "is this the agent's own pull request?" for the merge grant.
+      const session = sessionManager.get(sessionId);
+      expect(session?.prNumber).toBe(1);
+      expect(session?.prRepoId).toBe("github:test-user/test-repo");
+    },
+  );
+
+  it(
+    "a pull request ShipIt only DISCOVERED is never recorded as the session's",
+    { timeout: 15_000 },
+    async () => {
+      // The rule the merge grant rests on: an open pull request found on the
+      // branch may have been opened by a person on github.com. Adopting it
+      // would hand the agent merge rights over their work (req 5).
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      githubAuth.setPrData({
+        url: "https://github.com/test-user/test-repo/pull/99",
+        number: 99,
+        base: "main",
+        title: "Opened by a person",
+      });
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/quick`,
+        payload: {},
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ number: 99, alreadyExisted: true });
+      // Nothing was created, so nothing is recorded — and the merge gate will
+      // refuse #99 for want of a record.
+      const session = sessionManager.get(sessionId);
+      expect(session?.prNumber).toBeUndefined();
+      expect(session?.prRepoId).toBeUndefined();
     },
   );
 
@@ -935,9 +974,13 @@ describe("repo-aware PR brokering (docs/211)", () => {
     },
   );
 
-  // docs/224 — `gh pr merge` is gated behind the sandbox dangerousGitHubOps grant.
+  // docs/224 — `gh pr merge` is gated behind the sandbox dangerousGitHubOps
+  // grant; docs/287 — and, for a repo-bound session, behind the per-repository
+  // grant plus the ownership tuple.
+  const REPO = "https://github.com/test-user/test-repo.git";
+
   it(
-    "agent merge is 403 for a repo-bound session (use the PR card)",
+    "agent merge is 403 in a repo-bound session the user has not granted",
     { timeout: 15_000 },
     async () => {
       await githubAuth.setToken("test-token");
@@ -948,7 +991,114 @@ describe("repo-aware PR brokering (docs/211)", () => {
         payload: {},
       });
       expect(res.statusCode).toBe(403);
-      expect(res.json()).toMatchObject({ error: expect.stringContaining("Sandbox sessions") });
+      // Off for every repository until the user turns it on, and the refusal
+      // says where (req 6).
+      expect(res.json()).toMatchObject({ error: expect.stringContaining("Project Settings") });
+    },
+  );
+
+  it(
+    "a granted repository still refuses a pull request ShipIt did not open",
+    { timeout: 15_000 },
+    async () => {
+      // The grant answers "may an agent merge here"; it says nothing about
+      // WHICH pull request. Without a recorded create there is nothing that
+      // distinguishes the session's own pull request from a person's.
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/5/merge`,
+        payload: {},
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toMatchObject({ error: expect.stringContaining("no record") });
+    },
+  );
+
+  it(
+    "a granted repository refuses a number other than the one this session opened",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/8/merge`,
+        payload: {},
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toMatchObject({ error: expect.stringContaining("#7") });
+    },
+  );
+
+  it(
+    "a granted repository refuses --repo, which would retarget the merge",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/7/merge`,
+        payload: { repo: "someone/else" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ error: expect.stringContaining("--repo") });
+    },
+  );
+
+  it(
+    "the session's own pull request clears every ownership check",
+    { timeout: 15_000 },
+    async () => {
+      // The whole tuple lines up: granted repository, session branch checked
+      // out, and the number ShipIt recorded when it opened the pull request.
+      //
+      // It stops at 501 rather than merging because the merge SEQUENCE is not
+      // built yet (see the route). That is the point of this test today: it
+      // proves the gate passes, and it will need one line changed — not
+      // rewriting — when the sequence lands.
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/7/merge`,
+        payload: { cwd: "/workspace" },
+      });
+      expect(res.statusCode).toBe(501);
+      expect(res.json()).toMatchObject({ error: expect.stringContaining("still being built") });
+    },
+  );
+
+  it(
+    "revoking the grant closes the door again",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      repoStore.setAllowAgentMerge(REPO, false);
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/7/merge`,
+        payload: {},
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toMatchObject({ error: expect.stringContaining("Project Settings") });
     },
   );
 
