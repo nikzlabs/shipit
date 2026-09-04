@@ -205,6 +205,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   private _reconcileTimer: ReturnType<typeof setInterval> | null = null;
   private _reconcileDivergenceCount = 0;
+  /**
+   * The `running`/`turnEpoch` shape the divergences above were counted against.
+   * A tick observing a different one restarts the count — see
+   * {@link runReconcileCheck}.
+   */
+  private _reconcileShape = "";
   private static readonly RECONCILE_INTERVAL_MS = 30000;
   private static readonly RECONCILE_MAX_DIVERGENCES = 2;
 
@@ -1156,7 +1162,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this._reconcileDivergenceCount = 0;
       return;
     }
-    this._reconcileDivergenceCount += 1;
+    // Two consecutive divergences, and they must describe the SAME turn state.
+    // The counter used to be reset by the early return above on every tick with
+    // `running` false, so it could only ever accumulate within one turn; once
+    // the idle-but-streaming shape also ticks, a strike counted while idle would
+    // otherwise carry into a turn that started a moment later. That turn sets
+    // `running` synchronously and reaches the worker only after env-prep, so its
+    // first tick legitimately answers `running: false` — and would land on
+    // strike 2 with a margin of one tick instead of two, resetting a turn that
+    // was merely still starting. Keyed on the observed state rather than on a
+    // transition, so a shape this counter has not seen twice cannot trip it.
+    const shape = `${this._isRunning}:${this.turnEpoch}`;
+    this._reconcileDivergenceCount = shape === this._reconcileShape
+      ? this._reconcileDivergenceCount + 1
+      : 1;
+    this._reconcileShape = shape;
     if (this._reconcileDivergenceCount >= ContainerSessionRunner.RECONCILE_MAX_DIVERGENCES) {
       this._reconcileDivergenceCount = 0;
       await this.verifyRunningState();
@@ -2732,9 +2752,16 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * streaming proxy and then exit, nulling `_agent` while the live streaming
    * process in the worker keeps emitting. `_streamingProxy` is the stable
    * reference to that process, and `isStreamingActive` is the discriminator: a
-   * GENUINELY-orphaned stream has it false (every path that releases the
-   * resident process clears it), so this can never resurrect a dead turn — the
-   * docs/267 failure that is worse than the one it fixes.
+   * stream the orchestrator has already FINALIZED has it false (every path that
+   * releases the resident process clears it), so a turn that ended cannot be
+   * re-adopted here — the docs/267 failure that is worse than the one this
+   * fixes.
+   *
+   * The flag is a belief, not a fact, and it CAN be stale the other way —
+   * believing a process resident after it died is the drift `verifyRunningState`
+   * now repairs. That direction is the safe one for this resolver: what it then
+   * routes is the dead process's own exit, and delivering that is what corrects
+   * the belief.
    */
   private resolveEventTarget(): ProxyAgentProcess | null {
     return this._agent ?? (this._isStreamingActive ? this._streamingProxy : null);
@@ -2781,24 +2808,26 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         }
 
         // A TERMINAL event gets the same re-adopt as `agent_event` above, and it
-        // is the one that could least afford to be dropped. Both of these carry
-        // a resident streaming process's EXIT, and the teardown that exit owns
-        // — `setAgent(null)`, `isStreamingActive = false`,
-        // `clearBackgroundTasks()`, and (on `done`) the streaming
-        // abnormal-exit commit that CLAUDE.md post-turn invariant 2 requires —
-        // is all gated behind the handler's `runner.getAgent() === agent`
-        // identity check. So dropping the event does not merely lose a
-        // notification: it leaves the runner holding liveness state for a
-        // process that no longer exists, with a stale background-task list, and
-        // whatever the turn wrote uncommitted. Production stranded two sessions
-        // that way on 2026-09-04.
+        // is the one that could least afford to be dropped. Both carry a
+        // resident streaming process's EXIT, and dropping one loses the whole
+        // teardown that exit owns, in two layers:
         //
-        // `this._agent = target` before the emit for exactly that reason: the
-        // teardown runs only if the slot points back at the proxy that is
-        // exiting. Re-installing it is what `agent_event` already does, and
+        //  - The turn's, which needs only the event to be DELIVERED: on `done`
+        //    that is the streaming abnormal-exit branch — drain, finished-SSE,
+        //    `runCommitAndPr`, idle — i.e. the commit CLAUDE.md post-turn
+        //    invariant 2 requires of every terminal path. A crashed turn's edits
+        //    stay in the working tree without it.
+        //  - The runner's process state (`setAgent(null)`,
+        //    `isStreamingActive = false`, `clearBackgroundTasks()`), which is
+        //    additionally gated on the handler's `runner.getAgent() === agent`
+        //    identity check — hence `this._agent = target` before the emit,
+        //    which is what `agent_event` already does. Without it the event
+        //    arrives and that half still does not run.
+        //
         // `isStaleSpawnEvent` (against the RESOLVED target, planning#290) still
         // discards a retired spawn's late exit so it cannot tear down the turn
-        // that replaced it.
+        // that replaced it, and a stream the orchestrator already finalized has
+        // `isStreamingActive === false` and is still dropped.
         case "agent_done": {
           const target = this.resolveEventTarget();
           if (!target) {
@@ -3253,28 +3282,57 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   /**
    * Drop everything whose lifetime is the WORKER-SIDE CLI PROCESS's, once that
-   * process is known to be gone. Extracted verbatim from `verifyRunningState`'s
-   * reset so the two drift shapes it now handles clear exactly the same set.
+   * process is known to be gone. Extracted from `verifyRunningState`'s reset so
+   * the two drift shapes it now handles clear exactly the same set.
    *
-   * Deliberately does NOT touch `_isRunning`, the queue, the delivery or the
-   * turn settlement: those belong to a TURN, and only one of the two callers
-   * has one to end.
+   * Writes `_isRunning`, the queue, the delivery and the turn settlement
+   * nowhere: those belong to a TURN, and only one of the two callers has one to
+   * end. That is a statement about what this function ASSIGNS, not about what
+   * can happen while it runs — `announceBackgroundWork` reaches the registry's
+   * `background_work` subscriber synchronously, and a system turn deferred
+   * behind background work is released there (docs/260 req 13), which sets
+   * `running` and installs an agent. So the announce is LAST, after every field
+   * above is already at its final value: announcing mid-clear would let that
+   * turn's fresh agent be nulled by the `_agent = null` a line later.
    */
   private clearResidentProcessState(): void {
     this._isStreamingActive = false;
     this._streamingProxy = null;
+    // docs/153 — the write-back watch's lifetime is the CLI process's, and this
+    // is that process's death. Assigning `_isStreamingActive` directly (as this
+    // reset always has) skips the setter that would otherwise release it.
+    stopTokenWriteBackWatch(this.sessionId);
     // docs/235 — the streaming process is gone, so its background tasks went
     // with it. The count getter already gates on `isStreamingActive`; clearing
     // here keeps the tracker from holding a stale list across a respawn.
     this._backgroundTasks.clear();
-    // planning#246 — written directly rather than through the setters, so the
-    // marker needs saying: we just declared this session's agent dead, and
-    // nothing else will tell the sidebar.
-    this.announceBackgroundWork();
     this._appliedPermissionMode = undefined;
     this._appliedSpawnIdentity = undefined;
     this._residentRoute = undefined;
     this._agent = null;
+    // The per-session half, and it is not optional. `announceBackgroundWork`
+    // below reaches the SIDEBAR (the `session_attention` SSE) and that is ALL it
+    // reaches: the client's handler for that event owns `backgroundTaskSessions`
+    // and deliberately does not touch the open session's status line, which is
+    // cleared by this per-session message instead. Without it the server and the
+    // sidebar converge while the chat the user is looking at keeps saying
+    // "Waiting for: …" until the next terminal message or a reload.
+    //
+    // Only when nothing is outstanding at all: a backgrounded `shipit agent run`
+    // consult survives a dead CLI (it is a separate worker process), and it
+    // keeps both its marker and its status line.
+    if (this.backgroundWorkDescriptions.length === 0) {
+      this.emitMessage({
+        type: "background_tasks",
+        sessionId: this.sessionId,
+        count: 0,
+        descriptions: [],
+      });
+    }
+    // planning#246 — written directly rather than through the setters, so the
+    // marker needs saying: we just declared this session's agent dead, and
+    // nothing else will tell the sidebar.
+    this.announceBackgroundWork();
   }
 
   async verifyRunningState(): Promise<boolean> {
@@ -3285,6 +3343,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // early on `!_isRunning`. See `runReconcileCheck`.
     const staleResidentOnly = !this._isRunning && this._isStreamingActive;
     if (!this._isRunning && !staleResidentOnly) return false;
+    // Captured before the await below, for the identity re-check after it.
+    const wasRunning = this._isRunning;
+    const turnEpochAtCheck = this.turnEpoch;
     let workerRunning: boolean;
     try {
       const status = await workerGet(this.workerUrl, "/agent/status") as { running?: boolean };
@@ -3298,11 +3359,29 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // `running: this.agent !== null` on the worker — an occupied slot, not an
     // active turn — so a resident streaming process between turns answers true.
     if (workerRunning) return this._isRunning;
+    // The status above describes the instant the request was answered, and a
+    // turn can start across that await: `dispatchOnRunner` sets `running`
+    // synchronously and reaches the worker only after env-prep, so a dispatch
+    // landing here would be judged by a reading taken before it existed —
+    // clearing the fresh agent out of the slot, or (on the branch below)
+    // abandoning a turn that is merely still starting. Compare the state, not a
+    // transition: if either half moved, this observation is about a runner that
+    // no longer exists and the next tick can look again.
+    if (this._isRunning !== wasRunning || this.turnEpoch !== turnEpochAtCheck) {
+      console.warn(
+        `[container-runner:${this.sessionId}] verifyRunningState: turn state changed under the `
+        + `worker probe (running ${wasRunning}→${this._isRunning}) — standing down`,
+      );
+      return this._isRunning;
+    }
     if (staleResidentOnly) {
       // No turn was running, so none of the turn-settlement work below applies:
-      // there is nothing to abandon, nothing queued behind a phantom, and no
-      // "out of sync" sentence to show a user whose turn ended normally. Only
-      // the dead process's state is wrong, so only that is cleared.
+      // no turn to abandon, no delivery to release, and no "out of sync"
+      // sentence to show a user whose turn ended normally. Only the dead
+      // process's state is wrong, so only that is cleared — and clearing it
+      // releases a system turn deferred behind the stale background work, via
+      // the `background_work` announcement, which is the correct place for that
+      // to happen.
       console.warn(
         `[container-runner:${this.sessionId}] Detected a stale resident streaming process `
         + `(worker reports no agent). Clearing the resident-process state.`,
