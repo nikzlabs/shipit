@@ -508,3 +508,22 @@ justify an otherwise empty navigation category.
   the cost of shipping without `docs/288-agent-merge-arming`: until that lands, an
   agent whose CI takes minutes cannot land its work inside the turn that produced
   it.
+- **In `RUNTIME_MODE=local`, the grant is not out of the agent's reach** — and
+  cannot be made so by anything in this feature. Requirement 3's guarantee rests
+  on the PATCH route carrying no `containerAccessible` opt-in, which is a real
+  boundary only when there are containers. Local mode has none: the agent runs in
+  the orchestrator's own namespace, `registerContainerOriginGuard` is inert
+  without a `containerManager` (`api-container-guard.ts:270`), and a request with
+  no `Origin` is allowed (`api-origin-guard.ts` `isAllowedWithoutOrigin`). So a
+  local agent can PATCH its own grant.
+
+  It is left as-is rather than special-cased, because a local-mode refusal would
+  protect nothing: `POST /api/sessions/:id/pr/merge` is browser-only by the same
+  mechanism, so an agent that can reach the grant route can already merge
+  **without** a grant, today, with this feature absent. `local-agent-ops.ts`
+  states the same conclusion for the `gh` surface it hosts — "it is not a
+  sandbox … a determined agent can already curl `/api/sessions/<any-id>/…`
+  directly. Closing that is a different problem than this one, and it is not
+  made worse here." That is exactly this feature's position, and closing it is
+  the same different problem. Recorded, not silently inherited (cross-agent
+  review finding).

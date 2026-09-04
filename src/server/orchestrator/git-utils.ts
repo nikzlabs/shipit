@@ -156,11 +156,18 @@ export function canonicalRepoKey(url: string): string {
  */
 const GITHUB_OWNER = String.raw`[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?`;
 const GITHUB_REPO = String.raw`[A-Za-z0-9._-]+`;
+// Case-insensitive, because a host name is: `https://GitHub.com/acme/repo` and
+// `git@GitHub.com:acme/repo.git` are the same remote, and a case-sensitive match
+// refused them outright — the user flipped the switch and was told their own
+// repository was "not a recognised GitHub remote" (cross-agent review finding).
+// Failing closed made it a usability defect rather than a security one, but the
+// grant still could not be given. The owner/repo groups already span both cases,
+// and the identity is lower-cased below, so the flag widens nothing else.
 const GITHUB_HTTPS_REMOTE = new RegExp(
-  String.raw`^https?://github\.com/(${GITHUB_OWNER})/(${GITHUB_REPO}?)/?$`,
+  String.raw`^https?://github\.com/(${GITHUB_OWNER})/(${GITHUB_REPO}?)/?$`, "i",
 );
 const GITHUB_SSH_REMOTE = new RegExp(
-  String.raw`^(?:ssh://)?git@github\.com[:/](${GITHUB_OWNER})/(${GITHUB_REPO}?)/?$`,
+  String.raw`^(?:ssh://)?git@github\.com[:/](${GITHUB_OWNER})/(${GITHUB_REPO}?)/?$`, "i",
 );
 
 /**
@@ -184,6 +191,17 @@ const GITHUB_SSH_REMOTE = new RegExp(
  *
  * Refusing is the safe direction: a remote with no identity matches no grant,
  * so the capability is simply unavailable rather than mis-assigned.
+ *
+ * Two acceptances are deliberate, and both preserve the property that matters —
+ * two spellings share an identity only when they name the same repository:
+ *
+ * - **`http://` as well as `https://`.** The scheme a remote is written with
+ *   says nothing about which repository it is, and refusing would deny the grant
+ *   to a repository the user demonstrably owns.
+ * - **Userinfo, query and fragment**, which {@link stripRemoteUrlCredentials}
+ *   removes before the match. `https://…@github.com/acme/repo?x=1` is the same
+ *   repository as `https://github.com/acme/repo`; a token in the URL is a
+ *   credential, not an identity, and treating it as one would split the grant.
  */
 export function repoId(url: string): string | null {
   const trimmed = stripRemoteUrlCredentials((url ?? "").trim());
@@ -191,7 +209,7 @@ export function repoId(url: string): string | null {
   if (!match) return null;
   const owner = match[1];
   // Strip a TERMINAL `.git` only — `my.git.tools` keeps its dots.
-  const repo = match[2].replace(/\.git$/, "");
+  const repo = match[2].replace(/\.git$/i, "");
   if (!repo || repo === "." || repo === "..") return null;
   return `github:${owner.toLowerCase()}/${repo.toLowerCase()}`;
 }

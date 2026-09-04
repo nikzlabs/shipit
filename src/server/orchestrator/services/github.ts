@@ -645,6 +645,26 @@ export async function quickCreatePr(
   headBranch: string;
   insertions: number;
   deletions: number;
+  /**
+   * docs/287-agent-merge-per-repo — false only when THIS call created the pull
+   * request; true when it found one already open on the branch.
+   *
+   * The distinction is what makes the merge grant's ownership record
+   * trustworthy. A pull request ShipIt merely *discovered* on the branch was
+   * opened by someone unknown — a human, a laptop, an earlier session — and
+   * recording it as this session's would hand the agent merge rights over a
+   * pull request it did not open. Only a witnessed create is provenance, so
+   * every caller that records ownership reads this field.
+   *
+   * The two return sites are otherwise shaped identically, which is exactly why
+   * the caller could not tell them apart before.
+   */
+  alreadyExisted: boolean;
+  /** The repository the pull request actually lives in — `--repo` can retarget
+   * it away from the session's own remote, so ownership is checked against this
+   * rather than against `session.remoteUrl`. */
+  owner: string;
+  repo: string;
 }> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
@@ -666,6 +686,9 @@ export async function quickCreatePr(
       headBranch: head,
       insertions: stats.insertions,
       deletions: stats.deletions,
+      alreadyExisted: true,
+      owner: resolved.owner,
+      repo: resolved.repo,
     };
   }
 
@@ -727,6 +750,9 @@ export async function quickCreatePr(
     headBranch: head,
     insertions: stats.insertions,
     deletions: stats.deletions,
+    alreadyExisted: false,
+    owner: resolved.owner,
+    repo: resolved.repo,
   };
 }
 
@@ -857,6 +883,40 @@ async function removePrLabels(
  *    an automatic commit, so that caller consults
  *    `services/auto-commit-gate.ts` before it gets here.
  */
+/**
+ * docs/287-agent-merge-per-repo req 15 — the complete answer to "did this turn's
+ * work reach the branch?".
+ *
+ * `autoCommit()` has four ways to NOT commit the work and only two of them were
+ * ever reported: the booleans this replaced said nothing about unresolved
+ * conflicts (a null hash, indistinguishable from a clean tree) or about a
+ * partial commit that omitted an unreadable directory. A caller that merges on
+ * "no error" would merge a branch missing the very edits it just asked to
+ * include, so the outcome is enumerated and the caller decides per case.
+ *
+ * The `unreadable: "omitted"` state is orthogonal in `autoCommit` — it can ride
+ * along with any other result — so the flat union states a **precedence**:
+ * secret, then blocked-unreadable, then conflict, then partial. Every one of
+ * them means "not the whole tree", which is why the merge accepts `committed`
+ * and `nothing-to-commit` and nothing else.
+ */
+export type TurnCommitFlush =
+  /** The whole working tree is on the branch, in this commit. */
+  | { kind: "committed"; commitHash: string }
+  /** Nothing to commit, and git could see everything. */
+  | { kind: "nothing-to-commit" }
+  /** docs/213 — a likely secret; `autoCommit` refused and unstaged. */
+  | { kind: "blocked-secret" }
+  /** docs/266 req 15 — `git add -A` exited 128 and staged nothing at all. */
+  | { kind: "blocked-unreadable" }
+  /** Unmerged paths or a rebase mid-flight; committing would freeze it. */
+  | { kind: "blocked-conflict"; conflictedFiles: string[]; rebaseInProgress: boolean }
+  /**
+   * docs/266 req 14 — a path git could not read was omitted. A commit may still
+   * have landed (`commitHash`), but it does not carry everything in the tree.
+   */
+  | { kind: "partial-unreadable"; commitHash: string | null };
+
 export async function flushPendingTurnCommit(
   git: GitManager,
   deps: {
@@ -876,7 +936,7 @@ export async function flushPendingTurnCommit(
      */
     summary?: string;
   },
-): Promise<{ commitHash: string | null; secretBlocked: boolean; unreadableBlocked: boolean }> {
+): Promise<TurnCommitFlush> {
   const runner = deps.sessionId && deps.runnerRegistry
     ? deps.runnerRegistry.get(deps.sessionId)
     : null;
@@ -939,13 +999,29 @@ export async function flushPendingTurnCommit(
   // "nothing to commit" answer, and conflating the two would abort every PR
   // opened on an already-clean tree.
   const unreadableBlocked = unreadable?.kind === "blocked";
-  if (!commitHash) return { commitHash: null, secretBlocked, unreadableBlocked };
 
-  if (runner && parentHash) {
-    runner.pendingCommitLink = { commitHash, parentCommitHash: parentHash };
+  if (commitHash) {
+    if (runner && parentHash) {
+      runner.pendingCommitLink = { commitHash, parentCommitHash: parentHash };
+    }
+    runner?.emitMessage({ type: "git_committed", hash: commitHash, message: summary });
   }
-  runner?.emitMessage({ type: "git_committed", hash: commitHash, message: summary });
-  return { commitHash, secretBlocked: false, unreadableBlocked: false };
+
+  // docs/287-agent-merge-per-repo req 15 — precedence, most-blocking first. The
+  // three refusals are mutually exclusive in `autoCommit` (each returns early),
+  // but they are ordered rather than assumed so a future path that produces two
+  // at once still fails closed instead of picking whichever branch runs first.
+  if (secretBlocked) return { kind: "blocked-secret" };
+  if (unreadableBlocked) return { kind: "blocked-unreadable" };
+  if (conflictedFiles.length > 0 || rebaseInProgress) {
+    return { kind: "blocked-conflict", conflictedFiles, rebaseInProgress };
+  }
+  // An `omitted` path is orthogonal to the commit: it can accompany a landed
+  // commit (partial) or a "clean" tree whose only changes git could not see.
+  // Both mean the branch does not carry the whole tree, so both are `partial`.
+  if (unreadable) return { kind: "partial-unreadable", commitHash };
+  if (!commitHash) return { kind: "nothing-to-commit" };
+  return { kind: "committed", commitHash };
 }
 
 /**
@@ -1051,7 +1127,7 @@ export async function agentCreatePr(
   // would silently publish the prior (stale) state without the agent's edit —
   // and the agent would believe its change shipped. Abort with a clear error;
   // the redacted warning notice was already surfaced by the flush.
-  if (flush.secretBlocked) {
+  if (flush.kind === "blocked-secret") {
     throw new ServiceError(
       422,
       "Refused to create the PR: a likely secret was found in the staged changes, so they were not committed. " +
@@ -1065,7 +1141,12 @@ export async function agentCreatePr(
   // flush just posted. The secret branch above already names this failure mode
   // as the thing to prevent — it was only ever wired for one of its two causes
   // (review finding).
-  if (flush.unreadableBlocked) {
+  //
+  // These two are the only kinds that abort a `gh pr create`. `blocked-conflict`
+  // and `partial-unreadable` fall through exactly as they did when the flush
+  // reported two booleans: docs/287 req 15 is about what may be MERGED, and
+  // what may be PUSHED is not that feature's decision to change.
+  if (flush.kind === "blocked-unreadable") {
     throw new ServiceError(
       422,
       "Refused to create the PR: ShipIt could not read part of the workspace, so `git add` staged "

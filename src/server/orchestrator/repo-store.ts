@@ -294,22 +294,29 @@ export class RepoStore {
    * docs/287 — set the agent-merge grant for every stored row that resolves to
    * the same GitHub repository. Transactional for the reason {@link setTrusted}
    * is: a concurrent reader must never see it half-applied across duplicate rows.
-   * Returns false when `url` has no parseable GitHub identity, so a caller can
-   * say why nothing happened rather than reporting a silent success.
+   *
+   * Returns `"no-identity"` when `url` has no parseable GitHub identity and
+   * `"not-found"` when it parses but names no stored repository — so the caller
+   * can say WHICH nothing happened, and never report success for a write that
+   * matched no row. That last state is not hypothetical: granting a repository
+   * ShipIt has not been given would answer 200, store nothing, and leave the
+   * repository starting with the grant OFF whenever it was finally added
+   * (cross-agent review finding). {@link setHidden} has always returned false
+   * for an untracked url; this now agrees with it.
    */
-  setAllowAgentMerge(url: string, allow: boolean): boolean {
+  setAllowAgentMerge(url: string, allow: boolean): "ok" | "no-identity" | "not-found" {
     const id = repoId(url);
-    if (!id) return false;
+    if (!id) return "no-identity";
     const val = allow ? 1 : 0;
     const rows = this.db.prepare("SELECT url FROM repos").all() as Pick<RepoRow, "url">[];
+    const matches = rows.filter((r) => repoId(r.url) === id);
+    if (matches.length === 0) return "not-found";
     const update = this.db.prepare("UPDATE repos SET allow_agent_merge = ? WHERE url = ?");
     const tx = this.db.transaction(() => {
-      for (const r of rows) {
-        if (repoId(r.url) === id) update.run(val, r.url);
-      }
+      for (const r of matches) update.run(val, r.url);
     });
     tx();
-    return true;
+    return "ok";
   }
 
   /**

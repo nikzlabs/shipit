@@ -85,6 +85,10 @@ describe("branch-sync against a real repository", () => {
     expect(run("git rev-parse refs/heads/feature", bareDir).trim())
       .toBe(run("git rev-parse HEAD", workDir).trim());
     expect(await readBranchSync(git, "feature")).toEqual({ state: "in-sync", ahead: 0, behind: 0 });
+    // docs/287-agent-merge-per-repo req 17 — the agent merge cancels the
+    // debounced auto-push ONLY on this reading. The push landed, so the pending
+    // one has nothing left to carry.
+    expect(verdict.action === "hold" && verdict.pushed).toBe(true);
   });
 
   it("holds the merge on `diverged`, and does NOT try to repair it", async () => {
@@ -106,6 +110,9 @@ describe("branch-sync against a real repository", () => {
     // and which one is right is not derivable from git.
     expect(run("git rev-parse refs/heads/feature", bareDir).trim()).toBe(remoteTipBefore);
     expect(run("git rev-parse HEAD", workDir).trim()).not.toBe(remoteTipBefore);
+    // Nothing was pushed, so the debounced push is the only route this commit
+    // still has — cancelling it here would strand the work (docs/287 req 17).
+    expect(verdict.action === "hold" && verdict.pushed).toBe(false);
   });
 
   it("lets a `behind` branch merge — the remote already contains this session's commits", async () => {
@@ -171,6 +178,10 @@ describe("branch-sync against a real repository", () => {
     // The push it attempts fails too, and the message says so rather than
     // claiming the work is now safe on GitHub.
     expect(verdict.action === "hold" && verdict.message).toContain("failed");
+    // A hold that ATTEMPTED a push and lost it reports the same `pushed: false`
+    // as the divergence above: the caller's question is whether the commits
+    // reached GitHub, not whether a push was tried.
+    expect(verdict.action === "hold" && verdict.pushed).toBe(false);
   });
 });
 

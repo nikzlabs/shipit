@@ -24,7 +24,8 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 - [ ] Branch check uses `currentBranchOrNull()` against `session.branch`
 - [ ] Requested number must equal `session.pr_number`, and `pr_repo_id` must
       equal `repoId(session.remoteUrl)` at merge time; absent refuses
-- [ ] `quickCreatePr()` gains an `alreadyExisted` discriminator
+- [x] `quickCreatePr()` gains an `alreadyExisted` discriminator (and the resolved
+      `owner`/`repo`, since `--repo` can retarget where the PR lands)
 - [ ] Only a **witnessed create** records provenance; a discovered pull request is
       never adopted, on any path — no nonce, no intent table, no heuristic
 - [ ] Every discovery route goes through one provenance path, including
@@ -53,11 +54,14 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 
 ## Merge sequence
 
-- [ ] `flushPendingTurnCommit()` returns a discriminated outcome; merge proceeds
-      on `committed` / `nothing-to-commit` only
-- [ ] `agentCreatePr()` adapts to the new return type and changes no behaviour
+- [x] `flushPendingTurnCommit()` returns a discriminated outcome — `committed` /
+      `nothing-to-commit` / `blocked-secret` / `blocked-unreadable` /
+      `blocked-conflict` / `partial-unreadable`
+- [ ] The merge proceeds on `committed` / `nothing-to-commit` only (needs the
+      merge route)
+- [x] `agentCreatePr()` adapts to the new return type and changes no behaviour
 - [ ] Steps 1–2 run for repo-bound sessions only, never for a sandbox
-- [ ] `guardMergeSync()` verdict carries `pushed: boolean` (no taxonomy)
+- [x] `guardMergeSync()` verdict carries `pushed: boolean` (no taxonomy)
 - [ ] `cancelAutoPush(sessionId)` only when the push landed
 - [ ] Merge sends the observed `headRefOid` as the REST expected `sha`
 
@@ -115,6 +119,10 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 ## Quality
 
 - [ ] Tests as listed in plan.md's Tests section
-- [ ] Each new guard proved red on its own before the fix
+- [x] Each new guard proved red on its own before the fix
 - [ ] `npm run lint:dev` and `npm run typecheck` green
-- [ ] A review of the implementation, not only of the design
+- [x] A review of the implementation, not only of the design — round 1 on the
+      storage/grant slice (`shipit agent run --role reviewer`, Codex). Six of its
+      seven findings verified at source and fixed; the seventh (the grant is
+      reachable by a local-mode agent) is recorded in plan.md's Risks, since a
+      local agent can already merge without it

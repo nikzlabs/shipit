@@ -25,7 +25,7 @@ import {
   ClaimAbortedError,
   refreshRepoDefaultBranch,
 } from "./services/index.js";
-import { canonicalRepoKey, hasUrlCredentials } from "./git-utils.js";
+import { canonicalRepoKey, hasUrlCredentials, repoId } from "./git-utils.js";
 import { getErrorMessage } from "./validation.js";
 
 export async function registerSessionReposRoutes(
@@ -316,15 +316,35 @@ export async function registerSessionReposRoutes(
           return;
         }
         if (colorIndex !== undefined) assertValidRepoColorIndex(colorIndex);
+        // docs/287 — the grant's own precondition (a parseable GitHub identity
+        // naming a stored repository) is checked HERE, with the type checks and
+        // before ANY field is written. Doing it at the write instead broke the
+        // guarantee the comment above states: `{hidden: true, allowAgentMerge:
+        // true}` on a GitLab repository hid it and then answered 400, so a
+        // rejected request had mutated the row (cross-agent review finding).
+        //
+        // The error deliberately does not quote the url back. It arrives from
+        // the caller and may carry `user:password@`, which would put a
+        // credential into a response body and every log that records it.
+        if (allowAgentMerge !== undefined) {
+          const id = repoId(url);
+          if (!id) {
+            reply.code(400).send({
+              error: "Cannot set agent-merge permission: that remote is not a recognised GitHub repository.",
+            });
+            return;
+          }
+        }
         if (colorIndex !== undefined) setRepoColorIndex(deps.repoStore, url, colorIndex);
         if (hidden !== undefined) setRepoHidden(deps.repoStore, url, hidden);
-        if (allowAgentMerge !== undefined && !deps.repoStore.setAllowAgentMerge(url, allowAgentMerge)) {
-          // No parseable GitHub identity — say so rather than reporting a
-          // success that granted nothing.
-          reply.code(400).send({
-            error: `Cannot set agent-merge permission: "${url}" is not a recognised GitHub remote.`,
-          });
-          return;
+        if (allowAgentMerge !== undefined) {
+          const result = deps.repoStore.setAllowAgentMerge(url, allowAgentMerge);
+          if (result === "not-found") {
+            // The same 404 every other setter on this route gives for a
+            // repository ShipIt does not hold — never a 200 that wrote nothing.
+            reply.code(404).send({ error: "Repository not found" });
+            return;
+          }
         }
         // Broadcast so every connected tab updates its sidebar immediately —
         // same pattern as add/remove/reorder.

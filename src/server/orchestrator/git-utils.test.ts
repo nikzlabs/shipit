@@ -156,6 +156,29 @@ describe("repoId", () => {
     expect(repoId("not a url")).toBeNull();
   });
 
+  it("accepts a host spelled in any case — DNS is case-insensitive", () => {
+    // A case-sensitive host match refused these outright, so the user flipped
+    // the grant on their own repository and was told it was not a recognised
+    // GitHub remote (cross-agent review finding).
+    const id = "github:acme/shipit";
+    expect(repoId("https://GitHub.com/acme/shipit.git")).toBe(id);
+    expect(repoId("https://GITHUB.COM/Acme/ShipIt")).toBe(id);
+    expect(repoId("git@GitHub.com:acme/shipit.git")).toBe(id);
+    expect(repoId("https://github.com/acme/shipit.GIT")).toBe(id);
+    // Still only THIS host: case-insensitivity must not reach the label check.
+    expect(repoId("https://GitHub.com.evil.example/acme/shipit")).toBeNull();
+  });
+
+  it("reads http, userinfo and a query as the same repository — deliberately", () => {
+    // Each of these is a spelling of one repository. Splitting them would mean
+    // a grant that silently does not apply; none of them can name a DIFFERENT
+    // repository, which is the property that actually has to hold.
+    const id = "github:acme/shipit";
+    expect(repoId("http://github.com/acme/shipit")).toBe(id);
+    expect(repoId("https://github.com/acme/shipit?x=1")).toBe(id);
+    expect(repoId("https://github.com/acme/shipit#readme")).toBe(id);
+  });
+
   it("does not collapse distinct repositories", () => {
     expect(repoId("https://github.com/acme/shipit")).not.toBe(
       repoId("https://github.com/acme/other"),
