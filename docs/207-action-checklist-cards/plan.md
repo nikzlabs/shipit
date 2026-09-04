@@ -372,11 +372,17 @@ These were open questions; the following are the settled answers.
   | Tool | Enforced bound | Was it readable? |
   |---|---|---|
   | `propose_actions` | 5 actions; id 64, label 120, description 280, payload 4000, title 120 | No → fixed here |
-  | `AskUserQuestion` (`ask`) | non-empty `questions`; each question needs ≥1 option (`hasUsableQuestions`, mirroring `isWellFormedAskUserQuestion`) | Partly — `options` was `required` but an **empty array** passed the schema and failed the tool. Now `minItems: 1` on both. The "2–4 options" and "~12 char header" stay prose: nothing enforces them, and the schema must not claim otherwise. |
-  | `report_shipit_bug` | `title` and `body` non-empty only | Yes. (The 200-char slice in `services/bug-report.ts` shapes the *outcome notice* read back to the agent; it does not cap the submitted title.) |
-  | `voice_note` | `summary` non-empty | Yes |
-  | `present` | **none** | Inverted — see below |
+  | `AskUserQuestion` (`ask`) | non-empty `questions`; each question needs ≥1 option **whose `label` is a non-empty string** — `normalizeAskQuestions` drops the rest and the worker 400s on what is left | No. `options` was `required`, but an **empty array** satisfied that, and so did `[{ label: "" }]`. The pre-check re-implemented a weaker rule (array length only), so a blank label crossed the wire and came back a 400 — the very round trip this audit exists to remove. It now defers to `normalizeAskQuestions`, and the schema declares `minItems: 1` on both arrays plus `minLength: 1` on `label`. The "2–4 options" and "~12 char header" stay prose: nothing enforces them, and the schema must not claim otherwise. |
+  | `report_shipit_bug` | `title` and `body` non-empty **after trimming** | No — `required` admits `""`. Now `minLength: 1` on both. (The 200-char slice in `services/bug-report.ts` shapes the *outcome notice* read back to the agent; it does not cap the submitted title.) |
+  | `voice_note` | `summary` non-empty after trimming | No, same reason → `minLength: 1` |
+  | `present` | `file` non-empty (no size cap of any kind) | No for `file` → `minLength: 1`; and inverted for size — see below |
   | `permission_prompt` | n/a | Out of scope: the CLI invokes it, the model never authors the call. |
+
+  **`required` is not `minLength`.** Four of the six tools declared a string as
+  `required` while their route rejected it for being blank — an empty string
+  satisfies `required`, so each of those was a real (if small) instance of the
+  same defect, found only by reading the routes rather than trusting the first
+  pass of this table.
 
   `present` is the same defect pointing the other way, and it is worth naming
   because a search for "enforced but unstated" would never have found it: the
@@ -432,9 +438,12 @@ Server (tool → relay → orchestrator → persist):
   session-side tool and the orchestrator route reject **identically**; the error
   strings are written to be model-readable (measured size + cap + repair).
 - `src/server/orchestrator/api-routes-propose-actions.ts` — authoritative
-  validation (re-exports the shared validator), emit-time provenance (branch/HEAD
-  via `createGitManager`), and the single `emitChatCard` call. No `update*Card`
-  path — the card is immutable.
+  validation (it *imports* the shared validator; it exports only the route
+  registrar), emit-time provenance (branch/HEAD via `createGitManager`), and the
+  single `emitChatCard` call. No `update*Card` path — the card is immutable.
+  Driven end-to-end by `integration_tests/propose-actions-route.test.ts`, because
+  the session-side pre-check is a convenience and this route is the gate: the
+  endpoint is container-accessible, so the tool is not the only way in.
 - `src/server/orchestrator/chat-history.ts` + `shared/database.ts` —
   `actionChecklist` field + `action_checklist` column + `toRow`/`fromRow` +
   migration (written once on emit, never patched).

@@ -26,6 +26,20 @@ export const MAX_DESC_LEN = 280;
 export const MAX_PAYLOAD_LEN = 4000;
 export const MAX_TITLE_LEN = 120;
 
+/**
+ * Length in Unicode CODE POINTS, which is what JSON Schema's `maxLength`
+ * counts. JavaScript's `String.length` counts UTF-16 code units, so it doubles
+ * every astral character: 3000 emoji measure 6000 there and would be rejected
+ * as "over 4000" while satisfying the very `maxLength` this module's caps are
+ * advertised through. The whole point of the caps is that the model can see
+ * them, so the two counts have to agree.
+ */
+function charLength(s: string): number {
+  // Fast path: no surrogates ⇒ the two counts are identical. `Array.from`
+  // iterates code points (not the spread form, which `no-misused-spread` flags).
+  return /[\uD800-\uDBFF]/.test(s) ? Array.from(s).length : s.length;
+}
+
 interface RawAction {
   id?: unknown;
   label?: unknown;
@@ -68,15 +82,15 @@ export function validateProposeActions(body: {
     const label = typeof a.label === "string" ? a.label.trim() : "";
     const payload = typeof a.payload === "string" ? a.payload.trim() : "";
     if (!id) return { error: `actions[${i}].id is required and must be a non-empty string.` };
-    if (id.length > MAX_ID_LEN) return { error: overLength(i, "id", id.length, MAX_ID_LEN) };
+    if (charLength(id) > MAX_ID_LEN) return { error: overLength(i, "id", charLength(id), MAX_ID_LEN) };
     if (seenIds.has(id)) return { error: `Duplicate action id "${id}" — ids must be unique within a card.` };
     seenIds.add(id);
     if (!label) return { error: `actions[${i}].label is required and must be a non-empty string.` };
-    if (label.length > MAX_LABEL_LEN) return { error: overLength(i, "label", label.length, MAX_LABEL_LEN) };
+    if (charLength(label) > MAX_LABEL_LEN) return { error: overLength(i, "label", charLength(label), MAX_LABEL_LEN) };
     if (!payload) return { error: `actions[${i}].payload is required and must be a non-empty string.` };
-    if (payload.length > MAX_PAYLOAD_LEN) return { error: overLength(i, "payload", payload.length, MAX_PAYLOAD_LEN) };
+    if (charLength(payload) > MAX_PAYLOAD_LEN) return { error: overLength(i, "payload", charLength(payload), MAX_PAYLOAD_LEN) };
     const description = typeof a.description === "string" ? a.description.trim() : "";
-    if (description.length > MAX_DESC_LEN) return { error: overLength(i, "description", description.length, MAX_DESC_LEN) };
+    if (charLength(description) > MAX_DESC_LEN) return { error: overLength(i, "description", charLength(description), MAX_DESC_LEN) };
 
     const item: ActionChecklistItem = { id, label, payload };
     if (description) item.description = description;
@@ -85,8 +99,8 @@ export function validateProposeActions(body: {
   }
 
   const title = typeof body.title === "string" ? body.title.trim() : "";
-  if (title.length > MAX_TITLE_LEN) {
-    return { error: `\`title\` is ${title.length} chars; the cap is ${MAX_TITLE_LEN}. Shorten it and call propose_actions again.` };
+  if (charLength(title) > MAX_TITLE_LEN) {
+    return { error: `\`title\` is ${charLength(title)} chars; the cap is ${MAX_TITLE_LEN}. Shorten it and call propose_actions again.` };
   }
 
   return { ...(title ? { title } : {}), actions };

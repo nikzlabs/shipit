@@ -63,6 +63,9 @@ const inputSchema = {
   properties: {
     file: {
       type: "string",
+      // The worker rejects an empty path (session-worker.ts). `required` does
+      // not say that — an empty string satisfies `required` — so declare it.
+      minLength: 1,
       description:
         "Path to the file to present. Relative paths resolve against the workspace; absolute paths (e.g. /persist/chart.html) are read as-is. Write the file first, then present it.",
     },

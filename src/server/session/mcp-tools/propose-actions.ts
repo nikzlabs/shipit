@@ -116,11 +116,6 @@ const INSTRUCTIONS = [
   "needs discussion. Cap at ~3–5 actions, at most one card per turn.",
 ].join(" ");
 
-/** True when the payload passes the shared contract the orchestrator enforces. */
-export function hasUsableActions(args: { actions?: unknown }): boolean {
-  return !("error" in validateProposeActions(args));
-}
-
 export const proposeActionsTool: ToolDescriptor = {
   id: "propose_actions",
   name: "propose_actions",

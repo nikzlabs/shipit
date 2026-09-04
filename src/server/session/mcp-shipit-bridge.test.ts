@@ -109,6 +109,24 @@ describe("createShipitBridgeServer — ListTools", () => {
     expect((result as { isError?: boolean }).isError).toBe(true);
   });
 
+  // A blank label is DROPPED by `normalizeAskQuestions`, leaving the question
+  // with no options and the worker returning 400 — so a pre-check that only
+  // counts the array is weaker than what it pre-checks, and the round trip it
+  // exists to avoid happens anyway.
+  it("rejects a blank-labelled option in-box, not after a round trip", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    bridge = await connect(selectTools("ask"));
+
+    const result = await bridge.client.callTool({
+      name: "AskUserQuestion",
+      arguments: { questions: [{ question: "Which?", header: "Pick", options: [{ label: "" }] }] },
+    });
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("exposes a different subset for Codex (ask, no permission)", async () => {
     bridge = await connect(selectTools("present,voice,ask,bug,propose_actions"));
     const names = (await bridge.client.listTools()).tools.map((t) => t.name);

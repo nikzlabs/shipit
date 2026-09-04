@@ -84,6 +84,20 @@ describe("validateProposeActions", () => {
     expect("error" in validateProposeActions({ actions: [action({ label: long })] })).toBe(true);
   });
 
+  // The caps are advertised through JSON Schema `maxLength`, which counts
+  // Unicode CODE POINTS. `String.length` counts UTF-16 code units, so an
+  // emoji-heavy payload would be schema-valid and rejected anyway — the two
+  // counts must agree or the advertised cap is a lie for astral text.
+  it("measures the cap in code points, matching the advertised `maxLength`", () => {
+    const emoji = "🚀".repeat(MAX_PAYLOAD_LEN); // 4000 code points, 8000 UTF-16 units
+    const atCap = validateProposeActions({ actions: [action({ payload: emoji })] });
+    expect("error" in atCap).toBe(false);
+
+    const overCap = validateProposeActions({ actions: [action({ payload: `${emoji}🚀` })] });
+    expect("error" in overCap).toBe(true);
+    if ("error" in overCap) expect(overCap.error).toContain(`${MAX_PAYLOAD_LEN + 1} chars`);
+  });
+
   it("ignores a non-string description rather than throwing", () => {
     const result = validateProposeActions({
       actions: [{ id: "a1", label: "L", payload: "P", description: 42 }],
