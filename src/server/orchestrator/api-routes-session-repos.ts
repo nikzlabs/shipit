@@ -280,15 +280,26 @@ export async function registerSessionReposRoutes(
   // color for the sidebar's group edge. Both fields are optional and independent
   // (each applied only when present), so the client can PATCH either one; a body
   // carrying neither is the 400 below rather than a silent no-op.
-  app.patch<{ Params: { url: string }; Body: { hidden?: boolean; colorIndex?: number } }>(
+  app.patch<{
+    Params: { url: string };
+    Body: { hidden?: boolean; colorIndex?: number; allowAgentMerge?: boolean };
+  }>(
     "/api/repos/:url",
     async (request, reply) => {
       try {
         const url = decodeURIComponent(request.params.url);
         const hidden = request.body?.hidden;
         const colorIndex = request.body?.colorIndex;
-        if (hidden === undefined && colorIndex === undefined) {
-          reply.code(400).send({ error: "Request body must include a boolean 'hidden' or a numeric 'colorIndex'" });
+        // docs/287 — the agent-merge grant rides this route rather than getting
+        // one of its own, so it inherits the browser-only boundary: this route
+        // carries no `containerAccessible` opt-in, which is exactly what keeps
+        // the permission out of reach of the agent it governs.
+        const allowAgentMerge = request.body?.allowAgentMerge;
+        if (hidden === undefined && colorIndex === undefined && allowAgentMerge === undefined) {
+          reply.code(400).send({
+            error:
+              "Request body must include a boolean 'hidden', a numeric 'colorIndex', or a boolean 'allowAgentMerge'",
+          });
           return;
         }
         // A field that is PRESENT but malformed is an error, never a silent
@@ -300,9 +311,21 @@ export async function registerSessionReposRoutes(
           reply.code(400).send({ error: "'hidden' must be a boolean" });
           return;
         }
+        if (allowAgentMerge !== undefined && typeof allowAgentMerge !== "boolean") {
+          reply.code(400).send({ error: "'allowAgentMerge' must be a boolean" });
+          return;
+        }
         if (colorIndex !== undefined) assertValidRepoColorIndex(colorIndex);
         if (colorIndex !== undefined) setRepoColorIndex(deps.repoStore, url, colorIndex);
         if (hidden !== undefined) setRepoHidden(deps.repoStore, url, hidden);
+        if (allowAgentMerge !== undefined && !deps.repoStore.setAllowAgentMerge(url, allowAgentMerge)) {
+          // No parseable GitHub identity — say so rather than reporting a
+          // success that granted nothing.
+          reply.code(400).send({
+            error: `Cannot set agent-merge permission: "${url}" is not a recognised GitHub remote.`,
+          });
+          return;
+        }
         // Broadcast so every connected tab updates its sidebar immediately —
         // same pattern as add/remove/reorder.
         deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });

@@ -50,6 +50,17 @@ both parts case-insensitively), and uses `github:<owner>/<repo>` as the key
 everywhere the permission is written, read, or compared. `canonicalRepoKey()`
 keeps its existing job and is not touched.
 
+**`repoId()` parses strictly, and refuses what it cannot parse.** The existing
+convenience regex is not a model to copy: it is unanchored, so `github.com` can
+match inside another host's path, and its `[^/.]+` repository group truncates a
+legal name at the first dot (`git-utils.ts:480`). The contract is: accept only
+the supported remote forms — `https://github.com/<owner>/<repo>` and
+`git@github.com:<owner>/<repo>` — with the authority **exactly** GitHub; strip
+only a terminal `.git`; preserve every legal owner and repository character,
+dots included; and **reject** anything else rather than degrade to a best-effort
+string. A remote that cannot be parsed has no identity, so no grant applies to
+it, which fails closed.
+
 **No new endpoint.** The flag joins the existing browser-only
 `PATCH /api/repos/:url` (which already takes `hidden` and `colorIndex` and
 broadcasts `repo_list`) and rides the `RepoInfo` projection to the client. It is
@@ -125,34 +136,16 @@ opened (`:721`). It gains an `alreadyExisted` discriminator, as `agentCreatePr()
 already has, and both of its callers pass the result through. Without that the
 implementation must either record nothing or claim a person's pull request.
 
-**A create that crashes must not lose the pull request it made — and recovery
-must be able to prove which one it made.** GitHub creates the pull request before
-`agentCreatePr()` returns, so a crash in between leaves a real pull request and no
-provenance; the retry then takes the already-exists path, which this design
-forbids recording, and the session could never merge its own work.
-
-An *intent* alone does not fix that, because it proves only that ShipIt meant to
-open one: between the existing-pull-request read and the create call a person can
-open one from the same branch, and adopting it would be precisely the failure
-requirement 5 exists to prevent. So the create **carries its own proof**:
-
-- Before calling GitHub, ShipIt writes
-  `pr_create_intents(session_id, repo_id, branch, nonce)` and puts that
-  server-generated `nonce` into the created pull request's body, as a marker
-  comment.
-- A discovered pull request may be adopted as provenance **only** when its body
-  carries the nonce of an intent for that repository and branch. No nonce, no
-  adoption — a person's pull request on the same branch is not claimable, however
-  the timing falls.
-- The intent is cleared when provenance is recorded, and on a **definitive**
-  create failure. An **indeterminate** failure (a transport error, an unparseable
-  response) keeps it, because the pull request may exist.
-
-**One reconciliation path, not four.** Every route that can discover an existing
-pull request goes through the same provenance reconciliation — including
-`pr-lifecycle.ts`, which can return one straight from the poller without touching
-the create paths at all, and which would otherwise leave `pr_number` unset for a
-pull request ShipIt did open.
+**A create that crashes records nothing, and that is the safe answer.** GitHub
+creates the pull request before `agentCreatePr()` returns, so a crash in between
+leaves a real pull request with no provenance, and the session cannot merge it.
+An earlier draft tried to recover that case with a nonce written into the pull
+request's body — which does not work: the agent can edit the body of any pull
+request through the shim, so a nonce is copyable into a person's pull request and
+adoption would hand the agent exactly what requirement 5 forbids. **Only a
+witnessed create records provenance.** A pull request found rather than created
+is never adopted, whatever evidence it appears to carry. Recovering that crash is
+not a requirement; if it becomes one, it needs evidence an agent cannot write.
 
 **"If the created repo matches" is load-bearing twice over.** `agentCreatePr()`
 accepts `--repo` and passes the retargeted remote through
@@ -314,15 +307,26 @@ CREATE TABLE agent_merge_claims (
   repo_id      TEXT NOT NULL,      -- github:<owner>/<repo>, case-normalised
   pr_number    INTEGER NOT NULL,
   expected_sha TEXT NOT NULL,      -- the head the live read observed
-  method       TEXT NOT NULL,      -- merge | squash | rebase
+  turn_id      TEXT NOT NULL,      -- the turn that owns this claim
   state        TEXT NOT NULL       -- merging | settling
 );
 ```
 
-The claim is **turn-owned**: the direct merge runs inside the agent's own turn,
-so it needs no admission gating — the turn holding it is the turn that is
-running. (`docs/288-agent-merge-arming` extends this table for merges ShipIt
-performs on its own, which do need it.)
+The claim is **turn-owned, and the route must prove it** rather than assume it.
+Today it cannot: the merge route is `containerAccessible`, the worker injects
+only a session id, the container guard checks route opt-in and session ownership
+but never an active turn — and an existing integration test calls the endpoint
+with no live turn at all. So a process inside the container could merge after its
+turn ended, or during a later turn, attaching its flush, its claim and its
+transcript record to the wrong one.
+
+So the route **requires an active turn on the session's runner, and the claim
+records that turn's identity**. A request arriving with no active turn is
+refused; a claim whose recorded turn is no longer the active one is not settled
+into that session's state. `runner.running` alone is not enough — it is a mutable
+boolean that says something is running, not that *this* request belongs to it.
+(`docs/288-agent-merge-arming` extends this table for merges ShipIt performs on
+its own, which have no owning turn and need admission exclusion instead.)
 
 **A merge attempt has three outcomes, not two.** The REST call is a plain
 `fetch`, which can reject *after* GitHub accepted the request — so "it threw"
@@ -347,14 +351,24 @@ tuple: read that pull request in that repository and ask whether `expected_sha`
 merged. Merged ⇒ `settling`; still open ⇒ deleted. Nothing is decided from the
 shape of the error.
 
-**Recovery is part of this feature, not a later one.** A claim written just
-before a crash has no live turn to resume it, so 287 carries its own driver: a
-**startup reconciliation pass** resolves every surviving `merging` and `settling`
-row once, after `reattachInFlightTurns()` completes and before any of it can race
-an adopted turn. That is all this feature needs, because a direct claim is only
-ever created inside a live turn — there is no waiting work to keep polling for.
+**Recovery is part of this feature, not a later one**, and it has to be careful
+about two things.
+
+*It must not race the turn it belongs to.* Reattachment re-establishes ownership
+and listeners and then returns — the adopted turn keeps running afterwards, still
+editing and still pushing. Settling behind its back could mark the session merged
+and delete its remote branch mid-turn. So reconciliation of a session's claim
+**waits for that session to have no active turn**, and a later turn does not
+start while its settlement is unresolved.
+
+*It must be retryable.* A transient GitHub or authentication failure must not
+strand a row until the next process restart. Reconciliation therefore runs from
+three triggers, all cheap and all inside this feature: once at startup, at the end
+of any turn on that session, and when the session is next activated. No polling
+integration is required, because a direct claim never waits for anything external
+— it is created inside a turn and resolved as soon as that turn is over.
 (`docs/288-agent-merge-arming` adds rows that *do* wait, and with them the
-polling-supervisor and global-gate integration that keeps them reachable.)
+polling-supervisor and global-gate work that keeps them reachable.)
 
 ### Settlement
 
@@ -397,9 +411,8 @@ the merge record carries a **stable natural identity** —
 `agent-merge:<repo_id>#<pr_number>@<expected_sha>` — and settlement is idempotent
 on it; the promotion, the lifecycle callbacks and the notification keep their
 existing fire-once behaviour. Only after settlement is written is the row
-deleted; until then it is also what holds the polling gate open, which is why
-deleting at the REST response would let the gate close before the card,
-`merged_at` and reset eligibility exist.
+deleted — deleting it at the REST response would leave a crash in that window
+with no record that a merge had happened at all.
 
 **What the record may claim.** A witnessed REST success records *"the agent
 merged it"*. Recovery that finds `expected_sha` already merged records something
@@ -437,7 +450,7 @@ justify an otherwise empty navigation category.
 
 | File | Change |
 |---|---|
-| `src/server/shared/database.ts` | migrations: `repos.allow_agent_merge`, `sessions.pr_number` + `pr_repo_id`, `pr_create_intents`, `agent_merge_claims` |
+| `src/server/shared/database.ts` | migrations: `repos.allow_agent_merge`, `sessions.pr_number` + `pr_repo_id`, `agent_merge_claims` |
 | `src/server/orchestrator/agent-merge-claims.ts` | the claim store: claim, state transitions, reconciliation |
 | `src/server/orchestrator/repo-store.ts` | grant read/write, keyed by the GitHub repository identity |
 | `src/server/orchestrator/git-utils.ts` | `repoId()` — parsed, case-normalised `github:<owner>/<repo>` |
@@ -474,9 +487,13 @@ justify an otherwise empty navigation category.
   pull request; the notice surviving a history reload.
 - `git-utils.test.ts` — `repoId()` collapses the https/SSH/casing spellings that
   `canonicalRepoKey()` does not.
-- Provenance recovery — a pull request carrying the intent's nonce is adopted, one
-  without it is not, and a person's pull request on the same branch never is.
-- Startup reconciliation resolves a surviving `merging` / `settling` row.
+- Provenance — only a witnessed create records it; a discovered pull request never
+  does, on any path, including `pr-lifecycle.ts`'s poller discovery.
+- Turn ownership — the merge route refuses with no active turn, and a claim whose
+  turn is no longer active does not write session state. The existing integration
+  test that calls the endpoint with no live turn must be updated to expect that.
+- Reconciliation — a surviving row resolves at startup, at end of turn, and on
+  activation; and it does not settle while that session has an active turn.
 - The container-route snapshot must not gain the grant route.
 - Each new guard proved red on its own before the fix.
 

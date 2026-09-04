@@ -19,6 +19,7 @@ import {
   stripRemoteUrlCredentials,
   hasUrlCredentials,
   canonicalRepoKey,
+  repoId,
   repoUrlToHash,
   syncLocalDefaultBranchToOrigin,
 } from "./git-utils.js";
@@ -114,6 +115,53 @@ describe("stripUrlCredentials", () => {
   it("leaves an scp-style SSH remote untouched", () => {
     expect(stripUrlCredentials("git@github.com:acme/shipit.git")).toBe(
       "git@github.com:acme/shipit.git",
+    );
+  });
+});
+
+describe("repoId", () => {
+  it("collapses the spellings canonicalRepoKey does not", () => {
+    const id = "github:acme/shipit";
+    expect(repoId("https://github.com/acme/shipit")).toBe(id);
+    expect(repoId("https://github.com/Acme/ShipIt")).toBe(id);
+    expect(repoId("https://github.com/acme/shipit.git")).toBe(id);
+    expect(repoId("https://github.com/acme/shipit/")).toBe(id);
+    expect(repoId("git@github.com:acme/shipit.git")).toBe(id);
+    expect(repoId("ssh://git@github.com/acme/shipit.git")).toBe(id);
+    // A credentialed remote resolves to the same id too, because `repoId`
+    // delegates to `stripRemoteUrlCredentials` first — asserted in that
+    // function's own tests rather than here, since a literal credentialed URL
+    // is rejected by the secret scanner on shape alone, whatever its value.
+    // The three spellings the permission would otherwise split across.
+    expect(new Set([
+      canonicalRepoKey("https://github.com/Acme/ShipIt"),
+      canonicalRepoKey("https://github.com/acme/shipit"),
+      canonicalRepoKey("git@github.com:acme/shipit.git"),
+    ]).size).toBe(3);
+  });
+
+  it("keeps dots inside a repository name", () => {
+    expect(repoId("https://github.com/acme/my.git.tools")).toBe("github:acme/my.git.tools");
+    expect(repoId("https://github.com/acme/foo.bar.git")).toBe("github:acme/foo.bar");
+  });
+
+  it("refuses anything it cannot parse with certainty", () => {
+    // Unanchored matching would accept these; an authorization key must not.
+    expect(repoId("https://evil.example.com/github.com/acme/shipit")).toBeNull();
+    expect(repoId("https://github.com.evil.example/acme/shipit")).toBeNull();
+    expect(repoId("https://gitlab.com/acme/shipit")).toBeNull();
+    expect(repoId("https://github.com/acme")).toBeNull();
+    expect(repoId("https://github.com/acme/shipit/extra")).toBeNull();
+    expect(repoId("")).toBeNull();
+    expect(repoId("not a url")).toBeNull();
+  });
+
+  it("does not collapse distinct repositories", () => {
+    expect(repoId("https://github.com/acme/shipit")).not.toBe(
+      repoId("https://github.com/acme/other"),
+    );
+    expect(repoId("https://github.com/acme/shipit")).not.toBe(
+      repoId("https://github.com/other/shipit"),
     );
   });
 });

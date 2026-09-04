@@ -3,6 +3,7 @@ import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs.js";
 import { SecretsTab } from "./SecretsTab.js";
 import { RepoColorPicker } from "./RepoColorPicker.js";
+import { AgentPermissions } from "./AgentPermissions.js";
 import type { SecretsSavePayload } from "./SecretsTab.js";
 
 // On mobile the tab list collapses from a vertical sidebar into a horizontal
@@ -82,6 +83,12 @@ export function ProjectSettings({
 
           <TabsContent value="deployments">
             <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full" data-testid="deployments-tab">
+              {/* docs/287 — the agent-merge grant. One toggle does not justify a
+                  navigation category of its own, and this tab is the one place
+                  in the dialog already about what happens to the repo without
+                  the user doing it by hand. */}
+              <AgentPermissions repoUrl={repoUrl} />
+
               <div className="space-y-1">
                 <h3 className="text-sm font-medium text-(--color-text-primary)">Automatic Deployments</h3>
                 <p className="text-xs text-(--color-text-secondary)">

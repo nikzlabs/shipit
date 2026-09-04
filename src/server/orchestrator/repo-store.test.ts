@@ -121,6 +121,65 @@ describe("RepoStore", () => {
     expect(store.has("https://github.com/owner/repo.git")).toBe(true);
   });
 
+  describe("agent-merge grant (docs/287)", () => {
+    const URL = "https://github.com/owner/repo.git";
+
+    it("a freshly-added repo does not allow agent merges", () => {
+      const repo = store.add(URL);
+      expect(repo.allowAgentMerge).toBe(false);
+      expect(store.allowsAgentMerge(URL)).toBe(false);
+    });
+
+    it("setAllowAgentMerge flips the flag and the read reflects it", () => {
+      store.add(URL);
+      expect(store.setAllowAgentMerge(URL, true)).toBe(true);
+      expect(store.allowsAgentMerge(URL)).toBe(true);
+      expect(store.get(URL)?.allowAgentMerge).toBe(true);
+      store.setAllowAgentMerge(URL, false);
+      expect(store.allowsAgentMerge(URL)).toBe(false);
+    });
+
+    it("is keyed by GitHub identity — including the spellings trust cannot collapse", () => {
+      // canonicalRepoKey (which `trusted` uses) splits these three; a
+      // permission must not, or a grant made under one spelling silently
+      // fails to apply under another.
+      store.add(URL);
+      store.setAllowAgentMerge("git@github.com:Owner/Repo.git", true);
+      expect(store.allowsAgentMerge(URL)).toBe(true);
+      expect(store.allowsAgentMerge("https://github.com/OWNER/REPO")).toBe(true);
+      expect(store.allowsAgentMerge("ssh://git@github.com/owner/repo.git")).toBe(true);
+    });
+
+    it("is per-repository", () => {
+      const OTHER = "https://github.com/other/thing.git";
+      store.add(URL);
+      store.add(OTHER);
+      store.setAllowAgentMerge(URL, true);
+      expect(store.allowsAgentMerge(OTHER)).toBe(false);
+    });
+
+    it("refuses a remote with no GitHub identity, and grants nothing", () => {
+      store.add(URL);
+      expect(store.setAllowAgentMerge("https://gitlab.com/owner/repo", false)).toBe(false);
+      expect(store.setAllowAgentMerge("not a url", true)).toBe(false);
+      expect(store.allowsAgentMerge("https://gitlab.com/owner/repo")).toBe(false);
+      // A near-miss host must never inherit the grant.
+      store.setAllowAgentMerge(URL, true);
+      expect(store.allowsAgentMerge("https://github.com.evil.example/owner/repo")).toBe(false);
+    });
+
+    it("an unknown remote is not granted", () => {
+      expect(store.allowsAgentMerge("https://github.com/never/added.git")).toBe(false);
+    });
+
+    it("persists across store instances", () => {
+      store.add(URL);
+      store.setAllowAgentMerge(URL, true);
+      const reopened = new RepoStore(dbManager);
+      expect(reopened.allowsAgentMerge(URL)).toBe(true);
+    });
+  });
+
   describe("trust (docs/178)", () => {
     const URL = "https://github.com/owner/repo.git";
 

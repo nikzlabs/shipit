@@ -1,7 +1,7 @@
 import type { RepoInfo } from "../shared/types.js";
 import type { DatabaseManager } from "../shared/database.js";
 import { isValidRepoColorIndex, pickRepoColorIndex } from "../shared/repo-colors.js";
-import { canonicalRepoKey, hasUrlCredentials, stripRemoteUrlCredentials } from "./git-utils.js";
+import { canonicalRepoKey, hasUrlCredentials, repoId, stripRemoteUrlCredentials } from "./git-utils.js";
 
 interface RepoRow {
   url: string;
@@ -11,6 +11,7 @@ interface RepoRow {
   warm_session_id: string | null;
   trusted: number;
   hidden: number;
+  allow_agent_merge: number;
   default_branch: string | null;
   color_index: number | null;
 }
@@ -51,6 +52,7 @@ export class RepoStore {
     if (row.warm_session_id) info.warmSessionId = row.warm_session_id;
     info.trusted = row.trusted === 1;
     info.hidden = row.hidden === 1;
+    info.allowAgentMerge = row.allow_agent_merge === 1;
     if (row.default_branch) info.defaultBranch = row.default_branch;
     if (isValidRepoColorIndex(row.color_index)) info.colorIndex = row.color_index;
     return info;
@@ -267,6 +269,47 @@ export class RepoStore {
       }
     });
     tx();
+  }
+
+  /**
+   * docs/287 — may agents merge their own pull requests in this repository?
+   *
+   * Matched on {@link repoId}, NOT on `canonicalRepoKey` like {@link isTrusted}.
+   * That key lower-cases only the scheme and host and sends SCP-style remotes
+   * down a different branch entirely, so three spellings of one repository
+   * produce three keys — survivable for "have we seen this repo before",
+   * unacceptable for a permission, where the split means a grant silently does
+   * not apply. A remote with no parseable identity is never granted.
+   */
+  allowsAgentMerge(url: string): boolean {
+    const id = repoId(url);
+    if (!id) return false;
+    const rows = this.db
+      .prepare("SELECT url, allow_agent_merge FROM repos")
+      .all() as Pick<RepoRow, "url" | "allow_agent_merge">[];
+    return rows.some((r) => r.allow_agent_merge === 1 && repoId(r.url) === id);
+  }
+
+  /**
+   * docs/287 — set the agent-merge grant for every stored row that resolves to
+   * the same GitHub repository. Transactional for the reason {@link setTrusted}
+   * is: a concurrent reader must never see it half-applied across duplicate rows.
+   * Returns false when `url` has no parseable GitHub identity, so a caller can
+   * say why nothing happened rather than reporting a silent success.
+   */
+  setAllowAgentMerge(url: string, allow: boolean): boolean {
+    const id = repoId(url);
+    if (!id) return false;
+    const val = allow ? 1 : 0;
+    const rows = this.db.prepare("SELECT url FROM repos").all() as Pick<RepoRow, "url">[];
+    const update = this.db.prepare("UPDATE repos SET allow_agent_merge = ? WHERE url = ?");
+    const tx = this.db.transaction(() => {
+      for (const r of rows) {
+        if (repoId(r.url) === id) update.run(val, r.url);
+      }
+    });
+    tx();
+    return true;
   }
 
   /**

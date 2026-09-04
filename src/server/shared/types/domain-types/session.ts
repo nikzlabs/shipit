@@ -721,6 +721,15 @@ export interface RepoInfo {
    */
   trusted?: boolean;
   /**
+   * docs/287 — may an agent merge the pull request its own session opened in
+   * this repository? Off for every repository until the user turns it on, and
+   * never inferred from anything inside the repository: the agent can write
+   * `shipit.yaml`, so a permission declared there would be one it could grant
+   * itself. Set from Project Settings through the browser-only
+   * `PATCH /api/repos/:url`; the container neither reads nor writes it.
+   */
+  allowAgentMerge?: boolean;
+  /**
    * docs/222 — sidebar visibility flag. `true` hides the repo (and its sessions)
    * from the sidebar without removing anything: a pure declutter toggle, fully
    * reversible via the "Hidden" section or by re-adding the repo. Distinct from

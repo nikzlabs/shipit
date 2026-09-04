@@ -149,6 +149,53 @@ export function canonicalRepoKey(url: string): string {
   }
 }
 
+/**
+ * GitHub owner and repository name character sets, as GitHub itself accepts
+ * them: a login is alphanumeric with single hyphens, a repository name also
+ * allows `.` and `_`. Anchored on purpose — see {@link repoId}.
+ */
+const GITHUB_OWNER = String.raw`[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?`;
+const GITHUB_REPO = String.raw`[A-Za-z0-9._-]+`;
+const GITHUB_HTTPS_REMOTE = new RegExp(
+  String.raw`^https?://github\.com/(${GITHUB_OWNER})/(${GITHUB_REPO}?)/?$`,
+);
+const GITHUB_SSH_REMOTE = new RegExp(
+  String.raw`^(?:ssh://)?git@github\.com[:/](${GITHUB_OWNER})/(${GITHUB_REPO}?)/?$`,
+);
+
+/**
+ * The identity of a GitHub repository, for an **authorization** decision:
+ * `github:<owner>/<repo>`, lower-cased because GitHub treats both parts
+ * case-insensitively. Returns `null` for anything it cannot parse with
+ * certainty.
+ *
+ * Deliberately NOT {@link canonicalRepoKey}, which exists to spot a near-
+ * duplicate row in the repo list and is too loose to carry a permission: it
+ * lower-cases only the scheme and host, leaves the *path* casing alone, and
+ * sends every SCP-style `git@github.com:owner/repo.git` down a
+ * lowercase-the-whole-string fallback. So `https://github.com/Owner/Repo`, the
+ * lower-case spelling and the `git@` spelling produce three different keys
+ * there — and a grant written under one would silently not exist under another
+ * (docs/287-agent-merge-per-repo).
+ *
+ * Also not {@link parseGitHubRemote}, which is unanchored (so `github.com` can
+ * match inside another host's path) and whose `[^/.]+` repository group
+ * truncates a legal name at its first dot.
+ *
+ * Refusing is the safe direction: a remote with no identity matches no grant,
+ * so the capability is simply unavailable rather than mis-assigned.
+ */
+export function repoId(url: string): string | null {
+  const trimmed = stripRemoteUrlCredentials((url ?? "").trim());
+  const match = GITHUB_HTTPS_REMOTE.exec(trimmed) ?? GITHUB_SSH_REMOTE.exec(trimmed);
+  if (!match) return null;
+  const owner = match[1];
+  // Strip a TERMINAL `.git` only — `my.git.tools` keeps its dots.
+  const repo = match[2].replace(/\.git$/, "");
+  if (!repo || repo === "." || repo === "..") return null;
+  return `github:${owner.toLowerCase()}/${repo.toLowerCase()}`;
+}
+
 /** Why `pushToOrigin` returned without pushing anything. */
 export type PushSkipReason = "no-origin" | "no-branch";
 
