@@ -470,6 +470,62 @@ describe("post-turn flow for a self-woken turn", () => {
   });
 
   /**
+   * The same 401, looked at from the runner's state rather than the user's
+   * transcript: the killed CLI's background tasks must not outlive it.
+   *
+   * Every other path that kills a resident streaming process clears the list
+   * beside `setAgent(null)` / `isStreamingActive = false` — the `error` teardown
+   * in `agent-listeners.ts`, the `done` teardown in `turn-executor.ts`. The auth
+   * path did not, and it is the one that could least rely on a sibling to do it:
+   * the executor's `done` handler stands down at `automaticRecoveryInProgress`
+   * several statements BEFORE its `clearBackgroundTasks()`, so on this path
+   * nothing cleared the list at all.
+   *
+   * The stale list hides while `isStreamingActive` is false, which is why the
+   * assertion is made after the flag comes back: `turn-executor` sets it at the
+   * START of the next turn, before the fresh CLI has reported a list of its own,
+   * so the dead process's tasks reappear in the chat status line and the sidebar
+   * dot — and read `agentBusy`, which keeps the container off the reclaim list.
+   * Production stranded two sessions in this shape on 2026-09-04.
+   */
+  it("does not leave the killed process's background tasks behind after a quiet heal", async () => {
+    const ensureAgentTokenFresh = vi.fn().mockResolvedValue(true);
+    const h = await runFirstStreamingTurn({ ensureAgentTokenFresh });
+    // What `agent-execution.ts` does before it calls `executeAgentTurn`
+    // (`if (!existingAgent && runner) runner.setAgent(currentAgent)`), and what
+    // this harness — which calls the executor directly — otherwise skips. It is
+    // load-bearing here and nowhere else in this file: the auth teardown is
+    // identity-guarded on `runner.getAgent() === agent`, so with an empty slot
+    // the whole block under test never runs.
+    h.runner.setAgent(h.agent as never);
+
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => h.settledTurns() === 1, "turn 1 post-turn flow settled");
+
+    await selfWake(h.agent);
+
+    // The adopted turn backgrounds a job — the ordinary shape, and the reason
+    // the CLI woke itself in the first place.
+    h.agent.emit("event", {
+      type: "agent_background_tasks",
+      tasks: [{ id: "bg-1", description: "npm test" }],
+    });
+    expect(h.runner.backgroundWorkDescriptions).toEqual(["npm test"]);
+
+    // …then the stale-token 401 kills it.
+    h.agent.emit("auth_required");
+    h.agent.emit("done", 0);
+    await waitFor(() => !h.runner.running, "wake turn settled");
+
+    // The next turn re-enters streaming before its own process reports anything.
+    // Nothing of the dead one may come back with it.
+    h.runner.isStreamingActive = true;
+    expect(h.runner.backgroundWorkDescriptions).toEqual([]);
+
+    h.runner.dispose({ force: true });
+  });
+
+  /**
    * The other side of the same split, so the fix above cannot be read as "an
    * adopted turn never surfaces re-auth". A heal that was ASKED FOR and REFUSED
    * (token revoked, refresher rate-limited) is what makes an auth failure

@@ -1114,18 +1114,33 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   /**
-   * One tick of the reconciler. Only meaningful when `running=true` and a
-   * viewer is attached — otherwise the divergence is either expected
-   * (idle) or undetectable (no viewer means no reconnect-driven recovery
-   * to short-circuit). Two consecutive divergences are required so a
-   * single in-flight `/agent/status` race can't trigger a false reset.
+   * One tick of the reconciler. Meaningful when the runner believes SOMETHING
+   * is alive in the worker — a turn (`running`) or a resident streaming process
+   * (`isStreamingActive`) — and a viewer is attached (no viewer means no
+   * reconnect-driven recovery to short-circuit). Two consecutive divergences
+   * are required so a single in-flight `/agent/status` race can't trigger a
+   * false reset.
+   *
+   * `isStreamingActive` is in that condition, not just `running`, because the
+   * failure this net exists for can CLEAR `running` on its way past. A 401 on an
+   * adopted CLI-started turn kills the resident process, and the auth recovery
+   * then settles the turn — leaving `running` false and the resident-process
+   * state (streaming flag, background-task list, applied permission mode /
+   * spawn identity / route) describing a CLI that is gone. Gated on `running`
+   * alone, the only repair path in the system could not see the fault it exists
+   * to correct, and nothing else ever cleared it.
+   *
+   * Cheap to widen: `/agent/status` answers `running: this.agent !== null` — a
+   * resident-but-idle streaming process reports `true` — so the ordinary
+   * between-turns state resets the divergence counter on the first tick and
+   * costs one loopback request per 30s per ATTACHED session.
    */
   private async runReconcileCheck(): Promise<void> {
     if (this._disposed) {
       this.stopReconcileTimer();
       return;
     }
-    if (!this._isRunning || this._viewerCount === 0) {
+    if ((!this._isRunning && !this._isStreamingActive) || this._viewerCount === 0) {
       this._reconcileDivergenceCount = 0;
       return;
     }
@@ -2710,6 +2725,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     return true;
   }
 
+  /**
+   * The proxy a worker event belongs to when the `_agent` slot is empty.
+   *
+   * docs/146 follow-up — a stale / one-shot spawn can displace the resident
+   * streaming proxy and then exit, nulling `_agent` while the live streaming
+   * process in the worker keeps emitting. `_streamingProxy` is the stable
+   * reference to that process, and `isStreamingActive` is the discriminator: a
+   * GENUINELY-orphaned stream has it false (every path that releases the
+   * resident process clears it), so this can never resurrect a dead turn — the
+   * docs/267 failure that is worse than the one it fixes.
+   */
+  private resolveEventTarget(): ProxyAgentProcess | null {
+    return this._agent ?? (this._isStreamingActive ? this._streamingProxy : null);
+  }
+
   private handleSSEEvent(event: SSEEvent): void {
     try {
       const data = JSON.parse(event.data) as Record<string, unknown>;
@@ -2726,8 +2756,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           // `_agent`, while the live streaming process kept emitting. A
           // genuinely-orphaned stream has `isStreamingActive === false` (the
           // streaming `done` clears it), so this never resurrects a dead turn.
-          const target = this._agent
-            ?? (this._isStreamingActive ? this._streamingProxy : null);
+          const target = this.resolveEventTarget();
           if (!target) {
             // docs/140 diag — events arriving with no orchestrator-side agent
             // ref AND no live streaming turn mean a genuinely-orphaned stale
@@ -2751,17 +2780,48 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           break;
         }
 
-        case "agent_done":
-          if (this._agent && !this.isStaleSpawnEvent("agent_done", data)) {
-            this._agent.emit("done", (data.exitCode as number) ?? 0);
+        // A TERMINAL event gets the same re-adopt as `agent_event` above, and it
+        // is the one that could least afford to be dropped. Both of these carry
+        // a resident streaming process's EXIT, and the teardown that exit owns
+        // — `setAgent(null)`, `isStreamingActive = false`,
+        // `clearBackgroundTasks()`, and (on `done`) the streaming
+        // abnormal-exit commit that CLAUDE.md post-turn invariant 2 requires —
+        // is all gated behind the handler's `runner.getAgent() === agent`
+        // identity check. So dropping the event does not merely lose a
+        // notification: it leaves the runner holding liveness state for a
+        // process that no longer exists, with a stale background-task list, and
+        // whatever the turn wrote uncommitted. Production stranded two sessions
+        // that way on 2026-09-04.
+        //
+        // `this._agent = target` before the emit for exactly that reason: the
+        // teardown runs only if the slot points back at the proxy that is
+        // exiting. Re-installing it is what `agent_event` already does, and
+        // `isStaleSpawnEvent` (against the RESOLVED target, planning#290) still
+        // discards a retired spawn's late exit so it cannot tear down the turn
+        // that replaced it.
+        case "agent_done": {
+          const target = this.resolveEventTarget();
+          if (!target) {
+            console.warn(`[sse-drop:${this.sessionId}] agent_done dropped (no _agent)`);
+            break;
           }
+          if (this.isStaleSpawnEvent("agent_done", data, target)) break;
+          this._agent = target;
+          target.emit("done", (data.exitCode as number) ?? 0);
           break;
+        }
 
-        case "agent_error":
-          if (this._agent && !this.isStaleSpawnEvent("agent_error", data)) {
-            this._agent.emit("error", new Error((data.message as string) ?? "Unknown worker error"));
+        case "agent_error": {
+          const target = this.resolveEventTarget();
+          if (!target) {
+            console.warn(`[sse-drop:${this.sessionId}] agent_error dropped (no _agent)`);
+            break;
           }
+          if (this.isStaleSpawnEvent("agent_error", data, target)) break;
+          this._agent = target;
+          target.emit("error", new Error((data.message as string) ?? "Unknown worker error"));
           break;
+        }
 
         case "agent_auth_required":
           if (this._agent && !this.isStaleSpawnEvent("agent_auth_required", data)) {
@@ -3191,8 +3251,40 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    *     class planning#265 / planning#266 / docs/240 closed, reached through the one path
    *     they did not cover.
    */
+  /**
+   * Drop everything whose lifetime is the WORKER-SIDE CLI PROCESS's, once that
+   * process is known to be gone. Extracted verbatim from `verifyRunningState`'s
+   * reset so the two drift shapes it now handles clear exactly the same set.
+   *
+   * Deliberately does NOT touch `_isRunning`, the queue, the delivery or the
+   * turn settlement: those belong to a TURN, and only one of the two callers
+   * has one to end.
+   */
+  private clearResidentProcessState(): void {
+    this._isStreamingActive = false;
+    this._streamingProxy = null;
+    // docs/235 — the streaming process is gone, so its background tasks went
+    // with it. The count getter already gates on `isStreamingActive`; clearing
+    // here keeps the tracker from holding a stale list across a respawn.
+    this._backgroundTasks.clear();
+    // planning#246 — written directly rather than through the setters, so the
+    // marker needs saying: we just declared this session's agent dead, and
+    // nothing else will tell the sidebar.
+    this.announceBackgroundWork();
+    this._appliedPermissionMode = undefined;
+    this._appliedSpawnIdentity = undefined;
+    this._residentRoute = undefined;
+    this._agent = null;
+  }
+
   async verifyRunningState(): Promise<boolean> {
-    if (!this._isRunning) return false;
+    // Two shapes of drift reach here. The turn-level one (`running` stuck true)
+    // is what the doc above describes. The PROCESS-level one — `running`
+    // correctly false, but the runner still holding the resident streaming
+    // process's state — is the second, and it is why this no longer returns
+    // early on `!_isRunning`. See `runReconcileCheck`.
+    const staleResidentOnly = !this._isRunning && this._isStreamingActive;
+    if (!this._isRunning && !staleResidentOnly) return false;
     let workerRunning: boolean;
     try {
       const status = await workerGet(this.workerUrl, "/agent/status") as { running?: boolean };
@@ -3203,23 +3295,24 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       console.warn(`[container-runner:${this.sessionId}] verifyRunningState: worker unreachable, keeping running=true`, err);
       return this._isRunning;
     }
-    if (workerRunning) return true;
+    // `running: this.agent !== null` on the worker — an occupied slot, not an
+    // active turn — so a resident streaming process between turns answers true.
+    if (workerRunning) return this._isRunning;
+    if (staleResidentOnly) {
+      // No turn was running, so none of the turn-settlement work below applies:
+      // there is nothing to abandon, nothing queued behind a phantom, and no
+      // "out of sync" sentence to show a user whose turn ended normally. Only
+      // the dead process's state is wrong, so only that is cleared.
+      console.warn(
+        `[container-runner:${this.sessionId}] Detected a stale resident streaming process `
+        + `(worker reports no agent). Clearing the resident-process state.`,
+      );
+      this.clearResidentProcessState();
+      return false;
+    }
     console.warn(`[container-runner:${this.sessionId}] Detected stuck running=true (worker reports no agent). Resetting.`);
     this._isRunning = false;
-    this._isStreamingActive = false;
-    this._streamingProxy = null;
-    // docs/235 — the streaming process is gone, so its background tasks went
-    // with it. The count getter already gates on `isStreamingActive`; clearing
-    // here keeps the tracker from holding a stale list across a respawn.
-    this._backgroundTasks.clear();
-    // planning#246 — written directly rather than through the setters, so the
-    // marker needs saying: the reconciler just declared this session's agent
-    // dead, and nothing else will tell the sidebar.
-    this.announceBackgroundWork();
-    this._appliedPermissionMode = undefined;
-    this._appliedSpawnIdentity = undefined;
-      this._residentRoute = undefined;
-    this._agent = null;
+    this.clearResidentProcessState();
     this.emitMessage({
       type: "session_status",
       sessionId: this.sessionId,

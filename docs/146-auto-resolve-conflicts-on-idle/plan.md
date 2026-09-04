@@ -636,6 +636,25 @@ Two-part fix (both orchestrator-side):
 | `src/server/orchestrator/integration_tests/{dispatched-turn-race,live-steering}.test.ts` | A dispatched turn reuses a resident streaming agent (via `sendUserMessage`) instead of spawning a competing one-shot when `useStreaming` recomputes false. |
 | `src/server/orchestrator/integration_tests/container-agent-wiring.test.ts` | A stale spawn's exit nulling the slot while a streaming turn is live re-adopts the streaming proxy (events delivered, not dropped); a genuinely-orphaned stream is still dropped. |
 
+### Follow-up (2026-09-04): the re-adopt now covers TERMINAL events too
+
+The defense-in-depth row above was scoped to `agent_event`. `agent_done` and
+`agent_error` kept the old `if (this._agent)` shape and dropped a resident
+streaming process's exit with no log line at all once the slot had been cleared
+— which is strictly worse than dropping a mid-turn event, because everything a
+streaming exit owns is gated behind the handler's `runner.getAgent() === agent`
+identity check: `setAgent(null)`, `isStreamingActive = false`,
+`clearBackgroundTasks()`, and the streaming abnormal-exit commit CLAUDE.md's
+post-turn invariant 2 requires. A dropped exit therefore left the runner holding
+liveness state for a process that no longer existed AND left the turn's edits
+uncommitted.
+
+| File | Change |
+|---|---|
+| `src/server/orchestrator/container-session-runner.ts` | `agent_done` / `agent_error` resolve their target through the same `resolveEventTarget()` helper `agent_event` uses (slot, else the tracked `_streamingProxy` while `isStreamingActive`), re-install the slot before emitting so the identity-guarded teardown runs, and log the drop when there is genuinely no target. `isStaleSpawnEvent` is still applied against the resolved target, so a retired spawn's late exit cannot tear down the turn that replaced it, and an orphaned stream (`isStreamingActive === false`) is still dropped. |
+| `src/server/orchestrator/container-session-runner.ts` | `runReconcileCheck` / `verifyRunningState` no longer gate on `running` alone: a runner that is idle but still believes a streaming process is resident is reconciled against `/agent/status` too, and a worker with no agent clears the resident-process state (`clearResidentProcessState()`). Gated on `running`, the only repair path in the system could not see a fault whose own failure mode clears that flag. |
+| `src/server/orchestrator/ws-handlers/agent-auth-handler.ts` | The auth-failure kill clears the killed process's background tasks, like the sibling `error` / `done` teardowns. It was the one path that could not rely on a sibling: the executor's `done` handler stands down at `automaticRecoveryInProgress` before reaching its own `clearBackgroundTasks()`. |
+
 ## Tests
 
 ### Unit tests (`auto-conflict-resolve-manager.test.ts`)
