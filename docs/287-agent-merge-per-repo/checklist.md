@@ -120,7 +120,8 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 
 ## Quality
 
-- [ ] Tests as listed in plan.md's Tests section
+- [x] Tests as listed in plan.md's Tests section, for everything built so far
+      (the settlement tests wait on the claim slice)
 - [x] Each new guard proved red on its own before the fix
 - [ ] `npm run lint:dev` and `npm run typecheck` green
 - [x] A review of the implementation, not only of the design — round 1 on the

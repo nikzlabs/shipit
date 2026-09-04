@@ -136,6 +136,16 @@ describe("decideMerge — the observation table", () => {
     await expect(decide(observed({ prState: "MERGED" }))).resolves.toEqual({ action: "already-merged" });
   });
 
+  it("reports already-merged even when the head has moved since", async () => {
+    // The merge already happened; a moved head cannot change that, and saying
+    // "push and merge again" to someone whose work shipped is just wrong.
+    const decision = await decide(
+      observed({ prState: "MERGED", headRefOid: "sha-new", rollupCommitOid: "sha-old" }),
+      { localHead: "sha-local" },
+    );
+    expect(decision).toEqual({ action: "already-merged" });
+  });
+
   it("refuses a closed pull request and a draft", async () => {
     await expect(decide(observed({ prState: "CLOSED" }))).resolves.toMatchObject({ reason: "not-open" });
     await expect(decide(observed({ isDraft: true }))).resolves.toMatchObject({ reason: "draft" });

@@ -472,10 +472,15 @@ justify an otherwise empty navigation category.
 
 - `pr-target.test.ts` — dispositions; `--repo` refused and `cwd` ignored on a
   repo-bound merge; the ordinary call (which always carries `cwd`) is allowed.
-- `services/github-agent-merge.test.ts` — ownership refusals (foreign number,
-  wrong branch, no recorded PR, moved `pr_repo_key`); each flush outcome; the
-  cancel rule; every row of the observation table in **both** modes; the
-  expected-`sha` merge.
+- `services/merge-gate.test.ts` — every row of the observation table, and the
+  read's unreadable shapes including a 200 carrying `errors` beside data.
+- `services/github-agent-merge.test.ts` — the sandbox path on the new read,
+  including the two states its old `getCheckStatus()` gate could not tell apart:
+  a repository with no CI, and a read that failed.
+- `pr-target.test.ts` — ownership refusals (foreign number, wrong branch, no
+  recorded PR, moved repository).
+- `integration_tests/agent-driven-pr.test.ts` — each flush outcome, the cancel
+  rule, the expected-`sha` merge, and the `--auto` refusal.
 - `agent-merge-claims.test.ts` — the three outcomes, and reconciliation of a
   `merging` row from its own tuple after an indeterminate result or a crash.
 - Settlement tests — idempotence on the natural identity (a repeated settlement

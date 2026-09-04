@@ -216,6 +216,12 @@ export async function decideMerge(args: {
     };
   }
 
+  // Terminal, and terminal beats everything below: no comparison of SHAs or
+  // checks can change the answer for a pull request that has already merged,
+  // and running them first would report a moved head to somebody whose merge
+  // has already happened. Nothing is merged on this path.
+  if (observation.prState === "MERGED") return { action: "already-merged" };
+
   // req 16 — the checks describe a commit that is no longer the head. Merging on
   // the strength of them would merge code CI never saw.
   if (observation.rollupCommitOid !== observation.headRefOid) {
@@ -243,7 +249,6 @@ export async function decideMerge(args: {
     };
   }
 
-  if (observation.prState === "MERGED") return { action: "already-merged" };
   if (observation.prState !== "OPEN") {
     return {
       action: "refuse",

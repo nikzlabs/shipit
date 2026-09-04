@@ -597,6 +597,15 @@ export async function agentMergePullRequest(
         autoMergeEnabled: autoResult.success,
       };
     }
+    // A sandbox keeps the `--auto` affordance, so its pending refusal keeps
+    // naming it. A repo-bound session does not have one yet, which is why the
+    // gate's own wording says only "merge again once they report".
+    if (decision.reason === "checks-pending" && !opts.repoBound) {
+      return {
+        success: false,
+        message: `${decision.message} Or pass --auto to merge when checks pass.`,
+      };
+    }
     return { success: false, message: decision.message };
   }
 
