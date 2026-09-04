@@ -65,7 +65,7 @@ npm install
 
 Session containers are sized from host capacity (docs/229), so `npm test` and the integration tests **can** run in-box. Still prefer the fast loop (typecheck, `lint:dev`, affected co-located tests); reach for the full suite on suspected wide breakage. A genuine OOM means the host is undersized — raise `DEFAULT_SESSION_MEMORY_MB` rather than concluding the suite can't run locally.
 
-**Always kill child processes via `killChild()` (`shared/kill-child.ts`), never `child.kill()`** — on a spawn that never exec'd, `child.kill()` signals an arbitrary unrelated pid (full mechanism: that file's docstring). Diagnose before naming an OOM: a suite dying part-way at exit **143** is that friendly fire, not memory; a real OOM is exit **137** and is recorded at `/sys/fs/cgroup/memory.events` → `oom_kill`.
+**Always kill child processes via `killChild()` (`shared/kill-child.ts`), never `child.kill()`** — on a spawn that never exec'd, `child.kill()` signals an arbitrary unrelated pid (full mechanism: that file's docstring). **An agent CLI takes `killProcessTree()` instead**, from the same file: it is the root of a tree (MCP servers, and a Playwright browser under those), and a pid-only kill leaves that tree running on pid 1 for the container's lifetime — docs/289-agent-process-tree-teardown. Diagnose before naming an OOM: a suite dying part-way at exit **143** is that friendly fire, not memory; a real OOM is exit **137** and is recorded at `/sys/fs/cgroup/memory.events` → `oom_kill`.
 
 ## Debugging the UI
 

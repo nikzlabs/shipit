@@ -20,6 +20,16 @@ import type { ChildProcess } from "node:child_process";
 import { OpencodeAdapter } from "./adapter.js";
 import type { AgentEvent, AgentRunParams } from "../agent-process.js";
 
+// Real implementation, made observable. planning#509 — an OpenCode turn ends
+// with the adapter killing the CLI (with MCP servers configured it never exits
+// on its own), and that kill has to take the CLI's descendants with it.
+vi.mock("../../../shared/kill-child.js", async (importOriginal) => {
+  // eslint-disable-next-line no-restricted-syntax -- the mock factory's signature requires the inline import type
+  const real = await importOriginal<typeof import("../../../shared/kill-child.js")>();
+  return { ...real, killProcessTree: vi.fn(real.killProcessTree) };
+});
+import { killProcessTree } from "../../../shared/kill-child.js";
+
 /** A scriptable stand-in for the spawned CLI. */
 class FakeChild extends EventEmitter {
   stdout = new EventEmitter();
@@ -235,6 +245,14 @@ describe("OpencodeAdapter", () => {
     expect(child.kill).not.toHaveBeenCalled();
     vi.advanceTimersByTime(6_000);
     expect(child.kill).toHaveBeenCalled();
+    // planning#509 — and it takes the CLI's descendants with it. This is the
+    // ordinary end of every OpenCode turn, and MCP servers are exactly what
+    // leaves a browser behind.
+    expect(vi.mocked(killProcessTree)).toHaveBeenCalledWith(
+      child,
+      "SIGTERM",
+      expect.objectContaining({ label: "opencode" }),
+    );
 
     child.close(143);
     const result = events.at(-1);

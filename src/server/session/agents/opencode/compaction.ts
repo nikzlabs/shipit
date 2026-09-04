@@ -29,7 +29,7 @@
  */
 
 import type { ChildProcess, SpawnOptions } from "node:child_process";
-import { killChild } from "../../../shared/kill-child.js";
+import { killProcessTree } from "../../../shared/kill-child.js";
 import { SHIPIT_PROVIDER_ID } from "../../../shared/spawn-routing.js";
 
 /** How long to wait for the transient server to announce its port. */
@@ -127,7 +127,9 @@ export async function compactOpencodeSession(opts: OpencodeCompactionOptions): P
       throw new Error(`summarize did not confirm compaction (body: ${text.slice(0, 300)})`);
     }
   } finally {
-    killChild(proc, "SIGTERM");
+    // Tree-wide: the transient server loads the session's MCP servers like any
+    // other OpenCode process, so it can leave the same descendants behind.
+    killProcessTree(proc, "SIGTERM", { label: "opencode-compaction-server" });
   }
 }
 

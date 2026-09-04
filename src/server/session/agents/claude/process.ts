@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
-import { killChild } from "../../../shared/kill-child.js";
+import { killChild, killProcessTree } from "../../../shared/kill-child.js";
 import type { ClaudeEvent, ImageAttachment, PermissionMode, ServiceRouting } from "../../../shared/types.js";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
 import type { AgentHomeResolver } from "../../../shared/agent-home.js";
@@ -746,14 +746,10 @@ export class ClaudeProcess extends EventEmitter {
    * by then, so a `control_request` interrupt (the resident process's route) is
    * not available here.
    *
-   * KNOWN DIFFERENCE: a PTY delivered Ctrl+C to the foreground process GROUP,
-   * so a wedged tool descendant took the signal too. This signals the CLI only
-   * — the same semantics {@link StreamingClaudeProcess} has always had — so a
-   * descendant that survives its parent can still hold the stdout pipe open and
-   * delay `close` (and therefore `done`). Escalating to `detached` + a
-   * process-group kill changes teardown and orphaning behaviour for every
-   * one-shot turn, so it belongs in its own change rather than here; the
-   * sub-agent wall-clock cap resolves independently of `done` regardless.
+   * The SIGINT itself is deliberately narrow — the CLI alone, so it can flush a
+   * turn its tool descendants may still be feeding. Descendants are dealt with
+   * by the escalation below, which routes through {@link kill} and therefore
+   * through `killProcessTree` (planning#509).
    */
   interrupt(): void {
     if (!this.proc) return;
@@ -774,11 +770,15 @@ export class ClaudeProcess extends EventEmitter {
     });
   }
 
-  /** Kill the running process if any. */
+  /**
+   * Kill the running process if any — and everything it spawned. An MCP server's
+   * browser outlives a plain pid kill (see `killProcessTree`), so teardown has
+   * to be tree-wide or the turn leaves a Chromium burning CPU in the container.
+   */
   kill(): void {
     this.clearWatchdog();
     if (this.proc) {
-      killChild(this.proc, "SIGTERM");
+      killProcessTree(this.proc, "SIGTERM", { label: "claude" });
       this.proc = null;
     }
     removeFileQuietly(this.systemPromptFile);
@@ -1108,10 +1108,11 @@ export class StreamingClaudeProcess extends EventEmitter {
     this.writeToStdin(`${JSON.stringify(msg)}\n`);
   }
 
+  /** See {@link ClaudeProcess.kill} — tree-wide for the same reason. */
   kill(): void {
     this.clearWatchdog();
     if (this.proc) {
-      killChild(this.proc, "SIGTERM");
+      killProcessTree(this.proc, "SIGTERM", { label: "streaming-claude" });
       this.proc = null;
     }
     removeFileQuietly(this.systemPromptFile);

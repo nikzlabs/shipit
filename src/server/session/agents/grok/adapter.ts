@@ -78,7 +78,7 @@ import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { killChild } from "../../../shared/kill-child.js";
+import { killChild, killProcessTree } from "../../../shared/kill-child.js";
 import { GROK_TOOL_NAMES } from "../../../shared/agent-registry.js";
 import { HARNESSES } from "../../../shared/catalogue/harnesses.js";
 import { GROK_PERMISSION_MODES } from "../../../shared/types/agent-types.js";
@@ -805,7 +805,7 @@ export class GrokAdapter
       if (!this.resultKillTimer && this.proc) {
         this.resultKillTimer = setTimeout(() => {
           this.resultKillTimer = null;
-          if (this.proc) killChild(this.proc, "SIGTERM");
+          if (this.proc) killProcessTree(this.proc, "SIGTERM", { label: "grok" });
         }, RESULT_EXIT_GRACE_MS);
       }
     }
@@ -1057,13 +1057,13 @@ export class GrokAdapter
     if (this.interruptKillTimer) clearTimeout(this.interruptKillTimer);
     this.interruptKillTimer = setTimeout(() => {
       this.interruptKillTimer = null;
-      if (this.proc === proc) killChild(proc, "SIGTERM");
+      if (this.proc === proc) killProcessTree(proc, "SIGTERM", { label: "grok-interrupt" });
     }, 5_000);
   }
 
   kill(): void {
     this.clearTimers();
-    if (this.proc) killChild(this.proc, "SIGTERM");
+    if (this.proc) killProcessTree(this.proc, "SIGTERM", { label: "grok" });
     this.cleanupTurnFiles();
   }
 

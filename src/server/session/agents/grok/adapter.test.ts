@@ -28,6 +28,14 @@ import type { ChildProcess } from "node:child_process";
 import { GrokAdapter, resolveGrokBinary } from "./adapter.js";
 import type { AgentEvent, AgentRunParams } from "../agent-process.js";
 
+// Real implementation, made observable — see the tree-teardown test below.
+vi.mock("../../../shared/kill-child.js", async (importOriginal) => {
+  // eslint-disable-next-line no-restricted-syntax -- the mock factory's signature requires the inline import type
+  const real = await importOriginal<typeof import("../../../shared/kill-child.js")>();
+  return { ...real, killProcessTree: vi.fn(real.killProcessTree) };
+});
+import { killProcessTree } from "../../../shared/kill-child.js";
+
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "__fixtures__");
 
 // `grokHome()` honours `process.env.GROK_HOME` first. A grok-pinned session
@@ -280,6 +288,32 @@ describe("GrokAdapter — the captured tool tour (docs/272)", () => {
         // The union is closed: an unrecognized `type` must not leak through.
         for (const k of kinds) {
           expect(["agent_init", "agent_assistant", "agent_tool_result", "agent_result"]).toContain(k);
+        }
+      });
+
+      /**
+       * planning#509 — the post-result kill exists so an MCP child holding the
+       * event loop open cannot keep the session busy, and it has to take that
+       * child's own descendants (a Playwright browser) with it.
+       */
+      it("tears down the whole process tree when the post-result kill fires", async () => {
+        vi.useFakeTimers();
+        try {
+          vi.mocked(killProcessTree).mockClear();
+          const h = makeHarness();
+          homes.push(h.home);
+          h.child.emitStdout(capture(file));
+          expect(vi.mocked(killProcessTree)).not.toHaveBeenCalled();
+
+          await vi.advanceTimersByTimeAsync(6_000);
+          expect(vi.mocked(killProcessTree)).toHaveBeenCalledWith(
+            h.child,
+            "SIGTERM",
+            expect.objectContaining({ label: "grok" }),
+          );
+          h.child.close(143);
+        } finally {
+          vi.useRealTimers();
         }
       });
 
