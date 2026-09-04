@@ -1,3 +1,5 @@
+import { AgentMergeClaimStore } from "./agent-merge-claims.js";
+import { reconcileAgentMergeClaims } from "./services/agent-merge-settlement.js";
 import { serviceForLoginIntegration } from "../shared/catalogue/index.js";
 import path from "node:path";
 import { createDockerClient } from "./docker-client.js";
@@ -961,6 +963,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     sseBroadcast("credential_routes", { routes: listCredentialRoutesForWire(credentialStore) });
   };
 
+  // docs/287-agent-merge-per-repo §4 — one claim store for the process. Shared
+  // by the three reconciliation triggers below and by the merge route.
+  const agentMergeClaims = new AgentMergeClaimStore(databaseManager);
+
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, repoStore, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
@@ -997,6 +1003,20 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     // manager is constructed inside the poller's constructor, which runs
     // after the registry, so the runner-idle hook reads through a getter.
     getAutoConflictResolveManager: () => prStatusPollerRef.ref?.autoConflictResolveManager,
+    // docs/287-agent-merge-per-repo req 9 — the end-of-turn reconciliation
+    // trigger. Same lazy shape as the poller for the same reason: settlement
+    // needs the poller, which is constructed after this registry.
+    reconcileAgentMergeClaimsFor: (sessionId: string) => {
+      void reconcileAgentMergeClaims({
+        claims: agentMergeClaims,
+        sessionManager,
+        chatHistoryManager,
+        ...(prStatusPollerRef.ref ? { prStatusPoller: prStatusPollerRef.ref } : {}),
+        ...(registryHolder.ref ? { runnerRegistry: registryHolder.ref } : {}),
+      }, { sessionId }).catch((err: unknown) => {
+        console.error(`[agent-merge] end-of-turn reconciliation for ${sessionId} failed:`, err);
+      });
+    },
   });
   registryHolder.ref = runnerRegistry;
 
@@ -1080,6 +1100,25 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // planning#261 (second half) — the reconcile itself is deliberately NOT started
   // here. It must run AFTER the docs/240 turn-adoption sweep (see the
   // `reattachInFlightTurns` block below), which is what chains it.
+
+  // docs/287-agent-merge-per-repo req 9 — the startup reconciliation trigger,
+  // the first of three. A claim left `merging` by a crash mid-merge is resolved
+  // here from its own tuple. Deliberately off the boot path (`void`): a merge
+  // that may or may not have happened is not a reason to delay serving, and the
+  // other two triggers cover a pass that fails.
+  //
+  // Reconciliation itself refuses to settle a session with an active turn, so
+  // this cannot race the docs/240 adoption sweep: an adopted turn's claim is
+  // skipped here and picked up when that turn ends.
+  void reconcileAgentMergeClaims({
+    claims: agentMergeClaims,
+    sessionManager,
+    chatHistoryManager,
+    prStatusPoller,
+    ...(registryHolder.ref ? { runnerRegistry: registryHolder.ref } : {}),
+  }).catch((err: unknown) => {
+    console.error("[agent-merge] startup reconciliation failed:", err);
+  });
 
   // ---- Release Status Poller (docs/171) ----
   // Reflects the inline release lifecycle card: gate/CI status + the published

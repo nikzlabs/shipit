@@ -451,7 +451,8 @@ justify an otherwise empty navigation category.
 | File | Change |
 |---|---|
 | `src/server/shared/database.ts` | migrations: `repos.allow_agent_merge`, `sessions.pr_number` + `pr_repo_id`, `agent_merge_claims` |
-| `src/server/orchestrator/agent-merge-claims.ts` | the claim store: claim, state transitions, reconciliation |
+| `src/server/orchestrator/agent-merge-claims.ts` | the claim store, the turn identity, and the merge record's natural identity |
+| `src/server/orchestrator/services/agent-merge-settlement.ts` | settlement and the three reconciliation triggers |
 | `src/server/orchestrator/repo-store.ts` | grant read/write, keyed by the GitHub repository identity |
 | `src/server/orchestrator/git-utils.ts` | `repoId()` — parsed, case-normalised `github:<owner>/<repo>` |
 | `src/server/orchestrator/api-routes-session-repos.ts` | grant on the existing `PATCH /api/repos/:url` |
@@ -506,19 +507,23 @@ justify an otherwise empty navigation category.
 
 ## What is built, and what is not
 
-Requirements 1–8 and 12–17 are implemented: the grant, the gate, the ownership
-tuple, provenance, the flush, the sync guard, the single live read and its
-table, the expected-SHA merge, and the `--auto` refusal.
+All seventeen requirements are implemented.
 
-**Section 4 — the durable claim and settlement — is not.** In its place the
-route awaits `forceVerifySessionPrState()` after a witnessed merge, which is
-what the UI merge route has always done and what keeps `merged_at` current for
-the agent's next `shipit branch reset-to-base`. That covers the ordinary path
-and not the crash window: a process that dies between GitHub accepting the merge
-and the response returning leaves no record that ShipIt performed it, and the
-merge is then picked up by ordinary poller detection rather than being recorded
-as the agent's. Requirements 9, 10 and 11 stay open for that reason, and the
-claim table already exists in the schema for them.
+Two deliberate deviations from this document, both narrowing:
+
+- **The CREATE adapter keeps its boolean result.** §4 asks for a typed
+  three-way outcome on the merge *and* the create adapters, on the grounds that
+  the distinction decides whether a create intent is cleared or kept. That
+  intent table was deleted earlier in this feature — provenance is
+  witnessed-create-only — so the create side has no consumer for the
+  distinction, and adding one would be mechanism nothing reads. The merge
+  adapter has it, because the claim genuinely turns on it.
+- **A later turn is not blocked while a settlement is unresolved.** §4 asks for
+  that as the second half of "reconciliation must not race the turn". The first
+  half is built and is the one that protects correctness: reconciliation stands
+  down for any active turn. The second would mean holding a user's next message
+  behind a GitHub round trip, and an unresolved claim already survives to the
+  next of three triggers, so the cost buys nothing the triggers do not.
 
 ## Risks
 

@@ -1,3 +1,5 @@
+import { AgentMergeClaimStore } from "./agent-merge-claims.js";
+import { reconcileAgentMergeClaims } from "./services/agent-merge-settlement.js";
 import type { FastifyInstance } from "fastify";
 import { nativeServiceForHarness, selectionExists, selectionHonoursEffort } from "../shared/catalogue/index.js";
 import { applyModelRetirement } from "./model-retirement.js";
@@ -311,6 +313,10 @@ export async function registerRoutes(
     clientDir, logStore, buildId,
   } = rt;
   const { kickDiskEscalation } = monitors;
+  // docs/287-agent-merge-per-repo §4 — one store for the route deps AND the
+  // activation reconciliation below. A stateless wrapper over the shared
+  // database, so two instances could not disagree; one is simply clearer.
+  const agentMergeClaims = new AgentMergeClaimStore(databaseManager);
   const wsOriginPolicy = readOriginPolicyFromEnv();
 
   // ---- HTTP API routes ----
@@ -332,6 +338,7 @@ export async function registerRoutes(
     credentialsDir,
     marketplaceStore,
     usageManager,
+    agentMergeClaims,
     runnerRegistry,
     chatHistoryManager,
     authManager,
@@ -1369,6 +1376,20 @@ export async function registerRoutes(
         if (dir !== activeSessionDir) {
           activeSessionDir = dir;
         }
+        // docs/287-agent-merge-per-repo req 9 — the activation reconciliation
+        // trigger, the third of three. A claim stranded by a transient GitHub or
+        // authentication failure must not wait for a process restart, and a
+        // session being opened is both a natural retry point and the moment its
+        // user is most likely to be looking at the card the settlement writes.
+        void reconcileAgentMergeClaims({
+          claims: agentMergeClaims,
+          sessionManager,
+          chatHistoryManager,
+          prStatusPoller,
+          runnerRegistry,
+        }, { sessionId: sid }).catch((err: unknown) => {
+          console.error(`[agent-merge] activation reconciliation for ${sid} failed:`, err);
+        });
         if (s?.remoteUrl) {
           prStatusPoller.trackSession(sid, s.remoteUrl);
           void prStatusPoller.forceRefreshSession(sid).catch((err: unknown) => {

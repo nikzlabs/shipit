@@ -18,6 +18,7 @@
  */
 
 import type { GitHubAuthManager } from "./github-auth.js";
+import type { TerminalPrFacts } from "./github-auth-prs.js";
 import type { SessionManager } from "./sessions.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { GitManager } from "../shared/git.js";
@@ -1383,6 +1384,36 @@ export class PrStatusPoller {
       return "open";
     }
 
+    this.promoteTerminal({ sessionId, owner, repo, branch, pr });
+    return "terminal";
+  }
+
+  /**
+   * docs/287-agent-merge-per-repo req 11 — the ONE terminal-promotion
+   * operation. Everything a merged or closed pull request does to a session
+   * happens here: the persisted snapshot, `merged_at`, `mergedHeadSha`, reset
+   * eligibility, the notify-on-merge watch, and the issue lifecycle.
+   *
+   * It takes the pull request's FACTS rather than fetching them, because its
+   * two callers find the pull request differently and only one of them can:
+   * detection knows the branch, settlement knows the number, and a
+   * branch-addressed lookup answers about the wrong pull request after a
+   * re-arm or an unarchive in the same repository.
+   */
+  private promoteTerminal(args: {
+    sessionId: string;
+    owner: string;
+    repo: string;
+    branch: string;
+    pr: {
+      number: number; url: string; title: string; body: string; base: string;
+      state: "open" | "closed"; merged_at: string | null; merge_commit_sha: string | null;
+      head_sha: string | null; additions: number; deletions: number;
+    };
+    /** Re-run the once-per-merge effects even if the state already reads terminal. */
+    force?: boolean;
+  }): void {
+    const { sessionId, owner, repo, branch, pr, force } = args;
     // Capture whether this session was already promoted to a terminal state
     // before this verify, so the merge-driven side effects (archive,
     // issue-lifecycle close, notify-on-merge) fire exactly once per real merge.
@@ -1399,14 +1430,29 @@ export class PrStatusPoller {
     // seeds it), so we also treat a PR already recorded terminal as terminal.
     // A merge first observed only after a mid-merge restart still fires once:
     // its persisted state was "open" at the last pre-restart poll.
+    const isMerged = pr.merged_at !== null;
+    const prState = isMerged ? "merged" as const : pr.state === "closed" ? "closed" as const : "open" as const;
     const prevState = this.tracker.lastKnown.get(sessionId)?.prState;
     // docs/266 — captured HERE, before `lastKnown` is overwritten with the
     // terminal summary below (which hard-codes `autoMergeEnabled: false`).
     // GitHub's own flag is the only record of a native arming ShipIt never
     // stored, e.g. the merge button's pending-checks fallback.
     const nativeArmedOnGitHub = this.tracker.lastKnown.get(sessionId)?.autoMergeEnabled === true;
-    const alreadyTerminal =
-      this.tracker.mergedSessions.has(sessionId)
+    // docs/287-agent-merge-per-repo req 11 — `force` re-enters the once-per-merge
+    // effects even when the persisted state already reads terminal.
+    //
+    // Without it this method is NOT crash-reentrant, and silently so: it
+    // persists the terminal snapshot first, derives `alreadyTerminal` from that
+    // persisted state, and writes `mergedHeadSha`, `merged_at` and the
+    // downstream merge handling later and only when `!alreadyTerminal`. A crash
+    // between the two therefore restarts into `prevState === "merged"` and
+    // suppresses those writes for ever — the session left with a merged card,
+    // no `merged_at`, and no reset eligibility, with nothing anywhere saying so.
+    // A durable `settling` claim is exactly the evidence that those effects have
+    // not run, so it re-enters rather than trusting the snapshot.
+    const alreadyTerminal = force
+      ? false
+      : this.tracker.mergedSessions.has(sessionId)
       || prevState === "merged"
       || prevState === "closed";
 
@@ -1570,6 +1616,38 @@ export class PrStatusPoller {
       }
     }
 
-    return "terminal";
+  }
+
+  /**
+   * docs/287-agent-merge-per-repo req 11 — promote a pull request ShipIt just
+   * merged, addressed by NUMBER.
+   *
+   * This is what settlement calls instead of `forceVerifySessionPrState()`.
+   * That one resolves the tracker's current repository and the session's
+   * current branch, and the lookup beneath it takes the most recently updated
+   * pull request on that branch — so a re-arm or an unarchive is enough to make
+   * it settle a different pull request than the one that merged.
+   *
+   * Returns the facts it promoted from, so the caller can describe the merge
+   * without a second fetch; `null` when GitHub does not answer, which leaves
+   * the claim for another attempt.
+   */
+  async promoteMergedPrByNumber(args: {
+    sessionId: string;
+    owner: string;
+    repo: string;
+    prNumber: number;
+  }): Promise<TerminalPrFacts | null> {
+    const pr = await this.githubAuth.findPullRequestByNumber(args.owner, args.repo, args.prNumber);
+    if (!pr) return null;
+    this.promoteTerminal({
+      sessionId: args.sessionId,
+      owner: args.owner,
+      repo: args.repo,
+      branch: pr.head_ref,
+      pr,
+      force: true,
+    });
+    return pr;
   }
 }

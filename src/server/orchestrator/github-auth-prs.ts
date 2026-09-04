@@ -154,6 +154,56 @@ export async function findPullRequestAnyState(
   };
 }
 
+/** The normalized pull-request facts a terminal promotion needs. */
+export interface TerminalPrFacts {
+  url: string; number: number; base: string; title: string; body: string;
+  state: "open" | "closed"; merged_at: string | null; merge_commit_sha: string | null;
+  head_sha: string | null; head_ref: string; additions: number; deletions: number;
+}
+
+/**
+ * docs/287-agent-merge-per-repo req 11 — the same facts as
+ * {@link findPullRequestAnyState}, addressed by NUMBER.
+ *
+ * Settlement cannot use the branch-addressed lookup. That one asks for the most
+ * recently updated pull request on a branch, so a re-arm or an unarchive inside
+ * the same repository is enough to make it answer about a different pull request
+ * than the one that was merged — and settling the wrong pull request writes the
+ * wrong session state. A number is exact.
+ */
+export async function findPullRequestByNumber(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+): Promise<TerminalPrFacts | null> {
+  const res = await fetchGitHub(
+    `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
+    token,
+  );
+  if (!res.ok) return null;
+  const pr = (await res.json().catch(() => null)) as {
+    html_url?: string; number?: number; base?: { ref?: string }; title?: string; body?: string | null;
+    state?: "open" | "closed"; merged_at?: string | null; merge_commit_sha?: string | null;
+    head?: { sha?: string; ref?: string } | null; additions?: number; deletions?: number;
+  } | null;
+  if (!pr || typeof pr.number !== "number") return null;
+  return {
+    url: pr.html_url ?? "",
+    number: pr.number,
+    base: pr.base?.ref ?? "",
+    title: pr.title ?? "",
+    body: pr.body ?? "",
+    state: pr.state === "closed" ? "closed" : "open",
+    merged_at: pr.merged_at ?? null,
+    merge_commit_sha: pr.merge_commit_sha ?? null,
+    head_sha: pr.head?.sha ?? null,
+    head_ref: pr.head?.ref ?? "",
+    additions: pr.additions ?? 0,
+    deletions: pr.deletions ?? 0,
+  };
+}
+
 /**
  * Merge a pull request.
  *
@@ -171,6 +221,119 @@ export async function findPullRequestAnyState(
  * the check and this call merges unchecked. Omitted by callers with nothing to
  * pin (the UI card merges what the card shows).
  */
+export type MergeAttempt =
+  /** A parsed response saying the merge landed. */
+  | { outcome: "merged"; message: string; mergeCommitSha: string | null }
+  /** GitHub answered no — conflict, protection, a moved head. It did not merge. */
+  | { outcome: "refused"; message: string }
+  /**
+   * We never got an answer we can trust: a transport error, a 5xx, an
+   * unparseable body. The merge MAY have happened.
+   */
+  | { outcome: "indeterminate"; message: string };
+
+/**
+ * docs/287-agent-merge-per-repo req 9 — the merge attempt, with the three
+ * outcomes it actually has.
+ *
+ * The distinction is not cosmetic: it decides whether the durable claim
+ * (`agent-merge-claims.ts`) is deleted or left for reconciliation. Collapsing
+ * "GitHub refused" and "we never heard back" into one `success: false` — what
+ * {@link mergePullRequest} did, and still presents to callers that only need a
+ * boolean — discards the record of a merge that may already have happened.
+ *
+ * The classification errs toward `indeterminate`, because that is the outcome
+ * whose recovery is a second look at GitHub. A 4xx is GitHub answering about
+ * THIS merge and is taken as a refusal; a 5xx, a rejected fetch, and a 2xx we
+ * cannot parse are not answers.
+ */
+export async function mergePullRequestAttempt(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  method: "merge" | "squash" | "rebase" = "merge",
+  commitTitle?: string,
+  commitMessage?: string,
+  expectedSha?: string,
+): Promise<MergeAttempt> {
+  const body: Record<string, string> = { merge_method: method };
+  if (typeof commitTitle === "string") body.commit_title = commitTitle;
+  if (typeof commitMessage === "string") body.commit_message = commitMessage;
+  if (expectedSha) body.sha = expectedSha;
+
+  let res: Response;
+  try {
+    res = await fetchGitHub(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}/merge`,
+      token,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+  } catch (err) {
+    // The request may have reached GitHub and been executed. Saying "failed"
+    // here is how a performed merge loses its record.
+    return {
+      outcome: "indeterminate",
+      message:
+        `ShipIt did not hear back from GitHub about merging PR #${pullNumber} `
+        + `(${err instanceof Error ? err.message : String(err)}). It may or may not have merged.`,
+    };
+  }
+
+  if (!res.ok) {
+    const message = await parseGitHubError(res);
+    // 5xx and 429 are not an answer about this merge.
+    if (res.status >= 500 || res.status === 429) {
+      return {
+        outcome: "indeterminate",
+        message: `GitHub returned ${res.status} for the merge of PR #${pullNumber}: ${message}`,
+      };
+    }
+    if (res.status === 405) {
+      return { outcome: "refused", message: message || "PR is not mergeable" };
+    }
+    // 409 with an `expectedSha` is specifically "the head moved between the
+    // check and this call" — the case the parameter exists to catch, and worth
+    // naming, because GitHub's own wording ("Head branch was modified") does not
+    // tell the caller what to do next.
+    if (res.status === 409 && expectedSha) {
+      return {
+        outcome: "refused",
+        message:
+          `${message || "Head branch was modified"} — the branch moved after its checks were `
+          + "read, so nothing was merged. Merge again once the new head's checks report.",
+      };
+    }
+    return { outcome: "refused", message };
+  }
+
+  const parsed = await res.json().catch(() => null) as { merged?: boolean; sha?: string } | null;
+  if (!parsed) {
+    // A 2xx we cannot read. Almost certainly merged — and "almost" is exactly
+    // why this is not reported as one.
+    return {
+      outcome: "indeterminate",
+      message: `GitHub accepted the merge of PR #${pullNumber} but returned a body ShipIt could not read.`,
+    };
+  }
+  if (parsed.merged === false) {
+    return { outcome: "refused", message: "GitHub reported the pull request as not merged." };
+  }
+  return { outcome: "merged", message: "Pull request merged", mergeCommitSha: parsed.sha ?? null };
+}
+
+/**
+ * Merge a pull request, for callers that only need "did it work".
+ *
+ * Both non-success outcomes collapse to `success: false` here on purpose: a
+ * caller with no durable claim has nothing to do differently with an
+ * indeterminate result. Callers that DO — the agent merge — use
+ * {@link mergePullRequestAttempt}.
+ */
 export async function mergePullRequest(
   token: string,
   owner: string,
@@ -181,42 +344,10 @@ export async function mergePullRequest(
   commitMessage?: string,
   expectedSha?: string,
 ): Promise<{ success: boolean; message: string }> {
-  const body: Record<string, string> = { merge_method: method };
-  if (typeof commitTitle === "string") body.commit_title = commitTitle;
-  if (typeof commitMessage === "string") body.commit_message = commitMessage;
-  if (expectedSha) body.sha = expectedSha;
-
-  const res = await fetchGitHub(
-    `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}/merge`,
-    token,
-    {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    },
+  const attempt = await mergePullRequestAttempt(
+    token, owner, repo, pullNumber, method, commitTitle, commitMessage, expectedSha,
   );
-
-  if (!res.ok) {
-    const err = (await res.json()) as { message?: string };
-    if (res.status === 405) {
-      return { success: false, message: err.message || "PR is not mergeable" };
-    }
-    // 409 with an `expectedSha` is specifically "the head moved between the
-    // check and this call" — the case the parameter exists to catch, and worth
-    // naming, because GitHub's own wording ("Head branch was modified") does not
-    // tell the caller what to do next.
-    if (res.status === 409 && expectedSha) {
-      return {
-        success: false,
-        message:
-          `${err.message || "Head branch was modified"} — the branch moved after its checks were `
-          + "read, so nothing was merged. Merge again once the new head's checks report.",
-      };
-    }
-    return { success: false, message: err.message || `GitHub API returned ${res.status}` };
-  }
-
-  return { success: true, message: "Pull request merged" };
+  return { success: attempt.outcome === "merged", message: attempt.message };
 }
 
 /**

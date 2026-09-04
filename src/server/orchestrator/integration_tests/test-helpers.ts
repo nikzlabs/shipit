@@ -579,6 +579,43 @@ export class StubGitHubAuthManager extends EventEmitter {
     return this._mergeResult ?? { success: true, message: "Pull request merged" };
   }
 
+  /**
+   * docs/287 — the three-way attempt the agent merge uses. Recorded in the same
+   * list as the boolean wrapper so a test can assert what was pinned either way,
+   * and answered from `_mergeAttempt` when a test needs a specific outcome.
+   */
+  async mergePullRequestAttempt(
+    owner: string, repo: string, pullNumber: number, method = "merge", expectedSha?: string,
+  ) {
+    this.mergePullRequestCalls.push({
+      owner, repo, pullNumber, method, ...(expectedSha ? { expectedSha } : {}),
+    });
+    if (this._mergeAttempt) return this._mergeAttempt;
+    const legacy = this._mergeResult;
+    if (legacy && !legacy.success) return { outcome: "refused" as const, message: legacy.message };
+    return { outcome: "merged" as const, message: "Pull request merged", mergeCommitSha: "merge-sha" };
+  }
+
+  private _mergeAttempt:
+    | { outcome: "merged"; message: string; mergeCommitSha: string | null }
+    | { outcome: "refused"; message: string }
+    | { outcome: "indeterminate"; message: string }
+    | null = null;
+
+  /** Set the three-way outcome the agent merge sees. */
+  setMergeAttempt(attempt: typeof this._mergeAttempt) {
+    this._mergeAttempt = attempt;
+  }
+
+  /** docs/287 — the by-number terminal facts settlement promotes from. */
+  private _prByNumber: Record<number, unknown> = {};
+  setPullRequestByNumber(number: number, facts: unknown) {
+    this._prByNumber[number] = facts;
+  }
+  async findPullRequestByNumber(_owner: string, _repo: string, pullNumber: number) {
+    return (this._prByNumber[pullNumber] ?? null) as never;
+  }
+
   async enableAutoMerge(_owner: string, _repo: string, _pullNumber: number, _method = "MERGE") {
     return { success: true, message: "Auto-merge enabled — PR will merge when checks pass" };
   }

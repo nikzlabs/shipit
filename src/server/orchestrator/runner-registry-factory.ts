@@ -175,6 +175,14 @@ export interface RunnerRegistryDeps {
    */
   getPrStatusPoller?: () => PrStatusPoller | undefined;
   /**
+   * docs/287-agent-merge-per-repo req 9 — resolve this session's outstanding
+   * agent-merge claim, now that its turn is over. Fire-and-forget: a claim that
+   * cannot be resolved this time is resolved by one of the other two triggers
+   * (startup, session activation). Optional — a setup without it simply defers
+   * every claim to those.
+   */
+  reconcileAgentMergeClaimsFor?: (sessionId: string) => void;
+  /**
    * docs/146 — lazy resolver for the auto-conflict-resolve manager. The
    * manager is constructed inside the poller (one tick after the registry
    * exists), so we accept a lazy getter rather than a direct ref. Wired so
@@ -317,6 +325,7 @@ export function createRunnerRegistry(
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, logStore, runtimeMode, broadcastLog,
     credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, rebindDelivery,
+    reconcileAgentMergeClaimsFor,
     usageManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     markSessionAccountExhausted,
     markCredentialRouteAuthFailed,
@@ -344,6 +353,13 @@ export function createRunnerRegistry(
       // Fans out to BOTH the auto-fix and auto-resolve managers. Cooldown-driven
       // retry still runs through `handleTransition` on the next poll, not here.
       getPrStatusPoller?.()?.notifyRunnerIdle(sessionId);
+      // docs/287-agent-merge-per-repo req 9 — end of turn is one of the three
+      // reconciliation triggers. A claim left `merging` by an indeterminate
+      // merge is resolvable the moment its turn is over, and this is the
+      // earliest safe point: reconciliation refuses to settle while a turn is
+      // running, precisely so it cannot mark a session merged and delete its
+      // remote branch while the agent is still pushing.
+      reconcileAgentMergeClaimsFor?.(sessionId);
     },
     onRunnerCreated: (runner) => {
       // planning#246 — the ONE subscriber for the cross-session "busy outside a

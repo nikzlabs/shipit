@@ -72,43 +72,51 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 - [x] Migration: `agent_merge_claims` (session PK with `ON DELETE CASCADE`,
       repo id, PR number, expected SHA, `turn_id`, `state` = merging | settling).
       No `method`: nothing after the REST attempt reads it — **done**
-- [ ] Three merge outcomes: witnessed success → `settling`; definitive GitHub
+- [x] Three merge outcomes: witnessed success → `settling`; definitive GitHub
       refusal → deleted, reason reaches the agent; indeterminate (transport
       error, timeout, unparseable body) → stays `merging`
-- [ ] The merge and create adapters return a **typed three-way outcome**; today
-      every non-2xx and every transport error collapse into one `success: false`
-- [ ] A `merging` row is resolved from its own tuple, never from the shape of the
-      error: merged → `settling`; still open → deleted
-- [ ] The merge route **requires an active turn** and records its identity on the
-      claim; the route is `containerAccessible` and enforces none of this today,
-      and an existing integration test calls it with no live turn
-- [ ] Reconciliation runs at startup, at end of turn, and on session activation —
-      not startup alone, or a transient failure strands a row until a restart
-- [ ] Reconciliation never settles while that session has an active turn
-      (reattachment returns while the adopted turn keeps running), and a later
-      turn does not start while settlement is unresolved
+- [x] The MERGE adapter returns a typed three-way outcome
+      (`mergePullRequestAttempt`); `mergePullRequest` stays as the boolean
+      wrapper for callers with no claim to keep or drop. The CREATE adapter
+      deliberately does not: the distinction was there to decide whether a
+      create *intent* was cleared, and that table was deleted when provenance
+      became witnessed-create-only, so it would have no consumer
+- [x] A `merging` row is resolved from its own tuple, never from the shape of the
+      error: merged → settled and recorded; still open → deleted
+- [x] The merge route **requires an active turn** and records its identity on the
+      claim. The turn identity carries a per-process prefix, so a claim from a
+      previous process cannot match epoch 0 of the next one
+- [x] Reconciliation runs at startup, at end of turn (the runner-idle hook), and
+      on session activation
+- [x] Reconciliation never settles while that session has an active turn —
+      `agentBusy` OR `running`, so post-turn work counts too
+- [ ] A later turn does not start while settlement is unresolved (not built: an
+      unresolved claim defers to the next trigger rather than blocking a turn)
 
-- [ ] Neither `forceVerifySessionPrState()` nor `awaitMergeHandling()` is used
-- [ ] One canonical terminal-promotion operation, addressed by PR number and given
+- [x] Neither `forceVerifySessionPrState()` nor `awaitMergeHandling()` is used
+- [x] One canonical terminal-promotion operation, addressed by PR number and given
       the complete PR facts (URL, title, body, base, branch, diff stats, head SHA)
-- [ ] Promoted state matches a detected merge: `merged_at`, merged snapshot,
-      `mergedHeadSha`, reset eligibility
-- [ ] A `settling` row **re-enters** terminal promotion even when `pr_status`
-      already reads terminal — today's promotion persists the snapshot first and
-      writes `merged_at` / `mergedHeadSha` / merge handling only when
-      `!alreadyTerminal`, so a crash between them would suppress them for ever
-- [ ] A test crashes between the snapshot and those writes, and proves the
+- [x] Promoted state matches a detected merge: `merged_at`, merged snapshot,
+      `mergedHeadSha`, reset eligibility — it is literally the same code path
+- [x] A `settling` row **re-enters** terminal promotion even when `pr_status`
+      already reads terminal (the `force` flag)
+- [x] A test crashes between the snapshot and those writes, and proves the
       restart still lands `merged_at`, `mergedHeadSha` and reset eligibility
-- [ ] Merge record carries a stable natural identity built only from durable row
+- [x] Merge record carries a stable natural identity built only from durable row
       values (`agent-merge:<repo_id>#<pr>@<expected_sha>`); settlement is
-      idempotent on it
-- [ ] Notices go through `persistNoticeUnattached()` when there is no runner
-- [ ] Recovery records only what it can prove: "the agent asked for this commit
+      idempotent on it — the record and the release share one transaction, and
+      the row inside it is the permission to record
+- [x] Notices go through `persistNoticeUnattached()` — always, since a
+      settlement can run post-turn or after a restart
+- [x] Recovery records only what it can prove: "the agent asked for this commit
       and it is now merged"; "the agent merged it" needs a witnessed REST success
-- [ ] Session-state writes require the current `pr_repo_id` **and** `pr_number`
-      to equal the row's, and the row's `turn_id` to still be the active turn
-- [ ] The row is deleted only after settlement is written
-- [ ] Success is reported only after settlement, so the agent's next
+- [x] Session-state writes require the current `pr_repo_id` **and** `pr_number`
+      to equal the row's, checked BEFORE the promotion (which is what writes
+      that state). Reconciliation's turn rule is stronger than the row's
+      `turn_id`: it stands down for ANY active turn, because the hazard is
+      writing while something else pushes, not whether the ids match
+- [x] The row is deleted only after settlement is written
+- [x] Success is reported only after settlement, so the agent's next
       `shipit branch reset-to-base` cannot see `not-merged`
 
 ## UI and docs

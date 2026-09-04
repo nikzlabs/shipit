@@ -68,7 +68,14 @@ function makeGitHub(
     // the same way: a fake that aliases the gate read with any other query
     // cannot fail a test that wires the wrong one.
     graphqlQuery: vi.fn(async (query: string) => (query.includes("MergeGate") ? gateAnswer : null)),
-    mergePullRequest: vi.fn(async () => ({ success: true, message: "Pull request merged" })),
+    // docs/287 — the agent merge goes through the THREE-way attempt, because
+    // its durable claim is kept or dropped on the distinction between "GitHub
+    // refused" and "we never heard back". `mergePullRequest` (the boolean
+    // wrapper) is deliberately absent from this fake: a test that wired the
+    // wrong one would otherwise pass.
+    mergePullRequestAttempt: vi.fn(async () => ({
+      outcome: "merged" as const, message: "Pull request merged", mergeCommitSha: "merge-sha",
+    })),
     enableAutoMerge: vi.fn(async () => ({ success: true, message: "Auto-merge enabled" })),
     ...over,
   } as unknown as GitHubAuthManager;
@@ -80,13 +87,13 @@ describe("agentMergePullRequest", () => {
     const res = await agentMergePullRequest(makeGit(), github, { number: 5, sessionId: "s1", remoteUrl: REMOTE });
     expect(res.success).toBe(true);
     // req 16 — pinned to the commit the gate examined.
-    expect(github.mergePullRequest).toHaveBeenCalledWith("o", "r", 5, "merge", HEAD_SHA);
+    expect(github.mergePullRequestAttempt).toHaveBeenCalledWith("o", "r", 5, "merge", HEAD_SHA);
   });
 
   it("forwards the chosen merge method", async () => {
     const github = makeGitHub();
     await agentMergePullRequest(makeGit(), github, { number: 5, sessionId: "s1", method: "squash", remoteUrl: REMOTE });
-    expect(github.mergePullRequest).toHaveBeenCalledWith("o", "r", 5, "squash", HEAD_SHA);
+    expect(github.mergePullRequestAttempt).toHaveBeenCalledWith("o", "r", 5, "squash", HEAD_SHA);
   });
 
   it("merges when GitHub reports no checks and no grace window applies", async () => {
@@ -105,7 +112,7 @@ describe("agentMergePullRequest", () => {
     });
     expect(res.success).toBe(false);
     expect(res.message).toContain("no checks yet");
-    expect(github.mergePullRequest).not.toHaveBeenCalled();
+    expect(github.mergePullRequestAttempt).not.toHaveBeenCalled();
   });
 
   it("refuses when the read itself fails, instead of reading it as no checks", async () => {
@@ -114,7 +121,7 @@ describe("agentMergePullRequest", () => {
     const github = makeGitHub({}, null);
     const res = await agentMergePullRequest(makeGit(), github, { number: 5, sessionId: "s1", remoteUrl: REMOTE });
     expect(res.success).toBe(false);
-    expect(github.mergePullRequest).not.toHaveBeenCalled();
+    expect(github.mergePullRequestAttempt).not.toHaveBeenCalled();
   });
 
   it("refuses a failing check and never calls merge", async () => {
@@ -122,7 +129,7 @@ describe("agentMergePullRequest", () => {
     const res = await agentMergePullRequest(makeGit(), github, { number: 5, sessionId: "s1", remoteUrl: REMOTE });
     expect(res.success).toBe(false);
     expect(res.message).toContain("failing");
-    expect(github.mergePullRequest).not.toHaveBeenCalled();
+    expect(github.mergePullRequestAttempt).not.toHaveBeenCalled();
   });
 
   it("refuses a still-running check without --auto", async () => {
@@ -131,7 +138,7 @@ describe("agentMergePullRequest", () => {
     expect(res.success).toBe(false);
     // The sandbox keeps the `--auto` affordance, so its refusal still names it.
     expect(res.message).toContain("--auto");
-    expect(github.mergePullRequest).not.toHaveBeenCalled();
+    expect(github.mergePullRequestAttempt).not.toHaveBeenCalled();
     expect(github.enableAutoMerge).not.toHaveBeenCalled();
   });
 
@@ -140,7 +147,7 @@ describe("agentMergePullRequest", () => {
     const res = await agentMergePullRequest(makeGit(), github, { number: 5, sessionId: "s1", auto: true, remoteUrl: REMOTE });
     expect(res.autoMergeEnabled).toBe(true);
     expect(github.enableAutoMerge).toHaveBeenCalledWith("o", "r", 5, "MERGE");
-    expect(github.mergePullRequest).not.toHaveBeenCalled();
+    expect(github.mergePullRequestAttempt).not.toHaveBeenCalled();
   });
 
   it("refuses a draft PR", async () => {
@@ -148,7 +155,7 @@ describe("agentMergePullRequest", () => {
     const res = await agentMergePullRequest(makeGit(), github, { number: 5, sessionId: "s1", remoteUrl: REMOTE });
     expect(res.success).toBe(false);
     expect(res.message).toContain("draft");
-    expect(github.mergePullRequest).not.toHaveBeenCalled();
+    expect(github.mergePullRequestAttempt).not.toHaveBeenCalled();
   });
 
   it("reports an already-merged PR as success without re-merging", async () => {
@@ -156,16 +163,88 @@ describe("agentMergePullRequest", () => {
     const res = await agentMergePullRequest(makeGit(), github, { number: 5, sessionId: "s1", remoteUrl: REMOTE });
     expect(res.success).toBe(true);
     expect(res.message).toContain("already merged");
-    expect(github.mergePullRequest).not.toHaveBeenCalled();
+    expect(github.mergePullRequestAttempt).not.toHaveBeenCalled();
   });
 
   it("surfaces GitHub's rejection verbatim (branch protection / required review)", async () => {
     const github = makeGitHub({
-      mergePullRequest: vi.fn(async () => ({ success: false, message: "At least 1 approving review is required." })),
+      mergePullRequestAttempt: vi.fn(async () => ({
+        outcome: "refused" as const, message: "At least 1 approving review is required.",
+      })),
     });
     const res = await agentMergePullRequest(makeGit(), github, { number: 5, sessionId: "s1", remoteUrl: REMOTE });
     expect(res.success).toBe(false);
     expect(res.message).toBe("At least 1 approving review is required.");
+  });
+
+  // docs/287 req 9 — the three outcomes, and what each does to the claim.
+  describe("the durable claim", () => {
+    it("claims before the merge call, and settles only a witnessed success", async () => {
+      const order: string[] = [];
+      const github = makeGitHub({
+        mergePullRequestAttempt: vi.fn(async () => {
+          order.push("merge");
+          return { outcome: "merged" as const, message: "Pull request merged", mergeCommitSha: "m" };
+        }),
+      });
+      const res = await agentMergePullRequest(makeGit(), github, {
+        number: 5, sessionId: "s1", remoteUrl: REMOTE,
+        onClaim: (sha) => { order.push(`claim:${sha}`); return true; },
+        onMerged: async () => { order.push("settle"); },
+        onRefused: async () => { order.push("refused"); },
+        onIndeterminate: async () => { order.push("indeterminate"); },
+      });
+      expect(res.success).toBe(true);
+      // The claim is durable BEFORE the call, because the call can reject after
+      // GitHub accepted it — and success is reported only after settlement.
+      expect(order).toEqual([`claim:${HEAD_SHA}`, "merge", "settle"]);
+    });
+
+    it("refuses to merge at all when the claim cannot be written", async () => {
+      const github = makeGitHub();
+      const res = await agentMergePullRequest(makeGit(), github, {
+        number: 5, sessionId: "s1", remoteUrl: REMOTE, onClaim: () => false,
+      });
+      expect(res.success).toBe(false);
+      expect(github.mergePullRequestAttempt).not.toHaveBeenCalled();
+    });
+
+    it("reports an indeterminate attempt without settling it", async () => {
+      // The merge MAY have happened. Settling would claim a merge nobody saw;
+      // dropping the claim would lose the only evidence there is.
+      const calls: string[] = [];
+      const github = makeGitHub({
+        mergePullRequestAttempt: vi.fn(async () => ({
+          outcome: "indeterminate" as const, message: "ShipIt did not hear back from GitHub",
+        })),
+      });
+      const res = await agentMergePullRequest(makeGit(), github, {
+        number: 5, sessionId: "s1", remoteUrl: REMOTE,
+        onClaim: () => true,
+        onMerged: async () => { calls.push("settle"); },
+        onRefused: async () => { calls.push("refused"); },
+        onIndeterminate: async () => { calls.push("indeterminate"); },
+      });
+      expect(res.success).toBe(false);
+      expect(calls).toEqual(["indeterminate"]);
+    });
+
+    it("releases the claim on a definitive refusal", async () => {
+      const calls: string[] = [];
+      const github = makeGitHub({
+        mergePullRequestAttempt: vi.fn(async () => ({
+          outcome: "refused" as const, message: "PR is not mergeable",
+        })),
+      });
+      await agentMergePullRequest(makeGit(), github, {
+        number: 5, sessionId: "s1", remoteUrl: REMOTE,
+        onClaim: () => true,
+        onMerged: async () => { calls.push("settle"); },
+        onRefused: async () => { calls.push("refused"); },
+        onIndeterminate: async () => { calls.push("indeterminate"); },
+      });
+      expect(calls).toEqual(["refused"]);
+    });
   });
 
   it("throws a 401 ServiceError when GitHub is not authenticated", async () => {

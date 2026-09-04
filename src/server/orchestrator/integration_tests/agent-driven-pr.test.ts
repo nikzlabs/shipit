@@ -42,6 +42,7 @@ import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
 import { CredentialStore } from "../credential-store.js";
 import { RepoStore } from "../repo-store.js";
+import { AgentMergeClaimStore } from "../agent-merge-claims.js";
 import type { WsServerMessage } from "../../shared/types.js";
 
 let tmpDir: string;
@@ -70,6 +71,11 @@ beforeEach(async () => {
   repoStore = new RepoStore(dbManager);
 
   app = await buildApp({
+    // docs/287 — the SAME database the managers above were built from. Without
+    // this, app-di creates its own, and anything the orchestrator constructs
+    // internally (the agent-merge claim store) writes into a database whose
+    // `sessions` table is empty — which its foreign key correctly refuses.
+    databaseManager: dbManager,
     credentialStore,
     credentialsDir: path.join(tmpDir, "credentials"),
     workspaceDir: tmpDir,
@@ -183,6 +189,26 @@ async function setupPrimedSession(): Promise<{ sessionId: string; sessionDir: st
   sessionManager.setBranchRenamed(sessionId, true);
 
   return { sessionId, sessionDir };
+}
+
+/**
+ * docs/287 req 9 — run `fn` while a turn is actually in flight on the session.
+ *
+ * The agent merge is turn-owned and the route now proves it, so a request made
+ * between turns is refused. That is not a test artefact to work around: the shim
+ * only ever calls this endpoint from inside a turn, and this helper reproduces
+ * that rather than reaching into the runner registry to fake it.
+ */
+async function withLiveTurn<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  const previous = latestClaude;
+  client.send({ type: "send_message", text: "merge it", sessionId });
+  const claude = await waitForClaude(() => latestClaude, previous);
+  try {
+    return await fn();
+  } finally {
+    claude.finish("agent-session-1");
+    await drainMessages(1500);
+  }
 }
 
 async function drainMessages(timeoutMs = 2500): Promise<WsServerMessage[]> {
@@ -1072,11 +1098,11 @@ describe("repo-aware PR brokering (docs/211)", () => {
       }).toString().trim();
       githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "SUCCESS" });
 
-      const res = await app.inject({
+      const res = await withLiveTurn(sessionId, () => app.inject({
         method: "POST",
         url: `/api/sessions/${sessionId}/pr/7/merge`,
         payload: { cwd: "/workspace" },
-      });
+      }));
       expect(res.statusCode).toBe(200);
       expect(res.json()).toMatchObject({ success: true });
       // req 16 — GitHub is asked to merge that exact commit, so anything that
@@ -1102,11 +1128,11 @@ describe("repo-aware PR brokering (docs/211)", () => {
       githubAuth.setMergeGateResult({ headRefOid: "somebody-elses-commit", rollupState: "SUCCESS" });
       const before = githubAuth.mergePullRequestCalls.length;
 
-      const res = await app.inject({
+      const res = await withLiveTurn(sessionId, () => app.inject({
         method: "POST",
         url: `/api/sessions/${sessionId}/pr/7/merge`,
         payload: {},
-      });
+      }));
       expect(res.json()).toMatchObject({
         success: false,
         message: expect.stringContaining("not this session's current commit"),
@@ -1129,9 +1155,9 @@ describe("repo-aware PR brokering (docs/211)", () => {
       const before = githubAuth.mergePullRequestCalls.length;
 
       githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "FAILURE" });
-      const failing = await app.inject({
+      const failing = await withLiveTurn(sessionId, () => app.inject({
         method: "POST", url: `/api/sessions/${sessionId}/pr/7/merge`, payload: {},
-      });
+      }));
       expect(failing.json()).toMatchObject({
         success: false, message: expect.stringContaining("failing checks"),
       });
@@ -1139,9 +1165,9 @@ describe("repo-aware PR brokering (docs/211)", () => {
       // req 12/13 — arming is docs/288, and the refusal says so rather than
       // merging something the agent did not ask for.
       githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "PENDING" });
-      const auto = await app.inject({
+      const auto = await withLiveTurn(sessionId, () => app.inject({
         method: "POST", url: `/api/sessions/${sessionId}/pr/7/merge`, payload: { auto: true },
-      });
+      }));
       expect(auto.json()).toMatchObject({
         success: false, message: expect.stringContaining("docs/288-agent-merge-arming"),
       });
@@ -1181,11 +1207,11 @@ describe("repo-aware PR brokering (docs/211)", () => {
       githubAuth.setMergeGateResult({ rollupState: "SUCCESS" });
       const before = githubAuth.mergePullRequestCalls.length;
 
-      const res = await app.inject({
+      const res = await withLiveTurn(sessionId, () => app.inject({
         method: "POST",
         url: `/api/sessions/${sessionId}/pr/7/merge`,
         payload: {},
-      });
+      }));
       expect(res.statusCode).toBe(422);
       expect(res.json()).toMatchObject({ error: expect.stringContaining("unresolved conflicts") });
       expect(githubAuth.mergePullRequestCalls).toHaveLength(before);
@@ -1216,14 +1242,100 @@ describe("repo-aware PR brokering (docs/211)", () => {
       githubAuth.setMergeGateResult({ rollupState: "SUCCESS" });
       const before = githubAuth.mergePullRequestCalls.length;
 
+      const res = await withLiveTurn(sessionId, () => app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/7/merge`,
+        payload: {},
+      }));
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toMatchObject({ error: expect.stringContaining("had not reached GitHub") });
+      expect(githubAuth.mergePullRequestCalls).toHaveLength(before);
+    },
+  );
+
+  it(
+    "refuses a merge that arrives with no turn running (req 9)",
+    { timeout: 15_000 },
+    async () => {
+      // The endpoint is `containerAccessible` and the worker injects only a
+      // session id, so without this a process inside the container could merge
+      // after its turn ended, or during a later one — attaching its flush, its
+      // claim and its transcript record to the wrong turn.
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      const head = execSync("git rev-parse HEAD", {
+        cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "SUCCESS" });
+      const before = githubAuth.mergePullRequestCalls.length;
+
+      // No `withLiveTurn` — this is the request the guard exists for.
       const res = await app.inject({
         method: "POST",
         url: `/api/sessions/${sessionId}/pr/7/merge`,
         payload: {},
       });
+
       expect(res.statusCode).toBe(409);
-      expect(res.json()).toMatchObject({ error: expect.stringContaining("had not reached GitHub") });
+      expect(res.json()).toMatchObject({ error: expect.stringContaining("no turn") });
       expect(githubAuth.mergePullRequestCalls).toHaveLength(before);
+    },
+  );
+
+  it(
+    "leaves the claim standing when the merge outcome is indeterminate (req 9)",
+    { timeout: 15_000 },
+    async () => {
+      // The merge MAY have happened. Dropping the row would destroy the only
+      // evidence there is; reconciliation resolves it from the row's own tuple.
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      const head = execSync("git rev-parse HEAD", {
+        cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "SUCCESS" });
+      githubAuth.setMergeAttempt({
+        outcome: "indeterminate", message: "ShipIt did not hear back from GitHub",
+      });
+
+      const res = await withLiveTurn(sessionId, () => app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/7/merge`,
+        payload: {},
+      }));
+
+      expect(res.json()).toMatchObject({ success: false });
+      const claim = new AgentMergeClaimStore(dbManager).get(sessionId);
+      expect(claim).toMatchObject({ prNumber: 7, expectedSha: head, state: "merging" });
+    },
+  );
+
+  it(
+    "drops the claim when GitHub definitively refuses (req 9)",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      const head = execSync("git rev-parse HEAD", {
+        cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "SUCCESS" });
+      githubAuth.setMergeAttempt({ outcome: "refused", message: "PR is not mergeable" });
+
+      await withLiveTurn(sessionId, () => app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/7/merge`,
+        payload: {},
+      }));
+
+      // GitHub answered, and the answer was no. Nothing merged, nothing to recover.
+      expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toBeNull();
     },
   );
 

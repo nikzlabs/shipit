@@ -540,6 +540,19 @@ export async function agentMergePullRequest(
      * grace, which is the honest answer for a caller with no poller.
      */
     graceSaysWait?: (headSha: string) => Promise<boolean>;
+    /**
+     * docs/287 req 9 — write the durable claim, immediately before the REST
+     * call. Returning false refuses the merge: performing one whose record
+     * cannot survive a crash is the failure this whole section exists to
+     * prevent. Synchronous so nothing can interleave between it and the call.
+     */
+    onClaim?: (expectedSha: string) => boolean;
+    /** The merge landed and was witnessed — settle before reporting success. */
+    onMerged?: (expectedSha: string) => Promise<void>;
+    /** GitHub answered no; the claim is spent. */
+    onRefused?: (expectedSha: string) => Promise<void>;
+    /** No answer we can trust; the claim STAYS for reconciliation. */
+    onIndeterminate?: (expectedSha: string) => Promise<void>;
   },
 ): Promise<{ success: boolean; message: string; autoMergeEnabled?: boolean }> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
@@ -609,29 +622,54 @@ export async function agentMergePullRequest(
     return { success: false, message: decision.message };
   }
 
+  // docs/287 req 9 — the claim goes in BEFORE the call, because the call can
+  // reject after GitHub accepted it. `onClaim` returns false when the claim
+  // could not be written, and that refuses the merge rather than performing one
+  // whose outcome nothing would survive to record.
+  if (opts.onClaim && !opts.onClaim(decision.sha)) {
+    return {
+      success: false,
+      message:
+        `Not merged — ShipIt could not record the merge of PR #${opts.number} before performing `
+        + "it, and will not merge without a record it can recover. Try again.",
+    };
+  }
+
   // req 16 — merge the commit the gate examined, and nothing else. GitHub
   // refuses atomically if the head has moved since the read.
-  const result = await githubAuthManager.mergePullRequest(
+  const attempt = await githubAuthManager.mergePullRequestAttempt(
     owner, repo, opts.number, mergeMethod, decision.sha,
   );
-  if (result.success) {
-    // docs/266 req 7 — the merge record for the agent's own `gh pr merge`. The
-    // owner/repo field is load-bearing here in a way it is not on the UI route:
-    // a sandbox session merges an explicit PR number in a repository that need
-    // not be the session's own.
-    logMergePerformed({
-      owner,
-      repo,
-      prNumber: opts.number,
-      sessionId: opts.sessionId,
-      via: "gh pr merge",
-      method: mergeMethod,
-    });
-    return { success: true, message: `Merged PR #${opts.number}` };
+
+  // req 9 — three outcomes, not two. `indeterminate` deliberately leaves the
+  // claim standing: the merge may have happened, and reconciliation resolves it
+  // from the row's own tuple rather than from the shape of this failure.
+  if (attempt.outcome === "indeterminate") {
+    await opts.onIndeterminate?.(decision.sha);
+    return { success: false, message: attempt.message };
   }
-  // GitHub rejected the merge (branch protection, required review, conflicts).
-  // Surface its reason verbatim — never force.
-  return { success: false, message: result.message };
+  if (attempt.outcome === "refused") {
+    await opts.onRefused?.(decision.sha);
+    return { success: false, message: attempt.message };
+  }
+
+  // docs/266 req 7 — the merge record for the agent's own `gh pr merge`. The
+  // owner/repo field is load-bearing here in a way it is not on the UI route: a
+  // sandbox session merges an explicit PR number in a repository that need not
+  // be the session's own.
+  logMergePerformed({
+    owner,
+    repo,
+    prNumber: opts.number,
+    sessionId: opts.sessionId,
+    via: "gh pr merge",
+    method: mergeMethod,
+  });
+  // docs/287 req 11 — success is reported only after settlement, so the agent's
+  // next `shipit branch reset-to-base` cannot read `not-merged` for work that
+  // shipped a moment ago.
+  await opts.onMerged?.(decision.sha);
+  return { success: true, message: `Merged PR #${opts.number}` };
 }
 
 /**

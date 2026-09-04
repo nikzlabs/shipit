@@ -53,7 +53,8 @@ import { PR_LIST_STATES, type PrListState } from "./github-auth-prs.js";
 import { getErrorMessage } from "./validation.js";
 import { guardMergeSync } from "./services/branch-sync.js";
 import { mergeFlushRefusal } from "./services/merge-gate.js";
-import { parseGitHubRemote } from "./git-utils.js";
+import { activeTurnIdFor, settleAgentMerge } from "./services/agent-merge-settlement.js";
+import { parseGitHubRemote, repoId } from "./git-utils.js";
 import { resolvePrTarget, gitCredentialAllowed, mergeDisposition, agentMergeOwnership } from "./pr-target.js";
 import { recordWitnessedPrCreate } from "./services/pr-provenance.js";
 import type { FastifyReply } from "fastify";
@@ -1425,6 +1426,20 @@ export async function registerGitHubRoutes(
       // repository is whatever it cloned — and which has no grace hook anyway.
       const parsedRemote = session.remoteUrl ? parseGitHubRemote(session.remoteUrl) : null;
       const mergeRepoKey = parsedRemote ? `${parsedRemote.owner}/${parsedRemote.repo}` : null;
+      // docs/287 req 9 — the claim is repo-bound only. A sandbox's pull request
+      // is not the session's own, has no provenance, and no session state to
+      // settle into, so there is nothing for a claim to protect.
+      const claimRepoId = repoBound ? repoId(session.remoteUrl ?? "") : null;
+      const claimDeps = deps.agentMergeClaims && repoBound
+        ? {
+          claims: deps.agentMergeClaims,
+          sessionManager,
+          chatHistoryManager: deps.chatHistoryManager,
+          ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
+          ...(deps.runnerRegistry ? { runnerRegistry: deps.runnerRegistry } : {}),
+        }
+        : null;
+      let turnId: string | null = "n/a";
       // One try from here on: the ownership check, the flush and the sync guard
       // all touch git, and a throw from any of them is the same "could not
       // establish that this merge is safe" answer as one from the merge itself.
@@ -1455,6 +1470,28 @@ export async function registerGitHubRoutes(
           reply.code(refusal.status).send({ error: refusal.error });
           return;
         }
+        // req 9 — the merge is turn-owned, and the route proves it rather than
+        // assuming it. This endpoint is `containerAccessible` and the worker
+        // injects only a session id, so without this a process inside the
+        // container could merge after its turn ended, or during a later one,
+        // attaching its flush, its claim and its transcript record to the wrong
+        // turn. `running` alone is a mutable boolean that says SOMETHING is
+        // running; the recorded identity is what says it is still this one.
+        //
+        // Placed AFTER the ownership checks and before the first mutation: the
+        // ownership refusals are the agent's likeliest mistakes and deserve
+        // their specific message, while everything below this line changes
+        // state and is what the turn requirement exists to own.
+        turnId = claimDeps ? activeTurnIdFor(deps.runnerRegistry, request.params.id) : "n/a";
+        if (claimDeps && !turnId) {
+          reply.code(409).send({
+            error:
+              "Not merged — `gh pr merge` runs as part of a turn, and this session has no turn "
+              + "running. Merge from the PR lifecycle card in the ShipIt UI instead.",
+          });
+          return;
+        }
+
         // docs/287 reqs 14 + 15 — the agent works INSIDE the turn and ShipIt's
         // auto-commit runs after it, so without this the merge would ship the
         // branch as it stood BEFORE this turn's edits and report success. The
@@ -1518,15 +1555,43 @@ export async function registerGitHubRoutes(
                 }),
             }
             : {}),
+          ...(claimDeps && claimRepoId && turnId
+            ? {
+              // docs/287 req 9 — the durable claim, written synchronously in the
+              // instant before the REST call, and resolved by exactly one of the
+              // three outcome hooks.
+              onClaim: (expectedSha: string) => {
+                try {
+                  claimDeps.claims.claim({
+                    sessionId: request.params.id,
+                    repoId: claimRepoId,
+                    prNumber: num,
+                    expectedSha,
+                    turnId: turnId ?? "n/a",
+                  });
+                  return true;
+                } catch (err) {
+                  console.error(`[agent-merge] could not claim the merge for ${request.params.id}:`, err);
+                  return false;
+                }
+              },
+              onMerged: async (expectedSha: string) => {
+                const claim = claimDeps.claims.get(request.params.id);
+                if (claim?.expectedSha !== expectedSha) return;
+                claimDeps.claims.markSettling(request.params.id, expectedSha);
+                await settleAgentMerge(claimDeps, { ...claim, state: "settling" }, { witnessed: true });
+              },
+              // A definitive refusal merged nothing, so the claim is spent.
+              onRefused: (expectedSha: string) => {
+                claimDeps.claims.release(request.params.id, expectedSha);
+                return Promise.resolve();
+              },
+              // Deliberately does NOT release: the merge may have happened, and
+              // the row is the only evidence reconciliation has to resolve it.
+              onIndeterminate: () => Promise.resolve(),
+            }
+            : {}),
         });
-        // The same post-merge verification the UI merge route runs, for the same
-        // reason: the open-PR GraphQL view can report a just-merged pull request
-        // as open for a beat, so waiting for a poll tick would leave the card —
-        // and `merged_at`, which `shipit branch reset-to-base` reads — stale
-        // exactly when the agent's next step needs it.
-        if (result.success && !result.autoMergeEnabled && deps.prStatusPoller && session.remoteUrl) {
-          await deps.prStatusPoller.forceVerifySessionPrState(request.params.id).catch(() => {});
-        }
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {

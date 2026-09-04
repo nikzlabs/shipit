@@ -7,8 +7,8 @@ import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper,
 import { GitHubAppTokenMinter, type AppTokenMintResult } from "./github-app-token.js";
 // Sub-module imports — delegated implementations
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl, listOrgs as listOrgsImpl } from "./github-auth-repos.js";
-import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, addLabelsToPullRequest as addLabelsToPullRequestImpl, removeLabelFromPullRequest as removeLabelFromPullRequestImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, viewPullRequestResult as viewPullRequestResultImpl, viewPullRequestConversation as viewPullRequestConversationImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
-import type { PullRequestDetail, PrConversation, PrListState, ListPullRequestsResult } from "./github-auth-prs.js";
+import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, mergePullRequestAttempt as mergePullRequestAttemptImpl, findPullRequestByNumber as findPullRequestByNumberImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, addLabelsToPullRequest as addLabelsToPullRequestImpl, removeLabelFromPullRequest as removeLabelFromPullRequestImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, viewPullRequestResult as viewPullRequestResultImpl, viewPullRequestConversation as viewPullRequestConversationImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
+import type { PullRequestDetail, PrConversation, PrListState, ListPullRequestsResult, MergeAttempt, TerminalPrFacts } from "./github-auth-prs.js";
 import { getCheckStatus as getCheckStatusImpl, getCheckRunAnnotations as getCheckRunAnnotationsImpl, getJobLogs as getJobLogsImpl } from "./github-auth-checks.js";
 import {
   listWorkflowRuns as listWorkflowRunsImpl,
@@ -648,6 +648,35 @@ export class GitHubAuthManager extends EventEmitter {
       pr?.body,
       expectedSha,
     );
+  }
+
+  /**
+   * docs/287 req 9 — the same merge, reporting which of its three outcomes
+   * happened. Used by the agent merge, whose durable claim is kept or dropped
+   * on exactly that distinction.
+   */
+  async mergePullRequestAttempt(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    method: "merge" | "squash" | "rebase" = "merge",
+    expectedSha?: string,
+  ): Promise<MergeAttempt> {
+    if (!this._token) return { outcome: "refused", message: "Not authenticated" };
+    const pr = await viewPullRequestImpl(this._token, owner, repo, pullNumber);
+    return mergePullRequestAttemptImpl(
+      this._token, owner, repo, pullNumber, method, pr?.title, pr?.body, expectedSha,
+    );
+  }
+
+  /** docs/287 req 11 — the terminal-promotion facts, addressed by number. */
+  async findPullRequestByNumber(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+  ): Promise<TerminalPrFacts | null> {
+    if (!this._token) return null;
+    return findPullRequestByNumberImpl(this._token, owner, repo, pullNumber);
   }
 
   /**
