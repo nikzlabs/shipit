@@ -121,10 +121,11 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 
 ## UI and docs
 
-- [x] Draft the replacement `shipit-docs/github.md` section ([agent-docs.md](./agent-docs.md))
+- [x] Draft the replacement `shipit-docs/github.md` section
 - [x] Agent permissions section in `ProjectSettings.tsx` (no new tab)
-- [ ] Move the draft into `shipit-docs/github.md` with the `gh pr merge` table row
-- [ ] Delete `agent-docs.md` once its content has moved
+- [x] Move the draft into `shipit-docs/github.md` with the `gh pr merge` table row,
+      corrected against the shipped behaviour rather than the pre-implementation draft
+- [x] Delete `agent-docs.md` once its content has moved
 
 ## Quality
 

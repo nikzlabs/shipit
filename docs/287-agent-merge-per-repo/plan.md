@@ -467,7 +467,7 @@ justify an otherwise empty navigation category.
 | `src/server/orchestrator/services/pr-lifecycle.ts`, `pr-rearm.ts`, `services/git.ts`, `sessions.ts` | provenance writers and clearers |
 | `src/server/orchestrator/api-routes-github.ts` | gate, ownership, settlement, notice |
 | `src/client/components/ProjectSettings.tsx` | Agent permissions section + toggle |
-| `src/server/shipit-docs/github.md` | agent-facing text ([draft](./agent-docs.md)) |
+| `src/server/shipit-docs/github.md` | agent-facing text: the grant, what may be merged, the commit-and-push step, and the guardrails |
 
 ## Tests
 
