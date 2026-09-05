@@ -18,6 +18,7 @@ import type {
 } from "../../../shared/types.js";
 import { CLAUDE_PERMISSION_MODES } from "../../../shared/types.js";
 import { CLAUDE_MODELS, CLAUDE_TOOL_NAMES } from "../../../shared/agent-registry.js";
+import { unshapeClaudeModelId } from "../../../shared/spawn-routing.js";
 import type {
   AgentId,
   AgentCapabilities,
@@ -216,7 +217,10 @@ export class ClaudeAdapter
               type: "agent_init",
               agentId: "claude",
               sessionId: raw.session_id,
-              model: raw.model,
+              // The CLI echoes `--model` verbatim, so undo the `[1m]` the spawn
+              // may have appended (`claudeModelArg`) before this id reaches the
+              // usage row, the model label, or any other catalogue lookup.
+              model: raw.model === undefined ? undefined : unshapeClaudeModelId(raw.model),
               tools: raw.tools,
               // docs/138 — authoritative guarded-mode availability signal.
               permissionMode: raw.permissionMode,
