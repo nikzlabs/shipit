@@ -56,17 +56,14 @@ because it changed the design's conclusion when it went away.
 2. Opening a **new session** on a project that declares such a plugin costs
    close to zero in **disk** and close to zero in **install time**. The
    dependency is not re-fetched, and it is not stored a second time, for each
-   session that uses it.
+   session that uses it. This binds **every session after the first** on a given
+   host; the first session may pay the full cost once.
 3. The plugin stays **self-contained**: the plugin repository alone carries
    what its CLI needs. Consuming it requires no separately published artifact
    and no action from whoever operates the ShipIt instance.
 
 ## Open questions
 
-- **Does requirement 2 bind the first session on a host?** Something must pay
-  the download or the build once. The agent reads "a new session" as *any
-  session after the first on that host*, so the first one may take minutes.
-  Is that the intended reading, or must even the first session be cheap?
 - **Does requirement 2 hold across a plugin refresh of an existing session?**
   The requirement names a new session. A plugin repository commits often, and
   `shipit plugin refresh` moves a *running* session to a new commit. If the
@@ -74,6 +71,11 @@ because it changed the design's conclusion when it went away.
 
 ## Resolved questions
 
+- 2026-09-05 — Asked whether requirement 2 binds the first session on a given
+  host, which must pay the download or build once. The user's answer: **"No,
+  only 2+ session."** Requirement 2 now says so. The constraint it carries: a
+  mechanism may cost minutes on first use, so a design is not disqualified by a
+  cold build — only by a cost that recurs per session.
 - 2026-09-05 — Asked whether a plugin author should be told when the near-zero
   cost property is not in effect. The user's answer: **that is a separate bug**,
   not a requirement of this feature. Filed as **planning#511** and scoped out
