@@ -278,6 +278,35 @@ describe("runOneRequest — ending the request", () => {
     expect(notices().join(" ")).toContain(expected);
   });
 
+  it("does not write session state when a turn starts during the recovery read", async () => {
+    // The MERGED-by-somebody-else path runs OUTSIDE the hold, and settlement
+    // promotes the pull request — which writes session state. A turn starting
+    // while GitHub answers would have that landing under it.
+    const runner = fakeRunner();
+    const p = poller();
+    (p.promoteMergedPrByNumber as unknown as { mockImplementation: (f: (a: { guard?: (pr: TerminalPrFacts) => boolean }) => Promise<unknown>) => void })
+      .mockImplementation(async (args) => {
+        runner.running = true;
+        const pr = facts();
+        if (args.guard && !args.guard(pr)) return { pr, promoted: false };
+        return { pr, promoted: true };
+      });
+
+    const out = await runOneRequest(
+      deps({
+        githubAuthManager: github({ read: observation({ prState: "MERGED" }) as never }),
+        prStatusPoller: p,
+        runnerRegistry: registry(runner),
+      }),
+      armed(),
+    );
+
+    expect(out).toMatchObject({ result: "waiting" });
+    // The row survives for the next pass rather than being resolved against a
+    // promotion that was refused.
+    expect(claims.get(SESSION)).not.toBeNull();
+  });
+
   it("settles a pull request somebody else merged at the armed commit", async () => {
     // The user, or the pull-request card's own auto-merge. The request is
     // satisfied; what is left is docs/287's record, in its narrower wording.

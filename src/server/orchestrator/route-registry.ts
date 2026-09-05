@@ -1,6 +1,4 @@
-import { AgentMergeClaimStore } from "./agent-merge-claims.js";
 import { reconcileAgentMergeClaims } from "./services/agent-merge-settlement.js";
-import { AgentMergeExecutor } from "./services/agent-merge-executor.js";
 import type { FastifyInstance } from "fastify";
 import { nativeServiceForHarness, selectionExists, selectionHonoursEffort } from "../shared/catalogue/index.js";
 import { applyModelRetirement } from "./model-retirement.js";
@@ -314,24 +312,10 @@ export async function registerRoutes(
     clientDir, logStore, buildId,
   } = rt;
   const { kickDiskEscalation } = monitors;
-  // docs/287 §4 — one store for the route deps and the activation trigger below.
-  const agentMergeClaims = new AgentMergeClaimStore(databaseManager);
-  // docs/288 — carries out `gh pr merge --auto` requests. Started HERE rather
-  // than in `bootstrapManagers` for the ordering it needs for free: this runs
-  // after that function has awaited `reattachInFlightTurns()`, and until the
-  // adoption sweep completes the runner registry is empty, so "is this session
-  // busy?" answers no for everything and a surviving turn's pre-turn head could
-  // be merged while that turn still holds uncommitted work.
-  const agentMergeExecutor = new AgentMergeExecutor({
-    claims: agentMergeClaims,
-    sessionManager,
-    chatHistoryManager,
-    repoStore,
-    githubAuthManager,
-    prStatusPoller,
-    runnerRegistry,
-  });
-  agentMergeExecutor.start();
+  // docs/287 §4 — the store the route deps and the activation trigger below
+  // share, and docs/288's executor, both built and started by
+  // `bootstrapManagers` (the executor needs the post-adoption ordering there).
+  const { agentMergeClaims, agentMergeExecutor } = rt;
   const wsOriginPolicy = readOriginPolicyFromEnv();
 
   // ---- HTTP API routes ----

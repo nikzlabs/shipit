@@ -210,6 +210,33 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     client.close();
   });
 
+  it("docs/288 req 6: a typed message is QUEUED while ShipIt is merging, and starts when the hold clears", async () => {
+    // The interactive send has its own admission check, separate from
+    // `dispatchOnRunner`'s. Without the hold there, a user typing during a
+    // background merge starts a turn that pushes behind a merge in flight.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // A first turn so the runner exists, then let it finish: the hold has to be
+    // what queues the next message, not a turn still running.
+    client.send({ type: "send_message", text: "First" });
+    const first = await waitForClaude(() => lastClaude);
+    first.initSession("first-session");
+    first.finish("first-session");
+    const runner = runnerFor(client.sessionId);
+    await waitUntil(() => !runner.running, "first turn finished");
+
+    runner.mergeHold = true;
+    const before = lastClaude;
+    client.send({ type: "send_message", text: "typed during the merge" });
+    await drainUntil(client, (m) => m.type === "message_queued");
+    expect(runner.running).toBe(false);
+    expect(runner.queueLength).toBe(1);
+    expect(lastClaude).toBe(before); // no new agent was spawned
+
+    client.close();
+  });
+
   it("an ordinary user message queued behind a running turn still drains on the interactive path (no server echo bubble)", async () => {
     // The routing tag must not change what a user-typed queued message does: it
     // stays interactive, so the drain does NOT emit a `system_user_message` echo
