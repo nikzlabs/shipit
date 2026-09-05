@@ -142,8 +142,9 @@ cancels the request under req 3 regardless.
 ### Where the executor runs
 
 **Its own small loop in the orchestrator process** (`services/agent-merge-executor.ts`),
-started after `reattachInFlightTurns()` and ticking only while a `pending` row
-exists.
+built and started in `bootstrapManagers` immediately after
+`reattachInFlightTurns()`. The interval runs unconditionally; a tick with no
+`pending` row is one indexed `SELECT` and no GitHub call at all.
 
 The parked design put it in the PR poller's tick. That is a second timer avoided
 at the price of making armings a first-class input to **both** the polling
@@ -152,7 +153,9 @@ supervisor and the global gate — because the supervisor iterates
 persisted request after a restart with no viewer would never receive a tick. Two
 subsystems gain a concept; this one gains a timer. The timer is less. It also
 needs no gate of its own: it makes a GitHub call only when a row exists, so an
-idle ShipIt is exactly as quiet as before.
+idle ShipIt is exactly as quiet as before. It is stopped from the app's
+`onClose` — the interval is `unref`'d and does not hold the process open, but a
+tick firing after `app.close()` would query a closed database.
 
 Starting **after** `reattachInFlightTurns()` is not incidental: until the adoption
 sweep completes the runner registry is empty, so "is this session busy?" answers
@@ -247,7 +250,7 @@ cannot prove ShipIt performed the merge. Two details are this feature's:
 | `src/server/orchestrator/api-routes-session-repos.ts` | revocation deletes pending rows for the repository |
 | `src/server/orchestrator/session-runner.ts`, `container-session-runner.ts` | `mergeHold` on the runner; `dispatchOnRunner` consults it |
 | `src/server/orchestrator/ws-handlers/send-message.ts`, `queue-drain.ts` | the other two sites consult it |
-| `src/server/orchestrator/bootstrap-managers.ts`, `route-registry.ts` | construct and start the executor after adoption |
+| `src/server/orchestrator/bootstrap-managers.ts` | construct and start the executor after adoption; `route-registry.ts` and `startup-monitors.ts` take it from the runtime |
 | `src/server/shipit-docs/github.md` | the agent-facing `--auto` section |
 
 ## Tests

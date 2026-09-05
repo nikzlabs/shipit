@@ -288,7 +288,7 @@ async function performMerge(
  * SAY, exactly as it does there: ShipIt merged it, or that commit is now merged.
  *
  * No turn token, deliberately: `settleAgentMerge` compares one only against a
- * turn that is currently running, and this path holds the session idle.
+ * turn that is currently running, and the merge path holds the session idle.
  */
 async function settle(
   deps: AgentMergeExecutorDeps,
@@ -312,7 +312,15 @@ async function settle(
       ...(deps.runnerRegistry ? { runnerRegistry: deps.runnerRegistry } : {}),
     },
     live,
-    { witnessed, turn: null },
+    {
+      witnessed,
+      turn: null,
+      // Re-asked past the settlement's own GitHub read, and it is what the
+      // UNWITNESSED path relies on: that one runs outside the hold, so a turn
+      // can start while GitHub is answering and settlement writes session state.
+      // The witnessed path holds the session, and passing it there costs nothing.
+      stillSafeToSettle: () => isIdle(deps, claim.sessionId, { underHold: witnessed }),
+    },
   );
   return outcome.result === "settled";
 }
