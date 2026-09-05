@@ -55,6 +55,7 @@ import { guardMergeSync } from "./services/branch-sync.js";
 import { mergeFlushRefusal } from "./services/merge-gate.js";
 import { captureTurn, settleAgentMerge, type TurnToken } from "./services/agent-merge-settlement.js";
 import { parseGitHubRemote, repoId } from "./git-utils.js";
+import { mergeMethodFor } from "./agent-merge-claims.js";
 import { resolvePrTarget, gitCredentialAllowed, mergeDisposition, agentMergeOwnership } from "./pr-target.js";
 import { recordWitnessedPrCreate } from "./services/pr-provenance.js";
 import type { FastifyReply } from "fastify";
@@ -1564,12 +1565,44 @@ export async function registerGitHubRoutes(
                   repoId: claimRepoId,
                   prNumber: num,
                   expectedSha,
+                  method: mergeMethodFor(request.body?.method),
                 })) {
                   // Single-flight: a row is already outstanding for this session.
                   return "Not merged — an earlier merge on this session has not been resolved yet, and "
                     + "ShipIt will not start a second one over it. It resolves that attempt at the end "
                     + "of the turn; try again after that.";
                 }
+                return null;
+              },
+              // docs/288 req 1 — the same two re-checks, for the same reason:
+              // the decision to arm was taken before a commit, a push and a
+              // GitHub round trip, and the row outlives all of them.
+              onArm: (expectedSha: string) => {
+                const live = sessionManager.get(request.params.id);
+                if (!live) return "Not armed — this session no longer exists.";
+                if (mergeDisposition(live, deps.repoStore.allowsAgentMerge(live.remoteUrl ?? "")) !== "allowed") {
+                  return "Not armed — the permission to merge in this repository was withdrawn while "
+                    + "ShipIt was preparing the request. Nothing was armed.";
+                }
+                if (live.prNumber !== num || live.prRepoId !== claimRepoId) {
+                  return `Not armed — PR #${num} is no longer the pull request ShipIt opened for `
+                    + "this session.";
+                }
+                if (!claimDeps.claims.arm({
+                  sessionId: request.params.id,
+                  repoId: claimRepoId,
+                  prNumber: num,
+                  expectedSha,
+                  method: mergeMethodFor(request.body?.method),
+                })) {
+                  // Only an unresolved ATTEMPT refuses; a previous request is
+                  // replaced, since re-arming at a new commit is the normal case.
+                  return "Not armed — a merge on this session has not been resolved yet, and ShipIt "
+                    + "will not queue a second one behind it. It resolves that attempt at the end of "
+                    + "the turn; try again after that.";
+                }
+                // A pull request already green must not wait out a whole tick.
+                void deps.agentMergeExecutor?.tick();
                 return null;
               },
               onMerged: async (expectedSha: string) => {

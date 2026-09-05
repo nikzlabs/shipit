@@ -509,8 +509,9 @@ export async function agentMergePullRequest(
     method?: string;
     auto?: boolean;
     remoteUrl?: string;
-    /** docs/287 — the head must equal this workspace's HEAD (req 14), `--auto`
-     * is refused (req 12/13), and the zero-check grace is consulted. */
+    /** docs/287 — the head must equal this workspace's HEAD (req 14), the
+     * zero-check grace is consulted, and docs/288's `--auto` records a request
+     * instead of arming GitHub's own merge-when-green. */
     repoBound?: boolean;
     /** The repo-bound session's local HEAD, for the req 14 comparison. */
     localHead?: { kind: "head"; sha: string } | { kind: "unreadable"; reason: string };
@@ -530,6 +531,12 @@ export async function agentMergePullRequest(
     onRefused?: (expectedSha: string) => Promise<void>;
     /** No answer we can trust; the claim STAYS for reconciliation. */
     onIndeterminate?: (expectedSha: string) => Promise<void>;
+    /**
+     * docs/288 req 1 — record the request for `expectedSha`, past every await
+     * above it. Same shape and same reason as {@link beforeMerge}: returns a
+     * refusal message in its own wording, or null.
+     */
+    onArm?: (expectedSha: string) => string | null;
   },
 ): Promise<{ success: boolean; message: string; autoMergeEnabled?: boolean }> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
@@ -540,23 +547,18 @@ export async function agentMergePullRequest(
   const { owner, repo } = resolved;
   const mergeMethod = (opts.method || "merge") as "merge" | "squash" | "rebase";
 
-  // req 12/13 — `--auto` is arming, not merging; repo-bound arming is docs/288.
-  // Refused before the read. Sandbox `--auto` is untouched.
-  if (opts.auto && opts.repoBound) {
-    return {
-      success: false,
-      message:
-        `Not merged — \`--auto\` is not available for this session yet. \`gh pr merge\` merges when `
-        + "the checks have already passed; run it again once they report. "
-        + "(Merge-when-checks-pass is docs/288-agent-merge-arming.)",
-    };
-  }
+  // docs/288 req 1 — a repo-bound `--auto` is a REQUEST: the same table decides
+  // it, and the answers meaning "this commit may merge, now or once CI reports"
+  // come back as `arm` instead of `merge`. A sandbox `--auto` is untouched and
+  // still arms GitHub's own auto-merge below (req 7).
+  const arming = opts.auto === true && opts.repoBound === true;
 
   const observation = await readMergeObservation(githubAuthManager, owner, repo, opts.number);
 
   const decision = await decideMerge({
     observation,
     prNumber: opts.number,
+    ...(arming ? { arming: true } : {}),
     localHead: opts.repoBound ? (opts.localHead ?? { kind: "unreadable", reason: "no local commit was supplied" }) : { kind: "sandbox" },
     graceSaysWait: async () => {
       if (!opts.graceSaysWait || observation.kind !== "read") return false;
@@ -566,6 +568,22 @@ export async function agentMergePullRequest(
 
   if (decision.action === "already-merged") {
     return { success: true, message: `PR #${opts.number} is already merged` };
+  }
+
+  // docs/288 — record the request and stop. `--auto` NEVER merges inline, even
+  // when the checks are already green: one flag, one meaning, and an agent that
+  // wants the merge now calls `gh pr merge` without it.
+  if (decision.action === "arm") {
+    const refusal = opts.onArm?.(decision.sha);
+    if (refusal) return { success: false, message: refusal };
+    return {
+      success: true,
+      message:
+        `ShipIt will merge PR #${opts.number} at ${decision.sha.slice(0, 8)} once its checks pass. `
+        + "It merges that exact commit — pushing again cancels the request, and so does withdrawing "
+        + "the repository's merge permission. The result appears in this session's transcript.",
+      autoMergeEnabled: true,
+    };
   }
 
   if (decision.action === "refuse") {

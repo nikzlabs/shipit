@@ -94,7 +94,10 @@ export function releaseQueuedTurn(runner: SessionRunnerInterface): boolean {
   // production session stranded mid-rebase: the released turn displaced the
   // conflict-resolution agent and nothing ever ran `git rebase --continue` or
   // `--abort`. The flow releases the queue itself when it settles.
-  if (runner.running || runner.systemTurnInProgress || runner.queueLength === 0) return false;
+  // docs/288 req 6 — `mergeHold` for the same reason: `dispatch` would only
+  // re-queue the entry, so dequeuing here costs a `queue_updated` broadcast that
+  // shows the queue shrinking and growing again.
+  if (runner.running || runner.systemTurnInProgress || runner.mergeHold || runner.queueLength === 0) return false;
   // A runner with no system-turn deps can't start a dispatched turn at all
   // (`dispatch` falls back to a plain enqueue), so dequeuing here would only
   // shuffle the entry to the back of its own queue.

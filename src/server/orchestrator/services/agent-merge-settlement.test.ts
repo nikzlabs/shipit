@@ -98,9 +98,13 @@ function claimOne(over: { prNumber?: number; expectedSha?: string } = {}) {
     repoId: REPO_ID,
     prNumber: over.prNumber ?? 7,
     expectedSha: over.expectedSha ?? "sha-head",
+    method: "merge" as const,
   };
   claims.claim(claim);
-  return { ...claim, state: "merging" as const, createdAt: new Date().toISOString() };
+  return {
+    ...claim, state: "merging" as const, origin: "direct" as const,
+    createdAt: new Date().toISOString(),
+  };
 }
 
 function notices(): string[] {

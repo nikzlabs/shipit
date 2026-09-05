@@ -131,6 +131,12 @@ export interface ApiDeps {
    */
   agentMergeClaims?: AgentMergeClaimStore;
   /**
+   * docs/288 — run one request pass NOW, so `gh pr merge --auto` on an already
+   * green pull request does not wait out a whole tick. Optional: without it the
+   * request is still recorded and the interval carries it out.
+   */
+  agentMergeExecutor?: { tick(): Promise<void> };
+  /**
    * docs/262 req 12 — run a plugin-repository refresh and WAIT for it, for the
    * agent's `shipit plugin refresh`. A runtime that cannot refresh supplies
    * `undefined` and the route says so rather than pretending it worked.

@@ -13,6 +13,8 @@ import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { StubAuthManager, StubGitHubAuthManager, createTestCredentialStore, createTestDatabaseManager, pinGitToLocalTransports } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
+import { AgentMergeClaimStore } from "../agent-merge-claims.js";
+import { ChatHistoryManager } from "../chat-history.js";
 
 let tmpDir: string;
 let app: FastifyInstance;
@@ -40,6 +42,10 @@ beforeEach(async () => {
   githubStub = new StubGitHubAuthManager();
 
   app = await buildApp({
+    // docs/288 — the SAME database these managers were built from, so the
+    // agent-merge claim store the orchestrator constructs internally is the one
+    // these tests write requests into.
+    databaseManager: dbManager,
     sessionManager,
     repoStore,
     authManager: new StubAuthManager() as unknown as AuthManager,
@@ -347,6 +353,62 @@ describe("PATCH /api/repos/:url (agent-merge grant, docs/287)", () => {
     });
     expect(off.statusCode).toBe(200);
     expect(repoStore.allowsAgentMerge(url)).toBe(false);
+  });
+
+  it("cancels this repository's merge requests when the grant is withdrawn (docs/288 req 4)", async () => {
+    // The whole of requirement 4. A request survives a restart, so leaving one
+    // armed after the permission is off means ShipIt merges under a permission
+    // it reports as withdrawn — exactly what GitHub-native auto-merge could not
+    // avoid, and the reason this is a ShipIt request at all.
+    repoStore.add(url);
+    const claims = new AgentMergeClaimStore(dbManager);
+    sessionManager.track("s1", "A session");
+    sessionManager.track("s2", "Another session");
+    claims.arm({
+      sessionId: "s1", repoId: "github:owner/repo", prNumber: 7, expectedSha: "sha", method: "merge",
+    });
+    // A different repository's request must survive: the grant is per repository.
+    claims.arm({
+      sessionId: "s2", repoId: "github:owner/other", prNumber: 3, expectedSha: "sha2", method: "merge",
+    });
+
+    await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(url)}`,
+      payload: { allowAgentMerge: true },
+    });
+    const off = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(url)}`,
+      payload: { allowAgentMerge: false },
+    });
+
+    expect(off.statusCode).toBe(200);
+    expect(claims.get("s1")).toBeNull();
+    expect(claims.get("s2")).not.toBeNull();
+    // And the session is told, or its agent waits for a merge that is not coming.
+    const said = new ChatHistoryManager(dbManager).load("s1")
+      .map((m) => (m as { text?: string }).text ?? "").join(" ");
+    expect(said).toContain("agent merging was turned off");
+  });
+
+  it("leaves a merge already under way alone", async () => {
+    // A row past `pending` is being settled or resolved from its tuple and can
+    // no longer merge anything, so there is nothing to cancel — and deleting it
+    // would destroy the only evidence that a merge happened.
+    repoStore.add(url);
+    const claims = new AgentMergeClaimStore(dbManager);
+    sessionManager.track("s3", "A session");
+    claims.claim({
+      sessionId: "s3", repoId: "github:owner/repo", prNumber: 9, expectedSha: "sha3", method: "merge",
+    });
+
+    await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(url)}`,
+      payload: { allowAgentMerge: false },
+    });
+    expect(claims.get("s3")).toMatchObject({ state: "merging" });
   });
 
   it("rejects a non-boolean rather than reading it as truthy", async () => {
