@@ -206,21 +206,13 @@ export class CiGraceTracker {
    * docs/287-agent-merge-per-repo — should an agent merge WAIT, having read zero
    * checks for this commit?
    *
-   * The same question {@link shouldForcePending} answers for the poller, decided
-   * differently in one place that matters: **an unknown CI history starts the
-   * grace here instead of ending it.** The poller returns false for a repository
-   * it has no CI signal for because it will see that repository again in a few
-   * seconds and can revise; a merge is a one-shot, irreversible decision that
-   * gets no second look, so "we do not know yet whether this repository runs CI"
-   * must not read as "it does not".
-   *
-   * The workflow short-circuit is kept, because it is positive evidence rather
-   * than absence: when the repository's parsed workflows are known and none of
-   * them can fire for this pull request, no check is coming and waiting for one
-   * would refuse a merge that will never have anything to report.
-   *
-   * Keyed by repository + pull request + head SHA so the window belongs to the
-   * commit being merged, not to a session.
+   * The same question {@link shouldForcePending} answers for the poller, with
+   * one difference that matters: **an unknown CI history STARTS the grace here
+   * instead of ending it.** The poller can revise in a few seconds; a merge is
+   * one-shot, so "we do not know whether this repository runs CI" must not read
+   * as "it does not". The workflow short-circuit is kept — it is positive
+   * evidence, not absence. Keyed by repository + pull request + head SHA, so the
+   * window belongs to the commit being merged rather than to a session.
    */
   shouldWaitForMergeChecks(args: {
     repoKey: string;

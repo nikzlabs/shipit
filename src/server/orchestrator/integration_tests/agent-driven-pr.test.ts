@@ -1124,7 +1124,9 @@ describe("repo-aware PR brokering (docs/211)", () => {
       expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toBeNull();
       const history = chatHistoryManager.load(sessionId)
         .map((m) => (m as { text?: string }).text ?? "").join("\n");
-      expect(history).toContain("agent-merge:github:test-user/test-repo#7@");
+      // req 9 — the record names the pull request and survives a reload (it is
+      // read back out of persisted chat history here, not off the socket).
+      expect(history).toContain("Merged pull request #7");
     },
   );
 

@@ -501,19 +501,11 @@ export async function mergePullRequest(
  * and the guardrails are enforced inline because the poller's cached state
  * cannot carry this decision (`services/merge-gate.ts` says why at length).
  *
- * **One live read decides everything**, for BOTH kinds. The `getCheckStatus()`
- * gate this replaced mapped a swallowed API failure and "no checks configured"
- * to the same `"none"` and merged on it — a live fail-open on the sandbox path,
- * not just a gap in the new one. Requirement 7 says the guardrails apply to
- * every agent merge, so both paths moved.
- *
- * The refusals are the caller's to relay verbatim; the merge itself pins the
- * observed head SHA, so anything that advances the branch between the read and
- * the merge is refused by GitHub rather than merged unchecked (req 16).
- *
- * Branch protection and required reviews stay enforced by GitHub server-side;
- * its rejection is surfaced verbatim rather than forced, and there is no
- * admin/force path (the shim rejects `--admin` before it reaches here).
+ * **One live read decides everything**, for BOTH kinds — the `getCheckStatus()`
+ * gate this replaced merged on a swallowed API failure, a live fail-open on the
+ * sandbox path and not just a gap in the new one (req 7). Refusals are the
+ * caller's to relay verbatim, the merge pins the observed head SHA (req 16), and
+ * branch protection stays GitHub's to enforce: no admin or force path exists.
  */
 export async function agentMergePullRequest(
   git: GitManager,
@@ -542,22 +534,17 @@ export async function agentMergePullRequest(
     graceSaysWait?: (headSha: string) => Promise<boolean>;
     /**
      * docs/287 reqs 1 + 9 — the last gate before the REST call: re-check that
-     * the merge is still authorised, then write the durable claim.
-     *
-     * Returns a refusal message, or null to proceed. It owns the wording because
-     * the two refusals are different facts — "the permission was withdrawn" and
-     * "an earlier attempt is unresolved" — and a caller told only "no" would
-     * report the wrong one. Synchronous, so nothing can interleave between it
-     * and the call it guards.
+     * the merge is still authorised, then write the durable claim. Returns a
+     * refusal message, or null to proceed; it owns the wording because its two
+     * refusals are different facts. Synchronous, so nothing can interleave
+     * between it and the call it guards.
      */
     beforeMerge?: (expectedSha: string) => string | null;
     /**
      * The merge landed and was witnessed — settle before reporting success.
-     *
-     * Returns whether settlement actually completed. `"deferred"` means the
-     * merge happened but the session state that `shipit branch reset-to-base`
-     * reads may not be current yet, and the agent is told exactly that instead
-     * of a bare success (cross-agent review finding).
+     * `"deferred"` means the merge happened but the session state
+     * `shipit branch reset-to-base` reads may not be current, and the agent is
+     * told that instead of a bare success.
      */
     onMerged?: (expectedSha: string) => Promise<"settled" | "deferred">;
     /** GitHub answered no; the claim is spent. */
@@ -574,10 +561,9 @@ export async function agentMergePullRequest(
   const { owner, repo } = resolved;
   const mergeMethod = (opts.method || "merge") as "merge" | "squash" | "rebase";
 
-  // docs/287 req 12/13 — `--auto` is arming, not merging, and arming for a
-  // repo-bound session is `docs/288-agent-merge-arming`. Refused before the read
-  // so the agent is told what to do rather than being handed a merge it did not
-  // ask for. Sandbox `--auto` is untouched, below.
+  // req 12/13 — `--auto` is arming, not merging, and repo-bound arming is
+  // `docs/288`. Refused before the read, so the agent is told what to do rather
+  // than handed a merge it did not ask for. Sandbox `--auto` is untouched.
   if (opts.auto && opts.repoBound) {
     return {
       success: false,
@@ -633,17 +619,12 @@ export async function agentMergePullRequest(
     return { success: false, message: decision.message };
   }
 
-  // docs/287 req 9 — the LAST gate before the irreversible call, and the only
-  // one on the far side of every await this function makes. It re-asks whether
-  // the merge is still authorised and writes the claim, and returns a refusal
-  // message when either answer is no.
-  //
-  // Everything above it — the grant, the ownership tuple, the flush, the push —
-  // was decided before a commit, a push and two GitHub round trips. A permission
-  // the user withdraws during that window has to stop the merge, or "withdraw at
-  // any time" (req 1) means "withdraw between merges" (cross-agent review
-  // finding). The claim is written here for the same reason: the call can reject
-  // after GitHub accepted it, so the record has to exist first.
+  // reqs 1 + 9 — the LAST gate before the irreversible call, and the only one on
+  // the far side of every await above it. The grant, the ownership tuple, the
+  // flush and the push were all decided before a commit, a push and two GitHub
+  // round trips; a permission withdrawn in that window has to stop the merge, or
+  // "withdraw at any time" means "withdraw between merges". The claim is written
+  // here for the same reason: the call can reject AFTER GitHub accepted it.
   const refusal = opts.beforeMerge?.(decision.sha);
   if (refusal) return { success: false, message: refusal };
 
@@ -665,10 +646,8 @@ export async function agentMergePullRequest(
     return { success: false, message: attempt.message };
   }
 
-  // docs/266 req 7 — the merge record for the agent's own `gh pr merge`. The
-  // owner/repo field is load-bearing here in a way it is not on the UI route: a
-  // sandbox session merges an explicit PR number in a repository that need not
-  // be the session's own.
+  // docs/266 req 7 — owner/repo is load-bearing here in a way it is not on the
+  // UI route: a sandbox merges a number in a repository not its own.
   logMergePerformed({
     owner,
     repo,
@@ -677,10 +656,10 @@ export async function agentMergePullRequest(
     via: "gh pr merge",
     method: mergeMethod,
   });
-  // docs/287 req 11 — success is reported only after settlement, so the agent's
-  // next `shipit branch reset-to-base` cannot read `not-merged` for work that
-  // shipped a moment ago. When settlement could not finish, the merge is still
-  // reported — it really happened — but the follow-up step is not promised.
+  // req 11 — success is reported only after settlement, so the agent's next
+  // `shipit branch reset-to-base` cannot read `not-merged` for work that just
+  // shipped. A merge that could not settle is still reported; the follow-up
+  // step is simply not promised.
   const settlement = await opts.onMerged?.(decision.sha);
   if (settlement === "deferred") {
     return {

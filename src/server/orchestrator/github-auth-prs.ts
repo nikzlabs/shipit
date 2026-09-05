@@ -326,14 +326,14 @@ export async function mergePullRequestAttempt(
   // performed merge with a boolean `merged`, so anything else readable — `{}`,
   // a bare string, `merged: null`, `merged: "false"` — is a response ShipIt does
   // not understand, and reading an unrecognised body as a merge is how a merge
-  // that never happened gets recorded as one (cross-agent review finding).
+  // that never happened gets recorded as one.
   if (parsed.merged === true) {
     return { outcome: "merged", message: "Pull request merged", mergeCommitSha: parsed.sha ?? null };
   }
   if (parsed.merged === false) {
     // req 7 — GitHub's own reason, word for word, when it sent one. The generic
     // sentence used to replace it unconditionally, which threw away the only
-    // part of the answer the agent could act on (cross-agent review finding).
+    // part of the answer the agent could act on.
     const reason = typeof parsed.message === "string" && parsed.message.trim() ? parsed.message.trim() : null;
     return {
       outcome: "refused",

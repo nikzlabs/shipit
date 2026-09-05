@@ -152,10 +152,15 @@ describe("settleAgentMerge", () => {
     expect(text).not.toContain("Merged pull request #7");
   });
 
-  it("carries the stable natural identity into the record", async () => {
+  it("names the pull request and the commit in the record (req 9)", async () => {
+    // Req 9: "the record names the pull request". The merge's natural identity
+    // stays in the log lines, for correlating a recovery across a restart; the
+    // transcript line is written for the user, not for a correlation key.
     const claim = claimOne();
     await settleAgentMerge(deps(), claim, { witnessed: true });
-    expect(notices().join("\n")).toContain("agent-merge:github:acme/shipit#7@sha-head");
+    const text = notices().join("\n");
+    expect(text).toContain("#7");
+    expect(text).toContain("sha-head".slice(0, 8));
   });
 
   it("drops the claim without recording when the pull request is still open", async () => {
@@ -198,7 +203,7 @@ describe("settleAgentMerge", () => {
     // session that has moved to a different pull request.
     expect(p.promoted).toEqual([]);
     const text = notices().join("\n");
-    expect(text).toContain("agent-merge:github:acme/shipit#7@sha-head");
+    expect(text).toContain("#7 in acme/shipit");
     expect(text).toContain("its own state is unchanged");
     expect(claims.get(SESSION)).toBeNull();
   });
@@ -344,7 +349,7 @@ describe("settleAgentMerge", () => {
     // The claim is gone, so a repeat has nothing to settle — which is what makes
     // the record fire once rather than once per recovery.
     await settleAgentMerge(deps(), claim, { witnessed: true });
-    expect(notices().filter((t) => t.includes("agent-merge:"))).toHaveLength(1);
+    expect(notices().filter((t) => t.includes("Merged pull request #7"))).toHaveLength(1);
   });
 });
 

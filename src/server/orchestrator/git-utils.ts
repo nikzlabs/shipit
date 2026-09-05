@@ -156,13 +156,10 @@ export function canonicalRepoKey(url: string): string {
  */
 const GITHUB_OWNER = String.raw`[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?`;
 const GITHUB_REPO = String.raw`[A-Za-z0-9._-]+`;
-// Case-insensitive, because a host name is: `https://GitHub.com/acme/repo` and
-// `git@GitHub.com:acme/repo.git` are the same remote, and a case-sensitive match
-// refused them outright — the user flipped the switch and was told their own
-// repository was "not a recognised GitHub remote" (cross-agent review finding).
-// Failing closed made it a usability defect rather than a security one, but the
-// grant still could not be given. The owner/repo groups already span both cases,
-// and the identity is lower-cased below, so the flag widens nothing else.
+// Case-insensitive, because a host name is: `https://GitHub.com/acme/repo` is
+// the same remote as the lower-case spelling, and refusing it told the user
+// their own repository was not a GitHub remote. The owner/repo groups already
+// span both cases and the identity is lower-cased below, so `i` widens nothing.
 const GITHUB_HTTPS_REMOTE = new RegExp(
   String.raw`^https?://github\.com/(${GITHUB_OWNER})/(${GITHUB_REPO}?)/?$`, "i",
 );
@@ -176,33 +173,18 @@ const GITHUB_SSH_REMOTE = new RegExp(
  * case-insensitively. Returns `null` for anything it cannot parse with
  * certainty.
  *
- * Deliberately NOT {@link canonicalRepoKey}, which exists to spot a near-
- * duplicate row in the repo list and is too loose to carry a permission: it
- * lower-cases only the scheme and host, leaves the *path* casing alone, and
- * sends every SCP-style `git@github.com:owner/repo.git` down a
- * lowercase-the-whole-string fallback. So `https://github.com/Owner/Repo`, the
- * lower-case spelling and the `git@` spelling produce three different keys
- * there — and a grant written under one would silently not exist under another
- * (docs/287-agent-merge-per-repo).
+ * Deliberately NOT {@link canonicalRepoKey}: that one lower-cases only the
+ * scheme and host and sends SCP-style remotes down a lowercase-everything
+ * fallback, so three spellings of one repository produce three keys — and a
+ * grant written under one would silently not exist under another. Not
+ * {@link parseGitHubRemote} either, which is unanchored and never refuses a
+ * host. Refusing is the safe direction: no identity matches no grant.
  *
- * Also not {@link parseGitHubRemote}, which is unanchored, so `github.com` can
- * match inside another host's path. The two now agree on where a repository
- * name ends — a disagreement there put the grant on one repository and the
- * merge on another — but only this one refuses a host it does not recognise.
- *
- * Refusing is the safe direction: a remote with no identity matches no grant,
- * so the capability is simply unavailable rather than mis-assigned.
- *
- * Two acceptances are deliberate, and both preserve the property that matters —
- * two spellings share an identity only when they name the same repository:
- *
- * - **`http://` as well as `https://`.** The scheme a remote is written with
- *   says nothing about which repository it is, and refusing would deny the grant
- *   to a repository the user demonstrably owns.
- * - **Userinfo, query and fragment**, which {@link stripRemoteUrlCredentials}
- *   removes before the match. `https://…@github.com/acme/repo?x=1` is the same
- *   repository as `https://github.com/acme/repo`; a token in the URL is a
- *   credential, not an identity, and treating it as one would split the grant.
+ * Two acceptances are deliberate, and both keep the property that matters — two
+ * spellings share an identity only when they name the same repository.
+ * `http://` is accepted because a scheme says nothing about which repository a
+ * remote is; userinfo, query and fragment are stripped before the match,
+ * because a token in a URL is a credential and not an identity.
  */
 export function repoId(url: string): string | null {
   const trimmed = stripRemoteUrlCredentials((url ?? "").trim());
@@ -564,18 +546,11 @@ export async function isWorkspaceCloneInSyncWithCache(
 
 /**
  * Parse owner/repo from a GitHub remote URL — the ACTION resolver, used to
- * address the GitHub API. {@link repoId} is the authorization identity; these
- * two must agree on which repository a URL names.
- *
- * The repository group used to be `[^/.]+`, which truncated a legal dotted name
- * at its first dot: `acme/foo.bar` resolved to `acme/foo`. Harmless-looking on
- * its own — the API call simply 404s — but docs/287 made the disagreement an
- * authorization one, since `repoId` accepts the dot. The grant would be checked
- * against `acme/foo.bar` while every operation targeted `acme/foo`.
- *
- * So the name runs to the next path separator and only a TERMINAL `.git` is
- * stripped, matching {@link repoId}. `github.com/acme/repo/pull/3` still yields
- * `repo`, because the group stops at the `/`.
+ * address the GitHub API. {@link repoId} is the authorization identity, and the
+ * two must agree on where a repository name ends: this group used to be
+ * `[^/.]+`, so a grant on `acme/foo.bar` authorised operations on `acme/foo`.
+ * The name now runs to the next path separator, with only a terminal `.git`
+ * stripped.
  */
 export function parseGitHubRemote(url: string): { owner: string; repo: string } | null {
   // Handle HTTPS: https://github.com/owner/repo.git
@@ -588,12 +563,9 @@ export function parseGitHubRemote(url: string): { owner: string; repo: string } 
 }
 
 /**
- * `github:owner/repo` back to the pair the GitHub API takes.
- *
- * The inverse of {@link repoIdFromOwnerRepo}, for the paths that must address a
- * repository the SESSION may no longer point at — settling a merge claim whose
- * session has since been repointed. Deriving it from the session's current
- * remote would ask GitHub about the wrong repository.
+ * `github:owner/repo` back to the pair the GitHub API takes — for the paths that
+ * must address a repository the SESSION may no longer point at, such as settling
+ * a merge claim on a session that has since been repointed.
  */
 export function ownerRepoFromRepoId(identity: string): { owner: string; repo: string } | null {
   const match = /^github:([^/]+)\/([^/]+)$/.exec((identity ?? "").trim());

@@ -333,21 +333,13 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   },
 
   /**
-   * docs/287 — the two failure shapes are handled differently, which the other
-   * toggles on this store do not need to do.
-   *
-   * A **rejected** request (`!res.ok`) is a definitive answer: the server did
-   * not apply the change, so the optimistic write is undone. No stale-write
-   * guard like `setRepoColorIndex`'s below, deliberately — with two values,
-   * `previous` is always `!allow`, so the guard could never change the outcome
-   * and would only read as protection that is not there.
-   *
-   * A **thrown** fetch is not an answer at all. The request may have been
-   * committed and its response lost, and this switch is a permission: quietly
-   * flipping the UI back to "off" while the database says "on" tells the user
-   * agents cannot merge here when they can (cross-agent review finding). So the
-   * indeterminate path asks the server instead of guessing, and only falls back
-   * to the revert when even that read fails.
+   * docs/287 — the two failure shapes are handled differently. A **rejected**
+   * request is a definitive answer, so the optimistic write is undone. A
+   * **thrown** fetch is not an answer at all: the request may have been
+   * committed and its response lost, and this switch is a permission — flipping
+   * the UI back to "off" while the database says "on" tells the user agents
+   * cannot merge when they can. So it re-reads from the server, and reverts only
+   * when even that fails.
    */
   setRepoAllowAgentMerge: async (url, allow) => {
     const previous = get().repos.find((r) => r.url === url)?.allowAgentMerge ?? false;

@@ -1557,7 +1557,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // be settled while that turn is still editing and pushing — marking the
   // session merged and deleting its remote branch underneath it. (An earlier
   // draft ran this before the sweep with a comment asserting it could not race;
-  // the assertion was never checked, and was wrong — cross-agent review finding.)
+  // the assertion was never checked, and was wrong.)
   void reconcileAgentMergeClaims({
     claims: agentMergeClaims,
     sessionManager,

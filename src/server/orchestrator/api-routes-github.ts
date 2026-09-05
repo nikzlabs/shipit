@@ -1414,26 +1414,19 @@ export async function registerGitHubRoutes(
         return;
       }
       // docs/287 req 5 — a repo-bound merge may only touch the pull request this
-      // session opened. Checked BEFORE `resolvePrTarget`, because that call is
-      // what a `--repo` override would retarget: validating after it would check
-      // this session's repository and then act on a different one.
-      //
-      // Sandbox merges skip this entirely (req 12): a sandbox has no session
-      // remote, no ShipIt-recorded branch and no provenance, and its own
-      // `dangerousGitHubOps` grant already decided.
+      // session opened, checked BEFORE `resolvePrTarget`, which is what a
+      // `--repo` override retargets. A sandbox skips all of it (req 12): no
+      // session remote, no recorded branch, no provenance.
       const repoBound = session.kind !== "sandbox";
       // The poller keys everything by `owner/repo`. Absent for a sandbox, whose
       // repository is whatever it cloned — and which has no grace hook anyway.
       const parsedRemote = session.remoteUrl ? parseGitHubRemote(session.remoteUrl) : null;
       const mergeRepoKey = parsedRemote ? `${parsedRemote.owner}/${parsedRemote.repo}` : null;
-      // docs/287 req 9 — the claim is repo-bound only. A sandbox's pull request
-      // is not the session's own, has no provenance, and no session state to
-      // settle into, so there is nothing for a claim to protect.
+      // req 9 — repo-bound only: a sandbox's pull request has no provenance and
+      // no session state to settle into.
       const claimRepoId = repoBound ? repoId(session.remoteUrl ?? "") : null;
-      // A repo-bound merge without a claim store cannot be recorded, and a merge
-      // ShipIt cannot record is one it will not perform. `route-registry.ts`
-      // always supplies one; this refuses rather than failing open on a
-      // hand-built or degraded server (cross-agent review finding).
+      // A merge ShipIt cannot record is one it will not perform. Refuses rather
+      // than failing open on a hand-built or degraded server.
       if (repoBound && !deps.agentMergeClaims) {
         reply.code(503).send({
           error:
@@ -1482,18 +1475,12 @@ export async function registerGitHubRoutes(
           reply.code(refusal.status).send({ error: refusal.error });
           return;
         }
-        // req 9 — the merge is turn-owned, and the route proves it rather than
-        // assuming it. This endpoint is `containerAccessible` and the worker
-        // injects only a session id, so without this a process inside the
-        // container could merge after its turn ended, or during a later one,
-        // attaching its flush, its claim and its transcript record to the wrong
-        // turn. `running` alone is a mutable boolean that says SOMETHING is
-        // running; the recorded identity is what says it is still this one.
-        //
-        // Placed AFTER the ownership checks and before the first mutation: the
-        // ownership refusals are the agent's likeliest mistakes and deserve
-        // their specific message, while everything below this line changes
-        // state and is what the turn requirement exists to own.
+        // req 9 — the merge is turn-owned, and the route proves it. This
+        // endpoint is `containerAccessible` and the worker injects only a
+        // session id, so without this a process in the container could merge
+        // after its turn ended, attaching its flush, claim and record to the
+        // wrong turn. Placed after the ownership checks (whose refusals are the
+        // agent's likeliest mistakes) and before the first mutation.
         turnId = claimDeps ? activeTurnIdFor(deps.runnerRegistry, request.params.id) : "n/a";
         if (claimDeps && !turnId) {
           reply.code(409).send({
@@ -1504,15 +1491,10 @@ export async function registerGitHubRoutes(
           return;
         }
 
-        // docs/287 reqs 14 + 15 — the agent works INSIDE the turn and ShipIt's
-        // auto-commit runs after it, so without this the merge would ship the
-        // branch as it stood BEFORE this turn's edits and report success. The
-        // sandbox path never showed this because a sandbox has no ShipIt
-        // auto-commit; extending to repo-bound sessions is what exposes it.
-        //
-        // Only two outcomes may proceed. The other four each mean "this turn's
-        // work is not on the branch", and merging on any of them ships a branch
-        // missing the work the merge was asked to land.
+        // reqs 14 + 15 — the agent works INSIDE the turn and ShipIt's
+        // auto-commit runs after it, so without this the merge ships the branch
+        // as it stood BEFORE this turn's edits and reports success. Only two
+        // outcomes proceed; the other four mean the work is not on the branch.
         const flush = await flushPendingTurnCommit(createGitManager(dir), {
           sessionId: request.params.id,
           runnerRegistry: deps.runnerRegistry,
@@ -1544,13 +1526,9 @@ export async function registerGitHubRoutes(
       }
         const { gitDir, remoteUrl } = resolvePrTarget(session, dir, request.body ?? {});
         const git = createGitManager(gitDir);
-        // req 14 — the pull request's head must be the commit this workspace is
-        // on. A repo-bound session that cannot answer WHICH commit that is has
-        // not passed the check, so the failure is REPORTED rather than turned
-        // into an absent value: the gate used to read `null` as "a sandbox,
-        // which owns its own git and has nothing to compare", so a failed read
-        // here silently bought a merge with no local comparison at all
-        // (cross-agent review finding).
+        // req 14 — a repo-bound session that cannot say WHICH commit it is on
+        // has not passed the check, so the failure is REPORTED rather than
+        // turned into an absent value the gate reads as the sandbox exemption.
         let localHead: { kind: "head"; sha: string } | { kind: "unreadable"; reason: string } | undefined;
         if (repoBound) {
           try {
@@ -1592,10 +1570,8 @@ export async function registerGitHubRoutes(
               // instant before the REST call, and resolved by exactly one of the
               // three outcome hooks.
               beforeMerge: (expectedSha: string) => {
-                // req 1 — the permission is withdrawable AT ANY TIME, and the
-                // decision to merge was taken before a commit, a push and two
-                // GitHub round trips. Re-read from ShipIt's own record, the same
-                // source the first check used.
+                // req 1 — withdrawable AT ANY TIME, and the decision to merge
+                // was taken before a commit, a push and two GitHub round trips.
                 const live = sessionManager.get(request.params.id);
                 if (!live) return "Not merged — this session no longer exists.";
                 if (mergeDisposition(live, deps.repoStore.allowsAgentMerge(live.remoteUrl ?? "")) !== "allowed") {

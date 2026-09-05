@@ -301,7 +301,7 @@ export class RepoStore {
    * matched no row. That last state is not hypothetical: granting a repository
    * ShipIt has not been given would answer 200, store nothing, and leave the
    * repository starting with the grant OFF whenever it was finally added
-   * (cross-agent review finding). {@link setHidden} has always returned false
+   *. {@link setHidden} has always returned false
    * for an untracked url; this now agrees with it.
    */
   setAllowAgentMerge(url: string, allow: boolean): "ok" | "no-identity" | "not-found" {

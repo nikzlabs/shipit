@@ -321,7 +321,7 @@ export async function registerSessionReposRoutes(
         // before ANY field is written. Doing it at the write instead broke the
         // guarantee the comment above states: `{hidden: true, allowAgentMerge:
         // true}` on a GitLab repository hid it and then answered 400, so a
-        // rejected request had mutated the row (cross-agent review finding).
+        // rejected request had mutated the row.
         //
         // The error deliberately does not quote the url back. It arrives from
         // the caller and may carry `user:password@`, which would put a

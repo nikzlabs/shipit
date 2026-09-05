@@ -2,33 +2,20 @@
  * docs/287-agent-merge-per-repo §3 — the one live read an agent merge is decided
  * from, and the table that decides it.
  *
- * ## Why this does not reuse anything
+ * Why nothing existing is reused. The poller's SUMMARY can be stale — a forced
+ * refresh that failed leaves the previous state standing, the poll indexes open
+ * pull requests by `headRefName` so two from one branch overwrite each other,
+ * and it carries no head SHA. The poller's QUERY has no `isDraft` and fixes
+ * `prState` to `"open"`. And `getCheckStatus()` maps "no checks configured" and
+ * a swallowed API failure to the same `"none"`, which the merge path treats as
+ * permission to merge — a live fail-open on the sandbox path, which is why this
+ * read replaces it for BOTH session kinds.
  *
- * **Not the poller's summary.** `forceRefreshSession()` returns `void` and
- * returns silently for an untracked session, and `pollRepo()` preserves the
- * previous state when it is unauthenticated, rate-limited, or handed no
- * repository data — so a "forced" refresh that failed leaves `getStatus()`
- * answering a stale green summary. The poll also indexes open pull requests by
- * `headRefName`, so two pull requests from one branch overwrite each other, and
- * the summary carries no head SHA at all.
- *
- * **Not the poller's query.** `buildPrStatusQuery()` emits the bulk
- * `pullRequests` connection with the number only as an alias, `PR_LIGHT_FIELDS`
- * has no `isDraft`, and `parsePrNode()` fixes `prState` to `"open"`.
- *
- * **Not `getCheckStatus()`.** It maps "no checks configured" AND a swallowed API
- * failure to the same `"none"`, and the merge path treats `"none"` as permission
- * to merge. That is a live fail-open defect on the sandbox path today, which is
- * why this read replaces it for BOTH session kinds rather than only the new one.
- *
- * ## One round trip, both SHAs
- *
- * `headRefOid` is the branch tip; the rollup's `commit.oid` is the commit the
- * checks actually describe. They differ exactly when something advanced the
- * branch after CI started, which is the case a check gate must refuse rather
- * than merge. The selection is deliberately minimal: `mergeable` is never
- * consulted, and the rollup's `contexts` list is not enumerated — counting a
- * bounded list is how a fail-open gate gets built.
+ * One round trip, both SHAs: `headRefOid` is the branch tip, the rollup's
+ * `commit.oid` is the commit the checks describe. They differ exactly when
+ * something advanced the branch after CI started. The selection is minimal on
+ * purpose — `mergeable` is never consulted and `contexts` is never enumerated,
+ * because counting a bounded list is how a fail-open gate gets built.
  */
 
 import type { GitHubAuthManager } from "../github-auth.js";
@@ -201,15 +188,10 @@ export async function decideMerge(args: {
   observation: MergeObservation;
   prNumber: number;
   /**
-   * What this workspace's current commit is — as one of three DISTINCT answers,
-   * because two of them used to share `null`.
-   *
-   * A sandbox owns its own git and has no ShipIt-managed branch to compare, so
-   * it genuinely skips req 14's check. A repo-bound workspace whose HEAD could
-   * not be read has NOT passed that check — and collapsing the two meant a
-   * broken or evicted workspace merged with no local comparison at all
-   * (cross-agent review finding). They are separate cases now so that a caller
-   * cannot express the failure as the exemption.
+   * What this workspace's current commit is, as three DISTINCT answers. A
+   * sandbox owns its own git and genuinely skips req 14's check; a repo-bound
+   * workspace whose HEAD could not be read has NOT passed it. Separate values so
+   * a caller cannot express the failure as the exemption.
    */
   localHead:
     | { kind: "sandbox" }
@@ -300,14 +282,10 @@ export async function decideMerge(args: {
     };
   }
 
-  // req 8 — a review gate GitHub is enforcing. Checked after CI so the more
-  // actionable message wins when both apply.
-  //
-  // A WHITELIST, not a list of the two refusals GitHub documents today. Naming
-  // the refusals means a value GitHub adds later falls through to the merge —
-  // the one direction this gate must never fail in — while naming the two that
-  // permit a merge makes an unrecognised value refuse on its own (cross-agent
-  // review finding). `null` is "no review is configured for this repository".
+  // req 8 — a review gate GitHub is enforcing, checked after CI so the more
+  // actionable message wins when both apply. A WHITELIST: naming the refusals
+  // GitHub documents today lets one it adds tomorrow fall through to a merge.
+  // `null` is "no review is configured for this repository".
   if (observation.reviewDecision !== null && observation.reviewDecision !== "APPROVED") {
     const reason =
       observation.reviewDecision === "CHANGES_REQUESTED" ? "changes requested"

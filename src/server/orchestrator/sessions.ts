@@ -634,13 +634,9 @@ export class SessionManager {
       .prepare("SELECT remote_url FROM sessions WHERE id = ?")
       .get(id) as { remote_url: string | null } | undefined;
     this.db.prepare("UPDATE sessions SET remote_url = ? WHERE id = ?").run(stored, id);
-    // docs/287 — repointing `origin` invalidates the merge provenance. The
-    // recorded pull request lives in the OLD repository, so leaving it would let
-    // a number from repository A authorise a merge that now resolves against
-    // repository B. Cleared here rather than at the callers because this is the
-    // single place the column moves, and comparing identities (not strings)
-    // keeps a no-op rewrite — the same remote in another spelling — from
-    // discarding a valid record.
+    // docs/287 — repointing `origin` invalidates the merge provenance: the
+    // recorded pull request lives in the OLD repository. Compared as identities,
+    // not strings, so a no-op rewrite in another spelling keeps a valid record.
     if (previous !== undefined && repoId(previous.remote_url ?? "") !== repoId(stored ?? "")) {
       this.clearPrProvenance(id);
     }
@@ -649,14 +645,11 @@ export class SessionManager {
   /**
    * docs/287 — record the pull request ShipIt just WITNESSED itself opening.
    *
-   * Written as a pair, and only from a create whose outcome said it created
-   * something. Every discovery path — the poller finding a pull request by
-   * branch name, a create that returned one already open — deliberately calls
-   * nothing here: a discovered pull request may be a person's, and adopting it
-   * would grant the agent merge rights over their work (req 5).
-   *
-   * `repoIdentity` is the repository the create actually landed in, not the one
-   * the caller asked for. Callers resolve it from the create's own answer.
+   * Written as a pair, and only from a create that said it created something.
+   * Every discovery path calls nothing here: a discovered pull request may be a
+   * person's, and adopting it would grant the agent rights over their work
+   * (req 5). `repoIdentity` is the repository the create landed in, not the one
+   * the caller asked for.
    */
   recordPrProvenance(id: string, prNumber: number, repoIdentity: string): void {
     if (!Number.isInteger(prNumber) || prNumber <= 0 || !repoIdentity) return;
@@ -945,16 +938,10 @@ export class SessionManager {
   /**
    * Set the branch name on a session.
    *
-   * docs/287 — a CHANGE of branch invalidates the merge provenance, for the same
-   * reason repointing `origin` does: the recorded pull request was opened from
-   * the old branch, and this session no longer has anything to do with it.
-   * Without this, repointing a session at another branch (the release-branch
-   * adoption path, which does not go through the PR reset) left the old number
-   * standing, and the agent could ask ShipIt to merge a pull request built from
-   * a branch its workspace had left (cross-agent review finding).
-   *
-   * Guarded on an actual change so the many creation-time callers — which set
-   * the branch a session is born with — clear nothing.
+   * docs/287 — a CHANGE of branch invalidates the merge provenance, as
+   * repointing `origin` does: the recorded pull request was opened from the old
+   * branch. Guarded on an actual change, so the creation-time callers that set
+   * the branch a session is born with clear nothing.
    */
   setBranch(id: string, branch: string): void {
     const previous = this.db

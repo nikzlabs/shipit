@@ -159,9 +159,8 @@ export function gitCredentialAllowed(
  *     is preserved deliberately, even though it now describes only one kind.
  *
  * `repoAllowsAgentMerge` is a required parameter rather than something this
- * module resolves. Keeping it pure is half the reason; the other half is that a
- * call site which has not consulted the grant cannot compile, so the answer can
- * never default to "allowed" because a caller forgot.
+ * module resolves: it keeps the module pure, and a call site that has not
+ * consulted the grant cannot compile, so it can never default to "allowed".
  *
  * Both grants are server-authoritative and never inferred from workspace files
  * — an agent can write `shipit.yaml`, so a permission stated there would be one

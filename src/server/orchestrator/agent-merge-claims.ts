@@ -3,35 +3,20 @@
  * attempted, written BEFORE the REST call and deleted only once its outcome has
  * been recorded.
  *
- * ## Why a row exists at all
- *
  * The merge call is a plain `fetch`, and it can reject *after* GitHub accepted
- * the request. Without a durable row, a transport error, a timeout or a crash in
- * that window destroys the only evidence that a merge happened: the process
- * comes back with a merged pull request, a session that never learned about it,
- * and nothing in the transcript. The row turns "we do not know" into a question
- * that can be answered later, from the row's own tuple.
+ * the request. The row is what turns "we do not know" into a question that can
+ * be answered later: a surviving row is resolved by reading THAT pull request in
+ * THAT repository and asking whether `expected_sha` is merged. The shape of the
+ * failure is never consulted — a socket error and a 500 look identical whether
+ * or not the merge landed.
  *
- * ## Resolved from the tuple, never from the error
+ * `merging` means the outcome is unknown and reconciliation owns the row.
+ * `settling` means a merge response came back and its effects are being written;
+ * that one bit is what stops a stale "still open" read from erasing the proof.
  *
- * A surviving `merging` row is resolved by reading THAT pull request in THAT
- * repository and asking whether `expected_sha` is merged. The shape of the
- * failure says nothing — a socket error and a 500 look identical whether or not
- * the merge landed — so it is never consulted.
- *
- * ## The two states
- *
- * - **`merging`** — the REST call is in flight, or its outcome was
- *   indeterminate. Reconciliation owns it.
- * - **`settling`** — the merge is known to have happened and its effects are
- *   being written. The row outlives the writes so a crash mid-settlement is
- *   recoverable; settlement is idempotent on the row's natural identity.
- *
- * One row per session, by primary key: a session runs one turn at a time, and a
- * turn performs at most one merge. `ON DELETE CASCADE` means deleting a session
- * takes its claim with it.
+ * One row per session, by primary key. `ON DELETE CASCADE` means deleting a
+ * session takes its claim with it.
  */
-
 import { randomUUID } from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
 
@@ -61,14 +46,10 @@ interface ClaimRow {
 }
 
 /**
- * A per-PROCESS random prefix for turn identities.
- *
- * `runner.turnEpoch` is a per-runner counter that restarts at 0 whenever a
- * runner is recreated — a container restart, an orchestrator restart. A bare
- * epoch would therefore let a claim written by turn 0 of a previous process read
- * as "the currently active turn" during turn 0 of the next one, and a stale
- * claim would write session state into an unrelated turn. Prefixing with a value
- * that cannot repeat makes that comparison fail closed instead.
+ * A per-PROCESS prefix for turn identities. `runner.turnEpoch` restarts at 0
+ * whenever a runner is recreated, so a bare epoch would let turn 0 of a previous
+ * process read as the turn running now. The prefix makes that comparison fail
+ * closed.
  */
 const PROCESS_TURN_PREFIX = randomUUID().slice(0, 8);
 
@@ -78,12 +59,9 @@ export function currentTurnId(turnEpoch: number): string {
 }
 
 /**
- * The merge record's stable natural identity (req 11).
- *
- * Built ONLY from durable row values, so a settlement resumed after a restart
- * derives the same string the first attempt did — which is what makes the
- * transcript notice and the merge record fire once rather than once per
- * recovery. A random id would defeat the whole point.
+ * The merge's stable natural identity, for correlating log lines across a
+ * restart. Built only from durable row values, so a resumed settlement derives
+ * the string the first attempt did.
  */
 export function mergeRecordId(claim: Pick<AgentMergeClaim, "repoId" | "prNumber" | "expectedSha">): string {
   return `agent-merge:${claim.repoId}#${claim.prNumber}@${claim.expectedSha}`;
@@ -112,29 +90,19 @@ export class AgentMergeClaimStore {
    * Record a merge about to be attempted. **Single-flight**: an existing row of
    * either state refuses the new claim, and the caller refuses the merge.
    *
-   * Replacing a row was the obvious reading of "one turn, one merge", and it was
-   * wrong in both states. A `settling` row is proof that a merge HAPPENED and
-   * its effects are still being written, so replacing it discards that proof. A
-   * `merging` row is an attempt whose outcome nobody has learned YET — replacing
-   * it loses a merge that is still in flight:
+   * Replacing a row loses a merge that is still in flight. A claims and GitHub
+   * merges, but A's response is slow; B replaces A's row, gets "already merged",
+   * and releases it; A returns to find no row and reports the merge as settled.
+   * Merged, unrecorded, unrecoverable. Refusing makes that sequence impossible.
    *
-   *   A claims and GitHub performs the merge, but A's response is slow. B claims
-   *   and replaces A's row. B gets "already merged", a definitive refusal, and
-   *   releases the row. A finally returns merged, finds no row of its own, and
-   *   reports the merge as already settled. The pull request merged; nothing
-   *   recorded it and nothing will (cross-agent review finding).
-   *
-   * Refusing instead makes that sequence impossible: B never reaches the REST
-   * call. A row left behind by a crashed or unresolved attempt does block the
-   * next merge, which is the intended direction — it is resolved by the three
-   * reconciliation triggers (end of turn, session activation, startup), and
-   * until then "an earlier attempt is unresolved" is the honest answer.
+   * A row left by a crashed attempt does block the next merge. That is the
+   * intended direction — the reconciliation triggers resolve it, and until then
+   * "an earlier attempt is unresolved" is the honest answer.
    */
   claim(claim: Omit<AgentMergeClaim, "state" | "createdAt">): boolean {
-    // A bare INSERT, so the primary key enforces single-flight rather than the
-    // read above it: `get` and `run` are both synchronous here, but a second
-    // orchestrator on the same database is not in this process's event loop, and
-    // a conflict there must refuse rather than throw its way out of the route.
+    // A bare INSERT, so the PRIMARY KEY enforces single-flight. A second
+    // orchestrator on the same database is not in this event loop, and its
+    // conflict must refuse rather than throw out of the route.
     try {
       this.db.prepare(
         `INSERT INTO agent_merge_claims
@@ -146,10 +114,8 @@ export class AgentMergeClaimStore {
       );
       return true;
     } catch (err) {
-      // Every reason to land here refuses the merge, so none of them may be
-      // silent: a conflicting row, a session deleted under the foreign key, a
-      // read-only database. The route turns `false` into one refusal message;
-      // this line is what says which of them it was.
+      // The route turns `false` into one refusal message; this says which of
+      // the reasons it was — conflict, missing session, read-only database.
       console.warn(`[agent-merge] claim refused for ${claim.sessionId}:`, err);
       return false;
     }
@@ -170,12 +136,7 @@ export class AgentMergeClaimStore {
     return rows.map(fromRow);
   }
 
-  /**
-   * The merge is known to have happened; its effects are now being written.
-   *
-   * Guarded on the SHA so a late transition cannot promote a row that has since
-   * been replaced by a newer attempt. Returns false when nothing matched.
-   */
+  /** The merge is known to have happened; its effects are now being written. */
   markSettling(sessionId: string, expectedSha: string): boolean {
     const res = this.db.prepare(
       "UPDATE agent_merge_claims SET state = 'settling' WHERE session_id = ? AND expected_sha = ?",
@@ -183,10 +144,7 @@ export class AgentMergeClaimStore {
     return res.changes > 0;
   }
 
-  /**
-   * Drop the claim — after settlement is written, or when GitHub definitively
-   * refused. Guarded on the SHA for the same reason as {@link markSettling}.
-   */
+  /** Drop the claim — settlement written, or GitHub definitively refused. */
   release(sessionId: string, expectedSha: string): boolean {
     const res = this.db.prepare(
       "DELETE FROM agent_merge_claims WHERE session_id = ? AND expected_sha = ?",
@@ -195,13 +153,9 @@ export class AgentMergeClaimStore {
   }
 
   /**
-   * Release a claim whose merge did NOT happen — a definitive refusal.
-   *
-   * The `state = 'merging'` filter keeps the "only an unresolved attempt may be
-   * discarded" rule inside the statement rather than in the caller's argument.
-   * Single-flight {@link claim} already stops a second request from ever seeing
-   * another request's `settling` row, so this is the belt to that braces: a
-   * `settling` row means a merge HAPPENED, and no refusal path may delete one.
+   * Release a claim whose merge did NOT happen — a definitive refusal. The
+   * `state = 'merging'` filter keeps "only an unresolved attempt may be
+   * discarded" in the statement: a `settling` row means a merge happened.
    */
   releaseUnmerged(sessionId: string, expectedSha: string): boolean {
     const res = this.db.prepare(
@@ -213,22 +167,16 @@ export class AgentMergeClaimStore {
   /**
    * Write the merge's transcript record and drop the claim **atomically**.
    *
-   * "Record, then delete" is not crash-idempotent on its own: a transcript
-   * notice gets a random id, so a crash between the append and the delete
-   * produces a second notice when recovery re-settles the surviving row. One
-   * transaction removes the window rather than trying to detect it afterwards —
-   * both writes are synchronous SQLite against the same database, so either the
-   * record and the release both land or neither does.
-   *
-   * `record` must therefore be synchronous and must not perform I/O.
+   * "Record, then delete" is not crash-idempotent: a crash between the two
+   * produces a second notice when recovery re-settles the surviving row. Both
+   * writes are synchronous SQLite against one database, so a transaction removes
+   * the window. `record` must therefore be synchronous and do no I/O.
    */
   releaseAfterRecording(sessionId: string, expectedSha: string, record: () => void): boolean {
     let released = false;
     this.db.transaction(() => {
-      // The row is the permission to record. Checked INSIDE the transaction so
-      // two settlements that overlap — the turn's own and a reconciliation pass
-      // that fired at the end of that turn — cannot both write the record: the
-      // second finds the row gone and writes nothing.
+      // The row is the permission to record, checked INSIDE the transaction so
+      // two overlapping settlements cannot both write: the second finds it gone.
       const row = this.db
         .prepare("SELECT session_id FROM agent_merge_claims WHERE session_id = ? AND expected_sha = ?")
         .get(sessionId, expectedSha);
