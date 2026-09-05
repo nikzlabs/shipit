@@ -37,7 +37,9 @@ import { persistNoticeUnattached } from "./chat-card-persistence.js";
  */
 function cancelAgentMergeRequests(deps: ApiDeps, id: string): void {
   if (!id || !deps.agentMergeClaims) return;
-  for (const claim of deps.agentMergeClaims.cancelPendingForRepo(id)) {
+  // The notice rides the delete's transaction: a request the user cancelled
+  // must not vanish leaving no record of why (req 3's guarantee, req 4's case).
+  deps.agentMergeClaims.cancelPendingForRepo(id, (claim) => {
     persistNoticeUnattached(
       deps.chatHistoryManager,
       claim.sessionId,
@@ -45,7 +47,7 @@ function cancelAgentMergeRequests(deps: ApiDeps, id: string): void {
       + "for this repository. Nothing was merged.",
       "info",
     );
-  }
+  });
 }
 
 export async function registerSessionReposRoutes(

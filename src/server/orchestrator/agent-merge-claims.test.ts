@@ -314,6 +314,48 @@ describe("AgentMergeClaimStore — merge requests", () => {
     expect(claims.get(SESSION)).not.toBeNull();
   });
 
+  it("writes the cancellation notice in the same transaction as the delete", () => {
+    // req 3 promises the transcript says WHY a request was cancelled. "Delete,
+    // then append" loses that explanation for good if anything fails between
+    // them, and the row is gone so nothing will ever say it again.
+    armOne();
+    const chatHistory = new ChatHistoryManager(dbManager);
+    expect(() => claims.releasePending(SESSION, "sha-head", () => {
+      chatHistory.append(SESSION, {
+        id: "m1", role: "system", text: "cancelled", timestamp: new Date().toISOString(),
+      } as never);
+      throw new Error("something later failed");
+    })).toThrow();
+
+    expect(claims.get(SESSION)).not.toBeNull();
+    expect(chatHistory.load(SESSION)).toHaveLength(0);
+  });
+
+  it("writes revocation's notices in the same transaction as its deletes", () => {
+    armOne();
+    const chatHistory = new ChatHistoryManager(dbManager);
+    expect(() => claims.cancelPendingForRepo(REPO, () => {
+      chatHistory.append(SESSION, {
+        id: "m1", role: "system", text: "revoked", timestamp: new Date().toISOString(),
+      } as never);
+      throw new Error("something later failed");
+    })).toThrow();
+
+    expect(claims.get(SESSION)).not.toBeNull();
+    expect(chatHistory.load(SESSION)).toHaveLength(0);
+  });
+
+  it("tracks which sessions have a merge REST call in flight", () => {
+    // Deliberately NOT a column: a `merging` row left by a crash must be
+    // reconciled, while one being merged this instant must not — and a restart
+    // emptying this set is the crash case answering correctly.
+    expect(claims.isMergeInFlight(SESSION)).toBe(false);
+    claims.markMergeInFlight(SESSION);
+    expect(claims.isMergeInFlight(SESSION)).toBe(true);
+    claims.clearMergeInFlight(SESSION);
+    expect(claims.isMergeInFlight(SESSION)).toBe(false);
+  });
+
   it("ends a request without touching an attempt", () => {
     armOne();
     expect(claims.releasePending(SESSION, "other-sha")).toBe(false);

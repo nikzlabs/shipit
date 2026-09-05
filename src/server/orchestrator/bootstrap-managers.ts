@@ -1006,6 +1006,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     getAutoConflictResolveManager: () => prStatusPollerRef.ref?.autoConflictResolveManager,
     // req 9 — the end-of-turn trigger. Lazy for the same reason as the poller:
     // settlement needs it, and it is constructed after this registry.
+    // docs/288 req 6 — seeds a freshly created runner's `mergeHold` when the
+    // merge started while this session had no container.
+    isAgentMergeInFlight: (sessionId: string) => agentMergeClaims.isMergeInFlight(sessionId),
     reconcileAgentMergeClaimsFor: (sessionId: string) => {
       void reconcileAgentMergeClaims({
         claims: agentMergeClaims,

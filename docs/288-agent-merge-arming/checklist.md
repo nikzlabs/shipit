@@ -48,9 +48,28 @@ Built on `docs/287-agent-merge-per-repo`, shipped.
 - [x] The `--auto` section in `shipit-docs/github.md`
 - [x] `docs/287`'s "not part of this feature" refusal updated
 
+## From the independent review
+
+- [x] Reconciliation stands down for a merge in flight — it could otherwise
+      delete the only record mid-REST-call and lose the merge entirely
+- [x] The rollup must describe the merged commit, or a lagging `SUCCESS` merges
+      a head CI never saw (req 1)
+- [x] The session's remote must still resolve to the claim's repository, so a
+      repointed `origin` cannot merge A under B's grant (req 2)
+- [x] The grant is re-read in the instant before the merge call; the residual
+      window is the REST call itself and is stated as such (req 4)
+- [x] `handleAnswerQuestion` — a fourth turn-start path — consults the hold
+- [x] A runner created mid-merge is seeded held, and the `finally` re-resolves
+      the registry so that runner is released (req 6)
+- [x] A throw from the merge call is `indeterminate`, with a notice — not a
+      silent strand that later reconciliation deletes without a word
+- [x] A bounded run of unreadable answers ends the request with a notice (req 1)
+- [x] Cancellation notices are written in the same transaction as the delete,
+      both for a moved branch and for revocation (req 3)
+
 ## Quality
 
 - [x] Tests as listed in plan.md
 - [x] Each new guard proved red on its own by deleting it singly
 - [x] `npm run lint:dev` and `npm run typecheck` green
-- [ ] An independent review of the implementation
+- [x] An independent review of the implementation — eight findings, all verified at source, all fixed (above)

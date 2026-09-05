@@ -99,6 +99,7 @@ export async function settleAgentMerge(
     return { result: "deferred", reason: "a turn started on this session" };
   }
 
+
   const read = await deps.prStatusPoller.promoteMergedPrByNumber({
     sessionId: claim.sessionId,
     owner: target.owner,
@@ -235,8 +236,18 @@ export async function reconcileAgentMergeClaims(
   }
 }
 
-/** Broader than "the claim's own turn": ANY turn may be editing and pushing. */
+/**
+ * Broader than "the claim's own turn": ANY turn may be editing and pushing.
+ *
+ * docs/288 adds the second clause, and it is not a turn at all. The executor
+ * writes `merging` and then awaits GitHub with no turn running, so without it a
+ * session activation reconciles that row, reads the pull request as still open,
+ * and DELETES it — after which GitHub accepts the outstanding request and the
+ * merge has no record anywhere. It is checked on the store rather than on the
+ * runner because a session with no container has no runner to ask.
+ */
 function hasActiveTurn(deps: AgentMergeSettlementDeps, claim: AgentMergeClaim): boolean {
+  if (deps.claims.isMergeInFlight(claim.sessionId)) return true;
   const runner = deps.runnerRegistry?.get(claim.sessionId);
   if (!runner) return false;
   return runner.agentBusy || runner.running;

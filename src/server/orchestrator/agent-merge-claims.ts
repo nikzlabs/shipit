@@ -72,9 +72,33 @@ function fromRow(row: ClaimRow): AgentMergeClaim {
 
 export class AgentMergeClaimStore {
   private db;
+  /**
+   * docs/288 — sessions whose merge REST call is in flight **in this process,
+   * right now**. Deliberately in memory and not a row: the question it answers
+   * is "may reconciliation touch this?", and a `merging` row left by a crash
+   * must be reconciled while one being merged this instant must not. A restart
+   * empties the set, which is exactly the crash case answering correctly.
+   *
+   * Without it, session activation fires reconciliation, which reads the pull
+   * request as still open, deletes the row as unmerged — and GitHub then accepts
+   * the outstanding request, leaving a merge with no record at all.
+   */
+  private readonly mergeInFlight = new Set<string>();
 
   constructor(dbManager: DatabaseManager) {
     this.db = dbManager.db;
+  }
+
+  markMergeInFlight(sessionId: string): void {
+    this.mergeInFlight.add(sessionId);
+  }
+
+  clearMergeInFlight(sessionId: string): void {
+    this.mergeInFlight.delete(sessionId);
+  }
+
+  isMergeInFlight(sessionId: string): boolean {
+    return this.mergeInFlight.has(sessionId);
   }
 
   /**
@@ -193,11 +217,12 @@ export class AgentMergeClaimStore {
    * anything, so there is nothing left to cancel. Returns the cancelled rows so
    * the caller can tell each session why.
    */
-  cancelPendingForRepo(repoId: string): AgentMergeClaim[] {
+  cancelPendingForRepo(repoId: string, record?: (claim: AgentMergeClaim) => void): AgentMergeClaim[] {
     let cancelled: AgentMergeClaim[] = [];
     this.db.transaction(() => {
-      // Read then delete, both filtered the same way and both inside the
-      // transaction, so the returned rows are exactly the ones that went.
+      // Read, delete and record, all filtered the same way and all inside the
+      // transaction: the returned rows are exactly the ones that went, and the
+      // notice telling each session why cannot be lost between the two.
       const rows = this.db
         .prepare("SELECT * FROM agent_merge_claims WHERE state = 'pending' AND repo_id = ?")
         .all(repoId) as ClaimRow[];
@@ -205,16 +230,28 @@ export class AgentMergeClaimStore {
         .prepare("DELETE FROM agent_merge_claims WHERE state = 'pending' AND repo_id = ?")
         .run(repoId);
       cancelled = rows.map(fromRow);
+      for (const claim of cancelled) record?.(claim);
     })();
     return cancelled;
   }
 
-  /** docs/288 — end a request that will not be carried out. `pending` only. */
-  releasePending(sessionId: string, expectedSha: string): boolean {
-    const res = this.db.prepare(
-      "DELETE FROM agent_merge_claims WHERE session_id = ? AND expected_sha = ? AND state = 'pending'",
-    ).run(sessionId, expectedSha);
-    return res.changes > 0;
+  /**
+   * docs/288 — end a request that will not be carried out, and write the notice
+   * that says why in the SAME transaction. req 3 promises the transcript says
+   * so, and "delete, then append" loses the explanation for good if anything
+   * fails in between. `record` must be synchronous and do no I/O.
+   */
+  releasePending(sessionId: string, expectedSha: string, record?: () => void): boolean {
+    let released = false;
+    this.db.transaction(() => {
+      const res = this.db.prepare(
+        "DELETE FROM agent_merge_claims WHERE session_id = ? AND expected_sha = ? AND state = 'pending'",
+      ).run(sessionId, expectedSha);
+      if (res.changes === 0) return;
+      record?.();
+      released = true;
+    })();
+    return released;
   }
 
   /** The merge is known to have happened; its effects are now being written. */

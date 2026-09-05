@@ -671,6 +671,31 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   const runnerEarly = resolveRunner(ctx);
   if (runnerEarly) runnerEarly.assertCanDispatch();
 
+  // docs/288 req 6 — a FOURTH turn-start path, and the one most easily missed:
+  // this handler does not go through `dispatch`, it sets `running = true` and
+  // calls `runAgentWithMessage` itself. An answer arriving while ShipIt is
+  // merging would start a turn that pushes behind a merge in flight. Queue it
+  // through `dispatch`, which is what the hold makes enqueue; the executor's
+  // `releaseQueuedTurn` starts it when the merge is done.
+  if (runnerEarly?.mergeHold) {
+    runnerEarly.dispatch(prepareDispatch({
+      text: answerText,
+      agentInterface: undefined,
+      execution: "interactive",
+      images: undefined,
+      files: undefined,
+      uploads: undefined,
+      permissionMode: undefined,
+      activity: undefined,
+      postTurn: undefined,
+      systemTurn: undefined,
+      onTurnComplete: undefined,
+      deliveryId: undefined,
+      dictated: msg.dictated,
+    }));
+    return;
+  }
+
   // planning#338 — while a system flow (rebase resolution, CI fix) holds the
   // session, the resident agent is the flow's own turn. The stale-kill below
   // would classify it non-reusable (`!systemTurnInProgress` in the

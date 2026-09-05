@@ -21,9 +21,10 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
+import type { MergeAttempt } from "../github-auth-prs.js";
 import type { AgentMergeClaim, AgentMergeClaimStore } from "../agent-merge-claims.js";
 import { persistNoticeUnattached } from "../chat-card-persistence.js";
-import { ownerRepoFromRepoId } from "../git-utils.js";
+import { ownerRepoFromRepoId, repoId } from "../git-utils.js";
 import { mergeDisposition } from "../pr-target.js";
 import { readMergeObservation } from "./merge-gate.js";
 import { settleAgentMerge } from "./agent-merge-settlement.js";
@@ -120,10 +121,31 @@ export async function runOneRequest(
     return { result: "ended", reason: "the session is gone" };
   }
 
+  // req 2 — the request names a repository and a pull request, and the session
+  // can be repointed while it waits. Without this the grant is read from the
+  // session's CURRENT remote while the merge is sent to the claim's repository:
+  // arm in A, repoint origin to B where merging is allowed, and B's permission
+  // merges A. `setRemoteUrl`/`setBranch` clear the provenance, so a repointed
+  // session fails the second half here even if the first were somehow satisfied.
+  if (
+    repoId(session.remoteUrl ?? "") !== claim.repoId
+    || session.prNumber !== claim.prNumber
+    || session.prRepoId !== claim.repoId
+  ) {
+    return end(
+      deps, claim,
+      `Cancelled the merge request for pull request #${claim.prNumber} in `
+      + `${target.owner}/${target.repo}: it is no longer the pull request ShipIt opened for this `
+      + "session. Nothing was merged.",
+    );
+  }
+
   // req 4 — the permission is withdrawable at any time, and this request was
   // recorded before an arbitrary wait. Revocation deletes pending rows; this is
-  // what covers the row that was mid-pass while it did.
-  if (mergeDisposition(session, deps.repoStore.allowsAgentMerge(session.remoteUrl ?? "")) !== "allowed") {
+  // what covers the row that was mid-pass while it did. Sound only because the
+  // identity check above has established that the session's remote IS the
+  // claim's repository.
+  if (!isStillGranted(deps, claim)) {
     return end(
       deps, claim,
       `The permission to merge in ${target.owner}/${target.repo} was withdrawn, so ShipIt did not `
@@ -140,9 +162,25 @@ export async function runOneRequest(
     deps.githubAuthManager, target.owner, target.repo, claim.prNumber,
   );
   if (observation.kind === "unreadable") {
-    // Transient by assumption: nothing is written and the next tick re-asks.
-    return { result: "waiting", reason: observation.reason };
+    // Transient by ASSUMPTION, and the assumption has a limit: a deleted
+    // repository, a revoked credential or a pull request ShipIt can no longer
+    // see would otherwise leave the request pending for ever with the agent
+    // never told the merge is not coming. Counted rather than timed, and in
+    // memory rather than in a column, because the question is "have this
+    // process's own reads kept failing?" — a restart re-earns the benefit of
+    // the doubt, which is the right answer for an outage that spanned it.
+    const failures = (unreadableCounts.get(unreadableKey(claim)) ?? 0) + 1;
+    unreadableCounts.set(unreadableKey(claim), failures);
+    if (failures < UNREADABLE_LIMIT) return { result: "waiting", reason: observation.reason };
+    return end(
+      deps, claim,
+      `Cancelled the merge request for pull request #${claim.prNumber}: ShipIt could not read it `
+      + `${failures} times in a row (${observation.reason}). Nothing was merged. Check that ShipIt `
+      + "still has access to this repository, then ask again.",
+    );
   }
+  // Any answer at all clears the run — the limit is on CONSECUTIVE failures.
+  unreadableCounts.delete(unreadableKey(claim));
 
   // req 3 — the commit is the request. Checked before state and checks alike, so
   // a branch that moved is reported as such rather than as a CI answer about a
@@ -194,6 +232,15 @@ export async function runOneRequest(
     );
   }
 
+  // req 1 — the checks that pass must be THIS commit's. A rollup describing an
+  // earlier commit is the ordinary shape moments after the push that armed the
+  // request, and reading its `SUCCESS` would merge a head CI has never seen —
+  // the same fail-open docs/287's `head-moved-since-checks` rule exists to stop,
+  // which arming deliberately skips at record time and must not skip here.
+  if (observation.rollupCommitOid !== observation.headRefOid) {
+    return { result: "waiting", reason: "the checks for this commit have not reported" };
+  }
+
   // The one waiting state.
   if (observation.rollupState === "PENDING" || observation.rollupState === "EXPECTED") {
     return { result: "waiting", reason: "checks are running" };
@@ -231,8 +278,11 @@ async function performMerge(
   target: { owner: string; repo: string },
 ): Promise<RequestOutcome> {
   const runner = deps.runnerRegistry?.get(claim.sessionId);
-  // Re-asked under the hold: a turn may have started while GitHub was answering.
-  // The hold goes on FIRST, so a turn racing this loses rather than ties.
+  // Two holds, because they cover different absences. `mergeHold` is what the
+  // turn-admission sites read, and needs a runner. The store's in-flight mark
+  // needs none: it is what stops RECONCILIATION resolving this row mid-call, and
+  // it is what a runner created during the call is seeded from.
+  deps.claims.markMergeInFlight(claim.sessionId);
   if (runner) runner.mergeHold = true;
   try {
     if (!isIdle(deps, claim.sessionId, { underHold: true })) {
@@ -245,9 +295,33 @@ async function performMerge(
       return { result: "waiting", reason: "the request was resolved by something else" };
     }
 
-    const attempt = await deps.githubAuthManager.mergePullRequestAttempt(
-      target.owner, target.repo, claim.prNumber, claim.method, claim.expectedSha,
-    );
+    // req 4 — the LAST read of the grant, in the instant before the irreversible
+    // call. The one above it was taken before a GitHub round trip. This cannot
+    // be made atomic with the merge — the residual window is the REST call
+    // itself, which no design can recall — but it is the whole of what is left.
+    if (!isStillGranted(deps, claim)) {
+      deps.claims.releaseUnmerged(claim.sessionId, claim.expectedSha);
+      notify(
+        deps, claim,
+        `The permission to merge in ${target.owner}/${target.repo} was withdrawn, so ShipIt did not `
+        + `merge pull request #${claim.prNumber}.`,
+        "info",
+      );
+      return { result: "ended", reason: "the permission was withdrawn" };
+    }
+
+    // A THROW here is `indeterminate`, not a failure: the manager's wrapper
+    // reads the pull request before it sends the merge, so a rejection can come
+    // from either — and the second one can reject after GitHub accepted it. The
+    // shape of an error never decides whether something merged.
+    let attempt: MergeAttempt;
+    try {
+      attempt = await deps.githubAuthManager.mergePullRequestAttempt(
+        target.owner, target.repo, claim.prNumber, claim.method, claim.expectedSha,
+      );
+    } catch (err) {
+      attempt = { outcome: "indeterminate", message: err instanceof Error ? err.message : String(err) };
+    }
 
     if (attempt.outcome === "indeterminate") {
       // The row stays `merging` on purpose: the merge may have happened, and
@@ -272,13 +346,17 @@ async function performMerge(
 
     return (await settle(deps, claim, true)) ? { result: "merged" } : { result: "waiting", reason: "settling" };
   } finally {
-    // Both in a `finally`, and in this order: the hold is what a queued turn is
-    // waiting on, and draining is event-driven — a background merge has no
-    // owning turn whose completion would drain the queue afterwards, so a
-    // message that arrived under the hold would sit there indefinitely (req 6).
-    if (runner) {
-      runner.mergeHold = false;
-      releaseQueuedTurn(runner);
+    deps.claims.clearMergeInFlight(claim.sessionId);
+    // RE-RESOLVED, not the one captured above: a session with no container has
+    // no runner to hold, and activating it during the call creates one — seeded
+    // held from the mark cleared just now, so it is this that unwedges it.
+    const held = deps.runnerRegistry?.get(claim.sessionId) ?? runner;
+    if (held) {
+      held.mergeHold = false;
+      // Draining is event-driven, and a background merge has no owning turn
+      // whose completion would drain the queue — so a message that arrived
+      // under the hold would sit there indefinitely (req 6, last sentence).
+      releaseQueuedTurn(held);
     }
   }
 }
@@ -331,13 +409,37 @@ function end(
   claim: AgentMergeClaim,
   message: string,
 ): RequestOutcome {
+  unreadableCounts.delete(unreadableKey(claim));
   // Only `pending`: if something promoted the row while this pass was reading
-  // GitHub, that attempt owns it now.
-  if (!deps.claims.releasePending(claim.sessionId, claim.expectedSha)) {
+  // GitHub, that attempt owns it now. The notice is written INSIDE the delete's
+  // transaction — req 3 promises the transcript says why, and "delete, then
+  // append" loses the explanation for good if anything fails in between.
+  if (!deps.claims.releasePending(
+    claim.sessionId, claim.expectedSha, () => notify(deps, claim, message, "info"),
+  )) {
     return { result: "waiting", reason: "the request was resolved by something else" };
   }
-  notify(deps, claim, message, "info");
   return { result: "ended", reason: message };
+}
+
+/**
+ * req 4 — read from the CLAIM's repository, which the caller has established is
+ * the session's own. `allowsAgentMerge` matches on `repoId`, so any spelling of
+ * the same repository answers the same.
+ */
+function isStillGranted(deps: AgentMergeExecutorDeps, claim: AgentMergeClaim): boolean {
+  const session = deps.sessionManager.get(claim.sessionId);
+  if (!session) return false;
+  if (repoId(session.remoteUrl ?? "") !== claim.repoId) return false;
+  return mergeDisposition(session, deps.repoStore.allowsAgentMerge(session.remoteUrl ?? "")) === "allowed";
+}
+
+/** Consecutive unreadable reads, per request. Cleared by any answer at all. */
+const unreadableCounts = new Map<string, number>();
+const UNREADABLE_LIMIT = 15;
+
+function unreadableKey(claim: AgentMergeClaim): string {
+  return `${claim.sessionId}@${claim.expectedSha}`;
 }
 
 /** Unattached: this runs post-turn, and often with no runner to emit through. */
