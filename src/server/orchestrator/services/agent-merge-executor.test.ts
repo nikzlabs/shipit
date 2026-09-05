@@ -384,7 +384,109 @@ describe("a request survives a restart (req 5)", () => {
   });
 });
 
+describe("runOneRequest — the checks must be this commit's (req 1)", () => {
+  it("waits when the rollup still describes an earlier commit, however green it is", async () => {
+    // The fail-open this feature could most easily have shipped. Arming
+    // deliberately ignores a lagging rollup — that lag is WHY the request
+    // exists — so the executor has to be the place that refuses to read it.
+    // Head is the armed commit and the rollup says SUCCESS, but about the
+    // commit the push replaced: merging here lands code CI never saw.
+    const gh = github({
+      read: observation({ rollupCommitOid: "sha-older", rollupState: "SUCCESS" }) as never,
+    });
+    const out = await runOneRequest(deps({ githubAuthManager: gh }), armed());
+
+    expect(out).toMatchObject({ result: "waiting" });
+    expect(gh.merges).toEqual([]);
+    expect(claims.get(SESSION)).toMatchObject({ state: "pending" });
+  });
+});
+
+describe("runOneRequest — the request names its own repository (req 2)", () => {
+  it("does not merge the armed repository under a repointed session's grant", async () => {
+    // Arm in A, repoint `origin` to B where agent merging is allowed. The REST
+    // target comes from the claim (A) and the permission from the session (B),
+    // so without an identity check B's grant merges A's pull request.
+    const gh = github();
+    armed();
+    sessions.setRemoteUrl(SESSION, "https://github.com/acme/other.git");
+
+    const out = await runOneRequest(deps({ githubAuthManager: gh }), claims.get(SESSION)!);
+
+    expect(out.result).toBe("ended");
+    expect(gh.merges).toEqual([]);
+    expect(gh.graphqlQuery).not.toHaveBeenCalled();
+    expect(claims.get(SESSION)).toBeNull();
+    expect(notices().join(" ")).toContain("no longer the pull request ShipIt opened");
+  });
+});
+
+describe("runOneRequest — an unreadable pull request cannot wait for ever (req 1)", () => {
+  it("ends the request after a long run of unreadable answers, and says so", async () => {
+    // A deleted repository or a revoked credential is not transient. Without a
+    // bound the row waits for ever and the agent is never told the merge is not
+    // coming — the one outcome the whole "end it with a notice" rule exists to
+    // prevent.
+    const claim = armed();
+    const gh = github({ read: null });
+    let last = await runOneRequest(deps({ githubAuthManager: gh }), claim);
+    for (let i = 0; i < 20 && last.result === "waiting"; i++) {
+      last = await runOneRequest(deps({ githubAuthManager: gh }), claim);
+    }
+    expect(last.result).toBe("ended");
+    expect(claims.get(SESSION)).toBeNull();
+    expect(notices().join(" ")).toContain("could not read it");
+  });
+
+  it("counts CONSECUTIVE failures — one good answer clears the run", async () => {
+    // Otherwise a repository with slow CI accumulates unrelated blips over an
+    // afternoon and has its request cancelled by arithmetic.
+    const claim = armed();
+    for (let i = 0; i < 20; i++) {
+      await runOneRequest(deps({ githubAuthManager: github({ read: null }) }), claim);
+      // A readable answer that still waits: checks running.
+      await runOneRequest(
+        deps({ githubAuthManager: github({ read: observation({ rollupState: "PENDING" }) as never }) }),
+        claim,
+      );
+    }
+    expect(claims.get(SESSION)).toMatchObject({ state: "pending" });
+  });
+});
+
 describe("runOneRequest — the permission (req 4)", () => {
+  it("re-reads the grant in the instant before the merge call", async () => {
+    // The check before the GitHub read is taken a round trip too early. This is
+    // the last one there can be: the residual window is the REST call itself,
+    // which no design can recall.
+    let granted = true;
+    const gh = github({ read: observation() as never });
+    (gh.graphqlQuery as unknown as { mockImplementation: (f: () => Promise<unknown>) => void })
+      .mockImplementation(async () => {
+        granted = false; // the user turns it off while GitHub is answering
+        return {
+          data: {
+            repository: {
+              pullRequest: {
+                state: "OPEN", isDraft: false, reviewDecision: null, headRefOid: HEAD,
+                commits: { nodes: [{ commit: { oid: HEAD, statusCheckRollup: { state: "SUCCESS" } } }] },
+              },
+            },
+          },
+        };
+      });
+
+    const out = await runOneRequest(
+      deps({ githubAuthManager: gh, repoStore: { allowsAgentMerge: () => granted } }),
+      armed(),
+    );
+
+    expect(out.result).toBe("ended");
+    expect(gh.merges).toEqual([]);
+    expect(claims.get(SESSION)).toBeNull();
+    expect(notices().join(" ")).toContain("was withdrawn");
+  });
+
   it("does not merge under a permission that was withdrawn after arming", async () => {
     // Revocation deletes pending rows; this covers the row that was mid-pass
     // while it did, and the restart that finds a row under a grant that is gone.
@@ -447,19 +549,69 @@ describe("runOneRequest — a merge and a turn are mutually exclusive (req 6)", 
     expect(runner.mergeHold).toBe(false);
   });
 
-  it("releases the hold when the merge throws", async () => {
+  it("releases the hold when something after the merge throws", async () => {
     // A hold left set by a throw is a session that accepts messages and runs
-    // none of them, with nothing that would ever clear it.
+    // none of them, with nothing that would ever clear it. The throw is staged
+    // in settlement, which runs after the merge and inside the hold.
     const runner = fakeRunner();
-    const gh = github();
-    (gh.mergePullRequestAttempt as unknown as { mockImplementation: (f: () => never) => void })
+    const p = poller();
+    (p.promoteMergedPrByNumber as unknown as { mockImplementation: (f: () => never) => void })
       .mockImplementation(() => { throw new Error("boom"); });
 
     await expect(runOneRequest(
-      deps({ githubAuthManager: gh, runnerRegistry: registry(runner) }),
+      deps({ prStatusPoller: p, runnerRegistry: registry(runner) }),
       armed(),
     )).rejects.toThrow("boom");
     expect(runner.mergeHold).toBe(false);
+    expect(claims.isMergeInFlight(SESSION)).toBe(false);
+  });
+
+  it("seeds a runner created DURING the merge, and releases it afterwards", async () => {
+    // A session with no container has no runner to hold. Opening it mid-merge
+    // creates one, which must not start a turn — the store's in-flight mark is
+    // what a fresh runner is seeded from (`runner-registry-factory.ts`), and
+    // this is the half of that contract the executor owns.
+    let created: ReturnType<typeof fakeRunner> | null = null;
+    let markedWhenCreated = false;
+    const gh = github({
+      onMerge: () => {
+        markedWhenCreated = claims.isMergeInFlight(SESSION);
+        created = fakeRunner({ mergeHold: markedWhenCreated } as never);
+      },
+    });
+
+    const out = await runOneRequest(
+      deps({
+        githubAuthManager: gh,
+        runnerRegistry: { get: () => created ?? undefined } as unknown as SessionRunnerRegistry,
+      }),
+      armed(),
+    );
+
+    expect(out).toEqual({ result: "merged" });
+    // The mark was up while the call was in flight, so the new runner was born
+    // held…
+    expect(markedWhenCreated).toBe(true);
+    // …and the `finally` re-resolves the registry rather than using the runner
+    // it captured at the start, so the new one is released instead of wedged.
+    expect(created!.mergeHold).toBe(false);
+  });
+
+  it("treats a throw from the merge call as indeterminate, not as a failure", async () => {
+    // The manager's wrapper reads the pull request BEFORE it sends the merge, so
+    // a rejection can come from either — and the second can reject after GitHub
+    // accepted it. Deleting the row on a throw would discard the record of a
+    // merge that already happened, and saying nothing would leave the agent
+    // waiting on an answer that never comes.
+    const gh = github();
+    (gh.mergePullRequestAttempt as unknown as { mockImplementation: (f: () => never) => void })
+      .mockImplementation(() => { throw new Error("socket hang up"); });
+
+    const out = await runOneRequest(deps({ githubAuthManager: gh }), armed());
+
+    expect(out.result).toBe("ended");
+    expect(claims.get(SESSION)).toMatchObject({ state: "merging" });
+    expect(notices().join(" ")).toContain("could not tell whether");
   });
 
   it("stands down when a turn starts while GitHub is answering the read", async () => {
@@ -490,6 +642,40 @@ describe("runOneRequest — a merge and a turn are mutually exclusive (req 6)", 
     expect(gh.merges).toEqual([]);
     expect(claims.get(SESSION)).toMatchObject({ state: "pending" });
     expect(runner.mergeHold).toBe(false);
+  });
+
+  it("is not resolved by reconciliation while its REST call is in flight", async () => {
+    // The worst interleaving this feature can produce. The executor writes
+    // `merging` and awaits GitHub with NO turn running, so reconciliation's
+    // busy check saw an idle session, read the pull request as still open, and
+    // deleted the row as unmerged — after which GitHub accepts the outstanding
+    // request and the merge is recorded nowhere at all.
+    armed();
+    const reconciled: string[] = [];
+    const gh = github({
+      onMerge: async () => {
+        // Session activation, mid-call.
+        await reconcileAgentMergeClaims(
+          {
+            claims,
+            sessionManager: sessions,
+            chatHistoryManager,
+            prStatusPoller: poller(),
+          },
+          { sessionId: SESSION },
+        );
+        reconciled.push(claims.get(SESSION)?.state ?? "gone");
+      },
+    });
+
+    const out = await runOneRequest(deps({ githubAuthManager: gh }), claims.get(SESSION)!);
+
+    // The row was still there when reconciliation ran, so the merge below has
+    // somewhere to land…
+    expect(reconciled).toEqual(["merging"]);
+    // …and it lands: settled and recorded, not silently lost.
+    expect(out).toEqual({ result: "merged" });
+    expect(notices().join(" ")).toContain("Merged pull request #7");
   });
 
   it("is invisible to reconciliation, which would delete it as not merged", async () => {

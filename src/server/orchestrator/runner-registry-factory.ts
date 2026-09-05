@@ -181,6 +181,12 @@ export interface RunnerRegistryDeps {
    */
   reconcileAgentMergeClaimsFor?: (sessionId: string) => void;
   /**
+   * docs/288 req 6 — is ShipIt merging this session's pull request right now?
+   * Read once, when a runner is created, to seed `mergeHold`: the merge may
+   * have started while the session had no container at all.
+   */
+  isAgentMergeInFlight?: (sessionId: string) => boolean;
+  /**
    * docs/146 — lazy resolver for the auto-conflict-resolve manager. The
    * manager is constructed inside the poller (one tick after the registry
    * exists), so we accept a lazy getter rather than a direct ref. Wired so
@@ -324,6 +330,7 @@ export function createRunnerRegistry(
     credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, logStore, runtimeMode, broadcastLog,
     credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, rebindDelivery,
     reconcileAgentMergeClaimsFor,
+    isAgentMergeInFlight,
     usageManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     markSessionAccountExhausted,
     markCredentialRouteAuthFailed,
@@ -356,6 +363,14 @@ export function createRunnerRegistry(
       reconcileAgentMergeClaimsFor?.(sessionId);
     },
     onRunnerCreated: (runner) => {
+      // docs/288 req 6 — a session with no container has no runner to hold, so
+      // the executor marks the merge in flight on the claim store instead. If
+      // the user opens the session DURING the merge, this is where the fresh
+      // runner learns about it: without the seed it starts with
+      // `mergeHold === false` and the first message begins a turn that pushes
+      // behind a merge already in flight. The executor's `finally` re-resolves
+      // the runner, so this one gets released rather than wedged.
+      if (isAgentMergeInFlight?.(runner.sessionId)) runner.mergeHold = true;
       // planning#246 — the ONE subscriber for the cross-session "busy outside a
       // turn" marker. The runner emits `background_work` from every place its
       // value can change (task list, streaming gate, consult set, dispose), so
