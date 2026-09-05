@@ -746,7 +746,18 @@ async function runInstallContainer(
     if (code !== 0) return { failure: `exited ${code}${output ? `:\n${output}` : ""}`, output };
     return { failure: null, output };
   } finally {
-    await container.remove({ force: true }).catch(() => undefined);
+    // Swallowed on purpose — the outcome above is already decided and a teardown
+    // failure must not change it — but never SILENT: see the same `finally` in
+    // `plugin-cli-run.ts`. {@link reapOrphanPluginInstalls} is boot-only by
+    // design, and a removal that fails while this orchestrator keeps running is
+    // the one orphan no restart is implied for.
+    await container.remove({ force: true }).catch((err: unknown) => {
+      console.warn(
+        `[plugins] ${job.repoName}: could not remove the install container ${container.id} — `
+        + "it is stranded until the next orchestrator restart:",
+        message(err),
+      );
+    });
   }
 }
 

@@ -917,7 +917,22 @@ async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCl
     }
     return { exitCode: typeof code === "number" ? code : 1, stdout: out.text(), stderr: err.text() };
   } finally {
-    await container.remove({ force: true }).catch(() => undefined);
+    // Swallowed on purpose — the exit code and the output are already computed,
+    // and a teardown failure must not change what the caller gets — but never
+    // SILENT. The only thing that reaps this container is
+    // `reapOrphanPluginInstalls`, called from the startup janitor alone, which is
+    // boot-only by design: an orphan implies a died process, and a died process
+    // implies the restart that reaps it. A failed removal is the one case that
+    // breaks that reasoning — it strands a container while this orchestrator
+    // keeps running, so no restart is implied and prod is deployed by hand. The
+    // log line is what makes it findable before then.
+    await container.remove({ force: true }).catch((err: unknown) => {
+      console.warn(
+        `[plugins:${deps.sessionId}] could not remove the companion-CLI container ${container.id} — `
+        + "it is stranded until the next orchestrator restart:",
+        message(err),
+      );
+    });
   }
 }
 

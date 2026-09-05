@@ -84,6 +84,9 @@ function fakeDocker(events: string[] = []) {
   const removed: string[] = [];
   let listed: Docker.ContainerInfo[] = [];
   let seq = 0;
+  /** Models the daemon failing the sweep's own listing, and a stuck sidecar. */
+  let listError: string | null = null;
+  let sidecarRemoveError: string | null = null;
   /** Models Docker refusing to remove a container whose netns is borrowed. */
   let failHolder: { id: string; shouldFail: () => boolean } | null = null;
   const docker = {
@@ -101,9 +104,15 @@ function fakeDocker(events: string[] = []) {
         },
       };
     },
-    listContainers: async () => listed,
+    listContainers: async () => {
+      if (listError) throw new Error(listError);
+      return listed;
+    },
     getContainer: (id: string) => ({
-      remove: async () => { removed.push(id); },
+      remove: async () => {
+        if (sidecarRemoveError) throw new Error(sidecarRemoveError);
+        removed.push(id);
+      },
     }),
   };
   return {
@@ -113,6 +122,8 @@ function fakeDocker(events: string[] = []) {
     /** What a later `listContainers` should report — the launched sidecars. */
     setListed: (entries: Docker.ContainerInfo[]) => { listed = entries; },
     failHolderRemove: (id: string, shouldFail: () => boolean) => { failHolder = { id, shouldFail }; },
+    failListing: (msg: string) => { listError = msg; },
+    failSidecarRemove: (msg: string) => { sidecarRemoveError = msg; },
   };
 }
 
@@ -525,6 +536,94 @@ describe("preparePluginNetns — failing closed", () => {
 
     expect(fake.removed).toContain("late-sidecar");
     expect(fake.removed).toContain(holderId);
+  });
+
+  /**
+   * And when BOTH passes fail the holder is stranded — with its Tier B resolver
+   * and Tier C SNI proxy still running, which is why a leaked holder is worse
+   * than a leaked workload. Nothing running reaps it: `reapOrphanPluginInstalls`
+   * is called from the startup janitor alone, boot-only because an orphan is
+   * taken to imply a died process and therefore the restart that reaps it. This
+   * is the case that breaks that reasoning, so it must not be silent.
+   */
+  it("logs the holder it could not remove after both sweeps", async () => {
+    const fake = fakeDocker();
+    const netns = await prepare(fake.docker, contained());
+    const holderId = fake.created[0].id;
+    fake.failHolderRemove(holderId, () => true);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      // Still resolves: `release` is called from a `finally` on the caller's own
+      // path, so it must not turn a teardown failure into a thrown one.
+      await expect(netns.release()).resolves.toBeUndefined();
+
+      expect(fake.removed).not.toContain(holderId);
+      const line = warn.mock.calls.map((c) => c.join(" ")).find((c) => c.includes(holderId));
+      expect(line).toBeDefined();
+      expect(line).toContain(SESSION);
+      expect(line).toContain("cannot remove");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The sweep in front of that removal has two silent catches of its own, and
+  // between them they are why the removal can fail at all — Docker refuses to
+  // remove a container whose namespace another is borrowing. Returning early is
+  // still correct; being the invisible half of the story is not.
+  it("logs a sidecar sweep the daemon would not answer", async () => {
+    const fake = fakeDocker();
+    const netns = await prepare(fake.docker, contained());
+    fake.failListing("daemon is not responding");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      await netns.release();
+
+      const line = warn.mock.calls.map((c) => c.join(" ")).find((c) => c.includes("daemon is not responding"));
+      expect(line).toBeDefined();
+      expect(line).toContain(SESSION);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("logs a sidecar it could not remove", async () => {
+    const fake = fakeDocker();
+    const netns = await prepare(fake.docker, contained());
+    fake.setListed([
+      { Id: "resolver-1", Labels: { [PLUGIN_NETNS_PARENT_LABEL]: fake.created[0].id } },
+    ] as unknown as Docker.ContainerInfo[]);
+    fake.failSidecarRemove("removal already in progress");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      await netns.release();
+
+      const line = warn.mock.calls.map((c) => c.join(" ")).find((c) => c.includes("resolver-1"));
+      expect(line).toBeDefined();
+      expect(line).toContain("removal already in progress");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The complement, so the assertions above cannot be met by a line this path
+  // emits on every release.
+  it("says nothing when the holder comes down cleanly", async () => {
+    const fake = fakeDocker();
+    const netns = await prepare(fake.docker, contained());
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      await netns.release();
+
+      expect(fake.removed).toContain(fake.created[0].id);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("tears the holder down and throws when a tier cannot be installed", async () => {

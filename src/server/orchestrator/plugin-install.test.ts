@@ -118,6 +118,8 @@ function fakeDocker(opts: {
   heldVolume?: boolean;
   /** What the install writes into the generation's writable layer. */
   onStart?: () => void;
+  /** The daemon refusing to remove the install container after it exits. */
+  removeError?: string;
 } = {}) {
   const containers: CreatedContainer[] = [];
   /** Every `logs()` call's options — the line half of the bound lives here. */
@@ -222,6 +224,7 @@ function fakeDocker(opts: {
           return Buffer.isBuffer(opts.logs) ? opts.logs : Buffer.from(opts.logs ?? "");
         },
         remove: async () => {
+          if (opts.removeError) throw new Error(opts.removeError);
           record.removed = true;
         },
       };
@@ -834,6 +837,34 @@ describe("createPluginInstallRunner", () => {
     const o = createdVolumes[0]!.DriverOpts!.o;
     for (const part of o.split(",")) {
       expect(part.split("=")[1]).toMatch(/^\/var\/lib\/docker\/volumes\/shipit-workspace\/_data\//);
+    }
+  });
+
+  /**
+   * The same claim `plugin-cli-run.test.ts` makes for the invocation container.
+   * `reapOrphanPluginInstalls` is boot-only by design — an orphan implies a died
+   * process, and a died process implies the restart that reaps it — and a
+   * swallowed removal failure is the one case where that does not hold: it
+   * strands a container while this orchestrator keeps running. Swallowing is
+   * still right, because the install's outcome is already decided; silence is not.
+   */
+  it("logs a removal the daemon refused, and still reports the install's own outcome", async () => {
+    const { docker, containers } = fakeDocker({ removeError: "device or resource busy" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      const result = await createPluginInstallRunner({
+        docker, image: "worker:test", sessionId: "s1", stateDir,
+      })(job([exportWith("probe", "npm ci")]));
+
+      // Unchanged by a teardown that failed after the exit code was read.
+      expect(result).toEqual({ ok: true });
+      const line = warn.mock.calls.map((c) => c.join(" ")).find((c) => c.includes(containers[0]!.id));
+      expect(line).toBeDefined();
+      expect(line).toContain("tools");
+      expect(line).toContain("device or resource busy");
+    } finally {
+      warn.mockRestore();
     }
   });
 });

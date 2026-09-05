@@ -375,15 +375,27 @@ export async function preparePluginNetns(
    * sweep, and the boot sweep is the backstop for anything stranger.
    */
   const release = async (): Promise<void> => {
+    let lastError: unknown;
     for (let attempt = 0; attempt < 2; attempt++) {
       await removeNetnsSidecars(opts.docker, opts.sessionId, holder.id);
       try {
         await holder.remove({ force: true });
         return;
-      } catch {
+      } catch (err) {
         /* a sidecar is still borrowing the namespace — sweep again */
+        lastError = err;
       }
     }
+    // Both passes failed, and a leaked HOLDER is worse than a leaked workload:
+    // it keeps the Tier B resolver and the Tier C SNI proxy running for nothing.
+    // The only thing that reaps it is `reapOrphanPluginInstalls`, which the
+    // startup janitor calls at boot alone — sound reasoning that assumes the
+    // orphan implies a died process, and this is the case where it does not.
+    console.warn(
+      `[plugins:${opts.sessionId}] could not remove the plugin netns holder ${holder.id} — `
+      + "its egress sidecars keep running until the next orchestrator restart:",
+      message(lastError),
+    );
   };
 
   try {
@@ -555,15 +567,30 @@ async function removeNetnsSidecars(
       all: true,
       filters: { label: [`${PLUGIN_NETNS_LABEL}=${sessionId}`] },
     });
-  } catch {
+  } catch (err) {
+    // Returning is right — the holder's removal is what actually frees the
+    // namespace — but a sweep that never listed is also why that removal can
+    // then fail, so it must not be the invisible half of the story.
+    console.warn(
+      `[plugins:${sessionId}] could not list the netns sidecars of holder ${holderId}:`,
+      message(err),
+    );
     return;
   }
   for (const entry of entries) {
     if (entry.Labels?.[PLUGIN_NETNS_PARENT_LABEL] !== holderId) continue;
     try {
       await docker.getContainer(entry.Id).remove({ force: true });
-    } catch {
-      /* already gone, or going with the holder */
+    } catch (err) {
+      /* already gone, or going with the holder — but say so */
+      console.warn(
+        `[plugins:${sessionId}] could not remove netns sidecar ${entry.Id}:`,
+        message(err),
+      );
     }
   }
+}
+
+function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
