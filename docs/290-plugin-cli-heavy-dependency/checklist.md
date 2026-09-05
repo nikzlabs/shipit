@@ -17,7 +17,9 @@ plugin-facing surface.
 
 ## M3 — plugin-supplied Dockerfile (the target: reqs 1–4)
 
-- [ ] Build-time egress containment designed — the prerequisite, and its own doc
+- [ ] Build-time egress containment **decided** — designed in
+      `docs/291-contained-builds` (planning#512), whose own open questions
+      gate this; three of them change what gets built
 - [ ] Manifest field by which a plugin names the Dockerfile its **CLI** runs on
 - [ ] Build-and-adopt flow that replaces `PluginCliDeps.image` at invocation
 - [ ] Image identity keyed to the CONTENT of the Dockerfile and its declared

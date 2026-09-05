@@ -157,6 +157,15 @@ subsystem elsewhere builds a pre-contained holder container so plugin code never
 has one uncontained instant (`plugin-egress.ts:72`). **Contained builds come
 first, and are the bulk of the work.**
 
+That prerequisite now has its own design — `docs/291-contained-builds`,
+planning#512 — which reports containment as achievable but **not** by the
+obvious route: the tier program's Tier B/C exemptions are keyed by uid
+(`session-worker-uid.ts:37` — "they are not identity checks, so ANY process with
+that uid inherits them"), and a `RUN` step starts as root and can assume a
+reserved uid in one line, which no declaration-time check on `user:` can reach.
+Read that doc rather than assuming the shape; it is a design with open
+questions, not a decision.
+
 Also needed: a prune tied to generation pruning (nothing prunes images
 in-session — `startup-janitor.ts:78`), and a `build:` subtree validated far
 more narrowly than Compose's — `context` and `dockerfile` only, since `secrets`,
