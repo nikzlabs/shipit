@@ -21,22 +21,31 @@ artifact or asking whoever operates the ShipIt instance to do anything.
 Shown a recipe that installs the dependency through the plugin's `install:`
 step, the user's objection was the cost: *"this cost is paid for every session,
 time and disk"* (2026-09-05). That objection is what this feature exists to
-answer, and it generalises past Blender — the requirement below is about any
+answer, and it generalises past Blender — the requirements below are about any
 heavy dependency, not about one tool.
 
 ## Requirement provenance
 
-Requirements 1–3 are the user's own words, dated above. Requirement 4 is
-**derived** by the agent from requirement 2 and is marked as such: a cost
-guarantee that cannot be observed cannot be relied on. It is listed as a
-requirement rather than an open question because it states an outcome, not a
-mechanism — but its provenance is the agent, and a human may strike it.
+All three numbered requirements are the user's own words, dated above.
 
-`why not dockerfile?` and `could a CLI just run inside one of the services
-defined in the docker compose?` were both asked by the user on 2026-09-05.
-Neither is recorded as a requirement: they are candidate **mechanisms**, and
-they are weighed as such in [plan.md](plan.md). Promoting either one here would
-make the design its own source of requirements.
+Two things the agent supplied are deliberately **not** requirements:
+
+- Whether a plugin author is told when the near-zero property is not in effect.
+  An earlier draft made this requirement 4 on the reasoning that a cost
+  guarantee nobody can observe cannot be relied on. That reasoning is the
+  agent's, so it belongs under Open questions until a human accepts it.
+- `why not dockerfile?` and `could a CLI just run inside one of the services
+  defined in the docker compose?`, both asked by the user on 2026-09-05. They
+  are candidate **mechanisms**, and they are weighed as such in
+  [plan.md](plan.md). Promoting either here would make the design its own
+  source of requirements.
+
+One open question was **withdrawn** rather than answered: an earlier draft asked
+whether a heavy dependency may require system packages. Requirement 1 already
+classifies that case — a dependency needing `apt` is exactly one "the
+session-worker image does not already carry" — so the question asked the user to
+narrow their own requirement. It is recorded here rather than deleted silently,
+because it changed the design's conclusion when it went away.
 
 ## Requirements
 
@@ -50,36 +59,28 @@ make the design its own source of requirements.
 3. The plugin stays **self-contained**: the plugin repository alone carries
    what its CLI needs. Consuming it requires no separately published artifact
    and no action from whoever operates the ShipIt instance.
-4. *(Derived — see provenance above.)* A plugin author can **tell** whether
-   requirement 2 is in effect for their plugin. When the near-zero property
-   does not apply, that is reported, not silent.
 
 ## Open questions
 
+- **Should a plugin author be told when the near-zero property is not in
+  effect?** Today ShipIt never says so: an install that quietly missed the
+  shared store is recorded as a plain success, so a plugin can pay a full cold
+  install in every session for ever with nobody told. Making that observable is
+  a real piece of work with its own scope, and the agent should not decide on
+  its own that requirement 2 implies it.
 - **Does requirement 2 bind the first session on a host?** Something must pay
   the download or the build once. The agent reads "a new session" as *any
   session after the first on that host*, so the first one may take minutes.
   Is that the intended reading, or must even the first session be cheap?
-- **May a heavy dependency require system packages?** Blender turned out to be
-  installable with `pip` as an unprivileged user (measured — see plan.md), so it
-  needs no root and no `apt`. A dependency that needs `apt-get` cannot be
-  installed this way at all, and that single fact decides whether this feature
-  needs a container image or not. Should the design cover the `apt` case, or is
-  a language-level package manager enough?
-- **Must each CLI call get a fresh container?** Today it does: a call gets its
-  own container, its own `/tmp`, and nothing survives between calls. Reusing a
-  long-lived container would make calls cheaper and would let them share
-  in-memory state — and would also let one call leave state that changes the
-  next. Which does the user want?
-- **Must the near-zero property survive a plugin commit that does not change
-  the dependency?** Requirement 2 names a new session. A plugin repository
-  commits often, and a new commit is a different question from a new session.
+- **Does requirement 2 hold across a plugin refresh of an existing session?**
+  The requirement names a new session. A plugin repository commits often, and
+  `shipit plugin refresh` moves a *running* session to a new commit. If the
+  dependency itself did not change, must that refresh also cost close to zero?
 
 ## Resolved questions
 
 - 2026-09-05 — Asked whether a heavy plugin dependency may be delivered as a
   pre-published container image the plugin names. The user's answer was
   **self-contained** ("I want a plugin with blender support to be
-  self-cotained"), which is recorded as requirement 3. A published image is not
-  ruled out as an intermediate step, but it does not satisfy requirement 3 on
-  its own.
+  self-cotained"), which is recorded as requirement 3. A pre-published image
+  therefore does not satisfy this feature.
