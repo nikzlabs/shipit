@@ -18,6 +18,7 @@ import type { ApiDeps } from "./api-routes.js";
 import type { SessionManager } from "./sessions.js";
 import { resolveShipitConfig, type ShipitConfig } from "../shared/shipit-config.js";
 import type { DeclaredPluginRepo } from "../shared/plugin-repos.js";
+import { destinationKey } from "../shared/plugin-repos.js";
 import {
   buildPluginReposSnapshot,
   EMPTY_PLUGIN_REPOS,
@@ -25,7 +26,7 @@ import {
   type PluginRepoRuntime,
 } from "../shared/plugin-repos.js";
 import { resolvePluginCredentials } from "../shared/plugin-credentials.js";
-import { resolvePluginHosts } from "../shared/plugin-hosts.js";
+import { resolvePluginHosts, type DeclaredHostsManifest } from "../shared/plugin-hosts.js";
 import { resolveLiveGenerations, type LiveGenerations } from "./plugin-generations.js";
 import {
   pluginCredentialDeclarationsFor,
@@ -344,8 +345,7 @@ export function assemblePluginSnapshot(
       // could not install is the ONLY version that ever declared anything. Its
       // failure message points at the Allow buttons on this card, so without
       // this the message named an affordance the card could not render.
-      (repoName) =>
-        (sessionId ? getActivationState(sessionId, repoName)?.declaredHosts : undefined) ?? null,
+      attemptedHostsFor(sessionId, config.plugins.repos),
     ),
     egressHostReach({
       contained: containEgress,
@@ -373,6 +373,39 @@ export function assemblePluginSnapshot(
     credentialGroups,
     hostGroups,
   );
+}
+
+/**
+ * req 24 — the hosts the last activation ATTEMPT declared, per repository name,
+ * and only where that attempt still speaks for the declaration in front of us.
+ *
+ * The activation map is keyed `sessionId::repoName`, so the name alone does not
+ * identify a repository — the same check `readActiveGeneration` applies to the
+ * durable half, applied here to the transient one. Two ways a name outlives its
+ * attempt, and the second is the one with no self-healing at all:
+ *
+ *  - re-pointed at a different repository — the next round overwrites the entry,
+ *    but this request may be the one in between;
+ *  - re-declared as `repo: self` — the tracked activation round does not visit
+ *    self declarations, so nothing ever overwrites it and the old repository's
+ *    hosts would keep their Allow buttons on the new card for the life of the
+ *    session (review finding).
+ */
+function attemptedHostsFor(
+  sessionId: string | undefined,
+  repos: readonly DeclaredPluginRepo[],
+): (repoName: string) => DeclaredHostsManifest | null {
+  if (!sessionId) return () => null;
+  const byName = new Map(repos.map((r) => [r.name.toLowerCase(), r]));
+  return (repoName: string) => {
+    const repo = byName.get(repoName.toLowerCase());
+    // req 27 — a self declaration's version is the working tree, which the live
+    // reader always answers for. It has no attempts of its own to fall back to.
+    if (!repo || repo.source.kind === "self") return null;
+    const attempted = getActivationState(sessionId, repoName)?.declaredHosts;
+    if (!attempted || attempted.source !== destinationKey(repo.source)) return null;
+    return attempted.exports;
+  };
 }
 
 /**

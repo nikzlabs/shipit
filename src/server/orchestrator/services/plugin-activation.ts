@@ -65,8 +65,17 @@ export interface PluginRepoActivationState {
    *
    * Transient like everything else here, and for the same reason: the version
    * this describes was never published, so nothing on disk remembers it.
+   *
+   * **`source` is what makes it safe to read by NAME**, and it is the rule
+   * `GenerationRecord.source` exists for, applied to the transient half. Every
+   * key here is `sessionId::repoName`, and a name can be re-pointed at a
+   * different repository — or at `repo: self`, which this round does not visit
+   * at all, so nothing would ever replace the entry. Without the check a host
+   * the OLD repository declared would keep its Allow buttons on the NEW
+   * declaration's card indefinitely, attributed to a plugin that never asked for
+   * it (review finding).
    */
-  declaredHosts?: DeclaredHostsManifest;
+  declaredHosts?: { source: string; exports: DeclaredHostsManifest };
 }
 
 /**
@@ -590,7 +599,14 @@ export async function activateDeclaredPlugins(
           ...(outcome.previous ? { generation: outcome.previous } : {}),
           ...(outcome.warning ? { warning: outcome.warning } : {}),
           ...(outcome.missingSelectors?.length ? { missingSelectors: outcome.missingSelectors } : {}),
-          ...(outcome.declaredHosts?.length ? { declaredHosts: outcome.declaredHosts } : {}),
+          ...(outcome.declaredHosts?.length
+            ? {
+                declaredHosts: {
+                  source: destinationKey(repo.source),
+                  exports: outcome.declaredHosts,
+                },
+              }
+            : {}),
         });
         console.warn(`[plugins:${sessionId}] ${repo.name}: ${outcome.reason}`);
         return;

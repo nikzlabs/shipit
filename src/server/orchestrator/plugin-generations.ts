@@ -868,6 +868,11 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
   let generationId = commit;
   let finalDir = generationDir(stateDir, repo.name, generationId);
   const stagingDir = `${finalDir}.staging-${crypto.randomUUID().slice(0, 8)}`;
+  // req 24 — empty until the manifest has been read and the selection resolved;
+  // see where it is assigned. Declared out here because the outer `catch` is one
+  // of the exits that must carry it, and nothing inside the `try` is in scope
+  // there.
+  let hostsField: { declaredHosts?: DeclaredHostsManifest } = {};
 
   try {
     await fsp.mkdir(generationsRoot(stateDir, repo.name), { recursive: true });
@@ -903,6 +908,13 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
     const selected = exportsList.filter((e) =>
       deps.selectedExports.some((n) => n.toLowerCase() === e.name.toLowerCase()),
     );
+    // req 24 — from here on the attempted version's declared hosts are KNOWN,
+    // and every way out of this block is a way the card loses them. Assigned
+    // once and spread into each failed return below rather than added at the
+    // install failure alone: the install is only the loudest of those exits, and
+    // a refresh refused at the phase-3 gate takes the same host declaration off
+    // the card just as completely (review finding).
+    hostsField = declaredHostsField(selected);
 
     // **Reusing the id `<commit>` means writing over durable artifacts that a
     // consumer may be mounted on, so that reuse runs under the consumer lease**
@@ -1008,7 +1020,12 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
         // very state directory cleanup had just removed.
         if (deps.isCancelled?.()) {
           await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
-          return { status: "failed", reason: "the session went away before activation completed", ...withPrevious };
+          return {
+            status: "failed",
+            reason: "the session went away before activation completed",
+            ...hostsField,
+            ...withPrevious,
+          };
         }
         const outcome = await deps.runInstall({
           stagingDir,
@@ -1025,7 +1042,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
           return {
             status: "failed",
             reason: outcome.reason ?? "plugin install failed",
-            ...declaredHostsField(selected),
+            ...hostsField,
             ...withPrevious,
             ...warningField,
           };
@@ -1142,7 +1159,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
       });
       if (refusal !== null) {
         await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
-        return { status: "failed", reason: refusal, ...withPrevious, ...warningField };
+        return { status: "failed", reason: refusal, ...hostsField, ...withPrevious, ...warningField };
       }
     } finally {
       releaseLease();
@@ -1167,7 +1184,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
     return { status: "activated", generation: record, ...warningField };
   } catch (err) {
     await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
-    return { status: "failed", reason: message(err), ...withPrevious, ...warningField };
+    return { status: "failed", reason: message(err), ...hostsField, ...withPrevious, ...warningField };
   }
 }
 
@@ -1222,8 +1239,8 @@ function missingSelectors(selected: readonly string[], available: readonly strin
 }
 
 /**
- * req 24 — the hosts a failed attempt's selected exports declared, kept only
- * when there is something to keep.
+ * req 24 — the hosts an attempt's selected exports declared, kept only when
+ * there is something to keep.
  *
  * Selected exports and not the whole manifest: an export the consuming project
  * never activated declares nothing this session needs, and offering to widen its
