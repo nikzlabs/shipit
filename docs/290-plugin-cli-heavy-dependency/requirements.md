@@ -33,7 +33,8 @@ Two things the agent supplied are deliberately **not** requirements:
 - Whether a plugin author is told when the near-zero property is not in effect.
   An earlier draft made this requirement 4 on the reasoning that a cost
   guarantee nobody can observe cannot be relied on. That reasoning is the
-  agent's, so it belongs under Open questions until a human accepts it.
+  agent's, so it went under Open questions instead — and the user then ruled it
+  a separate bug (planning#511). It is not part of this feature.
 - `why not dockerfile?` and `could a CLI just run inside one of the services
   defined in the docker compose?`, both asked by the user on 2026-09-05. They
   are candidate **mechanisms**, and they are weighed as such in
@@ -62,12 +63,6 @@ because it changed the design's conclusion when it went away.
 
 ## Open questions
 
-- **Should a plugin author be told when the near-zero property is not in
-  effect?** Today ShipIt never says so: an install that quietly missed the
-  shared store is recorded as a plain success, so a plugin can pay a full cold
-  install in every session for ever with nobody told. Making that observable is
-  a real piece of work with its own scope, and the agent should not decide on
-  its own that requirement 2 implies it.
 - **Does requirement 2 bind the first session on a host?** Something must pay
   the download or the build once. The agent reads "a new session" as *any
   session after the first on that host*, so the first one may take minutes.
@@ -79,6 +74,12 @@ because it changed the design's conclusion when it went away.
 
 ## Resolved questions
 
+- 2026-09-05 — Asked whether a plugin author should be told when the near-zero
+  cost property is not in effect. The user's answer: **that is a separate bug**,
+  not a requirement of this feature. Filed as **planning#511** and scoped out
+  here. The constraint it carries: this feature is about *delivering* a heavy
+  dependency cheaply, and the existing store's silence about its own
+  applicability is fixed independently of it.
 - 2026-09-05 — Asked whether a heavy plugin dependency may be delivered as a
   pre-published container image the plugin names. The user's answer was
   **self-contained** ("I want a plugin with blender support to be

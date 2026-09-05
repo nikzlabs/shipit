@@ -25,17 +25,6 @@ Nothing here may start while a bullet remains under `## Open questions` in
 - [ ] Image pruning tied to generation pruning
 - [ ] `build:` subtree validation narrowed to `context` and `dockerfile`
 
-## M1 — observability (only if the open question is accepted)
-
-- [ ] `planPluginDepStore` returns a typed reason instead of a bare `null`,
-      covering all six branches
-- [ ] The promotion path reports a null pin as a reason too
-- [ ] Cheap floor first: a log line, advisory, never failing an install
-- [ ] Expensive tier, separately: a Plugins-card row — needs persistence, a
-      snapshot projection, a shared type, client rendering and an end-to-end test
-- [ ] Co-located tests per branch
-- [ ] `src/server/shipit-docs/plugin-authoring.md` documents the conditions
-
 ## Rejected / deferred
 
 - [ ] M4 — running a call inside the plugin's service container; an
@@ -43,3 +32,6 @@ Nothing here may start while a bullet remains under `## Open questions` in
 - **M2 — a plugin-named published image: rejected.** It fails req 3, which the
   user decided on 2026-09-05. Reviving it means changing req 3 and its receipt
   first.
+- **M1 — making the dependency store's applicability observable: out of
+  scope.** The user ruled on 2026-09-05 that it is a separate bug, tracked as
+  planning#511. Do not sequence it against this feature.

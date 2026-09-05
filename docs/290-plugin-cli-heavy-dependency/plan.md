@@ -79,22 +79,22 @@ docstring's summary reads:
    (`:227`), and a dep dir already present in the checkout (`:248`) — and the
    caller then writes the stamp, records **`succeeded`**, and returns
    (`plugin-install.ts:462`). Promotion failure above is a seventh way to end up
-   sharing nothing, on a path where a plan existed. Whether this matters is an
-   open question, not a requirement.
+   sharing nothing, on a path where a plan existed. This is a **separate bug**,
+   tracked as planning#511 — recorded here because it shaped the measurements
+   above, not because this feature fixes it.
 
 ## Candidate mechanisms
 
-### M1 — make the store's applicability observable
+### M1 — make the store's applicability observable — *out of scope*
 
-Return a typed reason from `planPluginDepStore` instead of a bare `null`, cover
-the promotion-failure path as well, and surface both where the author looks.
+Returning a typed reason from `planPluginDepStore` and surfacing it would have
+made the store's silence visible. The user ruled on 2026-09-05 that this is a
+**separate bug**, not part of this feature: it is a defect in something that
+already exists, and it addresses no numbered requirement here — in particular
+not req 1, whose `apt` class it cannot reach.
 
-Addresses only the open question about observability — **not** req 1, whose
-`apt` class it cannot reach. Gated on a human accepting that open question.
-Note the scope is larger than one function: the Plugins card does not read
-install records today, so a card row needs persistence, a snapshot projection, a
-shared type, client rendering and an end-to-end test. A log line alone is the
-cheap floor.
+Tracked as **planning#511**. Nothing in this design depends on it, and it should
+not be sequenced against this feature's work.
 
 ### M2 — the plugin names a published image for its CLI
 
@@ -173,12 +173,11 @@ are answered.** With that said, the shape follows from req 1 taken whole:
 1. **M3 is the target**, because it is the only candidate that satisfies reqs 1,
    2 and 3 together. Its first piece of work is **contained builds**, not the
    plugin-facing surface.
-2. **M1 only if a human accepts the observability open question.** It is
-   independently useful and has no prerequisite, but it addresses no numbered
-   requirement, and its cheap floor (a log line) is worth separating from its
-   expensive one (a Plugins-card row).
-3. **M2 is rejected** — it fails req 3, which a human has already decided.
-4. **M4 is an optimisation of M3**, never a reason to choose it.
+2. **M2 is rejected** — it fails req 3, which a human has already decided.
+3. **M4 is an optimisation of M3**, never a reason to choose it.
+
+M1 is not on this list: the user scoped it out as a separate bug
+(planning#511).
 
 An earlier draft recommended M1 first, on the reading that req 1 might be
 narrowed to dependencies a language package manager can install. Req 1 already
