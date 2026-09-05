@@ -72,6 +72,11 @@ export async function settleAgentMerge(
   if (live?.expectedSha !== claim.expectedSha) {
     return { result: "deferred", reason: "the claim has already been resolved" };
   }
+  // docs/288 — a request has not been attempted, so "is it merged?" has no
+  // bearing on it and a `not-merged` answer here would DELETE it.
+  if (live.state === "pending") {
+    return { result: "deferred", reason: "this is a merge request the executor has not attempted" };
+  }
   if (!deps.prStatusPoller) return { result: "deferred", reason: "no pull-request poller" };
   const target = ownerRepoFor(claim);
   if (!target) return { result: "deferred", reason: "the claim has no readable repository" };
@@ -204,7 +209,10 @@ export async function reconcileAgentMergeClaims(
   opts: { sessionId?: string } = {},
 ): Promise<void> {
   const claims = opts.sessionId
-    ? [deps.claims.get(opts.sessionId)].filter((c): c is AgentMergeClaim => c !== null)
+    // `getAttempt`, not `get`: `settleAgentMerge` refuses a request on its own,
+    // so this is not what keeps one safe — it keeps the end of every turn from
+    // logging a deferral for a request that is simply still waiting.
+    ? [deps.claims.getAttempt(opts.sessionId)].filter((c): c is AgentMergeClaim => c !== null)
     : deps.claims.list();
 
   for (const claim of claims) {
