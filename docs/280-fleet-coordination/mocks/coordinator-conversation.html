@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coordinator mode — desktop conversation (interactive mock)</title>
+<style>
+  /* Self-contained interactive mock (second feedback round). Token values copied from
+     src/client/themes/{dark,light}.css (2026-08-23). Fake data; clicks are scripted. */
+  .dark {
+    --bg-primary:#030712; --bg-secondary:#111827; --bg-tertiary:#1f2937; --bg-elevated:#1f2937;
+    --bg-hover:rgba(255,255,255,.05); --bg-active:rgba(255,255,255,.1);
+    --text-primary:#f3f4f6; --text-secondary:#9ca3af; --text-tertiary:#6b7280; --text-inverse:#030712; --text-link:#60a5fa;
+    --border-primary:#212c3b; --border-secondary:#374151;
+    --accent:#3b82f6; --accent-text:#ffffff; --accent-subtle:rgba(59,130,246,.15);
+    --success:#22c55e; --success-subtle:rgba(34,197,94,.15);
+    --error:#ef4444; --error-subtle:rgba(239,68,68,.15);
+    --warning:#f59e0b; --warning-subtle:rgba(245,158,11,.15);
+    --info:#60a5fa; --info-subtle:rgba(96,165,250,.15);
+    --pr:#a78bfa; --attention:#f59e0b; --attention-text:#f59e0b;
+  }
+  .light {
+    --bg-primary:#ffffff; --bg-secondary:#f9fafb; --bg-tertiary:#f3f4f6; --bg-elevated:#ffffff;
+    --bg-hover:rgba(0,0,0,.04); --bg-active:rgba(0,0,0,.08);
+    --text-primary:#111827; --text-secondary:#4b5563; --text-tertiary:#9ca3af; --text-inverse:#ffffff; --text-link:#2563eb;
+    --border-primary:#dfe1e6; --border-secondary:#d1d5db;
+    --accent:#2563eb; --accent-text:#ffffff; --accent-subtle:rgba(37,99,235,.1);
+    --success:#16a34a; --success-subtle:rgba(22,163,74,.1);
+    --error:#dc2626; --error-subtle:rgba(220,38,38,.1);
+    --warning:#d97706; --warning-subtle:rgba(217,119,6,.1);
+    --info:#2563eb; --info-subtle:rgba(37,99,235,.1);
+    --pr:#7c3aed; --attention:#d97706; --attention-text:#b45309;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body { height:100%; }
+  body {
+    font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    background:var(--bg-primary); color:var(--text-primary);
+  }
+  .app { display:flex; height:100vh; min-height:640px; }
+
+  /* ---------- the queue panel: coordinator mode's left rail (reqs 35–37).
+       It REPLACES the session sidebar in this mode — one rail, attention only. ---------- */
+  .qpanel { width:304px; flex:none; background:var(--bg-secondary); border-right:1px solid var(--border-primary);
+            overflow-y:auto; display:flex; flex-direction:column; }
+  .qback { font-size:11.5px; color:var(--text-tertiary); padding:10px 14px 0; cursor:pointer; }
+  .qback:hover { color:var(--text-secondary); }
+  .qtitle { padding:6px 14px 8px; position:relative; }
+  .qtitle b { font-size:13px; }
+  .qtitle small { display:block; color:var(--text-tertiary); font-size:11px; margin-top:2px; }
+  .qgroup { padding:8px 14px 4px; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-tertiary); }
+  .qitem { margin:0 10px 8px; border:1px solid var(--border-primary); border-left:3px solid var(--attention);
+           border-radius:8px; background:var(--bg-primary); padding:9px 11px; position:relative; cursor:pointer;
+           transition:opacity .35s ease; }
+  .qitem:hover { background:var(--bg-hover); }
+  .qitem.inchat { border-left-color:var(--accent); }
+  .qitem.fresh { border-left-color:var(--border-secondary); }
+  .qitem.resolved { opacity:0; pointer-events:none; }
+  .qmeta { display:flex; align-items:center; gap:6px; font-size:10.5px; color:var(--text-tertiary); margin-bottom:4px; flex-wrap:wrap; }
+  .qbadge { font-size:10px; padding:0 6px; border-radius:999px; background:var(--warning-subtle); color:var(--attention-text); }
+  .qbadge.fail { background:var(--error-subtle); color:var(--error); }
+  .qnow { color:var(--accent); font-weight:500; }
+  .qitem .t { display:block; font-size:12.5px; font-weight:600; margin-bottom:4px; }
+  .qbrief { font-size:12px; color:var(--text-secondary); }
+  .qbrief.briefing { color:var(--text-tertiary); animation:pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity:.45; } }
+  @media (prefers-reduced-motion: reduce) { .qbrief.briefing { animation:none; } }
+  .qact { display:flex; gap:10px; margin-top:7px; font-size:11.5px; align-items:center; }
+  .qgo { color:var(--text-link); font-weight:500; }
+  .qopen { color:var(--text-tertiary); text-decoration:none; margin-left:auto; }
+  .qfoot { margin-top:auto; padding:10px 14px; font-size:11px; color:var(--text-tertiary);
+           border-top:1px solid var(--border-primary); position:relative; }
+  .qfoot .rest { color:var(--text-secondary); margin-bottom:5px; }
+
+  /* ---------- main column ---------- */
+  .main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .topbar { display:flex; align-items:center; gap:12px; padding:10px 16px;
+            border-bottom:1px solid var(--border-primary); background:var(--bg-primary); }
+  .topbar h1 { font-size:15px; font-weight:600; }
+  .presence { display:flex; align-items:center; gap:8px; margin-left:auto; }
+  .chip { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px;
+          border:1px solid var(--border-primary); font-size:12px; color:var(--text-secondary); background:var(--bg-secondary); }
+  .chip .st { width:7px; height:7px; border-radius:50%; }
+  .chip.free .st { background:var(--success); }
+  .toggle { display:inline-flex; align-items:center; gap:7px; padding:4px 10px; border-radius:999px; font-size:12px;
+            border:1px solid var(--border-primary); color:var(--text-secondary); background:var(--bg-secondary); cursor:pointer; }
+  .toggle .sw { width:26px; height:15px; border-radius:999px; background:var(--border-secondary); position:relative; }
+  .toggle .sw::after { content:""; position:absolute; top:2px; left:2px; width:11px; height:11px; border-radius:50%;
+                       background:var(--bg-primary); }
+  .toggle.on { color:var(--success); }
+  .toggle.on .sw { background:var(--success); }
+  .toggle.on .sw::after { left:auto; right:2px; }
+  .avail { font-size:12px; color:var(--text-tertiary); }
+
+  /* ---------- transcript ---------- */
+  .scroll { flex:1; overflow-y:auto; padding:20px 0 12px; }
+  .col { max-width:760px; margin:0 auto; padding:0 20px; display:flex; flex-direction:column; gap:14px; }
+  .daysep { text-align:center; font-size:11px; color:var(--text-tertiary); }
+
+  .row { position:relative; }
+  .user { margin-left:auto; max-width:78%; background:var(--accent-subtle);
+          border:1px solid var(--border-primary); border-radius:12px 12px 4px 12px; padding:9px 13px; }
+  .user .via { display:flex; gap:6px; align-items:center; font-size:11px; color:var(--text-tertiary); margin-bottom:3px; }
+  .mic { display:inline-block; width:10px; height:10px; border-radius:3px 3px 5px 5px; border:1.5px solid currentColor; position:relative; }
+  .coord { max-width:86%; padding:2px 0; }
+  .coord .who { font-size:11px; color:var(--text-tertiary); margin-bottom:3px; }
+  .coord .body { color:var(--text-primary); }
+  .coord .body p + p { margin-top:8px; }
+
+  /* thin relay line (plan §4: destination, the user's words, receipt) */
+  .relay { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-secondary);
+           padding:5px 12px; border-left:2px solid var(--border-secondary); }
+  .relay .arrow { color:var(--text-tertiary); }
+  .relay .dest { color:var(--text-primary); font-weight:500; }
+  .relay .rc { margin-left:auto; font-size:11px; color:var(--success); white-space:nowrap; }
+  .relay .rc.res { color:var(--pr); }
+
+  /* verbatim frame: visually distinct, untrusted, attributed, collapsed when long */
+  .verb { border:1px dashed var(--border-secondary); border-radius:10px; background:var(--bg-secondary); overflow:hidden; }
+  .verb .head { display:flex; align-items:center; gap:8px; padding:7px 12px; font-size:12px; color:var(--text-secondary); }
+  .verb .src { font-weight:600; color:var(--text-primary); }
+  .verb .untr { font-size:10px; padding:1px 7px; border-radius:999px; background:var(--warning-subtle); color:var(--attention-text); }
+  .verb .open { margin-left:auto; color:var(--text-link); font-size:11px; text-decoration:none; white-space:nowrap; }
+  .verb .fold { border-top:1px solid var(--border-primary); padding:6px 12px; font-size:12px; color:var(--text-tertiary); cursor:pointer; }
+  .verb .fold:hover { background:var(--bg-hover); }
+  .verb .excerpt { border-top:1px solid var(--border-primary); padding:8px 12px;
+                   font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--text-secondary);
+                   white-space:pre; overflow-x:auto; display:none; }
+  .verb.open .excerpt { display:block; }
+  .clarif { font-size:11px; color:var(--text-tertiary); padding:2px 12px 0; }
+  .clarif b { color:var(--text-secondary); font-weight:500; }
+
+  /* spawn receipts */
+  .receipts { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .rcpt { font-size:11px; padding:3px 9px; border-radius:6px; background:var(--bg-tertiary);
+          border:1px solid var(--border-primary); color:var(--text-secondary); }
+  .rcpt b { color:var(--text-primary); font-weight:500; }
+  .rcpt .tick { color:var(--success); }
+
+  /* option chips on a presented ask (req 35): a click becomes your message */
+  .opts { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; align-items:center; }
+  .opt { font-size:12px; padding:5px 12px; border-radius:999px; border:1px solid var(--border-secondary);
+         background:var(--bg-secondary); color:var(--text-primary); cursor:pointer; }
+  .opt:hover { background:var(--bg-hover); border-color:var(--accent); }
+  .opts .or { font-size:11px; color:var(--text-tertiary); }
+  .opts.done .opt { opacity:.45; pointer-events:none; }
+
+  /* composer */
+  .composer { border-top:1px solid var(--border-primary); background:var(--bg-primary); }
+  .composer .inner { max-width:760px; margin:0 auto; padding:12px 20px 14px; }
+  .box { display:flex; align-items:center; gap:10px; border:1px solid var(--border-secondary); border-radius:10px;
+         background:var(--bg-secondary); padding:10px 12px; }
+  .box .ph { color:var(--text-tertiary); flex:1; }
+  .micbtn { display:flex; align-items:center; gap:7px; padding:5px 11px; border-radius:8px;
+            background:var(--accent); color:var(--accent-text); font-size:12px; font-weight:500; cursor:pointer; }
+  .kbd { font:11px ui-monospace,monospace; border:1px solid var(--border-secondary); border-bottom-width:2px;
+         border-radius:4px; padding:0 5px; color:var(--text-secondary); background:var(--bg-tertiary); }
+  .hint { font-size:11px; color:var(--text-tertiary); margin-top:6px; text-align:left; }
+
+  /* mock chrome */
+  .mockbar { position:fixed; bottom:10px; right:12px; display:flex; gap:8px; z-index:9; }
+  .mockbar button { font-size:11px; padding:4px 10px; border-radius:999px; border:1px solid var(--border-secondary);
+                    background:var(--bg-elevated); color:var(--text-secondary); cursor:pointer; }
+  .mockbar button[aria-pressed="true"] { background:var(--accent-subtle); color:var(--text-primary); }
+  .toast { position:fixed; bottom:14px; left:50%; transform:translateX(-50%); background:var(--bg-elevated);
+           border:1px solid var(--border-secondary); color:var(--text-secondary); font-size:12px;
+           padding:7px 14px; border-radius:999px; opacity:0; transition:opacity .25s ease; pointer-events:none; z-index:10; }
+  .toast.show { opacity:1; }
+
+  /* requirement pins (hidden unless notes mode) */
+  .pin { display:none; position:absolute; top:-7px; right:-6px; font-size:10px; padding:1px 7px; border-radius:999px;
+         background:var(--info-subtle); color:var(--info); border:1px solid var(--border-primary); white-space:nowrap; }
+  .notes .pin { display:inline-block; }
+  .pin.left { right:auto; left:-6px; }
+  .legend { display:none; max-width:760px; margin:0 auto 6px; padding:8px 20px; font-size:11px; color:var(--text-tertiary); }
+  .notes .legend { display:block; }
+</style>
+</head>
+<body>
+<div class="mockbar">
+  <button id="notesBtn" aria-pressed="false" onclick="document.body.classList.toggle('notes');this.setAttribute('aria-pressed',document.body.classList.contains('notes'))">Show req notes</button>
+  <button onclick="const h=document.documentElement;h.classList.toggle('dark');h.classList.toggle('light')">Light / dark</button>
+</div>
+<div class="toast" id="toast"></div>
+
+<div class="app">
+
+  <!-- Coordinator mode's left rail IS the queue (reqs 35–37, second feedback round):
+       it replaces the session sidebar — one rail, only what needs you. Clicks are scripted fake data. -->
+  <aside class="qpanel">
+    <div class="qback" onclick="toast('Mock: back to the ordinary session sidebar (outside coordinator mode).')">‹ All sessions</div>
+    <div class="qtitle">
+      <b>Needs you</b>
+      <small>Only what waits on you. Reading it sends nothing.</small>
+      <span class="pin left" style="top:0">req 37 · the queue replaces the sidebar; attention only</span>
+    </div>
+
+    <div id="qlist">
+      <div class="qgroup">Reef Quest</div>
+
+      <div class="qitem" id="qi-gen12" role="button" onclick="takeItem('gen12')">
+        <span class="pin left">plan §4 · standing brief, written at arrival</span>
+        <div class="qmeta"><span class="qbadge fail">failure</span><span>Character generation #12</span><span>· 09:41</span><span class="qnow" hidden>· in the chat now</span></div>
+        <span class="t">Asset 3 of 10 failed — corrupt source sheet</span>
+        <div class="qbrief">The moray-eel reference sheet is corrupt at the source; the other nine sessions run clean. Regenerate the sheet (~10 min) or skip the eel.</div>
+        <div class="qact"><span class="qgo">Handle in chat →</span><a class="qopen" href="#" onclick="event.stopPropagation();toast('Mock: would open the session itself.')">open session ↗</a></div>
+      </div>
+
+      <div class="qitem inchat" id="qi-caves" role="button" onclick="takeItem('caves')">
+        <span class="pin left">req 36 · enough context after days away</span>
+        <div class="qmeta"><span class="qbadge">completed</span><span>Level generator — caves</span><span>· waiting since 09:07</span><span class="qnow">· in the chat now</span></div>
+        <span class="t">All 40 cave layouts regenerated clean</span>
+        <div class="qbrief">Thursday you asked for all 40 cave layouts to be regenerated after the tunnel-width fix. All 40 came out valid on the first pass — the fix held; no manual patches. Nothing to decide unless you want spot checks.</div>
+      </div>
+    </div>
+
+    <div class="qfoot">
+      <div class="rest" id="qrest">Nothing else needs you — 11 sessions running clean · shipit and hermes-tools quiet.</div>
+      New items appear the moment they happen: ShipIt's own line first, the coordinator's brief replaces it.
+      <span class="pin left" style="top:-9px">req 37 · the rest stays out — one line, not items</span>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <h1>Coordinator</h1>
+      <div class="presence" style="position:relative">
+        <span class="chip free"><span class="st"></span>Free</span>
+        <span class="toggle" id="hfToggle" onclick="hfFlip()"><span>Hands-free</span><span class="sw"></span></span>
+        <span class="avail">Availability: Auto ▾</span>
+        <span class="pin left">reqs 11 · 23 · 33</span>
+      </div>
+    </div>
+
+    <div class="scroll" id="scroll">
+      <div class="legend">Req-note pins map each element to the requirement it demonstrates. They are mock chrome, not UI.</div>
+      <div class="col" id="chatcol">
+        <div class="daysep">Saturday, August 23</div>
+
+        <div class="row user">
+          <div class="via"><span class="mic"></span> dictated · 09:12</div>
+          Morning. What's up?
+        </div>
+
+        <div class="row coord">
+          <span class="pin">req 7 · overview on request; the panel shows the queue standing (req 37)</span>
+          <div class="who">Coordinator · 09:12</div>
+          <div class="body">
+            <p>Quiet night. <b>Reef Quest</b>: two things need you — <b>water reflections</b> finished the shader pass and has a question, and the level-generator run for the caves completed clean. <b>shipit</b>: release 0.9 merged; the latency probe is still running, nothing waiting. <b>hermes-tools</b> is idle.</p>
+            <p>The reflections question is the one worth your time. Take it now?</p>
+          </div>
+        </div>
+
+        <div class="row user">
+          <div class="via"><span class="mic"></span> dictated · 09:13</div>
+          Yes, go.
+        </div>
+
+        <div class="row coord">
+          <span class="pin">reqs 2 · 6 · 31 — one topic, full context, decision named</span>
+          <div class="who">Coordinator · 09:13</div>
+          <div class="body">
+            <p><b>Water reflections</b> (Reef Quest). The session finished the planar-reflection pass and hit a fork: planar looks correct from every shore angle but doubles draw calls in the harbor scene; screen-space is nearly free but breaks at grazing angles — exactly the shots you flagged last week. It asks which approach to keep for the vertical slice.</p>
+            <p>If you want numbers first, I can have it profile the harbor at both settings before you decide.</p>
+          </div>
+        </div>
+
+        <div class="row user">
+          <div class="via"><span class="mic"></span> dictated · 09:14</div>
+          Have it profile both, then let's decide.
+        </div>
+
+        <div class="row relay">
+          <span class="pin">plan §4 · thin relay line: destination, your words, receipt</span>
+          <span class="arrow">→</span>
+          <span class="dest">Water reflections</span>
+          <span>"Profile the harbor scene at both settings."</span>
+          <span class="rc">✓ queued · turn started</span>
+        </div>
+
+        <div class="row verb" id="verb1">
+          <span class="pin left">req 18 · verbatim, chronological, attributed, collapsed when long</span>
+          <div class="head">
+            <span class="src">Reef Quest / Water reflections</span>
+            <span class="untr">session output — untrusted</span>
+            <span>· reply · 09:31</span>
+            <a class="open" href="#" onclick="event.preventDefault();toast('Mock: would open the session itself.')">open session ↗</a>
+          </div>
+          <div class="fold" onclick="document.getElementById('verb1').classList.toggle('open')">▸ 42 lines — profiling table, per-scene timings, two screenshots</div>
+          <div class="excerpt">harbor scene, 1080p, mid-tier target
+  planar:        3.1 ms  (draw calls 2.0×, correct at all angles)
+  screen-space:  1.2 ms  (artifacts at grazing angles, worst at dawn light)
+full table and captures in the session transcript…</div>
+          <div class="clarif"><b>Coordinator asked one clarifying question first</b> (units were missing) — autonomous round-trip 1 of 2, logged with its trigger.</div>
+        </div>
+
+        <div class="row coord">
+          <span class="pin">req 18 · the paraphrase follows; freshest line is the coordinator's</span>
+          <div class="who">Coordinator · 09:32</div>
+          <div class="body">
+            <p>Profiled. Planar costs <b>3.1 ms</b> in the harbor against <b>1.2 ms</b> for screen-space, but planar stays correct at every angle — the screen-space artifacts land exactly in your dawn shots. My read: keep planar for the slice and optimize the draw calls later. Decide now, or park it?</p>
+          </div>
+        </div>
+
+        <div class="row user">
+          <div class="via"><span class="mic"></span> dictated · 09:34</div>
+          Keep planar. Then start ten more character generations, and in parallel have someone investigate the battle mechanics for the kraken boss.
+        </div>
+
+        <div class="row relay">
+          <span class="arrow">→</span>
+          <span class="dest">Water reflections</span>
+          <span>"Keep planar for the slice; optimize draw calls later."</span>
+          <span class="rc res">✓ answered · item resolved</span>
+        </div>
+
+        <div class="row coord">
+          <span class="pin">reqs 8 · 27 — dispatch by voice; every action visible with its trigger</span>
+          <span class="pin left">req 38 · after your decision, the next item pops up by itself</span>
+          <div class="who">Coordinator · 09:34</div>
+          <div class="body">
+            <p>Done. Reflections is settled on planar. I started the new work in Reef Quest:</p>
+            <div class="receipts">
+              <span class="rcpt"><b>Character generation #11–20</b> · 10 sessions <span class="tick">✓</span></span>
+              <span class="rcpt"><b>Kraken boss — battle mechanics</b> · investigation <span class="tick">✓</span></span>
+              <span class="rcpt">trigger: your 09:34 message</span>
+            </div>
+            <p style="margin-top:8px"><b>Next</b> — while those spin up, one item waits on you:</p>
+            <p><b>Level generator — caves</b> (Reef Quest, started Thursday on your word). You asked for all 40 cave layouts to be regenerated after the tunnel-width fix. The run is done: all 40 valid on the first pass — the fix held, no manual patches. Nothing to decide — close it, or spot-check a few layouts first?</p>
+            <div class="opts" id="opts-caves">
+              <span class="opt" role="button" onclick="answer('caves',0)">Close it</span>
+              <span class="opt" role="button" onclick="answer('caves',1)">Spot-check three</span>
+              <span class="or">— or just say it</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="inner" style="position:relative">
+        <span class="pin left" style="top:2px">req 32 · dictation button + in-window shortcut</span>
+        <div class="box">
+          <span class="ph">Message the coordinator…</span>
+          <span class="kbd">⌥D</span>
+          <span class="micbtn" onclick="toast('Mock: dictation is not wired — click the queue items and option chips.')"><span class="mic"></span> Dictate</span>
+        </div>
+        <div class="hint">Same conversation everywhere — desk, phone, hands-free (req 14). Mock: click items and chips.</div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+/* Scripted interactivity, fake data. The flow it demonstrates (reqs 35–38, plan §4):
+   click a queue item OR answer a presented ask by chip → your message enters the chat →
+   relay + confirmation — and the confirmation flows straight into the NEXT waiting item's
+   presentation (req 38): after a decision, the next item pops up in the chat by itself. */
+var ITEMS = {
+  gen12: {
+    session: "Character generation #12", take: "Take: Character generation #12 — failed.",
+    t1: "09:47", t2: "09:49",
+    present: '<p><b>Character generation #12</b> (Reef Quest — one of the ten you started at 09:34). It failed on the third of ten assets: the moray-eel reference sheet is corrupt at the source. The other nine sessions run clean. Two ways out: regenerate the sheet first — about ten minutes, then #12 resumes — or skip the eel and let #12 finish with nine assets.</p>',
+    chips: [
+      { label: "Regenerate the sheet", words: "Regenerate the moray-eel sheet, then continue.",
+        confirm: "<p>Done — it is regenerating the sheet; #12 resumes in about ten minutes. This item is closed; anything new comes back through me.</p>" },
+      { label: "Skip the eel", words: "Skip the eel; finish with nine assets.",
+        confirm: "<p>Done — #12 continues with nine assets. The eel stays parked as future work. This item is closed.</p>" }
+    ]
+  },
+  caves: {
+    session: "Level generator — caves", take: "Take: Level generator — caves.",
+    t1: "09:48", t2: "09:48",
+    present: '<p><b>Level generator — caves</b> (Reef Quest, started Thursday on your word). You asked for all 40 cave layouts to be regenerated after the tunnel-width fix. The run is done: all 40 valid on the first pass — the fix held, no manual patches. Nothing to decide — close it, or spot-check a few layouts first?</p>',
+    chips: [
+      { label: "Close it", words: "Good — close it.",
+        confirm: "<p>Closed. The caves run is done and off your list.</p>" },
+      { label: "Spot-check three", words: "Have it render three random layouts first.",
+        confirm: "<p>Asked — it renders three random layouts and I bring them back as one new item. This one is closed.</p>" }
+    ]
+  },
+  kraken: {
+    session: "Kraken boss — battle mechanics", take: "Take: Kraken boss — battle mechanics.",
+    t1: "09:51", t2: "09:52",
+    present: '<p><b>Kraken boss — battle mechanics</b> (Reef Quest, the investigation you started at 09:34). The survey is done: three reference fights compared on pacing, readability, and asset cost. Before prototyping it asks one scoping call — should the kraken be beatable in the vertical slice, or a scripted escape the player cannot win?</p>',
+    chips: [
+      { label: "Beatable", words: "Beatable — a real fight in the slice.",
+        confirm: "<p>Sent. It prototypes a beatable fight and comes back with the pacing plan. Closed here.</p>" },
+      { label: "Scripted escape", words: "Scripted escape for the slice; a real fight later.",
+        confirm: "<p>Sent. It prototypes the escape sequence; the beatable version stays parked. Closed here.</p>" }
+    ]
+  }
+};
+var open = 2;
+
+function el(html) { var d = document.createElement("div"); d.innerHTML = html; return d.firstElementChild; }
+function scrollDown() { var s = document.getElementById("scroll"); s.scrollTop = s.scrollHeight; }
+function addRow(html) { document.getElementById("chatcol").appendChild(el(html)); scrollDown(); }
+function toast(msg) {
+  var t = document.getElementById("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(function(){ t.classList.remove("show"); }, 2600);
+}
+function esc(s) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
+
+function chipsHtml(id) {
+  return '<div class="opts" id="opts-' + id + '">' + ITEMS[id].chips.map(function(c, i) {
+    return '<span class="opt" role="button" onclick="answer(\'' + id + '\',' + i + ')">' + esc(c.label) + '</span>';
+  }).join("") + '<span class="or">— or just say it</span></div>';
+}
+function markInChat(id) {
+  var card = document.getElementById("qi-" + id); if (!card) return;
+  card.classList.add("inchat");
+  var now = card.querySelector(".qnow"); if (now) now.hidden = false;
+  var act = card.querySelector(".qact"); if (act) act.remove();
+}
+function nextWaitingId() {
+  var cards = document.querySelectorAll(".qitem");
+  for (var i = 0; i < cards.length; i++) {
+    var cl = cards[i].classList;
+    if (!cl.contains("inchat") && !cl.contains("fresh") && !cl.contains("resolved")) return cards[i].id.slice(3);
+  }
+  return null;
+}
+
+function takeItem(id) {
+  var it = ITEMS[id], card = document.getElementById("qi-" + id);
+  if (!it || !card || card.classList.contains("inchat") || card.classList.contains("fresh")) return;
+  markInChat(id);
+  addRow('<div class="row user"><span class="pin left">req 35 · a panel click became your message</span>' +
+    '<div class="via"><span aria-hidden="true">▤</span> from the queue panel · ' + it.t1 + '</div>' + esc(it.take) + '</div>');
+  addRow('<div class="row coord"><span class="pin">reqs 2 · 31 · 36 — one topic, presented with cold context</span>' +
+    '<div class="who">Coordinator · ' + it.t1 + '</div><div class="body">' + it.present + chipsHtml(id) + '</div></div>');
+}
+
+function answer(id, i) {
+  var it = ITEMS[id], c = it.chips[i];
+  var opts = document.getElementById("opts-" + id);
+  if (!opts || opts.classList.contains("done")) return;
+  opts.classList.add("done");
+  addRow('<div class="row user"><span class="pin left">req 35 · an option click is also your message</span>' +
+    '<div class="via"><span aria-hidden="true">▤</span> clicked · ' + it.t2 + '</div>' + esc(c.words) + '</div>');
+  addRow('<div class="row relay"><span class="arrow">→</span><span class="dest">' + esc(it.session) + '</span>' +
+    '<span>"' + esc(c.words) + '"</span><span class="rc res">✓ answered · item resolved</span></div>');
+  var card = document.getElementById("qi-" + id);
+  card.classList.add("resolved");
+  /* req 38: the confirmation flows straight into the next waiting item's presentation */
+  var nxt = nextWaitingId();
+  var body = c.confirm, pin = "";
+  if (nxt) {
+    markInChat(nxt);
+    body += '<p style="margin-top:8px"><b>Next</b> — this waits on you:</p>' + ITEMS[nxt].present + chipsHtml(nxt);
+    pin = '<span class="pin">req 38 · after your decision, the next item pops up by itself</span>';
+  } else if (document.querySelector(".qitem.fresh")) {
+    body += '<p style="margin-top:8px">One more is arriving — I am writing its brief; it lands on the left in a moment.</p>';
+  } else {
+    body += '<p style="margin-top:8px">Nothing else waits on you.</p>';
+  }
+  addRow('<div class="row coord">' + pin + '<div class="who">Coordinator · ' + it.t2 + '</div><div class="body">' + body + '</div></div>');
+  setTimeout(function(){ card.remove(); refreshFoot(); }, 400);
+}
+
+function refreshFoot() {
+  open = document.querySelectorAll(".qitem").length;
+  document.getElementById("qrest").textContent = open === 0
+    ? "Queue empty — nothing needs you. 11 sessions running clean · shipit and hermes-tools quiet."
+    : "Nothing else needs you — 11 sessions running clean · shipit and hermes-tools quiet.";
+  /* one repo group in this mock — hide its header with its last item */
+  document.querySelectorAll(".qgroup").forEach(function(g){ g.style.display = open === 0 ? "none" : ""; });
+}
+
+function hfFlip() {
+  var t = document.getElementById("hfToggle"); t.classList.toggle("on");
+  toast(t.classList.contains("on")
+    ? "Hands-free on — arrivals would be spoken on your phone; nothing pings here (req 26)."
+    : "Hands-free off — this surface carries arrivals ambiently (req 22).");
+}
+
+/* The fresh → briefed transition (plan §4): a new item lands as ShipIt's own line,
+   then the coordinator's arrival brief replaces it (§6 wake cause 5). */
+setTimeout(function() {
+  var g = document.getElementById("qlist");
+  g.appendChild(el('<div class="qitem fresh" id="qi-kraken" role="button" onclick="takeItem(\'kraken\')">' +
+    '<span class="pin left">plan §4 · fresh: ShipIt’s line until briefed</span>' +
+    '<div class="qmeta"><span class="qbadge">question</span><span>Kraken boss — battle mechanics</span><span class="qt-when">· just now</span><span class="qnow" hidden>· in the chat now</span></div>' +
+    '<span class="t">Session waiting — has a question</span>' +
+    '<div class="qbrief briefing">New item — the coordinator is reading it and writing the brief…</div></div>'));
+  refreshFoot();
+}, 2600);
+setTimeout(function() {
+  var card = document.getElementById("qi-kraken"); if (!card) return;
+  card.classList.remove("fresh");
+  card.querySelector(".qt-when").textContent = "· briefed just now";
+  card.querySelector(".t").textContent = "Beatable boss, or scripted escape?";
+  var b = card.querySelector(".qbrief"); b.classList.remove("briefing");
+  b.textContent = "The survey compared three reference fights. One scoping call before prototyping: beatable in the vertical slice, or a scripted escape? Cost and pacing notes are ready.";
+  card.appendChild(el('<div class="qact"><span class="qgo">Handle in chat →</span><a class="qopen" href="#" onclick="event.stopPropagation();toast(\'Mock: would open the session itself.\')">open session ↗</a></div>'));
+}, 6200);
+</script>
+</body>
+</html>
