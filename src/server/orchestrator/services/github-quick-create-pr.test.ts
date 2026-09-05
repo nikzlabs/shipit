@@ -86,6 +86,51 @@ describe("quickCreatePr (docs/202 re-arm overrides)", () => {
 });
 
 /**
+ * docs/287-agent-merge-per-repo — the merge grant records ownership of a pull
+ * request only when ShipIt WITNESSED its creation. A pull request found already
+ * open on the branch was opened by someone unknown (a human on github.com, a
+ * laptop, an earlier session), and adopting it would hand the agent merge rights
+ * over work it did not open.
+ *
+ * Both return sites were shaped identically before this, so the caller had no
+ * way to tell "I created it" from "it was already there".
+ */
+describe("quickCreatePr — created vs discovered (docs/287)", () => {
+  it("reports `alreadyExisted: false` and the repository when it creates the PR", async () => {
+    const github = makeGitHub();
+
+    const result = await quickCreatePr(
+      makeGit(), github, chatHistory, generateText, "s1", "Title", "/ws/s1", REMOTE,
+    );
+
+    expect(github.createPullRequest).toHaveBeenCalled();
+    expect(result.alreadyExisted).toBe(false);
+    // The repository the PR actually landed in — `remoteUrl` can retarget it
+    // away from the session's own origin, so ownership is checked against this.
+    expect(result).toMatchObject({ owner: "o", repo: "r" });
+  });
+
+  it("reports `alreadyExisted: true` for a pull request it merely found", async () => {
+    const github = makeGitHub();
+    (github.findPullRequest as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      number: 41,
+      url: "https://github.com/o/r/pull/41",
+      title: "Opened by someone else",
+      body: "",
+      base: "main",
+    });
+
+    const result = await quickCreatePr(
+      makeGit(), github, chatHistory, generateText, "s1", "Title", "/ws/s1", REMOTE,
+    );
+
+    expect(github.createPullRequest).not.toHaveBeenCalled();
+    expect(result.number).toBe(41);
+    expect(result.alreadyExisted).toBe(true);
+  });
+});
+
+/**
  * docs/252 phase 7 (req 9) — a failed or unavailable generation must yield the
  * generic description, not an empty one.
  *

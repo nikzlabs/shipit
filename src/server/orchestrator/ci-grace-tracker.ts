@@ -193,6 +193,54 @@ export class CiGraceTracker {
   }
 
   /**
+   * `repoKey#prNumber@headSha` → when a merge first saw zero checks for that
+   * exact commit. Separate from the per-SESSION {@link firstObservedNoChecks}:
+   * two pull requests can share a head SHA, and a session can ask about one the
+   * poller is not tracking for it.
+   */
+  private firstMergeNoChecks = new Map<string, number>();
+
+  /**
+   * docs/287-agent-merge-per-repo — should an agent merge WAIT, having read zero
+   * checks for this commit?
+   *
+   * {@link shouldForcePending}'s question, with one difference: **an unknown CI
+   * history STARTS the grace here instead of ending it.** The poller can revise
+   * in seconds; a merge is one-shot, so "we do not know" must not read as "it
+   * does not". The workflow short-circuit stays — that is evidence, not absence.
+   */
+  shouldWaitForMergeChecks(args: {
+    repoKey: string;
+    prNumber: number;
+    headSha: string;
+    headBranch?: string;
+    baseBranch?: string;
+    changedFiles?: string[];
+    now?: number;
+  }): boolean {
+    const parsed = this.parsedWorkflows.get(args.repoKey);
+    if (parsed && parsed.length > 0) {
+      const anyApplies = parsed.some((w) =>
+        workflowAppliesToPr(w, {
+          headBranch: args.headBranch,
+          baseBranch: args.baseBranch,
+          changedFiles: args.changedFiles,
+        }),
+      );
+      if (!anyApplies) return false;
+    }
+
+    const key = `${args.repoKey}#${args.prNumber}@${args.headSha}`;
+    const now = args.now ?? Date.now();
+    const first = this.firstMergeNoChecks.get(key);
+    if (first === undefined) {
+      this.firstMergeNoChecks.set(key, now);
+      return true;
+    }
+    return now - first < NO_CHECKS_GRACE_MS;
+  }
+
+  /**
    * Wall-clock instant at which this session's current grace window expires,
    * or `undefined` when no window is armed. Published to the client as
    * `checks.graceUntil` so the browser can retire a forced-pending spinner on

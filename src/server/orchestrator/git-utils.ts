@@ -151,6 +151,48 @@ export function canonicalRepoKey(url: string): string {
   }
 }
 
+/** GitHub's own character sets. Anchored on purpose — see {@link repoId}. */
+const GITHUB_OWNER = String.raw`[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?`;
+const GITHUB_REPO = String.raw`[A-Za-z0-9._-]+`;
+// Case-insensitive, because a host name is. The groups already span both cases
+// and the identity is lower-cased below, so `i` widens nothing.
+const GITHUB_HTTPS_REMOTE = new RegExp(
+  String.raw`^https?://github\.com/(${GITHUB_OWNER})/(${GITHUB_REPO}?)/?$`, "i",
+);
+const GITHUB_SSH_REMOTE = new RegExp(
+  String.raw`^(?:ssh://)?git@github\.com[:/](${GITHUB_OWNER})/(${GITHUB_REPO}?)/?$`, "i",
+);
+
+/**
+ * The identity of a GitHub repository, for an **authorization** decision:
+ * `github:<owner>/<repo>`, lower-cased, `null` for anything it cannot parse
+ * with certainty. NOT {@link canonicalRepoKey}, which gives three keys for three
+ * spellings, so a grant written under one would not exist under another. `http`
+ * and stripped userinfo/query/fragment are accepted: neither names a repository.
+ */
+export function repoId(url: string): string | null {
+  const trimmed = stripRemoteUrlCredentials((url ?? "").trim());
+  const match = GITHUB_HTTPS_REMOTE.exec(trimmed) ?? GITHUB_SSH_REMOTE.exec(trimmed);
+  if (!match) return null;
+  // Strip a TERMINAL `.git` only — `my.git.tools` keeps its dots.
+  return repoIdFromOwnerRepo(match[1], match[2].replace(/\.git$/i, ""));
+}
+
+/**
+ * The same identity from an ALREADY-resolved owner and repository — what a
+ * create returns — so provenance records where the pull request landed rather
+ * than the URL the caller hoped for. Validated, not merely lower-cased: these
+ * strings reach an authorization key, and a path-bearing value would forge one.
+ */
+export function repoIdFromOwnerRepo(owner: string, repo: string): string | null {
+  const o = (owner ?? "").trim();
+  const r = (repo ?? "").trim();
+  if (!new RegExp(String.raw`^${GITHUB_OWNER}$`).test(o)) return null;
+  if (!new RegExp(String.raw`^${GITHUB_REPO}$`).test(r)) return null;
+  if (r === "." || r === "..") return null;
+  return `github:${o.toLowerCase()}/${r.toLowerCase()}`;
+}
+
 /** Why `pushToOrigin` returned without pushing anything. */
 export type PushSkipReason = "no-origin" | "no-branch";
 
@@ -485,13 +527,27 @@ export async function isWorkspaceCloneInSyncWithCache(
   }
 }
 
-/** Parse owner/repo from a GitHub remote URL. */
+/**
+ * Parse owner/repo from a GitHub remote URL — the ACTION resolver. It must
+ * agree with {@link repoId} on where a name ends: this group used to be
+ * `[^/.]+`, so a grant on `acme/foo.bar` authorised work on `acme/foo`.
+ */
 export function parseGitHubRemote(url: string): { owner: string; repo: string } | null {
   // Handle HTTPS: https://github.com/owner/repo.git
-  const httpsMatch = /github\.com\/([^/]+)\/([^/.]+)/.exec(url);
-  if (httpsMatch) return { owner: httpsMatch[1], repo: httpsMatch[2] };
+  const httpsMatch = /github\.com\/([^/]+)\/([^/?#]+)/.exec(url);
+  if (httpsMatch) return { owner: httpsMatch[1], repo: httpsMatch[2].replace(/\.git$/i, "") };
   // Handle SSH: git@github.com:owner/repo.git
-  const sshMatch = /github\.com:([^/]+)\/([^/.]+)/.exec(url);
-  if (sshMatch) return { owner: sshMatch[1], repo: sshMatch[2] };
+  const sshMatch = /github\.com:([^/]+)\/([^/?#]+)/.exec(url);
+  if (sshMatch) return { owner: sshMatch[1], repo: sshMatch[2].replace(/\.git$/i, "") };
   return null;
+}
+
+/**
+ * `github:owner/repo` back to the pair the GitHub API takes — for paths that
+ * address a repository the SESSION may no longer point at.
+ */
+export function ownerRepoFromRepoId(identity: string): { owner: string; repo: string } | null {
+  const match = /^github:([^/]+)\/([^/]+)$/.exec((identity ?? "").trim());
+  if (!match) return null;
+  return { owner: match[1], repo: match[2] };
 }

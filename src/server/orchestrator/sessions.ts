@@ -6,7 +6,7 @@ import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { AgentId } from "../shared/types/agent-types.js";
 import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
 import { resolveModelSelection, sameCredentialOwner } from "../shared/catalogue/index.js";
-import { stripRemoteUrlCredentials } from "./git-utils.js";
+import { repoId, stripRemoteUrlCredentials } from "./git-utils.js";
 
 /**
  * docs/252 — how a credential route is BILLED, derived from the route itself.
@@ -118,6 +118,13 @@ interface SessionRow {
   merged_head_sha: string | null;
   /** docs/221 — one-shot `[System] …` line the next interactive turn prepends. NULL = nothing owed. */
   pending_agent_notice: string | null;
+  /**
+   * docs/287 — the pull request ShipIt itself opened, and the repository it was
+   * opened in. Read as a PAIR. Both NULL for a session predating the columns,
+   * and for any pull request ShipIt merely discovered.
+   */
+  pr_repo_id: string | null;
+  pr_number: number | null;
 }
 
 /**
@@ -414,6 +421,12 @@ export class SessionManager {
     }
     if (row.merged_head_sha) info.mergedHeadSha = row.merged_head_sha;
     if (row.pending_agent_notice) info.pendingAgentNotice = row.pending_agent_notice;
+    // docs/287 — a PAIR or nothing. Half a record authorises nothing, and
+    // reading it as absent is the answer that refuses the merge.
+    if (row.pr_number && row.pr_repo_id) {
+      info.prNumber = row.pr_number;
+      info.prRepoId = row.pr_repo_id;
+    }
     return info;
   }
 
@@ -612,7 +625,39 @@ export class SessionManager {
    */
   setRemoteUrl(id: string, remoteUrl: string | undefined): void {
     const stored = remoteUrl === undefined ? null : stripRemoteUrlCredentials(remoteUrl);
+    const previous = this.db
+      .prepare("SELECT remote_url FROM sessions WHERE id = ?")
+      .get(id) as { remote_url: string | null } | undefined;
     this.db.prepare("UPDATE sessions SET remote_url = ? WHERE id = ?").run(stored, id);
+    // docs/287 — repointing `origin` invalidates the merge provenance: the
+    // recorded pull request lives in the OLD repository. Compared as identities,
+    // not strings, so a no-op rewrite in another spelling keeps a valid record.
+    if (previous !== undefined && repoId(previous.remote_url ?? "") !== repoId(stored ?? "")) {
+      this.clearPrProvenance(id);
+    }
+  }
+
+  /**
+   * docs/287 — record the pull request ShipIt WITNESSED itself opening. A pair,
+   * only from a create that said it created something: a discovered pull
+   * request may be a person's (req 5). `repoIdentity` is where it landed.
+   */
+  recordPrProvenance(id: string, prNumber: number, repoIdentity: string): void {
+    if (!Number.isInteger(prNumber) || prNumber <= 0 || !repoIdentity) return;
+    this.db
+      .prepare("UPDATE sessions SET pr_number = ?, pr_repo_id = ? WHERE id = ?")
+      .run(prNumber, repoIdentity, id);
+  }
+
+  /**
+   * docs/287 — forget the recorded pull request, as a pair. Called wherever the
+   * session's relationship to it ends. Clearing is always safe (the agent is
+   * told to merge from the card); a stale record authorises the wrong one.
+   */
+  clearPrProvenance(id: string): void {
+    this.db
+      .prepare("UPDATE sessions SET pr_number = NULL, pr_repo_id = NULL WHERE id = ?")
+      .run(id);
   }
 
   /**
@@ -727,8 +772,12 @@ export class SessionManager {
     // docs/218 — also drop the merged-tip anchor: once un-merged there is no
     // merged tip, and a stale value must never let the auto-reset feature fire
     // against a session that is no longer in the merged state.
+    // docs/287 — and the provenance, in the same statement: after a re-arm the
+    // recorded number names a MERGED pull request, and leaving it would let the
+    // agent ask ShipIt to merge one that already shipped.
     const result = this.db.prepare(
-      "UPDATE sessions SET merged_at = NULL, previous_merged_pr = ?, merged_head_sha = NULL WHERE id = ? AND merged_at IS NOT NULL",
+      "UPDATE sessions SET merged_at = NULL, previous_merged_pr = ?, merged_head_sha = NULL, "
+      + "pr_number = NULL, pr_repo_id = NULL WHERE id = ? AND merged_at IS NOT NULL",
     ).run(json, id);
     return result.changes > 0;
   }
@@ -759,7 +808,8 @@ export class SessionManager {
    */
   clearPriorPrRecord(id: string): void {
     this.db.prepare(
-      "UPDATE sessions SET merged_at = NULL, merged_head_sha = NULL, previous_merged_pr = NULL WHERE id = ?",
+      "UPDATE sessions SET merged_at = NULL, merged_head_sha = NULL, previous_merged_pr = NULL, "
+      + "pr_number = NULL, pr_repo_id = NULL WHERE id = ?",
     ).run(id);
   }
 
@@ -870,11 +920,19 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET branch_renamed = ? WHERE id = ?").run(renamed ? 1 : 0, id);
   }
 
-  /** Set the branch name on a session. */
+  /**
+   * Set the branch name. docs/287 — a CHANGE invalidates the merge provenance,
+   * as repointing `origin` does: the recorded pull request came from the old
+   * branch. Guarded on a real change, so creation-time callers clear nothing.
+   */
   setBranch(id: string, branch: string): void {
+    const previous = this.db
+      .prepare("SELECT branch FROM sessions WHERE id = ?")
+      .get(id) as { branch: string | null } | undefined;
     this.db.prepare(
       "UPDATE sessions SET branch = ? WHERE id = ?",
     ).run(branch, id);
+    if (previous !== undefined && previous.branch !== branch) this.clearPrProvenance(id);
   }
 
   /**

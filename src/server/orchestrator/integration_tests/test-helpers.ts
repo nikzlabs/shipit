@@ -565,8 +565,51 @@ export class StubGitHubAuthManager extends EventEmitter {
     };
   }
 
-  async mergePullRequest(_owner: string, _repo: string, _pullNumber: number, _method = "merge") {
+  /** docs/287 — every merge call, so a test can assert WHICH commit was pinned. */
+  mergePullRequestCalls: {
+    owner: string; repo: string; pullNumber: number; method: string; expectedSha?: string;
+  }[] = [];
+
+  async mergePullRequest(
+    owner: string, repo: string, pullNumber: number, method = "merge", expectedSha?: string,
+  ) {
+    this.mergePullRequestCalls.push({
+      owner, repo, pullNumber, method, ...(expectedSha ? { expectedSha } : {}),
+    });
     return this._mergeResult ?? { success: true, message: "Pull request merged" };
+  }
+
+  /** docs/287 — the three-way attempt, recorded in the same list as the wrapper. */
+  async mergePullRequestAttempt(
+    owner: string, repo: string, pullNumber: number, method = "merge", expectedSha?: string,
+  ) {
+    this.mergePullRequestCalls.push({
+      owner, repo, pullNumber, method, ...(expectedSha ? { expectedSha } : {}),
+    });
+    if (this._mergeAttempt) return this._mergeAttempt;
+    const legacy = this._mergeResult;
+    if (legacy && !legacy.success) return { outcome: "refused" as const, message: legacy.message };
+    return { outcome: "merged" as const, message: "Pull request merged", mergeCommitSha: "merge-sha" };
+  }
+
+  private _mergeAttempt:
+    | { outcome: "merged"; message: string; mergeCommitSha: string | null }
+    | { outcome: "refused"; message: string }
+    | { outcome: "indeterminate"; message: string }
+    | null = null;
+
+  /** Set the three-way outcome the agent merge sees. */
+  setMergeAttempt(attempt: typeof this._mergeAttempt) {
+    this._mergeAttempt = attempt;
+  }
+
+  /** docs/287 — the by-number terminal facts settlement promotes from. */
+  private _prByNumber: Record<number, unknown> = {};
+  setPullRequestByNumber(number: number, facts: unknown) {
+    this._prByNumber[number] = facts;
+  }
+  async findPullRequestByNumber(_owner: string, _repo: string, pullNumber: number) {
+    return (this._prByNumber[pullNumber] ?? null) as never;
   }
 
   async enableAutoMerge(_owner: string, _repo: string, _pullNumber: number, _method = "MERGE") {
@@ -616,15 +659,74 @@ export class StubGitHubAuthManager extends EventEmitter {
     this._checkStatus = status;
   }
 
-  async graphqlQuery<T>(_query: string, _variables: Record<string, unknown>): Promise<T> {
+  /**
+   * docs/287 — the merge gate's query gets its own slot, dispatched on the query
+   * text: it and the poller's bulk read want opposite-shaped answers, and a stub
+   * aliasing them cannot fail a test that wires the wrong one.
+   */
+  async graphqlQuery<T>(query: string, _variables: Record<string, unknown>): Promise<T> {
+    if (query.includes("MergeGate")) {
+      // Runs INSIDE the gate's round trip, which is the window the merge route
+      // has to survive. Mutating state before the request cannot reach it.
+      await this._onMergeGateRead?.();
+      return this._mergeGateResult as T;
+    }
     return this._graphqlResult as T;
   }
 
+  private _onMergeGateRead: (() => void | Promise<void>) | null = null;
+  /** Do something while the merge gate's GraphQL read is in flight. */
+  setOnMergeGateRead(fn: (() => void | Promise<void>) | null) {
+    this._onMergeGateRead = fn;
+  }
+
   private _graphqlResult: unknown = null;
+  private _mergeGateResult: unknown = null;
 
   /** Set what graphqlQuery returns for tests. */
   setGraphqlResult(result: unknown) {
     this._graphqlResult = result;
+  }
+
+  /**
+   * docs/287 — answer the merge gate's read. Pass the pull request's fields;
+   * the envelope is built here so tests state only what they are varying.
+   */
+  setMergeGateResult(pr: {
+    state?: string;
+    isDraft?: boolean;
+    reviewDecision?: string | null;
+    headRefOid?: string;
+    rollupState?: string | null;
+    rollupCommitOid?: string;
+  } | null, errors?: unknown[]) {
+    if (pr === null) {
+      this._mergeGateResult = errors ? { errors } : null;
+      return;
+    }
+    const headRefOid = pr.headRefOid ?? "sha-head";
+    const rollupState = pr.rollupState === undefined ? "SUCCESS" : pr.rollupState;
+    this._mergeGateResult = {
+      ...(errors ? { errors } : {}),
+      data: {
+        repository: {
+          pullRequest: {
+            state: pr.state ?? "OPEN",
+            isDraft: pr.isDraft ?? false,
+            reviewDecision: pr.reviewDecision ?? null,
+            headRefOid,
+            commits: {
+              nodes: [{
+                commit: {
+                  oid: pr.rollupCommitOid ?? headRefOid,
+                  statusCheckRollup: rollupState === null ? null : { state: rollupState },
+                },
+              }],
+            },
+          },
+        },
+      },
+    };
   }
 
   // ---- Rate-limit state (mirrors the real GitHubAuthManager surface) ----

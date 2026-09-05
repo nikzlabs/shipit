@@ -30,6 +30,7 @@ import path from "node:path";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 import { isValidRepoFlag, repoFlagToUrl, REPO_FLAG_FORMS } from "../shared/github-repo-flag.js";
 import { ServiceError } from "./services/types.js";
+import { repoId } from "./git-utils.js";
 import type { SessionInfo } from "../shared/types.js";
 
 // Re-exported so existing importers (and `pr-target.test.ts`) keep resolving
@@ -141,23 +142,117 @@ export function gitCredentialAllowed(
 
 /**
  * Whether the agent (via `gh pr merge`) may merge a PR for this session
- * (docs/224 — gated "dangerous GitHub operations").
+ * (docs/224 — gated "dangerous GitHub operations"; docs/287 — the per-repository
+ * grant).
  *
  * Merge is an outward-facing, effectively-irreversible act and the verb most
- * exposed to prompt-injection, so it is opt-in and **sandbox-only**:
- *   - `"allowed"` — a sandbox session whose `dangerousGitHubOps` grant is on.
- *   - `"not-sandbox"` — any non-sandbox (repo-bound / ops) session. These merge
- *     from the PR lifecycle card in the ShipIt UI, not the shim; the route
- *     turns this into a 403 pointing the agent back at that card.
- *   - `"not-granted"` — a sandbox where the grant was left off at creation. The
- *     403 tells the agent the user must opt in when creating the sandbox.
+ * exposed to prompt-injection, so it is opt-in everywhere. Which opt-in applies
+ * depends on what the session is:
+ *   - `"allowed"` — a sandbox with `dangerousGitHubOps`, or a repo-bound
+ *     session in a granted repository (req 4, 12).
+ *   - `"not-granted"` — a sandbox whose grant was left off at creation.
+ *   - `"not-granted-repo"` — the repository's grant is off, as it is until the
+ *     user turns it on (req 6).
+ *   - `"not-sandbox"` — an **ops** session, unchanged by req 13. The wording is
+ *     kept even though it now describes only one kind.
  *
- * The grant is set server-authoritatively at creation and never inferred from
- * workspace files, so an agent cannot self-elevate into a merge.
+ * `repoAllowsAgentMerge` is a required parameter, so a call site that has not
+ * consulted the grant cannot compile. Both grants are server-authoritative and
+ * never read from workspace files — an agent can write `shipit.yaml`.
  */
 export function mergeDisposition(
   session: Pick<SessionInfo, "kind" | "capabilities">,
-): "allowed" | "not-sandbox" | "not-granted" {
-  if (session.kind !== "sandbox") return "not-sandbox";
-  return session.capabilities?.dangerousGitHubOps ? "allowed" : "not-granted";
+  repoAllowsAgentMerge: boolean,
+): "allowed" | "not-sandbox" | "not-granted" | "not-granted-repo" {
+  if (session.kind === "sandbox") {
+    return session.capabilities?.dangerousGitHubOps ? "allowed" : "not-granted";
+  }
+  if (session.kind === "ops") return "not-sandbox";
+  return repoAllowsAgentMerge ? "allowed" : "not-granted-repo";
+}
+
+/** Why a repo-bound agent merge was refused, or `null` when it may proceed. */
+export type AgentMergeOwnershipRefusal = { status: number; error: string } | null;
+
+/**
+ * docs/287 req 5 — is the pull request the agent asked to merge the one THIS
+ * session opened?
+ *
+ * Every input is server-derived. The agent supplies only the number, which
+ * proves nothing alone: `#7` names a different pull request in every fork.
+ * **`--repo` is refused**, not ignored, since `resolvePrTarget` retargets on it;
+ * **`cwd` is ignored**, since the shim sends it on every call. **The branch** is
+ * read with `currentBranchOrNull`, never `getCurrentBranch`, which answers
+ * `"main"` on a detached HEAD. **The recorded pull request** must match the
+ * number AND the repository identity, re-derived at merge time.
+ *
+ * Absence refuses throughout — the opposite of `guardMergeSync`, whose fallback
+ * is the status quo where this one's is a merge.
+ */
+export function agentMergeOwnership(args: {
+  session: Pick<SessionInfo, "remoteUrl" | "branch" | "prNumber" | "prRepoId">;
+  requestedNumber: number;
+  currentBranch: string | null;
+  repoOverride: string | undefined;
+}): AgentMergeOwnershipRefusal {
+  const { session, requestedNumber, currentBranch, repoOverride } = args;
+
+  if (repoOverride) {
+    return {
+      status: 400,
+      error:
+        "gh pr merge cannot take --repo in a repo-bound session: ShipIt only lets an agent merge "
+        + "the pull request its own session opened, in its own repository. Run it without --repo.",
+    };
+  }
+
+  const identity = repoId(session.remoteUrl ?? "");
+  if (!identity) {
+    return {
+      status: 403,
+      error:
+        "Not merged — this session's remote is not a GitHub repository ShipIt can identify, "
+        + "so it cannot tell whether the pull request belongs to this session.",
+    };
+  }
+
+  if (!session.branch || currentBranch !== session.branch) {
+    return {
+      status: 409,
+      error:
+        `Not merged — this session is on branch "${session.branch ?? "(none)"}" but the workspace `
+        + `is on ${currentBranch === null ? "a detached HEAD" : `"${currentBranch}"`}. `
+        + "Switch back to the session's branch and try again.",
+    };
+  }
+
+  if (session.prNumber === undefined || session.prRepoId === undefined) {
+    return {
+      status: 403,
+      error:
+        "Not merged — ShipIt has no record of opening a pull request for this session, so it "
+        + "cannot merge one on the agent's behalf. Open the pull request with `gh pr create` "
+        + "(ShipIt records the ones it opens), or merge from the PR card in the ShipIt UI.",
+    };
+  }
+
+  if (session.prRepoId !== identity) {
+    return {
+      status: 403,
+      error:
+        "Not merged — this session's pull request was opened in a different repository than the "
+        + "one `origin` points at now. Merge from the PR card in the ShipIt UI.",
+    };
+  }
+
+  if (session.prNumber !== requestedNumber) {
+    return {
+      status: 403,
+      error:
+        `Not merged — ShipIt can only merge the pull request this session opened (#${session.prNumber}), `
+        + `not #${requestedNumber}.`,
+    };
+  }
+
+  return null;
 }

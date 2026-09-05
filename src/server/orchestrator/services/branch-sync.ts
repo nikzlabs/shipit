@@ -122,10 +122,16 @@ export async function resolveMergeSync(
   return readBranchSync(git, branch, remote);
 }
 
-/** What the merge route should do about the branch's sync state. */
+/**
+ * What the merge route should do about the branch's sync state.
+ *
+ * `pushed` says whether a synchronous push landed here, because the debounced
+ * auto-push may be cancelled ONLY then — cancelling one that nothing replaced
+ * strands the commit with no retry and no error (docs/287 req 17).
+ */
 export type MergeSyncVerdict =
   | { action: "proceed" }
-  | { action: "hold"; message: string };
+  | { action: "hold"; pushed: boolean; message: string };
 
 /**
  * The merge route's guard: resolve the sync state and decide.
@@ -172,6 +178,7 @@ export async function guardMergeSync(
   if (sync.state === "diverged") {
     return {
       action: "hold",
+      pushed: false,
       message:
         `Not merged — this session's branch has diverged from ${remote}/${branch}`
         + ` (${sync.ahead} local commit${sync.ahead === 1 ? "" : "s"} the remote does not have,`
@@ -190,6 +197,7 @@ export async function guardMergeSync(
   } catch (err) {
     return {
       action: "hold",
+      pushed: false,
       message:
         `Not merged — ${commits} in this session have not reached GitHub, and pushing them just`
         + ` failed: ${getErrorMessage(err)}. Merging now would ship the branch as it stood at the`
@@ -198,6 +206,7 @@ export async function guardMergeSync(
   }
   return {
     action: "hold",
+    pushed: true,
     message:
       `Pushed ${commits} that had not reached GitHub yet — merging now would have shipped the`
       + " branch without them. The pull request is on the new head; merge again once its checks"

@@ -23,6 +23,7 @@ import type {
 import type { ReconcileEgressOutcome } from "./services/reconcile-session-egress.js";
 import type { UsageManager } from "./usage.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
+import type { AgentMergeClaimStore } from "./agent-merge-claims.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { AuthManager } from "./agents/claude/auth-manager.js";
@@ -123,6 +124,12 @@ export interface ApiDeps {
   credentialsDir?: string;
   usageManager: UsageManager;
   runnerRegistry: SessionRunnerRegistry;
+  /**
+   * docs/287 — durable claims for agent-performed merges. Always supplied by
+   * `route-registry.ts`; optional only for hand-built test deps, and the route
+   * refuses rather than merging unrecorded when it is absent.
+   */
+  agentMergeClaims?: AgentMergeClaimStore;
   /**
    * docs/262 req 12 — run a plugin-repository refresh and WAIT for it, for the
    * agent's `shipit plugin refresh`. A runtime that cannot refresh supplies

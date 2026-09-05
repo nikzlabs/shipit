@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { DatabaseManager } from "../shared/database.js";
 import { RepoStore } from "./repo-store.js";
 import { REPO_COLOR_ASSIGNMENT_ORDER } from "../shared/repo-colors.js";
@@ -119,6 +122,107 @@ describe("RepoStore", () => {
     expect(store.has("https://github.com/owner/repo.git")).toBe(false);
     store.add("https://github.com/owner/repo.git");
     expect(store.has("https://github.com/owner/repo.git")).toBe(true);
+  });
+
+  describe("agent-merge grant (docs/287)", () => {
+    const URL = "https://github.com/owner/repo.git";
+
+    it("a freshly-added repo does not allow agent merges", () => {
+      const repo = store.add(URL);
+      expect(repo.allowAgentMerge).toBe(false);
+      expect(store.allowsAgentMerge(URL)).toBe(false);
+    });
+
+    it("setAllowAgentMerge flips the flag and the read reflects it", () => {
+      store.add(URL);
+      expect(store.setAllowAgentMerge(URL, true)).toBe("ok");
+      expect(store.allowsAgentMerge(URL)).toBe(true);
+      expect(store.get(URL)?.allowAgentMerge).toBe(true);
+      store.setAllowAgentMerge(URL, false);
+      expect(store.allowsAgentMerge(URL)).toBe(false);
+    });
+
+    it("is keyed by GitHub identity — including the spellings trust cannot collapse", () => {
+      // canonicalRepoKey (which `trusted` uses) splits these three; a
+      // permission must not, or a grant made under one spelling silently
+      // fails to apply under another.
+      store.add(URL);
+      store.setAllowAgentMerge("git@github.com:Owner/Repo.git", true);
+      expect(store.allowsAgentMerge(URL)).toBe(true);
+      expect(store.allowsAgentMerge("https://github.com/OWNER/REPO")).toBe(true);
+      expect(store.allowsAgentMerge("ssh://git@github.com/owner/repo.git")).toBe(true);
+    });
+
+    it("is per-repository", () => {
+      const OTHER = "https://github.com/other/thing.git";
+      store.add(URL);
+      store.add(OTHER);
+      store.setAllowAgentMerge(URL, true);
+      expect(store.allowsAgentMerge(OTHER)).toBe(false);
+    });
+
+    it("refuses a remote with no GitHub identity, and grants nothing", () => {
+      store.add(URL);
+      expect(store.setAllowAgentMerge("https://gitlab.com/owner/repo", false)).toBe("no-identity");
+      expect(store.setAllowAgentMerge("not a url", true)).toBe("no-identity");
+      expect(store.allowsAgentMerge("https://gitlab.com/owner/repo")).toBe(false);
+      // A near-miss host must never inherit the grant.
+      store.setAllowAgentMerge(URL, true);
+      expect(store.allowsAgentMerge("https://github.com.evil.example/owner/repo")).toBe(false);
+    });
+
+    it("an unknown remote is not granted", () => {
+      expect(store.allowsAgentMerge("https://github.com/never/added.git")).toBe(false);
+    });
+
+    it("says WHY nothing was written — no identity, or no such repository", () => {
+      // The two failures are not the same answer, and reporting "ok" for the
+      // second granted a repository ShipIt does not hold: the write matched
+      // zero rows, the route answered 200, and adding that repository later
+      // started it with the grant OFF (cross-agent review finding).
+      store.add(URL);
+      expect(store.setAllowAgentMerge("https://gitlab.com/owner/repo", true)).toBe("no-identity");
+      expect(store.setAllowAgentMerge("https://github.com/never/added.git", true)).toBe("not-found");
+      expect(store.setAllowAgentMerge(URL, true)).toBe("ok");
+      // …and the untracked one really did write nothing, so adding it now
+      // starts from the default.
+      const added = store.add("https://github.com/never/added.git");
+      expect(added.allowAgentMerge).toBe(false);
+    });
+
+    it("is read from the row, not cached on the store instance", () => {
+      store.add(URL);
+      store.setAllowAgentMerge(URL, true);
+      // Same connection — this proves only that a second store sees it, which
+      // is a weaker claim than durability. The next test makes that one.
+      const reopened = new RepoStore(dbManager);
+      expect(reopened.allowsAgentMerge(URL)).toBe(true);
+    });
+
+    it("survives closing and reopening the database file", () => {
+      // The durability claim, on a real file: the grant is a permission, and a
+      // migration that ran but did not persist the column — or a value held
+      // only in memory — would silently revoke it on the next restart. Reopening
+      // also re-runs the migrations over a populated database.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repo-store-grant-"));
+      const file = path.join(dir, "shipit.db");
+      try {
+        const first = new DatabaseManager(file);
+        const firstStore = new RepoStore(first);
+        firstStore.add(URL);
+        expect(firstStore.setAllowAgentMerge(URL, true)).toBe("ok");
+        first.close();
+
+        const second = new DatabaseManager(file);
+        try {
+          expect(new RepoStore(second).allowsAgentMerge(URL)).toBe(true);
+        } finally {
+          second.close();
+        }
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("trust (docs/178)", () => {

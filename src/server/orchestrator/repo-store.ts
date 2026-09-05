@@ -1,7 +1,7 @@
 import type { RepoInfo } from "../shared/types.js";
 import type { DatabaseManager } from "../shared/database.js";
 import { isValidRepoColorIndex, pickRepoColorIndex } from "../shared/repo-colors.js";
-import { canonicalRepoKey, hasUrlCredentials, stripRemoteUrlCredentials } from "./git-utils.js";
+import { canonicalRepoKey, hasUrlCredentials, repoId, stripRemoteUrlCredentials } from "./git-utils.js";
 
 interface RepoRow {
   url: string;
@@ -11,6 +11,7 @@ interface RepoRow {
   warm_session_id: string | null;
   trusted: number;
   hidden: number;
+  allow_agent_merge: number;
   default_branch: string | null;
   color_index: number | null;
 }
@@ -51,6 +52,7 @@ export class RepoStore {
     if (row.warm_session_id) info.warmSessionId = row.warm_session_id;
     info.trusted = row.trusted === 1;
     info.hidden = row.hidden === 1;
+    info.allowAgentMerge = row.allow_agent_merge === 1;
     if (row.default_branch) info.defaultBranch = row.default_branch;
     if (isValidRepoColorIndex(row.color_index)) info.colorIndex = row.color_index;
     return info;
@@ -267,6 +269,43 @@ export class RepoStore {
       }
     });
     tx();
+  }
+
+  /**
+   * docs/287 — may agents merge their own pull requests in this repository?
+   *
+   * Matched on {@link repoId}, NOT `canonicalRepoKey` like {@link isTrusted}:
+   * that produces three keys for three spellings, which is survivable for "seen
+   * this repo before" and not for a permission. No identity, no grant.
+   */
+  allowsAgentMerge(url: string): boolean {
+    const id = repoId(url);
+    if (!id) return false;
+    const rows = this.db
+      .prepare("SELECT url, allow_agent_merge FROM repos")
+      .all() as Pick<RepoRow, "url" | "allow_agent_merge">[];
+    return rows.some((r) => r.allow_agent_merge === 1 && repoId(r.url) === id);
+  }
+
+  /**
+   * docs/287 — set the grant on every row resolving to the same repository.
+   * Transactional, so a reader never sees it half-applied. `"no-identity"` and
+   * `"not-found"` stop the caller reporting success for a write that matched no
+   * row, which would answer 200 and store nothing.
+   */
+  setAllowAgentMerge(url: string, allow: boolean): "ok" | "no-identity" | "not-found" {
+    const id = repoId(url);
+    if (!id) return "no-identity";
+    const val = allow ? 1 : 0;
+    const rows = this.db.prepare("SELECT url FROM repos").all() as Pick<RepoRow, "url">[];
+    const matches = rows.filter((r) => repoId(r.url) === id);
+    if (matches.length === 0) return "not-found";
+    const update = this.db.prepare("UPDATE repos SET allow_agent_merge = ? WHERE url = ?");
+    const tx = this.db.transaction(() => {
+      for (const r of matches) update.run(val, r.url);
+    });
+    tx();
+    return "ok";
   }
 
   /**

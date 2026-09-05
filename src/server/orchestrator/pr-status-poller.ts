@@ -18,6 +18,7 @@
  */
 
 import type { GitHubAuthManager } from "./github-auth.js";
+import type { TerminalPrFacts } from "./github-auth-prs.js";
 import type { SessionManager } from "./sessions.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { GitManager } from "../shared/git.js";
@@ -455,6 +456,32 @@ export class PrStatusPoller {
    * refresh, so a PR merged moments after a recheck would fall out of the bulk
    * view with the debounce already armed and never get REST-verified.
    */
+  /**
+   * docs/287-agent-merge-per-repo — the merge gate's zero-check decision.
+   *
+   * Here because the decision needs state the poll loop preloads
+   * (`ensureWorkflowsLoaded`). It awaits that LOAD, never the grace window — the
+   * command does not wait by itself (req 17). `prNumber` is explicit because a
+   * session can ask about a pull request the poller is not tracking for it.
+   */
+  async awaitCiGraceDecision(args: {
+    repoUrl: string | undefined;
+    repoKey: string;
+    prNumber: number;
+    headSha: string;
+    headBranch?: string;
+    baseBranch?: string;
+  }): Promise<boolean> {
+    await this.graceTracker.ensureWorkflowsLoaded(args.repoKey, args.repoUrl).catch(() => {});
+    return this.graceTracker.shouldWaitForMergeChecks({
+      repoKey: args.repoKey,
+      prNumber: args.prNumber,
+      headSha: args.headSha,
+      ...(args.headBranch ? { headBranch: args.headBranch } : {}),
+      ...(args.baseBranch ? { baseBranch: args.baseBranch } : {}),
+    });
+  }
+
   async forceVerifySessionPrState(
     sessionId: string,
     opts: { armAbsentDebounce?: boolean } = {},
@@ -1349,6 +1376,30 @@ export class PrStatusPoller {
       return "open";
     }
 
+    this.promoteTerminal({ sessionId, owner, repo, branch, pr });
+    return "terminal";
+  }
+
+  /**
+   * docs/287 req 11 — the ONE terminal-promotion operation: the snapshot,
+   * `merged_at`, `mergedHeadSha`, reset eligibility, the merge watch and the
+   * issue lifecycle all happen here. Takes the FACTS rather than fetching them,
+   * because detection knows the branch and settlement knows the number.
+   */
+  private promoteTerminal(args: {
+    sessionId: string;
+    owner: string;
+    repo: string;
+    branch: string;
+    pr: {
+      number: number; url: string; title: string; body: string; base: string;
+      state: "open" | "closed"; merged_at: string | null; merge_commit_sha: string | null;
+      head_sha: string | null; additions: number; deletions: number;
+    };
+    /** Re-run the once-per-merge effects even if the state already reads terminal. */
+    force?: boolean;
+  }): void {
+    const { sessionId, owner, repo, branch, pr, force } = args;
     // Capture whether this session was already promoted to a terminal state
     // before this verify, so the merge-driven side effects (archive,
     // issue-lifecycle close, notify-on-merge) fire exactly once per real merge.
@@ -1365,14 +1416,22 @@ export class PrStatusPoller {
     // seeds it), so we also treat a PR already recorded terminal as terminal.
     // A merge first observed only after a mid-merge restart still fires once:
     // its persisted state was "open" at the last pre-restart poll.
+    const isMerged = pr.merged_at !== null;
+    const prState = isMerged ? "merged" as const : pr.state === "closed" ? "closed" as const : "open" as const;
     const prevState = this.tracker.lastKnown.get(sessionId)?.prState;
     // docs/266 — captured HERE, before `lastKnown` is overwritten with the
     // terminal summary below (which hard-codes `autoMergeEnabled: false`).
     // GitHub's own flag is the only record of a native arming ShipIt never
     // stored, e.g. the merge button's pending-checks fallback.
     const nativeArmedOnGitHub = this.tracker.lastKnown.get(sessionId)?.autoMergeEnabled === true;
-    const alreadyTerminal =
-      this.tracker.mergedSessions.has(sessionId)
+    // req 11 — without `force` this is NOT crash-reentrant: the snapshot
+    // persists first, `alreadyTerminal` is derived from it, and `merged_at` /
+    // `mergedHeadSha` are written later and only when `!alreadyTerminal`. A
+    // crash between the two suppresses them for ever. A `settling` claim is the
+    // evidence they did not run, so it re-enters rather than trust the snapshot.
+    const alreadyTerminal = force
+      ? false
+      : this.tracker.mergedSessions.has(sessionId)
       || prevState === "merged"
       || prevState === "closed";
 
@@ -1536,6 +1595,47 @@ export class PrStatusPoller {
       }
     }
 
-    return "terminal";
+  }
+
+  /**
+   * docs/287-agent-merge-per-repo req 11 — promote a pull request ShipIt just
+   * merged, addressed by NUMBER.
+   *
+   * Not `forceVerifySessionPrState()`, which resolves the session's CURRENT
+   * branch and settles a different pull request after a re-arm. `guard` is asked
+   * AFTER the read and before the first write: the caller's preconditions were
+   * checked across an awaited request, and a turn can start inside it.
+   */
+  async promoteMergedPrByNumber(args: {
+    sessionId: string;
+    owner: string;
+    repo: string;
+    prNumber: number;
+    guard?: (pr: TerminalPrFacts) => boolean;
+  }): Promise<{ pr: TerminalPrFacts; promoted: boolean } | null> {
+    const pr = await this.githubAuth.findPullRequestByNumber(args.owner, args.repo, args.prNumber);
+    if (!pr) return null;
+    // Terminal state only: forcing an OPEN pull request through here drops its
+    // remediation and auto-merge state, after which polling skips it.
+    if (pr.merged_at === null && pr.state !== "closed") return { pr, promoted: false };
+    if (args.guard && !args.guard(pr)) return { pr, promoted: false };
+    this.promoteTerminal({
+      sessionId: args.sessionId,
+      owner: args.owner,
+      repo: args.repo,
+      branch: pr.head_ref,
+      pr,
+      force: true,
+    });
+    return { pr, promoted: true };
+  }
+
+  /**
+   * Read one pull request by number, promoting nothing — for the settlement path
+   * that asks about a pull request this session no longer owns, where the answer
+   * belongs in the transcript but no session state may move on it.
+   */
+  async readPrByNumber(owner: string, repo: string, prNumber: number): Promise<TerminalPrFacts | null> {
+    return this.githubAuth.findPullRequestByNumber(owner, repo, prNumber);
   }
 }

@@ -25,6 +25,7 @@ import type { PrStatusPoller } from "../pr-status-poller.js";
 import { getErrorMessage } from "../validation.js";
 import { activatePendingAutoMergeForPr, quickCreatePr } from "./github.js";
 import { notableFilesForBranch } from "./notable-files.js";
+import { recordWitnessedPrCreate } from "./pr-provenance.js";
 import type { GenerateText } from "../non-turn-model.js";
 
 export interface PrLifecycleDeps {
@@ -165,6 +166,9 @@ export async function emitPrLifecycleAfterCommit(args: {
             ? { baseBranch: previousMergedPr.baseBranch, forceWithLease: true }
             : undefined,
         );
+        // docs/287 — a witnessed create. The recovery branch above finds one by
+        // branch name, which may be a person's, so it records nothing.
+        recordWitnessedPrCreate(deps.sessionManager, sessionId, result);
         if (session.remoteUrl) {
           deps.prStatusPoller.trackSession(sessionId, session.remoteUrl);
           await activatePendingAutoMergeForPr(

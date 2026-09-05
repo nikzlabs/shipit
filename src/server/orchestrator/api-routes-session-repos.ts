@@ -25,7 +25,7 @@ import {
   ClaimAbortedError,
   refreshRepoDefaultBranch,
 } from "./services/index.js";
-import { canonicalRepoKey, hasUrlCredentials } from "./git-utils.js";
+import { canonicalRepoKey, hasUrlCredentials, repoId } from "./git-utils.js";
 import { getErrorMessage } from "./validation.js";
 
 export async function registerSessionReposRoutes(
@@ -280,15 +280,25 @@ export async function registerSessionReposRoutes(
   // color for the sidebar's group edge. Both fields are optional and independent
   // (each applied only when present), so the client can PATCH either one; a body
   // carrying neither is the 400 below rather than a silent no-op.
-  app.patch<{ Params: { url: string }; Body: { hidden?: boolean; colorIndex?: number } }>(
+  app.patch<{
+    Params: { url: string };
+    Body: { hidden?: boolean; colorIndex?: number; allowAgentMerge?: boolean };
+  }>(
     "/api/repos/:url",
     async (request, reply) => {
       try {
         const url = decodeURIComponent(request.params.url);
         const hidden = request.body?.hidden;
         const colorIndex = request.body?.colorIndex;
-        if (hidden === undefined && colorIndex === undefined) {
-          reply.code(400).send({ error: "Request body must include a boolean 'hidden' or a numeric 'colorIndex'" });
+        // docs/287 — the grant rides this route rather than getting its own, so
+        // it inherits the browser-only boundary: no `containerAccessible` opt-in
+        // is what keeps the permission out of reach of the agent it governs.
+        const allowAgentMerge = request.body?.allowAgentMerge;
+        if (hidden === undefined && colorIndex === undefined && allowAgentMerge === undefined) {
+          reply.code(400).send({
+            error:
+              "Request body must include a boolean 'hidden', a numeric 'colorIndex', or a boolean 'allowAgentMerge'",
+          });
           return;
         }
         // A field that is PRESENT but malformed is an error, never a silent
@@ -300,9 +310,35 @@ export async function registerSessionReposRoutes(
           reply.code(400).send({ error: "'hidden' must be a boolean" });
           return;
         }
+        if (allowAgentMerge !== undefined && typeof allowAgentMerge !== "boolean") {
+          reply.code(400).send({ error: "'allowAgentMerge' must be a boolean" });
+          return;
+        }
         if (colorIndex !== undefined) assertValidRepoColorIndex(colorIndex);
+        // docs/287 — checked HERE, before ANY field is written: doing it at the
+        // write let `{hidden: true, allowAgentMerge: true}` on a GitLab remote
+        // hide the repository and THEN answer 400. The error does not quote the
+        // url back, which may carry `user:password@`.
+        if (allowAgentMerge !== undefined) {
+          const id = repoId(url);
+          if (!id) {
+            reply.code(400).send({
+              error: "Cannot set agent-merge permission: that remote is not a recognised GitHub repository.",
+            });
+            return;
+          }
+        }
         if (colorIndex !== undefined) setRepoColorIndex(deps.repoStore, url, colorIndex);
         if (hidden !== undefined) setRepoHidden(deps.repoStore, url, hidden);
+        if (allowAgentMerge !== undefined) {
+          const result = deps.repoStore.setAllowAgentMerge(url, allowAgentMerge);
+          if (result === "not-found") {
+            // The same 404 every other setter on this route gives for a
+            // repository ShipIt does not hold — never a 200 that wrote nothing.
+            reply.code(404).send({ error: "Repository not found" });
+            return;
+          }
+        }
         // Broadcast so every connected tab updates its sidebar immediately —
         // same pattern as add/remove/reorder.
         deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });

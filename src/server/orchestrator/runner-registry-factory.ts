@@ -175,6 +175,12 @@ export interface RunnerRegistryDeps {
    */
   getPrStatusPoller?: () => PrStatusPoller | undefined;
   /**
+   * docs/287 req 9 — resolve this session's outstanding agent-merge claim now
+   * its turn is over. Fire-and-forget; the other two triggers (startup, session
+   * activation) catch whatever this pass cannot resolve.
+   */
+  reconcileAgentMergeClaimsFor?: (sessionId: string) => void;
+  /**
    * docs/146 — lazy resolver for the auto-conflict-resolve manager. The
    * manager is constructed inside the poller (one tick after the registry
    * exists), so we accept a lazy getter rather than a direct ref. Wired so
@@ -317,6 +323,7 @@ export function createRunnerRegistry(
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, logStore, runtimeMode, broadcastLog,
     credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, rebindDelivery,
+    reconcileAgentMergeClaimsFor,
     usageManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     markSessionAccountExhausted,
     markCredentialRouteAuthFailed,
@@ -344,6 +351,9 @@ export function createRunnerRegistry(
       // Fans out to BOTH the auto-fix and auto-resolve managers. Cooldown-driven
       // retry still runs through `handleTransition` on the next poll, not here.
       getPrStatusPoller?.()?.notifyRunnerIdle(sessionId);
+      // req 9 — the earliest safe reconciliation point: settling while a turn
+      // runs could mark the session merged mid-push.
+      reconcileAgentMergeClaimsFor?.(sessionId);
     },
     onRunnerCreated: (runner) => {
       // planning#246 — the ONE subscriber for the cross-session "busy outside a

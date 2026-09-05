@@ -9,6 +9,7 @@ import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
 
 import {
+  flushPendingTurnCommit,
   getPrStatus,
   getRepoScopedGitCredential,
   searchGitHubRepos,
@@ -51,8 +52,11 @@ import {
 import { PR_LIST_STATES, type PrListState } from "./github-auth-prs.js";
 import { getErrorMessage } from "./validation.js";
 import { guardMergeSync } from "./services/branch-sync.js";
-import { parseGitHubRemote } from "./git-utils.js";
-import { resolvePrTarget, gitCredentialAllowed, mergeDisposition } from "./pr-target.js";
+import { mergeFlushRefusal } from "./services/merge-gate.js";
+import { captureTurn, settleAgentMerge, type TurnToken } from "./services/agent-merge-settlement.js";
+import { parseGitHubRemote, repoId } from "./git-utils.js";
+import { resolvePrTarget, gitCredentialAllowed, mergeDisposition, agentMergeOwnership } from "./pr-target.js";
+import { recordWitnessedPrCreate } from "./services/pr-provenance.js";
 import type { FastifyReply } from "fastify";
 import type { SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
@@ -236,6 +240,9 @@ export async function registerGitHubRoutes(
           session.remoteUrl,
         );
 
+        // docs/287 — provenance, for a pull request this call actually opened.
+        recordWitnessedPrCreate(sessionManager, request.params.id, result);
+
         // Track the new PR in the poller
         if (deps.prStatusPoller && session.remoteUrl) {
           deps.prStatusPoller.trackSession(request.params.id, session.remoteUrl);
@@ -274,6 +281,15 @@ export async function registerGitHubRoutes(
           request.body.title, request.body.body, request.body.base, request.body.draft,
           session?.remoteUrl,
         );
+        // docs/287 — this route always CREATES, so success is a witnessed one.
+        if (result.success && result.number !== undefined) {
+          recordWitnessedPrCreate(sessionManager, request.params.id, {
+            number: result.number,
+            alreadyExisted: false,
+            owner: result.owner,
+            repo: result.repo,
+          });
+        }
         if (result.success && deps.prStatusPoller && session?.remoteUrl) {
           deps.prStatusPoller.trackSession(request.params.id, session.remoteUrl);
           void deps.prStatusPoller.forceRefreshSession(request.params.id);
@@ -338,6 +354,8 @@ export async function registerGitHubRoutes(
           ...(deps.cancelAutoPush ? { cancelAutoPush: deps.cancelAutoPush } : {}),
           chatHistory: deps.chatHistoryManager,
         });
+        // docs/287 — provenance. Skipped for an already-open pull request.
+        recordWitnessedPrCreate(sessionManager, request.params.id, result);
         if (deps.prStatusPoller && session.remoteUrl) {
           deps.prStatusPoller.trackSession(request.params.id, session.remoteUrl);
           await activatePendingAutoMergeForPr(
@@ -1328,8 +1346,9 @@ export async function registerGitHubRoutes(
     },
   );
 
-  // POST /api/sessions/:id/pr/:number/merge — agent-driven merge (docs/224),
-  // backing `gh pr merge`. Gated behind the sandbox `dangerousGitHubOps` grant.
+  // POST /api/sessions/:id/pr/:number/merge — `gh pr merge`. Two grants reach
+  // it: a sandbox's `dangerousGitHubOps` (docs/224), and a repository's
+  // `allow_agent_merge` plus the ownership tuple (docs/287).
   //
   // Deliberately separate from the UI merge route above: it merges an explicit
   // PR number (repo-aware via cwd/repo), and it does NOT apply that route's
@@ -1350,8 +1369,13 @@ export async function registerGitHubRoutes(
         return;
       }
       // docs/224 — gate the dangerous verb. Distinct messages so the agent knows
-      // whether this is a "wrong session kind" (use the PR card) or "not opted in".
-      const disposition = mergeDisposition(session);
+      // whether this is a "wrong session kind", "not opted in" or "not granted
+      // here". Read from ShipIt's record, never the workspace: the agent can
+      // write `shipit.yaml`.
+      const disposition = mergeDisposition(
+        session,
+        deps.repoStore.allowsAgentMerge(session.remoteUrl ?? ""),
+      );
       if (disposition === "not-sandbox") {
         reply.code(403).send({
           error:
@@ -1366,6 +1390,15 @@ export async function registerGitHubRoutes(
         });
         return;
       }
+      if (disposition === "not-granted-repo") {
+        reply.code(403).send({
+          error:
+            "Agents cannot merge pull requests in this repository. The user turns this on in "
+            + "Project Settings → Agent permissions. Until then, merge from the PR lifecycle card "
+            + "in the ShipIt UI.",
+        });
+        return;
+      }
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       const num = Number(request.params.number);
@@ -1373,16 +1406,192 @@ export async function registerGitHubRoutes(
         reply.code(400).send({ error: "Invalid PR number" });
         return;
       }
+      // req 5 — only the pull request this session opened, checked BEFORE
+      // `resolvePrTarget`, which a `--repo` override retargets. A sandbox skips
+      // all of it (req 12): no session remote, no branch, no provenance.
+      const repoBound = session.kind !== "sandbox";
+      // The poller keys by `owner/repo`. Absent for a sandbox.
+      const parsedRemote = session.remoteUrl ? parseGitHubRemote(session.remoteUrl) : null;
+      const mergeRepoKey = parsedRemote ? `${parsedRemote.owner}/${parsedRemote.repo}` : null;
+      // req 9 — repo-bound only: a sandbox has no provenance to settle into.
+      const claimRepoId = repoBound ? repoId(session.remoteUrl ?? "") : null;
+      // A merge ShipIt cannot record is one it will not perform.
+      if (repoBound && !deps.agentMergeClaims) {
+        reply.code(503).send({
+          error:
+            "Not merged — ShipIt cannot record an agent merge on this server, and will not perform "
+            + "one it could not recover. Merge from the PR lifecycle card in the ShipIt UI.",
+        });
+        return;
+      }
+      const claimDeps = deps.agentMergeClaims && repoBound
+        ? {
+          claims: deps.agentMergeClaims,
+          sessionManager,
+          chatHistoryManager: deps.chatHistoryManager,
+          ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
+          ...(deps.runnerRegistry ? { runnerRegistry: deps.runnerRegistry } : {}),
+        }
+        : null;
+      let turn: TurnToken | null = null;
+      // One try from here on: a throw from any git step below is the same
+      // "could not establish that this merge is safe" answer.
       try {
+      if (repoBound) {
+        // Apart from the comparison below, where `null` means "on no named
+        // branch": an unreadable workspace is not a detached HEAD.
+        let currentBranch: string | null;
+        try {
+          currentBranch = await createGitManager(dir).currentBranchOrNull();
+        } catch (err) {
+          reply.code(409).send({
+            error:
+              "Not merged — ShipIt could not read this session's workspace to confirm the pull "
+              + `request belongs to it: ${getErrorMessage(err)}`,
+          });
+          return;
+        }
+        const refusal = agentMergeOwnership({
+          session,
+          requestedNumber: num,
+          currentBranch,
+          repoOverride: request.body?.repo,
+        });
+        if (refusal) {
+          reply.code(refusal.status).send({ error: refusal.error });
+          return;
+        }
+        // req 9 — turn-owned. This endpoint is `containerAccessible`, so without
+        // it a container process could merge after its turn ended, attaching its
+        // flush, claim and record to the wrong turn.
+        turn = captureTurn(deps.runnerRegistry, request.params.id);
+        if (claimDeps && !turn) {
+          reply.code(409).send({
+            error:
+              "Not merged — `gh pr merge` runs as part of a turn, and this session has no turn "
+              + "running. Merge from the PR lifecycle card in the ShipIt UI instead.",
+          });
+          return;
+        }
+
+        // reqs 14 + 15 — ShipIt's auto-commit runs AFTER the turn, so without
+        // this the merge ships the branch as it stood before this turn's edits.
+        // Only two outcomes proceed; the other four leave work off the branch.
+        const flush = await flushPendingTurnCommit(createGitManager(dir), {
+          sessionId: request.params.id,
+          runnerRegistry: deps.runnerRegistry,
+          chatHistory: deps.chatHistoryManager,
+        });
+        if (flush.kind !== "committed" && flush.kind !== "nothing-to-commit") {
+          reply.code(422).send({ error: mergeFlushRefusal(flush) });
+          return;
+        }
+
+        // req 17 — the branch has to be on GitHub. `ahead` is repaired by
+        // pushing, but the merge still stops: the push moved the head.
+        const verdict = await guardMergeSync(createGitManager(dir));
+        if (verdict.action === "hold") {
+          // Dropped ONLY when a synchronous push replaced it; otherwise the
+          // commit is stranded with no retry.
+          if (verdict.pushed) deps.cancelAutoPush?.(request.params.id);
+          reply.code(409).send({
+            error: verdict.pushed
+              ? `${verdict.message} (Merge again once the checks on the new head report.)`
+              : verdict.message,
+          });
+          return;
+        }
+      }
         const { gitDir, remoteUrl } = resolvePrTarget(session, dir, request.body ?? {});
         const git = createGitManager(gitDir);
-        return await agentMergePullRequest(git, deps.githubAuthManager, {
+        // req 14 — a session that cannot say WHICH commit it is on has not
+        // passed the check, so the failure is REPORTED rather than turned into
+        // the absent value the gate reads as the sandbox exemption.
+        let localHead: { kind: "head"; sha: string } | { kind: "unreadable"; reason: string } | undefined;
+        if (repoBound) {
+          try {
+            const sha = await git.getHeadHash();
+            // Null is the same "cannot confirm which commit" as a throw.
+            localHead = sha
+              ? { kind: "head", sha }
+              : { kind: "unreadable", reason: "the workspace reported no current commit" };
+          } catch (err) {
+            localHead = { kind: "unreadable", reason: getErrorMessage(err) };
+          }
+        }
+        const result = await agentMergePullRequest(git, deps.githubAuthManager, {
           number: num,
           sessionId: request.params.id,
           method: request.body?.method,
           auto: request.body?.auto,
           remoteUrl,
+          repoBound,
+          // After the flush and push, so it is the commit those produced.
+          ...(localHead ? { localHead } : {}),
+          ...(deps.prStatusPoller && session.remoteUrl && mergeRepoKey
+            ? {
+              graceSaysWait: async (headSha: string) =>
+                deps.prStatusPoller!.awaitCiGraceDecision({
+                  repoUrl: session.remoteUrl,
+                  repoKey: mergeRepoKey,
+                  prNumber: num,
+                  headSha,
+                  ...(session.branch ? { headBranch: session.branch } : {}),
+                }),
+            }
+            : {}),
+          ...(claimDeps && claimRepoId && turn
+            ? {
+              // req 9 — written in the instant before the REST call, resolved
+              // by exactly one of the three outcome hooks.
+              beforeMerge: (expectedSha: string) => {
+                // req 1 — withdrawable AT ANY TIME, and the decision to merge
+                // was taken before a commit, a push and two GitHub round trips.
+                const live = sessionManager.get(request.params.id);
+                if (!live) return "Not merged — this session no longer exists.";
+                if (mergeDisposition(live, deps.repoStore.allowsAgentMerge(live.remoteUrl ?? "")) !== "allowed") {
+                  return "Not merged — the permission to merge in this repository was withdrawn while "
+                    + "ShipIt was preparing the merge. Nothing was merged.";
+                }
+                // And still the pull request this session owns: a re-arm or a
+                // repointed `origin` clears the provenance in the same window.
+                if (live.prNumber !== num || live.prRepoId !== claimRepoId) {
+                  return `Not merged — PR #${num} is no longer the pull request ShipIt opened for `
+                    + "this session. Nothing was merged.";
+                }
+                if (!claimDeps.claims.claim({
+                  sessionId: request.params.id,
+                  repoId: claimRepoId,
+                  prNumber: num,
+                  expectedSha,
+                })) {
+                  // Single-flight: a row is already outstanding for this session.
+                  return "Not merged — an earlier merge on this session has not been resolved yet, and "
+                    + "ShipIt will not start a second one over it. It resolves that attempt at the end "
+                    + "of the turn; try again after that.";
+                }
+                return null;
+              },
+              onMerged: async (expectedSha: string) => {
+                const claim = claimDeps.claims.get(request.params.id);
+                if (claim?.expectedSha !== expectedSha) return "settled";
+                claimDeps.claims.markSettling(request.params.id, expectedSha);
+                const outcome = await settleAgentMerge(
+                  claimDeps, { ...claim, state: "settling" }, { witnessed: true, turn },
+                );
+                return outcome.result === "settled" ? "settled" : "deferred";
+              },
+              // Merged nothing; `releaseUnmerged` still spares a `settling` row.
+              onRefused: (expectedSha: string) => {
+                claimDeps.claims.releaseUnmerged(request.params.id, expectedSha);
+                return Promise.resolve();
+              },
+              // Does NOT release: the row is reconciliation's only evidence.
+              onIndeterminate: () => Promise.resolve(),
+            }
+            : {}),
         });
+        return result;
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

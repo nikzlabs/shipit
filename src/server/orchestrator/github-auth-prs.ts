@@ -154,6 +154,51 @@ export async function findPullRequestAnyState(
   };
 }
 
+/** The normalized pull-request facts a terminal promotion needs. */
+export interface TerminalPrFacts {
+  url: string; number: number; base: string; title: string; body: string;
+  state: "open" | "closed"; merged_at: string | null; merge_commit_sha: string | null;
+  head_sha: string | null; head_ref: string; additions: number; deletions: number;
+}
+
+/**
+ * docs/287 req 11 — {@link findPullRequestAnyState}'s facts, addressed by
+ * NUMBER. Settlement cannot use the branch lookup: that takes the most recently
+ * updated pull request on a branch, so a re-arm answers about a different one.
+ */
+export async function findPullRequestByNumber(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+): Promise<TerminalPrFacts | null> {
+  const res = await fetchGitHub(
+    `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
+    token,
+  );
+  if (!res.ok) return null;
+  const pr = (await res.json().catch(() => null)) as {
+    html_url?: string; number?: number; base?: { ref?: string }; title?: string; body?: string | null;
+    state?: "open" | "closed"; merged_at?: string | null; merge_commit_sha?: string | null;
+    head?: { sha?: string; ref?: string } | null; additions?: number; deletions?: number;
+  } | null;
+  if (!pr || typeof pr.number !== "number") return null;
+  return {
+    url: pr.html_url ?? "",
+    number: pr.number,
+    base: pr.base?.ref ?? "",
+    title: pr.title ?? "",
+    body: pr.body ?? "",
+    state: pr.state === "closed" ? "closed" : "open",
+    merged_at: pr.merged_at ?? null,
+    merge_commit_sha: pr.merge_commit_sha ?? null,
+    head_sha: pr.head?.sha ?? null,
+    head_ref: pr.head?.ref ?? "",
+    additions: pr.additions ?? 0,
+    deletions: pr.deletions ?? 0,
+  };
+}
+
 /**
  * Merge a pull request.
  *
@@ -163,6 +208,129 @@ export async function findPullRequestAnyState(
  * defaults to "Default to commit messages" — i.e., concatenates every original
  * commit. Callers should pass the PR title (and ideally body) so behavior is
  * independent of per-repo settings.
+ *
+ * docs/287 req 16 — `expectedSha` is GitHub's optimistic-concurrency check: it
+ * merges only while the head is still that commit. A caller that decided by
+ * looking at a commit must pass it, or everything since merges unchecked.
+ */
+export type MergeAttempt =
+  /** A parsed response saying the merge landed. */
+  | { outcome: "merged"; message: string; mergeCommitSha: string | null }
+  /** GitHub answered no — conflict, protection, a moved head. It did not merge. */
+  | { outcome: "refused"; message: string }
+  /** No answer we can trust — transport error, 5xx, unparseable body. It MAY
+   * have merged. */
+  | { outcome: "indeterminate"; message: string };
+
+/**
+ * docs/287 req 9 — the merge attempt, with the three outcomes it actually has.
+ * The distinction decides whether the durable claim is deleted or left for
+ * reconciliation, so collapsing "refused" and "never heard back" discards the
+ * record of a merge that may have happened. It errs toward `indeterminate`: a
+ * 4xx is GitHub answering about THIS merge; a 5xx, a rejected fetch and an
+ * unparseable 2xx are not answers at all.
+ */
+export async function mergePullRequestAttempt(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  method: "merge" | "squash" | "rebase" = "merge",
+  commitTitle?: string,
+  commitMessage?: string,
+  expectedSha?: string,
+): Promise<MergeAttempt> {
+  const body: Record<string, string> = { merge_method: method };
+  if (typeof commitTitle === "string") body.commit_title = commitTitle;
+  if (typeof commitMessage === "string") body.commit_message = commitMessage;
+  if (expectedSha) body.sha = expectedSha;
+
+  let res: Response;
+  try {
+    res = await fetchGitHub(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}/merge`,
+      token,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+  } catch (err) {
+    // The request may have reached GitHub and been executed. Saying "failed"
+    // here is how a performed merge loses its record.
+    return {
+      outcome: "indeterminate",
+      message:
+        `ShipIt did not hear back from GitHub about merging PR #${pullNumber} `
+        + `(${err instanceof Error ? err.message : String(err)}). It may or may not have merged.`,
+    };
+  }
+
+  if (!res.ok) {
+    const message = await parseGitHubError(res);
+    // 5xx and 429 are not an answer about this merge.
+    if (res.status >= 500 || res.status === 429) {
+      return {
+        outcome: "indeterminate",
+        message: `GitHub returned ${res.status} for the merge of PR #${pullNumber}: ${message}`,
+      };
+    }
+    if (res.status === 405) {
+      return { outcome: "refused", message: message || "PR is not mergeable" };
+    }
+    // 409 with an `expectedSha` is "the head moved between the check and this
+    // call". Named, because GitHub's own wording does not say what to do next.
+    if (res.status === 409 && expectedSha) {
+      return {
+        outcome: "refused",
+        message:
+          `${message || "Head branch was modified"} — the branch moved after its checks were `
+          + "read, so nothing was merged. Merge again once the new head's checks report.",
+      };
+    }
+    return { outcome: "refused", message };
+  }
+
+  const parsed = await res.json().catch(() => null) as {
+    merged?: unknown; sha?: string; message?: unknown;
+  } | null;
+  if (!parsed) {
+    // A 2xx we cannot read. Almost certainly merged — and "almost" is exactly
+    // why this is not reported as one.
+    return {
+      outcome: "indeterminate",
+      message: `GitHub accepted the merge of PR #${pullNumber} but returned a body ShipIt could not read.`,
+    };
+  }
+  // `merged === true` and nothing else. GitHub documents a 200 only for a
+  // performed merge with a boolean `merged`; reading any other body as a merge
+  // is how one that never happened gets recorded.
+  if (parsed.merged === true) {
+    return { outcome: "merged", message: "Pull request merged", mergeCommitSha: parsed.sha ?? null };
+  }
+  if (parsed.merged === false) {
+    // req 7 — GitHub's own reason, word for word, when it sent one.
+    const reason = typeof parsed.message === "string" && parsed.message.trim() ? parsed.message.trim() : null;
+    return {
+      outcome: "refused",
+      message: reason
+        ? `GitHub reported the pull request as not merged: ${reason}`
+        : "GitHub reported the pull request as not merged.",
+    };
+  }
+  return {
+    outcome: "indeterminate",
+    message: `GitHub accepted the merge of PR #${pullNumber} but its answer did not say whether it merged.`,
+  };
+}
+
+/**
+ * Merge a pull request, for callers that only need "did it work".
+ *
+ * Both non-success outcomes collapse to `success: false`: a caller with no
+ * durable claim does nothing differently with an indeterminate result. The agent
+ * merge, which does, uses {@link mergePullRequestAttempt}.
  */
 export async function mergePullRequest(
   token: string,
@@ -172,30 +340,12 @@ export async function mergePullRequest(
   method: "merge" | "squash" | "rebase" = "merge",
   commitTitle?: string,
   commitMessage?: string,
+  expectedSha?: string,
 ): Promise<{ success: boolean; message: string }> {
-  const body: Record<string, string> = { merge_method: method };
-  if (typeof commitTitle === "string") body.commit_title = commitTitle;
-  if (typeof commitMessage === "string") body.commit_message = commitMessage;
-
-  const res = await fetchGitHub(
-    `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}/merge`,
-    token,
-    {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    },
+  const attempt = await mergePullRequestAttempt(
+    token, owner, repo, pullNumber, method, commitTitle, commitMessage, expectedSha,
   );
-
-  if (!res.ok) {
-    const err = (await res.json()) as { message?: string };
-    if (res.status === 405) {
-      return { success: false, message: err.message || "PR is not mergeable" };
-    }
-    return { success: false, message: err.message || `GitHub API returned ${res.status}` };
-  }
-
-  return { success: true, message: "Pull request merged" };
+  return { success: attempt.outcome === "merged", message: attempt.message };
 }
 
 /**

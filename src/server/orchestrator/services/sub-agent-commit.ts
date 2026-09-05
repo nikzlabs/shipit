@@ -133,7 +133,7 @@ export async function commitSubAgentWork(
     // resolves immediately.
     const commitHash = await withWorkspaceLock(runner.sessionDir, async () => {
       const git = deps.createGitManager!(runner.sessionDir);
-      const { commitHash, secretBlocked } = await flushPendingTurnCommit(git, {
+      const flush = await flushPendingTurnCommit(git, {
         sessionId,
         runnerRegistry: deps.runnerRegistry,
         chatHistory: deps.chatHistoryManager,
@@ -142,8 +142,12 @@ export async function commitSubAgentWork(
       // docs/213 — a commit refused for a secret finding stays refused. The
       // redacted warning was already emitted + persisted by the flush; the tree
       // stays dirty on purpose, because scrubbing it is the agent's job.
-      if (secretBlocked || !commitHash) return null;
-      return commitHash;
+      // Unchanged by docs/287's typed outcome: every kind other than a landed
+      // commit returned null here before, and still does — `partial-unreadable`
+      // included, since it carries a hash only when a commit really landed.
+      if (flush.kind === "committed") return flush.commitHash;
+      if (flush.kind === "partial-unreadable") return flush.commitHash;
+      return null;
     });
 
     if (!commitHash) return null;

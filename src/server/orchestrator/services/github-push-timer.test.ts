@@ -81,7 +81,11 @@ describe("flushPendingTurnCommit — does not touch the push debounce", () => {
       fakeGit({ autoCommit: vi.fn(async () => result) }),
       { sessionId: "s1", runnerRegistry: registryFor(runner) },
     );
-    expect(flushed.commitHash).toBe(result.commitHash);
+    expect(flushed.kind).toBe(
+      result.secretFindings.length > 0
+        ? "blocked-secret"
+        : result.commitHash ? "committed" : "nothing-to-commit",
+    );
   });
 });
 

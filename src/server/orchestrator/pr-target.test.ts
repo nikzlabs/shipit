@@ -19,6 +19,7 @@ import {
   resolvePrTarget,
   gitCredentialAllowed,
   mergeDisposition,
+  agentMergeOwnership,
 } from "./pr-target.js";
 import type { SessionInfo } from "../shared/types.js";
 
@@ -230,12 +231,12 @@ describe("gitCredentialAllowed", () => {
 });
 
 describe("mergeDisposition", () => {
-  it("treats a repo-bound session as not-sandbox (use the PR card)", () => {
-    expect(mergeDisposition({} as SessionInfo)).toBe("not-sandbox");
-  });
-
-  it("treats an ops session as not-sandbox", () => {
-    expect(mergeDisposition({ kind: "ops" } as SessionInfo)).toBe("not-sandbox");
+  it("treats an ops session as not-sandbox, whatever the repository grant says", () => {
+    // docs/287 req 13 — the one kind whose behaviour does not change. Asserted
+    // against a GRANTED repository, because that is the case a widened gate
+    // would have quietly started allowing.
+    expect(mergeDisposition({ kind: "ops" } as SessionInfo, true)).toBe("not-sandbox");
+    expect(mergeDisposition({ kind: "ops" } as SessionInfo, false)).toBe("not-sandbox");
   });
 
   it("allows a sandbox with the dangerousGitHubOps grant on", () => {
@@ -243,20 +244,120 @@ describe("mergeDisposition", () => {
       mergeDisposition({
         kind: "sandbox",
         capabilities: { git: true, docker: false, network: true, dangerousGitHubOps: true },
-      } as SessionInfo),
+      } as SessionInfo, false),
     ).toBe("allowed");
   });
 
   it("reports not-granted for a sandbox with the grant off", () => {
+    // The repository grant must not rescue a sandbox: the two permissions are
+    // separate, and a sandbox's repository is whatever it cloned.
     expect(
       mergeDisposition({
         kind: "sandbox",
         capabilities: { git: true, docker: false, network: true, dangerousGitHubOps: false },
-      } as SessionInfo),
+      } as SessionInfo, true),
     ).toBe("not-granted");
   });
 
   it("reports not-granted for a sandbox with capabilities missing entirely", () => {
-    expect(mergeDisposition({ kind: "sandbox" } as SessionInfo)).toBe("not-granted");
+    expect(mergeDisposition({ kind: "sandbox" } as SessionInfo, true)).toBe("not-granted");
+  });
+
+  // docs/287 reqs 4 + 6 — the repo-bound branch, which used to be a flat refusal.
+  it("lets a repo-bound session merge only where the user granted it", () => {
+    expect(mergeDisposition({} as SessionInfo, true)).toBe("allowed");
+    expect(mergeDisposition({} as SessionInfo, false)).toBe("not-granted-repo");
+  });
+});
+
+describe("agentMergeOwnership (docs/287 req 5)", () => {
+  const OK = {
+    session: {
+      remoteUrl: "https://github.com/acme/shipit.git",
+      branch: "shipit/feature",
+      prNumber: 7,
+      prRepoId: "github:acme/shipit",
+    },
+    requestedNumber: 7,
+    currentBranch: "shipit/feature",
+    repoOverride: undefined,
+  };
+
+  it("allows the session's own pull request", () => {
+    expect(agentMergeOwnership(OK)).toBeNull();
+  });
+
+  it("allows the ordinary call, which always carries a cwd", () => {
+    // The shim sends `cwd` on every request, so a guard that refused it would
+    // reject the feature's own happy path. `cwd` is not even an input here.
+    expect(agentMergeOwnership({ ...OK })).toBeNull();
+  });
+
+  it("refuses --repo, which would retarget the whole operation", () => {
+    const refusal = agentMergeOwnership({ ...OK, repoOverride: "other/repo" });
+    expect(refusal?.status).toBe(400);
+    expect(refusal?.error).toContain("--repo");
+  });
+
+  it("refuses a pull request number this session did not open", () => {
+    // The number alone proves nothing — this is the check that says so.
+    const refusal = agentMergeOwnership({ ...OK, requestedNumber: 8 });
+    expect(refusal?.status).toBe(403);
+    expect(refusal?.error).toContain("#7");
+  });
+
+  it("refuses when ShipIt recorded no pull request for the session", () => {
+    const refusal = agentMergeOwnership({
+      ...OK,
+      session: { ...OK.session, prNumber: undefined, prRepoId: undefined },
+    });
+    expect(refusal?.status).toBe(403);
+    expect(refusal?.error).toContain("no record");
+  });
+
+  it("refuses a recorded number whose repository is no longer the session's", () => {
+    // `remoteUrl` is rewritten in place when `origin` changes, so #7 in the old
+    // repository must not authorise #7 in the new one.
+    const refusal = agentMergeOwnership({
+      ...OK,
+      session: { ...OK.session, remoteUrl: "https://github.com/acme/other.git" },
+    });
+    expect(refusal?.status).toBe(403);
+    expect(refusal?.error).toContain("different repository");
+  });
+
+  it("accepts another spelling of the same repository", () => {
+    // The identity is what matters, not the string: an SSH origin naming the
+    // same repository is still this session's repository.
+    expect(agentMergeOwnership({
+      ...OK,
+      session: { ...OK.session, remoteUrl: "git@GitHub.com:Acme/ShipIt.git" },
+    })).toBeNull();
+  });
+
+  it("refuses when the workspace is on a different branch", () => {
+    const refusal = agentMergeOwnership({ ...OK, currentBranch: "main" });
+    expect(refusal?.status).toBe(409);
+  });
+
+  it("refuses a detached HEAD instead of reading it as main", () => {
+    // `getCurrentBranch()` answers "main" on a detached HEAD, which would pass
+    // this comparison for any main-based session. `currentBranchOrNull` gives
+    // null, and null refuses.
+    const refusal = agentMergeOwnership({
+      ...OK,
+      session: { ...OK.session, branch: "main" },
+      currentBranch: null,
+    });
+    expect(refusal?.status).toBe(409);
+    expect(refusal?.error).toContain("detached");
+  });
+
+  it("refuses a session whose remote has no GitHub identity", () => {
+    const refusal = agentMergeOwnership({
+      ...OK,
+      session: { ...OK.session, remoteUrl: "https://gitlab.com/acme/shipit.git" },
+    });
+    expect(refusal?.status).toBe(403);
   });
 });

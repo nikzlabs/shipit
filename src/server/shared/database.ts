@@ -1532,6 +1532,40 @@ const MIGRATIONS: Migration[] = [
     if (columns.some((c) => c.name === "client_request_id")) return;
     db.exec("ALTER TABLE messages ADD COLUMN client_request_id TEXT");
   },
+  // docs/287 — per-repository permission for agent-performed merges. Modelled on
+  // `repos.trusted` (docs/178) with one difference: NO backfill, because this is
+  // a new capability rather than a gate arriving after the repositories.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(repos)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "allow_agent_merge")) return;
+    db.exec("ALTER TABLE repos ADD COLUMN allow_agent_merge INTEGER NOT NULL DEFAULT 0");
+  },
+  // docs/287 — provenance for "the pull request this session opened", recorded
+  // ONLY on a witnessed create and stored WITH its repository identity, since
+  // `remote_url` is mutable and numbers coincide across forks. Never backfilled
+  // from `pr_status`, which also holds pull requests a person opened.
+  (db) => {
+    addSessionColumnIfMissing(db, "pr_repo_id");
+    const columns = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "pr_number")) return;
+    db.exec("ALTER TABLE sessions ADD COLUMN pr_number INTEGER");
+  },
+  // docs/287 — the durable merge claim, written BEFORE the REST call and
+  // deleted once the merge is recorded. The call can reject AFTER GitHub
+  // accepted it, and without the row that merge loses its req 9 record.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_merge_claims (
+        session_id   TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+        repo_id      TEXT NOT NULL,
+        pr_number    INTEGER NOT NULL,
+        expected_sha TEXT NOT NULL,
+        state        TEXT NOT NULL,
+        created_at   TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_merge_claims_state ON agent_merge_claims(state);
+    `);
+  },
 ];
 
 /**
@@ -1632,6 +1666,7 @@ export class DatabaseManager {
       this.db.prepare("DELETE FROM egress_allowlist").run();
       this.db.prepare("DELETE FROM egress_settings").run();
       this.db.prepare("DELETE FROM presentations").run();
+      this.db.prepare("DELETE FROM agent_merge_claims").run();
     })();
   }
 

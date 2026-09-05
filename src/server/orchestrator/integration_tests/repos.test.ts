@@ -319,6 +319,102 @@ describe("PATCH /api/repos/:url (hide/show, docs/222)", () => {
   });
 });
 
+/**
+ * docs/287-agent-merge-per-repo — the grant rides the same PATCH route, which is
+ * how it inherits the browser-only boundary that keeps it out of reach of the
+ * agent it governs (req 3). These pin the route's answers; the store's own tests
+ * pin the identity matching.
+ */
+describe("PATCH /api/repos/:url (agent-merge grant, docs/287)", () => {
+  const url = "https://github.com/owner/repo.git";
+
+  it("grants and revokes, and reports the flag back", async () => {
+    repoStore.add(url);
+
+    const on = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(url)}`,
+      payload: { allowAgentMerge: true },
+    });
+    expect(on.statusCode).toBe(200);
+    expect(on.json().repo).toMatchObject({ url, allowAgentMerge: true });
+    expect(repoStore.allowsAgentMerge(url)).toBe(true);
+
+    const off = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(url)}`,
+      payload: { allowAgentMerge: false },
+    });
+    expect(off.statusCode).toBe(200);
+    expect(repoStore.allowsAgentMerge(url)).toBe(false);
+  });
+
+  it("rejects a non-boolean rather than reading it as truthy", async () => {
+    repoStore.add(url);
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(url)}`,
+      payload: { allowAgentMerge: "yes" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(repoStore.allowsAgentMerge(url)).toBe(false);
+  });
+
+  it("refuses a remote with no GitHub identity — without echoing it back", async () => {
+    const gitlab = "https://gitlab.com/owner/repo.git";
+    repoStore.add(gitlab);
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(gitlab)}`,
+      payload: { allowAgentMerge: true },
+    });
+    expect(res.statusCode).toBe(400);
+    // The url arrives from the caller and can carry `user:password@`; quoting
+    // it back would put a credential in the response body and in every log that
+    // records it (cross-agent review finding).
+    expect(res.json().error).not.toContain("gitlab.com");
+  });
+
+  it("does not mutate any other field when the grant is refused", async () => {
+    // The route's stated guarantee is that a rejected body leaves the row
+    // untouched. Writing `hidden` before validating the grant's identity broke
+    // it: this hid the repository and THEN answered 400.
+    const gitlab = "https://gitlab.com/owner/repo.git";
+    repoStore.add(gitlab);
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(gitlab)}`,
+      payload: { hidden: true, allowAgentMerge: true },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(repoStore.get(gitlab)?.hidden).toBeFalsy();
+  });
+
+  it("404s for a parseable repository ShipIt does not hold", async () => {
+    // Not a 200: answering success for a write that matched no row left the
+    // repository starting with the grant OFF once it was finally added.
+    const never = "https://github.com/never/added.git";
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(never)}`,
+      payload: { allowAgentMerge: true },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(repoStore.add(never).allowAgentMerge).toBe(false);
+  });
+
+  it("applies the grant under a different spelling of the same repository", async () => {
+    repoStore.add(url);
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent("git@GitHub.com:Owner/Repo.git")}`,
+      payload: { allowAgentMerge: true },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(repoStore.allowsAgentMerge(url)).toBe(true);
+  });
+});
+
 describe("DELETE /api/repos/:url", () => {
   it("removes a repo", async () => {
     repoStore.add("https://github.com/owner/repo.git");

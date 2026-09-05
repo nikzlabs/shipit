@@ -67,6 +67,12 @@ interface RepoState {
    */
   setRepoHidden: (url: string, hidden: boolean) => Promise<boolean>;
   /**
+   * docs/287 — may agents merge their own pull requests in this repository?
+   * Same optimistic-then-PATCH shape as `setRepoHidden`; the server is the
+   * authority and a failed write rolls the toggle back.
+   */
+  setRepoAllowAgentMerge: (url: string, allow: boolean) => Promise<boolean>;
+  /**
    * docs/254 — set a repo's identity color (palette index) for the sidebar's
    * per-repo group edge. Same optimistic-then-PATCH shape as `setRepoHidden`,
    * so the edge and the picker's selected swatch both change on click.
@@ -322,6 +328,51 @@ export const useRepoStore = create<RepoState>((set, get) => ({
     } catch (err) {
       console.error("[repo-store] setRepoHidden failed:", err);
       apply(!hidden);
+      return false;
+    }
+  },
+
+  /**
+   * docs/287 — a **rejected** request is a definitive answer, so the optimistic
+   * write is undone. A **thrown** fetch is not: it may have been committed and
+   * its response lost, and showing "off" while the database says "on" tells the
+   * user agents cannot merge when they can. So it re-reads, and reverts only if
+   * that fails too.
+   */
+  setRepoAllowAgentMerge: async (url, allow) => {
+    const previous = get().repos.find((r) => r.url === url)?.allowAgentMerge ?? false;
+    const apply = (a: boolean) =>
+      set((state) => ({
+        repos: state.repos.map((r) => (r.url === url ? { ...r, allowAgentMerge: a } : r)),
+      }));
+    const revert = () => apply(previous);
+    const reconcile = async () => {
+      try {
+        const res = await fetch("/api/repos", { headers: { Accept: "application/json" } });
+        if (!res.ok) return false;
+        const data = await res.json() as { repos?: RepoInfo[] };
+        if (!data.repos) return false;
+        get().setRepos(data.repos);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    apply(allow);
+    try {
+      const res = await fetch(`/api/repos/${encodeURIComponent(url)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ allowAgentMerge: allow }),
+      });
+      if (!res.ok) {
+        revert();
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.error("[repo-store] setRepoAllowAgentMerge failed:", err);
+      if (!await reconcile()) revert();
       return false;
     }
   },

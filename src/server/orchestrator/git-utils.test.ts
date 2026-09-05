@@ -19,6 +19,9 @@ import {
   stripRemoteUrlCredentials,
   hasUrlCredentials,
   canonicalRepoKey,
+  ownerRepoFromRepoId,
+  parseGitHubRemote,
+  repoId,
   repoUrlToHash,
   syncLocalDefaultBranchToOrigin,
 } from "./git-utils.js";
@@ -114,6 +117,76 @@ describe("stripUrlCredentials", () => {
   it("leaves an scp-style SSH remote untouched", () => {
     expect(stripUrlCredentials("git@github.com:acme/shipit.git")).toBe(
       "git@github.com:acme/shipit.git",
+    );
+  });
+});
+
+describe("repoId", () => {
+  it("collapses the spellings canonicalRepoKey does not", () => {
+    const id = "github:acme/shipit";
+    expect(repoId("https://github.com/acme/shipit")).toBe(id);
+    expect(repoId("https://github.com/Acme/ShipIt")).toBe(id);
+    expect(repoId("https://github.com/acme/shipit.git")).toBe(id);
+    expect(repoId("https://github.com/acme/shipit/")).toBe(id);
+    expect(repoId("git@github.com:acme/shipit.git")).toBe(id);
+    expect(repoId("ssh://git@github.com/acme/shipit.git")).toBe(id);
+    // A credentialed remote resolves to the same id too, because `repoId`
+    // delegates to `stripRemoteUrlCredentials` first — asserted in that
+    // function's own tests rather than here, since a literal credentialed URL
+    // is rejected by the secret scanner on shape alone, whatever its value.
+    // The three spellings the permission would otherwise split across.
+    expect(new Set([
+      canonicalRepoKey("https://github.com/Acme/ShipIt"),
+      canonicalRepoKey("https://github.com/acme/shipit"),
+      canonicalRepoKey("git@github.com:acme/shipit.git"),
+    ]).size).toBe(3);
+  });
+
+  it("keeps dots inside a repository name", () => {
+    expect(repoId("https://github.com/acme/my.git.tools")).toBe("github:acme/my.git.tools");
+    expect(repoId("https://github.com/acme/foo.bar.git")).toBe("github:acme/foo.bar");
+  });
+
+  it("refuses anything it cannot parse with certainty", () => {
+    // Unanchored matching would accept these; an authorization key must not.
+    expect(repoId("https://evil.example.com/github.com/acme/shipit")).toBeNull();
+    expect(repoId("https://github.com.evil.example/acme/shipit")).toBeNull();
+    expect(repoId("https://gitlab.com/acme/shipit")).toBeNull();
+    expect(repoId("https://github.com/acme")).toBeNull();
+    expect(repoId("https://github.com/acme/shipit/extra")).toBeNull();
+    expect(repoId("")).toBeNull();
+    expect(repoId("not a url")).toBeNull();
+  });
+
+  it("accepts a host spelled in any case — DNS is case-insensitive", () => {
+    // A case-sensitive host match refused these outright, so the user flipped
+    // the grant on their own repository and was told it was not a recognised
+    // GitHub remote (cross-agent review finding).
+    const id = "github:acme/shipit";
+    expect(repoId("https://GitHub.com/acme/shipit.git")).toBe(id);
+    expect(repoId("https://GITHUB.COM/Acme/ShipIt")).toBe(id);
+    expect(repoId("git@GitHub.com:acme/shipit.git")).toBe(id);
+    expect(repoId("https://github.com/acme/shipit.GIT")).toBe(id);
+    // Still only THIS host: case-insensitivity must not reach the label check.
+    expect(repoId("https://GitHub.com.evil.example/acme/shipit")).toBeNull();
+  });
+
+  it("reads http, userinfo and a query as the same repository — deliberately", () => {
+    // Each of these is a spelling of one repository. Splitting them would mean
+    // a grant that silently does not apply; none of them can name a DIFFERENT
+    // repository, which is the property that actually has to hold.
+    const id = "github:acme/shipit";
+    expect(repoId("http://github.com/acme/shipit")).toBe(id);
+    expect(repoId("https://github.com/acme/shipit?x=1")).toBe(id);
+    expect(repoId("https://github.com/acme/shipit#readme")).toBe(id);
+  });
+
+  it("does not collapse distinct repositories", () => {
+    expect(repoId("https://github.com/acme/shipit")).not.toBe(
+      repoId("https://github.com/acme/other"),
+    );
+    expect(repoId("https://github.com/acme/shipit")).not.toBe(
+      repoId("https://github.com/other/shipit"),
     );
   });
 });
@@ -410,5 +483,45 @@ describe("isGitAuthError", () => {
     expect(isGitAuthError(new Error("non-fast-forward update"))).toBe(false);
     expect(isGitAuthError(new Error("merge conflict in foo.ts"))).toBe(false);
     expect(isGitAuthError(undefined)).toBe(false);
+  });
+});
+
+/**
+ * docs/287-agent-merge-per-repo — the ACTION resolver and the AUTHORIZATION
+ * identity must agree on which repository a URL names. They did not: `repoId`
+ * accepts a dotted repository name and `parseGitHubRemote` truncated at the
+ * first dot, so a grant on `acme/foo.bar` authorised operations that all
+ * targeted `acme/foo` (cross-agent review finding).
+ */
+describe("parseGitHubRemote", () => {
+  it("keeps a dotted repository name whole, and agrees with repoId", () => {
+    expect(parseGitHubRemote("https://github.com/acme/foo.bar.git"))
+      .toEqual({ owner: "acme", repo: "foo.bar" });
+    expect(parseGitHubRemote("git@github.com:acme/foo.bar.git"))
+      .toEqual({ owner: "acme", repo: "foo.bar" });
+    expect(repoId("https://github.com/acme/foo.bar.git")).toBe("github:acme/foo.bar");
+  });
+
+  it("still strips a terminal .git and stops at a path separator", () => {
+    expect(parseGitHubRemote("https://github.com/acme/repo.git")).toEqual({ owner: "acme", repo: "repo" });
+    expect(parseGitHubRemote("https://github.com/acme/repo")).toEqual({ owner: "acme", repo: "repo" });
+    expect(parseGitHubRemote("https://github.com/acme/repo/pull/3")).toEqual({ owner: "acme", repo: "repo" });
+    expect(parseGitHubRemote("git@github.com:acme/repo.git")).toEqual({ owner: "acme", repo: "repo" });
+  });
+
+  it("answers null for a non-GitHub remote", () => {
+    expect(parseGitHubRemote("https://gitlab.com/acme/repo.git")).toBeNull();
+  });
+});
+
+describe("ownerRepoFromRepoId", () => {
+  it("inverts the identity, for the paths that must address a repository the session left", () => {
+    expect(ownerRepoFromRepoId("github:acme/foo.bar")).toEqual({ owner: "acme", repo: "foo.bar" });
+  });
+
+  it("refuses anything that is not one", () => {
+    expect(ownerRepoFromRepoId("github:acme/a/b")).toBeNull();
+    expect(ownerRepoFromRepoId("acme/repo")).toBeNull();
+    expect(ownerRepoFromRepoId("")).toBeNull();
   });
 });

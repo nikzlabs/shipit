@@ -437,6 +437,14 @@ export interface SessionInfo {
    * notice is delivered exactly once.
    */
   pendingAgentNotice?: string;
+  /**
+   * docs/287 — the pull request ShipIt WITNESSED itself opening, and the
+   * repository it landed in. Present only as a pair, since a number is unique
+   * only within a repository. Never derived from `prStatus`, which also carries
+   * pull requests a person opened on the branch (req 5).
+   */
+  prNumber?: number;
+  prRepoId?: string;
 }
 
 /**
@@ -720,6 +728,12 @@ export interface RepoInfo {
    * populated from the store; only omitted on hand-built RepoInfo literals.
    */
   trusted?: boolean;
+  /**
+   * docs/287 — may an agent merge its own session's pull request here? Off until
+   * the user turns it on, and never inferred from repository contents: the agent
+   * can write `shipit.yaml`. Browser-only to set; the container never sees it.
+   */
+  allowAgentMerge?: boolean;
   /**
    * docs/222 — sidebar visibility flag. `true` hides the repo (and its sessions)
    * from the sidebar without removing anything: a pure declutter toggle, fully

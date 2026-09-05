@@ -1,3 +1,5 @@
+import { AgentMergeClaimStore } from "./agent-merge-claims.js";
+import { reconcileAgentMergeClaims } from "./services/agent-merge-settlement.js";
 import type { FastifyInstance } from "fastify";
 import { nativeServiceForHarness, selectionExists, selectionHonoursEffort } from "../shared/catalogue/index.js";
 import { applyModelRetirement } from "./model-retirement.js";
@@ -311,6 +313,8 @@ export async function registerRoutes(
     clientDir, logStore, buildId,
   } = rt;
   const { kickDiskEscalation } = monitors;
+  // docs/287 §4 — one store for the route deps and the activation trigger below.
+  const agentMergeClaims = new AgentMergeClaimStore(databaseManager);
   const wsOriginPolicy = readOriginPolicyFromEnv();
 
   // ---- HTTP API routes ----
@@ -332,6 +336,7 @@ export async function registerRoutes(
     credentialsDir,
     marketplaceStore,
     usageManager,
+    agentMergeClaims,
     runnerRegistry,
     chatHistoryManager,
     authManager,
@@ -1369,6 +1374,18 @@ export async function registerRoutes(
         if (dir !== activeSessionDir) {
           activeSessionDir = dir;
         }
+        // req 9 — the third reconciliation trigger. A claim stranded by a
+        // transient GitHub failure must not wait for a process restart, and an
+        // opened session is both a retry point and when its user is watching.
+        void reconcileAgentMergeClaims({
+          claims: agentMergeClaims,
+          sessionManager,
+          chatHistoryManager,
+          prStatusPoller,
+          runnerRegistry,
+        }, { sessionId: sid }).catch((err: unknown) => {
+          console.error(`[agent-merge] activation reconciliation for ${sid} failed:`, err);
+        });
         if (s?.remoteUrl) {
           prStatusPoller.trackSession(sid, s.remoteUrl);
           void prStatusPoller.forceRefreshSession(sid).catch((err: unknown) => {
