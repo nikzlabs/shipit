@@ -1060,6 +1060,87 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     expect(fs.existsSync(installStampPath(stateDir, "tools", COMMIT))).toBe(false);
   });
 
+  // -------------------------------------------------------------------------
+  // planning#511 — saying WHY a tree is not shared
+  // -------------------------------------------------------------------------
+
+  /** Where the install runner writes what it did. */
+  const installRecord = () => readInstallRecord(path.join(stateDir, "plugins"), "tools");
+
+  it("records why an install ShipIt cannot content-key shares nothing", async () => {
+    // The issue's own symptom: `--target` is read as a bare package positional,
+    // so the inputs cannot be extracted and the plugin pays a full cold install
+    // in every session, for ever. Before planning#511 this was a plain success.
+    const { docker, containers } = fakeDocker({ onStart: installs() });
+    const exp: PluginExport = {
+      ...exportWith("probe", "pip install --no-cache-dir --target vendor/py -r requirements.txt"),
+      depDirs: ["vendor/py"],
+    };
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir,
+    })(job([exp]));
+
+    expect(containers).toHaveLength(1);
+    // Advisory, and structurally so: the install ran, it worked, and the
+    // outcome it records is the one it would have recorded before.
+    expect(result).toEqual({ ok: true });
+    const record = installRecord();
+    expect(record?.outcome).toBe("succeeded");
+    expect(record?.depStoreReason).toContain("installed from scratch in every session");
+    // Naming the command is what makes it actionable in a repository with
+    // several installing exports.
+    expect(record?.depStoreReason).toContain("--target vendor/py");
+    expect(record?.depStoreReason).toContain("`install-inputs:`");
+  });
+
+  it("says nothing when the tree IS shared", async () => {
+    // The row exists to name a cost; a plugin that pays none must not grow one,
+    // or the card trains its reader to ignore the field.
+    const { docker } = fakeDocker({ onStart: installs() });
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir,
+    })(job([npmExport()]));
+
+    expect(result.basePins).toHaveLength(2);
+    expect(installRecord()?.depStoreReason).toBeUndefined();
+  });
+
+  it("records a dep dir the install left empty, which no plan could have predicted", async () => {
+    // A plan existed and promotion still pinned nothing. `adoptPluginDepBases`
+    // is all-or-nothing, so this repository will never get a store hit — the
+    // seventh way to share nothing, and the one that looks perfect from the plan.
+    const { docker, containers } = fakeDocker(); // the install writes nothing
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir,
+    })(job([npmExport()]));
+
+    expect(containers).toHaveLength(1);
+    expect(result).toEqual({ ok: true });
+    const reason = installRecord()?.depStoreReason ?? "";
+    expect(installRecord()?.outcome).toBe("succeeded");
+    // Both dirs, each named: an author fixes `node_modules` and ShipIt's own
+    // toolchain tree in different ways.
+    expect(reason).toContain("`node_modules`");
+    expect(reason).toContain(`\`${PLUGIN_TOOLCHAIN_DIR_NAME}\``);
+  });
+
+  it("keeps the reason when the same commit re-stages and skips the install", async () => {
+    // The record is last-writer-wins and this path computes no plan, so without
+    // the carry-forward the row would vanish at the moment the version goes
+    // live — the defect planning#416 fixed for `output`, one field over.
+    const exp: PluginExport = {
+      ...exportWith("probe", "pip install --target vendor/py -r requirements.txt"),
+      depDirs: ["vendor/py"],
+    };
+    const runner = { image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir };
+    await createPluginInstallRunner({ ...runner, docker: fakeDocker().docker })(job([exp]));
+    await createPluginInstallRunner({ ...runner, docker: fakeDocker().docker })(job([exp]));
+
+    const record = installRecord();
+    expect(record?.outcome).toBe("skipped-stamp");
+    expect(record?.depStoreReason).toContain("installed from scratch in every session");
+  });
+
   it("does nothing different without a store configured", async () => {
     const { docker, containers } = fakeDocker({ onStart: installs() });
     const result = await createPluginInstallRunner({

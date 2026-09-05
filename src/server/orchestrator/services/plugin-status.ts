@@ -52,6 +52,13 @@ export interface PluginStatusRepo {
   /** One line rendering of {@link install}, so every reader says it the same way. */
   installSummary: string;
   /**
+   * planning#511 — why the live version's dependencies are not shared, when
+   * they are not. Its own field rather than an `issues` row: the version is live
+   * and whole, and a reader that has to act on real problems must not be handed
+   * a cost among them.
+   */
+  depStoreNotice?: string;
+  /**
    * Whether a session should expect this plugin's surfaces to work. False for
    * anything the card would not call `active`, and false when the last install
    * did not complete — the combination that reported healthy and was not.
@@ -91,6 +98,37 @@ export function liveInstallProblem(
   return describeInstallRecord(record);
 }
 
+/**
+ * planning#511 — the live version's dependency-store miss, or null when there
+ * is none to report.
+ *
+ * **Gated on the GENERATION, not the commit** — a stricter test than the one
+ * {@link liveInstallProblem} beside it applies, and deliberately. The record is
+ * the last attempt, which is routinely for something that never became live; and
+ * a rebuild (docs/273-plugin-generation-rebuild) makes "the same commit" too
+ * weak to identify a build, since a forced re-install of the LIVE commit runs
+ * under a new id, can install differently, and can then fail the pre-publish
+ * gate with the previous generation still serving. Gating on the commit there
+ * would put the rejected build's advisory on the card of the generation that is
+ * running, which shares its dependencies perfectly well.
+ *
+ * Fail-closed on a record with no `generationId`: it was written before that
+ * field existed, so it also carries no `depStoreReason` and there is nothing to
+ * lose by not guessing.
+ *
+ * It is deliberately NOT part of `liveInstallProblem`: that answers "is the live
+ * version broken", which decides `usable`, and a repository that installs cold
+ * is working perfectly. This one is advisory — a cost its author can act on.
+ */
+export function liveDepStoreNotice(
+  record: PluginInstallRecord | null,
+  liveGenerationId: string | null,
+): string | null {
+  if (!record?.generationId || !liveGenerationId) return null;
+  if (record.generationId !== liveGenerationId) return null;
+  return record.depStoreReason ?? null;
+}
+
 /** The snapshot shape this projection needs, kept to what it reads. */
 export interface PluginStatusSnapshot {
   repos: {
@@ -100,6 +138,7 @@ export interface PluginStatusSnapshot {
     commit: string | null;
     status: PluginRepoStatus;
     issues: string[];
+    depStoreNotice?: string;
   }[];
   warnings: string[];
 }
@@ -156,6 +195,7 @@ export function buildPluginStatus(
         commit: repo.commit,
         status: repo.status,
         issues: repo.issues,
+        ...(repo.depStoreNotice ? { depStoreNotice: repo.depStoreNotice } : {}),
         install,
         installSummary: repo.status === "self"
           ? "no install runs under `repo: self` — `agent.install` prepares the working tree"
