@@ -90,6 +90,37 @@ describe("plugin install record", () => {
     expect(readInstallRecord(dir, "tools")).toEqual(succeeded);
   });
 
+  it("round-trips the reason an install shared nothing, without touching its outcome", async () => {
+    // planning#511 — the cost that used to be recorded as a plain success. It
+    // is a field of its own rather than part of `detail` because it is
+    // advisory: the install worked, and no reader may treat this as a failure.
+    const shared: PluginInstallRecord = {
+      commit: "b".repeat(40),
+      // The BUILD, not just the commit: a rebuild of the live commit runs under
+      // its own id, and a reader that could not tell them apart would describe
+      // a rejected build as a property of the one that is running.
+      generationId: `${"b".repeat(40)}.a1b2c3d4`,
+      at: "2026-09-05T10:00:00.000Z",
+      outcome: "succeeded",
+      depStoreReason: "Dependencies are installed from scratch in every session and never shared: …",
+    };
+    writeInstallRecord(dir, "tools", shared);
+    expect(readInstallRecord(dir, "tools")).toEqual(shared);
+  });
+
+  it("drops a depStoreReason that is not a string", async () => {
+    // Same rule as `output`, and for the same reason: this file is on disk,
+    // hand-editable, and the value is rendered onto a card.
+    fs.mkdirSync(path.join(dir, "tools"), { recursive: true });
+    fs.writeFileSync(
+      installRecordPath(dir, "tools"),
+      JSON.stringify({
+        commit: "a".repeat(40), at: "now", outcome: "succeeded", depStoreReason: { a: 1 },
+      }),
+    );
+    expect(readInstallRecord(dir, "tools")?.depStoreReason).toBeUndefined();
+  });
+
   it("drops an output that is not a string rather than carrying it through", async () => {
     // The file is on disk and hand-editable, and its output is quoted into
     // issues on other people's repositories. A non-string here would reach the

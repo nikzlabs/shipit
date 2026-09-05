@@ -1059,6 +1059,10 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
       if (notInstalled) {
         writeInstallRecord(pluginsRoot(stateDir), repo.name, {
           commit,
+          // planning#511 — the build this attempt was for, set by every writer
+          // of this record so a reader can tell a rebuild's outcome from the
+          // live generation's.
+          generationId,
           at: new Date().toISOString(),
           outcome: "not-run",
           detail: notInstalled,

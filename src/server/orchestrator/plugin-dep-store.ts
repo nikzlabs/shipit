@@ -64,7 +64,7 @@ import type { SessionInfo } from "../shared/types.js";
 import type { PluginExport } from "../shared/plugin-repos.js";
 import { destinationKey, pluginCloneUrl } from "../shared/plugin-repos.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
-import { computeInstallDepsHash, hasInstallLifecycleScript } from "../shared/deps-hash.js";
+import { computeDepsHash, hasInstallLifecycleScript, resolveDepsHashInputs } from "../shared/deps-hash.js";
 import { overlayBaseGenDir, overlayScopeHash } from "./overlay-volume.js";
 import { repoUrlToHash } from "./git-utils.js";
 import {
@@ -78,6 +78,140 @@ import { shareTreeWithAllSessions, shareWithAllSessions } from "./session-worker
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { pluginsRoot, readGenerationRecordAt } from "./plugin-generations.js";
 import { PLUGIN_TOOLCHAIN_DIR_NAME } from "./plugin-container-env.js";
+
+/**
+ * planning#511 — why an install is NOT sharing a tree through the store.
+ *
+ * **Advisory, never an error.** A missing store costs download time and a
+ * private copy on disk; it never makes a generation wrong, so nothing here may
+ * fail an install or change its recorded outcome. What it replaces is a bare
+ * `null` at each of {@link planPluginDepStore}'s six decline branches, and the
+ * silent `pin: null` beside them on the promotion path — which together cost a
+ * plugin's author a full cold install in every session, for ever, with nothing
+ * anywhere saying so.
+ *
+ * Typed rather than a pre-rendered string because the same reason reaches three
+ * readers with different needs — an orchestrator log line, the durable install
+ * record, and the repository's Plugins card — and only
+ * {@link describePluginDepStoreReason} decides how any of them word it.
+ */
+export type PluginDepStoreReasonKind =
+  /** The instance-wide kill switch is off (`OVERLAY_DEP_STORE=0`). */
+  | "store-disabled"
+  /** This deployment passed no store directory at all (no `depStoreDir`). */
+  | "no-store"
+  /** Nothing selected declares an `install:`, so there is no tree to share. */
+  | "no-install"
+  /** The repository's own `package.json` runs an install lifecycle script. */
+  | "install-lifecycle-script"
+  /** The install command is not one `deps-hash.ts` can extract inputs from. */
+  | "unrecognized-install"
+  /** The inputs resolved, and not one of those files is in the checkout. */
+  | "no-input-files"
+  /** Nothing selected declares `dep-dirs:`. */
+  | "no-dep-dirs"
+  /** A declared dep dir is committed to the repository, so it is source. */
+  | "tracked-dep-dir"
+  /** Promotion: the install left nothing at the dep dir's path. */
+  | "nothing-installed"
+  /** Promotion: what is there is a symlink or a file, not a tree to share. */
+  | "not-a-directory"
+  /** Promotion: the tree could not be published into the store. */
+  | "publish-failed";
+
+export interface PluginDepStoreReason {
+  kind: PluginDepStoreReasonKind;
+  /**
+   * What the reason is about, when its kind names one — the plugin whose
+   * install could not be keyed, or the dep dir that stayed behind. Rendered in
+   * backticks; never a sentence.
+   */
+  subject?: string;
+  /** The install command, or an error message, when the kind carries one. */
+  detail?: string;
+}
+
+/**
+ * One reason, as a plugin's author reads it on the repository's Plugins card
+ * and in `shipit plugin status`.
+ *
+ * Every sentence leads with the **consequence** and then names the cause,
+ * because the cause alone reads as a fact about ShipIt's internals rather than
+ * as something worth acting on — and the ones an author can act on say how.
+ */
+export function describePluginDepStoreReason(reason: PluginDepStoreReason): string {
+  const subject = reason.subject ? `\`${short(reason.subject)}\`` : "it";
+  const detail = reason.detail ? short(reason.detail) : "";
+  const inputs = "Declaring `install-inputs:` on the plugin tells ShipIt exactly what the install "
+    + "consumes, which qualifies it again.";
+  const cold = "Dependencies are installed from scratch in every session and never shared";
+  const dir = `${subject} is installed from scratch in every session and never shared`;
+  switch (reason.kind) {
+    case "store-disabled":
+      return `${cold}: ShipIt's shared dependency store is switched off on this instance `
+        + "(`OVERLAY_DEP_STORE=0`).";
+    case "no-store":
+      return `${cold}: this ShipIt deployment has no shared dependency store.`;
+    case "no-install":
+      return `${cold}: no selected plugin declares an \`install:\`.`;
+    case "install-lifecycle-script":
+      return `${cold}: ${subject}'s \`package.json\` declares an install lifecycle script `
+        + "(`preinstall`, `install`, `postinstall`, `prepare` or `prepublish`), so the install is a "
+        + `build and its output is not decided by the files ShipIt hashes. ${inputs}`;
+    case "unrecognized-install":
+      return `${cold}: ${subject}'s install command is not one ShipIt can identify the inputs of`
+        + `${detail ? ` (\`${detail}\`)` : ""}. ${inputs}`;
+    case "no-input-files":
+      return `${cold}: none of the files ${subject}'s install is keyed on are in this repository.`;
+    case "no-dep-dirs":
+      return `${cold}: no selected plugin declares \`dep-dirs:\`.`;
+    case "tracked-dep-dir":
+      return `${cold}: ${subject} is committed to this repository, so ShipIt reads it as source `
+        + "rather than as install output.";
+    case "nothing-installed":
+      return `${dir}: the install left nothing there.`;
+    case "not-a-directory":
+      return `${dir}: what the install left there is not a directory.`;
+    // Deliberately NOT the "every session, for ever" wording the others carry
+    // (review finding): a publish that failed is a fact about THIS install —
+    // a full disk, a store directory that was not there — and the next install
+    // of the same dependencies, in this session or another, publishes them
+    // normally. Saying "never" would send an author to a manifest that is fine.
+    case "publish-failed":
+      return `${subject} stayed private to this install: it could not be published to the shared `
+        + `dependency store${detail ? ` (${detail})` : ""}. The next install of these dependencies `
+        + "will try again.";
+  }
+}
+
+/**
+ * Bound one interpolated value.
+ *
+ * Every value a reason carries is **repo-authored** — a plugin name, a declared
+ * dep dir, an `install:` string — and the sentence it lands in is written to a
+ * durable record and rendered on a card in a CONSUMING project. A manifest's
+ * install command has no length ShipIt controls (`plugin-install.ts` bounds the
+ * install's own output for exactly that reason), and an unbounded one here
+ * would be a plugin author deciding how much of someone else's card it takes.
+ * Clipped at the HEAD, unlike an install log: the start of a command is what
+ * identifies it.
+ */
+const MAX_INTERPOLATED_CHARS = 120;
+
+function short(text: string): string {
+  return text.length > MAX_INTERPOLATED_CHARS ? `${text.slice(0, MAX_INTERPOLATED_CHARS)}…` : text;
+}
+
+/**
+ * What {@link planPluginDepStore} decided: a plan, or the reason there is none.
+ *
+ * A union rather than `PluginDepPlan | null` so a caller cannot take the "no
+ * store" path without holding the reason it took it — which is exactly what
+ * every one of them did before planning#511.
+ */
+export type PluginDepStoreDecision =
+  | { plan: PluginDepPlan; reason?: undefined }
+  | { plan: null; reason: PluginDepStoreReason };
 
 /** One declared dep dir, resolved to the store scope that would hold it. */
 export interface PluginDepDirPlan {
@@ -106,6 +240,15 @@ export interface PluginDepPromotion {
    * nothing saying why.
    */
   lost: boolean;
+  /**
+   * planning#511 — why this directory pinned nothing. Present when `pin` is
+   * null and the tree is still where install left it: that is a directory every
+   * future session will install again, and `adoptPluginDepBases` is
+   * all-or-nothing, so ONE of these makes the whole repository permanently
+   * cold. Absent on the `lost` path, which the caller reports as a failed
+   * install rather than as a missing optimization.
+   */
+  reason?: PluginDepStoreReason;
 }
 
 /** What the store can do for one generation's install. */
@@ -154,10 +297,11 @@ export function pluginDepScope(source: string, depsKey: string, depDir: string, 
 }
 
 /**
- * What the store can offer this generation, or `null` for "nothing — install
- * exactly as before".
+ * What the store can offer this generation, or a typed reason for "nothing —
+ * install exactly as before".
  *
- * Null covers every case where reuse would be a guess rather than a fact:
+ * A declined plan covers every case where reuse would be a guess rather than a
+ * fact:
  *
  *  - the `OVERLAY_DEP_STORE` kill switch is off;
  *  - nothing selected declares an `install` (there is no dependency tree);
@@ -170,6 +314,12 @@ export function pluginDepScope(source: string, depsKey: string, depDir: string, 
  *    skips those; here the whole plan is dropped rather than the one directory,
  *    because a repository whose declaration is wrong should be installing
  *    normally while its author fixes it, not half in the store.
+ *
+ * planning#511 — each of those is returned as a {@link PluginDepStoreReason},
+ * never as a bare `null`. The decision is unchanged: this function still
+ * qualifies exactly the installs it qualified before, and widening that set is
+ * a separate question with separate risks. What is new is that the author of a
+ * plugin paying a cold install in every session can find out why.
  */
 export function planPluginDepStore(args: {
   /** `destinationKey(repo.source)` — the repository, never the declaration name. */
@@ -179,9 +329,9 @@ export function planPluginDepStore(args: {
   /** The staging checkout — pristine, before install. */
   checkoutDir: string;
   env?: NodeJS.ProcessEnv;
-}): PluginDepPlan | null {
+}): PluginDepStoreDecision {
   const env = args.env ?? process.env;
-  if (!isOverlayEnabled(env)) return null;
+  if (!isOverlayEnabled(env)) return declined("store-disabled");
 
   // **In execution order, never sorted** (review finding). `installCommands`
   // runs the selected exports in manifest order, and a package manager's result
@@ -190,7 +340,7 @@ export function planPluginDepStore(args: {
   // orderings the same dep state and hand one of them the other's tree.
   const installers = args.exports
     .filter((e): e is PluginExport & { install: string } => Boolean(e.install?.trim()));
-  if (installers.length === 0) return null;
+  if (installers.length === 0) return declined("no-install");
 
   const parts: string[][] = [];
   for (const e of installers) {
@@ -205,16 +355,25 @@ export function planPluginDepStore(args: {
     // from the command line. A plugin that wants the store past this either has
     // no lifecycle script or declares `install-inputs`, which REPLACES the input
     // set and is the author saying what their install actually consumes.
-    if (e.installInputs.length === 0 && hasInstallLifecycleScript(args.checkoutDir)) return null;
-    const hash = computeInstallDepsHash(
-      args.checkoutDir,
+    if (e.installInputs.length === 0 && hasInstallLifecycleScript(args.checkoutDir)) {
+      return declined("install-lifecycle-script", { subject: e.name });
+    }
+    // planning#511 — `computeInstallDepsHash`'s two halves, run separately
+    // rather than through it, because its single `null` answers two questions a
+    // plugin author acts on differently: a command ShipIt cannot extract inputs
+    // from (declare `install-inputs`) and an input set none of whose files are
+    // in the checkout (a wrong `install-inputs`, or a lockfile that is not
+    // committed). Same inputs, same result, same order — only the reason is new.
+    const inputs = resolveDepsHashInputs(
       [command],
       e.installInputs.length > 0 ? e.installInputs : null,
     );
     // One unhashable install disables the store for the whole generation: the
     // dep dirs are shared, so a partial key would name a tree that only part of
     // the install produced.
-    if (hash === null) return null;
+    if (inputs === null) return declined("unrecognized-install", { subject: e.name, detail: command });
+    const hash = computeDepsHash(args.checkoutDir, inputs);
+    if (hash === null) return declined("no-input-files", { subject: e.name });
     parts.push([e.name, command, hash]);
   }
 
@@ -224,7 +383,7 @@ export function planPluginDepStore(args: {
       if (!depDirs.includes(dir)) depDirs.push(dir);
     }
   }
-  if (depDirs.length === 0) return null;
+  if (depDirs.length === 0) return declined("no-dep-dirs");
   // **ShipIt's own toolchain tree travels with the declared ones, and the author
   // does not have to know it exists.** A store hit clears the writable layer and
   // runs nothing, so anything the install produced outside a promoted dep dir is
@@ -245,17 +404,28 @@ export function planPluginDepStore(args: {
   // A dep dir that is already in the checkout is tracked source, not an install
   // artifact. `existsSync` follows symlinks on purpose — a symlinked dep dir is
   // just as much a thing we must not promote.
-  if (depDirs.some((dir) => fs.existsSync(path.join(args.checkoutDir, dir)))) return null;
+  const tracked = depDirs.find((dir) => fs.existsSync(path.join(args.checkoutDir, dir)));
+  if (tracked !== undefined) return declined("tracked-dep-dir", { subject: tracked });
 
   const depsKey = crypto.createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 32);
   return {
-    depsKey,
-    installCommands: installers.map((e) => e.install.trim()),
-    dirs: depDirs.map((depDir) => {
-      const scope = pluginDepScope(args.source, depsKey, depDir, env);
-      return { depDir, scope, scopeHash: overlayScopeHash(scope.repoUrl, scope.runtimeKey, scope.depDir) };
-    }),
+    plan: {
+      depsKey,
+      installCommands: installers.map((e) => e.install.trim()),
+      dirs: depDirs.map((depDir) => {
+        const scope = pluginDepScope(args.source, depsKey, depDir, env);
+        return { depDir, scope, scopeHash: overlayScopeHash(scope.repoUrl, scope.runtimeKey, scope.depDir) };
+      }),
+    },
   };
+}
+
+/** One declined decision, so every branch above stays a single line. */
+function declined(
+  kind: PluginDepStoreReasonKind,
+  rest: Omit<PluginDepStoreReason, "kind"> = {},
+): PluginDepStoreDecision {
+  return { plan: null, reason: { kind, ...rest } };
 }
 
 /**
@@ -312,22 +482,38 @@ export async function promotePluginDepDirs(args: {
     // reach the store, so it is computed once, from disk, at the end.
     // Reached only after the tree was there, so a missing source now means the
     // promotion moved it and did not finish.
-    const kept = (): PluginDepPromotion =>
-      ({ depDir: dir.depDir, pin: null, lost: !fs.existsSync(source) });
+    const kept = (reason: PluginDepStoreReason): PluginDepPromotion => {
+      const lost = !fs.existsSync(source);
+      // A lost tree is a failed install, not a missing optimization, and the
+      // caller says so in its own words — so it carries no advisory reason.
+      return { depDir: dir.depDir, pin: null, lost, ...(lost ? {} : { reason }) };
+    };
 
     let stat: Stats;
     try {
       stat = await fsp.lstat(source);
     } catch {
       // The install produced nothing here. Not a loss: a declared dep dir this
-      // install does not populate is an ordinary, complete outcome.
-      results.push({ depDir: dir.depDir, pin: null, lost: false });
+      // install does not populate is an ordinary, complete outcome — but it is
+      // also, on its own, what keeps this repository permanently cold
+      // (planning#511), because `adoptPluginDepBases` needs every dir pinned.
+      results.push({
+        depDir: dir.depDir,
+        pin: null,
+        lost: false,
+        reason: { kind: "nothing-installed", subject: dir.depDir },
+      });
       continue;
     }
     // A symlink is not a tree to promote, and following one would copy whatever
     // it points at into a tree every future session mounts.
     if (!stat.isDirectory()) {
-      results.push({ depDir: dir.depDir, pin: null, lost: false });
+      results.push({
+        depDir: dir.depDir,
+        pin: null,
+        lost: false,
+        reason: { kind: "not-a-directory", subject: dir.depDir },
+      });
       continue;
     }
 
@@ -385,7 +571,11 @@ export async function promotePluginDepDirs(args: {
         ? overlayBaseGenDir(args.depStoreDir, dir.scopeHash, pointer.generation)
         : null;
       if (!pointer || !genDir || !fs.existsSync(genDir)) {
-        results.push(kept());
+        results.push(kept({
+          kind: "publish-failed",
+          subject: dir.depDir,
+          detail: `the store did not take it (${result.outcome})`,
+        }));
         continue;
       }
       if (result.outcome !== "created") {
@@ -400,11 +590,12 @@ export async function promotePluginDepDirs(args: {
         lost: false,
       });
     } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
       console.warn(
         `[plugins] ${args.repoName}: could not share \`${dir.depDir}\` with other sessions:`,
-        err instanceof Error ? err.message : String(err),
+        detail,
       );
-      results.push(kept());
+      results.push(kept({ kind: "publish-failed", subject: dir.depDir, detail }));
     }
   }
   return results;

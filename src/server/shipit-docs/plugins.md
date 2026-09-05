@@ -225,6 +225,13 @@ copy of is the one thing that does not arrive. Both keys are the author's, and
 [plugin-authoring.md](plugin-authoring.md) → Build in `install` is where they
 are set.
 
+**When a plugin's install is not shared, its card says why** — a row on the
+repository's card in the Plugins tab, and a line in `shipit plugin status`
+(`install.depStoreReason` under `--json`). It is advisory: the version is live
+and whole, it just pays its whole install in every session. The full list of
+what an install has to satisfy is in [plugin-authoring.md](plugin-authoring.md)
+→ What makes an install shareable, which is also what to send its author.
+
 ## Skills
 
 A plugin can ship skills. ShipIt copies each imported plugin's skills into

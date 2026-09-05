@@ -58,6 +58,20 @@ export type PluginInstallOutcome =
 export interface PluginInstallRecord {
   /** The commit the attempt was for — not necessarily the one that is live. */
   commit: string;
+  /**
+   * planning#511 — the BUILD the attempt was for
+   * (docs/273-plugin-generation-rebuild): usually the commit, and
+   * `<commit>.<8 hex>` for a rebuild of a commit that is already live.
+   *
+   * The commit alone does not identify a build, and a rebuild is exactly when
+   * that matters: a forced re-install of the live commit under a new id can
+   * install differently, fail the pre-publish gate, and leave the previous
+   * generation serving — so a reader gating on the commit would describe the
+   * rejected build as a property of the one that is running. Absent on records
+   * written before this field existed, which is why every reader treats it as
+   * fail-closed rather than falling back to the commit.
+   */
+  generationId?: string;
   /** ISO timestamp of the attempt. */
   at: string;
   outcome: PluginInstallOutcome;
@@ -91,6 +105,20 @@ export interface PluginInstallRecord {
    * does not describe.
    */
   output?: string;
+  /**
+   * planning#511 — why this install's tree is NOT in the shared dependency
+   * store, or absent when it is (and on every path that did not complete an
+   * install). Advisory: sharing nothing is a complete, correct install, so
+   * `outcome` is unaffected and no reader may treat this as a failure.
+   *
+   * **A rendered sentence rather than a typed reason, and only here.** The
+   * reason is typed everywhere it is decided (`plugin-dep-store.ts`); what
+   * crosses onto disk is the text, because every reader of this file — the
+   * Plugins card, `shipit plugin status`, a human reading the JSON — wants the
+   * same sentence, and a kind a future version adds would otherwise reach an
+   * older reader as an enum it cannot render.
+   */
+  depStoreReason?: string;
 }
 
 const RECORD_FILE = "last-install.json";
@@ -139,10 +167,12 @@ export function readInstallRecord(pluginsDir: string, repoName: string): PluginI
     if (!isOutcome(obj.outcome)) return null;
     return {
       commit: obj.commit,
+      ...(typeof obj.generationId === "string" ? { generationId: obj.generationId } : {}),
       at: obj.at,
       outcome: obj.outcome,
       ...(typeof obj.detail === "string" ? { detail: obj.detail } : {}),
       ...(typeof obj.output === "string" ? { output: obj.output } : {}),
+      ...(typeof obj.depStoreReason === "string" ? { depStoreReason: obj.depStoreReason } : {}),
     };
   } catch {
     return null;

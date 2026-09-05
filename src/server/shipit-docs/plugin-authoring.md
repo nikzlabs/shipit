@@ -144,6 +144,53 @@ So the same preparation is declared **twice** — once in the manifest for
 consumers, once under `agent:` for your own sessions — and only one of the two
 runs in the session you develop in. Change one, change the other.
 
+### What makes an install shareable, and how to find out when it is not
+
+ShipIt keeps **one copy of an installed dependency tree per repository, per
+runtime, per dep state**, and every consuming session mounts it read-only
+([plugins.md](plugins.md) → Install). When your install qualifies, the second
+session to declare your plugin — and every later commit that does not move your
+dependencies — runs no install container at all. When it does not, every session
+pays the whole download and keeps a private copy of the tree, for ever.
+
+An install is shared when **all** of these hold:
+
+- **Some selected plugin declares an `install:`**, and the plugins that do
+  declare **at least one `dep-dirs:` entry between them.** The directories are
+  collected across the *installing* exports only, so `dep-dirs` on an export
+  with no `install:` contributes nothing — and `dep-dirs: []` on every
+  installing export is a deliberate opt-out that turns the store off for the
+  whole repository.
+- **ShipIt can tell what the install reads.** It infers that from the command:
+  `npm ci`, `npm install`, `pip install -r <file>`, `uv pip install -r <file>`
+  and friends are recognized; anything else — a shell script, a chained
+  `./build.sh && npm ci`, or a flag that leaves a bare positional such as
+  `pip install --target vendor/py -r requirements.txt` — is not. Declare
+  **`install-inputs:`** to say what the install consumes and it qualifies again.
+- **At least one of those input files exists in the repository.** A lockfile
+  that is git-ignored, or an `install-inputs:` path with a typo, leaves nothing
+  to key on.
+- **Your `package.json` declares no install lifecycle script** (`preinstall`,
+  `install`, `postinstall`, `prepare`, `prepublish`) — unless you declare
+  `install-inputs:`. A lifecycle script makes the install a *build*, whose output
+  can change while the files ShipIt hashes do not. See the section above for
+  what a building install then has to declare.
+- **No declared dep dir is committed to the repository.** A `dep-dirs:` entry
+  ShipIt finds in the checkout names tracked source, not install output, and the
+  whole plan is dropped rather than half of it.
+- **The install actually creates every declared dep dir.** A directory the
+  install never creates pins nothing (an existing but empty one is fine), and
+  reuse is all-or-nothing: one missing directory keeps the repository installing
+  cold for ever. So declare only directories your install really creates — and a
+  symlink is not one of them.
+
+**When it is not shared, ShipIt says which of these it was.** The reason is a row
+on the repository's card in the consuming project's Plugins tab, and it is in
+`shipit plugin status` (with the raw record under `--json`, as
+`install.depStoreReason`) in any session that has your plugin. It is advisory:
+an install that shares nothing is a complete, correct install — just a slow and
+expensive one.
+
 ### A toolchain your install downloads goes under `/plugin`, not into the image
 
 `install` borrows the session-worker image for its toolchain, but it runs as the
