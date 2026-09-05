@@ -1,5 +1,6 @@
 import { AgentMergeClaimStore } from "./agent-merge-claims.js";
 import { reconcileAgentMergeClaims } from "./services/agent-merge-settlement.js";
+import { AgentMergeExecutor } from "./services/agent-merge-executor.js";
 import { serviceForLoginIntegration } from "../shared/catalogue/index.js";
 import path from "node:path";
 import { createDockerClient } from "./docker-client.js";
@@ -1005,6 +1006,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     getAutoConflictResolveManager: () => prStatusPollerRef.ref?.autoConflictResolveManager,
     // req 9 — the end-of-turn trigger. Lazy for the same reason as the poller:
     // settlement needs it, and it is constructed after this registry.
+    // docs/288 req 6 — seeds a freshly created runner's `mergeHold` when the
+    // merge started while this session had no container.
+    isAgentMergeInFlight: (sessionId: string) => agentMergeClaims.isMergeInFlight(sessionId),
     reconcileAgentMergeClaimsFor: (sessionId: string) => {
       void reconcileAgentMergeClaims({
         claims: agentMergeClaims,
@@ -1563,6 +1567,22 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     console.error("[agent-merge] startup reconciliation failed:", err);
   });
 
+  // docs/288 — carry out `gh pr merge --auto` requests. Started HERE, and not at
+  // construction, for the ordering: until the adoption sweep above completes the
+  // runner registry is EMPTY, so "is this session busy?" answers no for
+  // everything and a surviving turn's pre-turn head could be merged while that
+  // turn still holds uncommitted work. Same reason as the reconciliation above.
+  const agentMergeExecutor = new AgentMergeExecutor({
+    claims: agentMergeClaims,
+    sessionManager,
+    chatHistoryManager,
+    repoStore,
+    githubAuthManager,
+    prStatusPoller,
+    runnerRegistry,
+  });
+  agentMergeExecutor.start();
+
   void (async () => {
     // docs/196 — re-derive any watch whose child PR reached a terminal state
     // while the orchestrator was down. Ordered AFTER the sweep above, on
@@ -1635,6 +1655,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession,
     migratedRepoUrls,
     startupTimer,
+    agentMergeClaims,
+    agentMergeExecutor,
   };
 }
 

@@ -135,13 +135,21 @@ export async function handleSendMessage(
   // resolution agent's slot in production and stranded the workspace
   // mid-rebase. The dispatch fall-through below enqueues it instead; the flow
   // releases the queue when it settles.
-  if (runnerForQueue?.running || runnerForQueue?.systemTurnInProgress) {
+  // docs/288 req 6 — a `gh pr merge --auto` request being carried out counts as
+  // busy for the same reason: this turn would push behind a merge already in
+  // flight. The executor clears the hold and calls `releaseQueuedTurn`, which is
+  // what starts the message queued here.
+  const heldByMerge = runnerForQueue?.mergeHold === true;
+  if (runnerForQueue?.running || runnerForQueue?.systemTurnInProgress || heldByMerge) {
     // Verify with the worker that an agent is actually running. The local
     // `running` flag can get stranded `true` if the orchestrator missed a
     // terminal SSE event (drop mid-turn, container restart, /agent/kill
     // race). Without this check, the new message would be queued forever
     // and the user sees: "agent starts briefly, nothing happens".
-    const actuallyRunning = await runnerForQueue.verifyRunningState();
+    // Skipped under a merge hold: the executor took it only because the session
+    // was idle, so there is no phantom turn to recover, and the recovery's own
+    // `releaseQueuedTurn` refuses under the hold anyway.
+    const actuallyRunning = heldByMerge ? false : await runnerForQueue.verifyRunningState();
     // planning#282 — the recovery inside `verifyRunningState` may have released a
     // queue entry the phantom turn was blocking, which claims the runner
     // synchronously. Re-read `running` rather than trusting the return value, or
@@ -151,7 +159,10 @@ export async function handleSendMessage(
     // queues this message behind the entry that was there first (steering and
     // `/compact` both fall through to the queue: the released turn has no
     // resident streaming process yet).
-    if (actuallyRunning || runnerForQueue.running || runnerForQueue.systemTurnInProgress) {
+    if (
+      actuallyRunning || runnerForQueue.running || runnerForQueue.systemTurnInProgress
+      || runnerForQueue.mergeHold
+    ) {
       // docs/178 — `/compact` while a turn is in flight: trigger compaction on
       // the resident live process (streaming Claude injects `/compact`; live
       // Codex sends `thread/compact/start`) rather than queuing the literal text.
@@ -659,6 +670,31 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   // + re-wire unconditional, which is the fix.
   const runnerEarly = resolveRunner(ctx);
   if (runnerEarly) runnerEarly.assertCanDispatch();
+
+  // docs/288 req 6 — a FOURTH turn-start path, and the one most easily missed:
+  // this handler does not go through `dispatch`, it sets `running = true` and
+  // calls `runAgentWithMessage` itself. An answer arriving while ShipIt is
+  // merging would start a turn that pushes behind a merge in flight. Queue it
+  // through `dispatch`, which is what the hold makes enqueue; the executor's
+  // `releaseQueuedTurn` starts it when the merge is done.
+  if (runnerEarly?.mergeHold) {
+    runnerEarly.dispatch(prepareDispatch({
+      text: answerText,
+      agentInterface: undefined,
+      execution: "interactive",
+      images: undefined,
+      files: undefined,
+      uploads: undefined,
+      permissionMode: undefined,
+      activity: undefined,
+      postTurn: undefined,
+      systemTurn: undefined,
+      onTurnComplete: undefined,
+      deliveryId: undefined,
+      dictated: msg.dictated,
+    }));
+    return;
+  }
 
   // planning#338 — while a system flow (rebase resolution, CI fix) holds the
   // session, the resident agent is the flow's own turn. The stale-kill below

@@ -226,9 +226,11 @@ without a second read:
 | checks **pending** | refuse (req 17) |
 | checks passed, or null rollup past the grace | merge now |
 
-**`--auto` is not part of this feature.** A repo-bound `--auto` is refused with a
-message naming `docs/288-agent-merge-arming`; sandbox `--auto` keeps today's
-behaviour (req 12).
+**`--auto` is not part of this feature.** It is
+[`docs/288-agent-merge-arming`](../288-agent-merge-arming/plan.md), now shipped:
+a repo-bound `--auto` records a request against this same observation and the
+same claim row, and the executor there carries it out. Sandbox `--auto` keeps
+today's behaviour, arming GitHub's own merge-when-green (req 12).
 
 **Any GraphQL `errors` refuses before anything else applies.** `graphqlQuery()`
 logs non-rate-limit errors and still returns the body, so a partial response can
@@ -482,7 +484,7 @@ justify an otherwise empty navigation category.
 - `pr-target.test.ts` — ownership refusals (foreign number, wrong branch, no
   recorded PR, moved repository).
 - `integration_tests/agent-driven-pr.test.ts` — each flush outcome, the cancel
-  rule, the expected-`sha` merge, and the `--auto` refusal.
+  rule, the expected-`sha` merge, and `--auto` recording a request.
 - `agent-merge-claims.test.ts` — the three outcomes, and reconciliation of a
   `merging` row from its own tuple after an indeterminate result or a crash.
 - Settlement tests — idempotence on the natural identity (a repeated settlement

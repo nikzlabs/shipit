@@ -59,8 +59,8 @@ but cannot land it. This feature moves the permission to the **repository**.
     the agent can merge once they pass. The command does not wait by itself.
 
 **"Merge it when the checks pass" is a separate feature**, in
-`docs/288-agent-merge-arming`. Until it ships, a repo-bound `--auto` is refused
-with a message saying so; sandbox `--auto` is unchanged (req 12).
+`docs/288-agent-merge-arming`, which has since shipped: a repo-bound `--auto`
+records a request there. Sandbox `--auto` is unchanged (req 12).
 
 ## Open questions
 

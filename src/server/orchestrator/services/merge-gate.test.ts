@@ -50,14 +50,17 @@ const NO_GRACE = async () => false;
 
 type LocalHead = { kind: "sandbox" } | { kind: "head"; sha: string } | { kind: "unreadable"; reason: string };
 
-async function decide(observation: MergeObservation, over: { localHead?: LocalHead; graceSaysWait?: () => Promise<boolean> } = {}) {
+async function decide(observation: MergeObservation, over: { localHead?: LocalHead; graceSaysWait?: () => Promise<boolean>; arming?: boolean } = {}) {
   return decideMerge({
     observation,
     prNumber: 7,
     localHead: over.localHead ?? { kind: "sandbox" },
     graceSaysWait: over.graceSaysWait ?? NO_GRACE,
+    ...(over.arming ? { arming: true } : {}),
   });
 }
+
+const LOCAL: LocalHead = { kind: "head", sha: "sha-head" };
 
 describe("readMergeObservation", () => {
   it("reads state, draft, review, both SHAs and the rollup in one round trip", async () => {
@@ -232,5 +235,73 @@ describe("mergeFlushRefusal", () => {
       .map((kind) => mergeFlushRefusal({ kind }));
     expect(new Set(messages).size).toBe(4);
     for (const m of messages) expect(m).toContain("Not merged");
+  });
+});
+
+/**
+ * docs/288 — the same table, one extra verdict. What must NOT change is the
+ * order: an arming still refuses on everything a merge refuses on, so a request
+ * is never recorded and then cancelled a tick later by the executor's own table.
+ */
+describe("decideMerge — arming (docs/288)", () => {
+  it("arms rather than merging when the checks are already green", async () => {
+    // `--auto` never merges inline. One flag, one meaning: an agent that wants
+    // the merge now calls `gh pr merge` without it.
+    expect(await decide(observed(), { localHead: LOCAL, arming: true }))
+      .toEqual({ action: "arm", sha: "sha-head" });
+  });
+
+  it("arms on running checks, which is the case the feature exists for", async () => {
+    expect(await decide(observed({ rollupState: "PENDING" }), { localHead: LOCAL, arming: true }))
+      .toEqual({ action: "arm", sha: "sha-head" });
+  });
+
+  it("arms while the zero-check grace is still open", async () => {
+    // The command must not wait, but the request is exactly a thing that waits.
+    expect(await decide(
+      observed({ rollupState: null }),
+      { localHead: LOCAL, arming: true, graceSaysWait: async () => true },
+    )).toEqual({ action: "arm", sha: "sha-head" });
+  });
+
+  it("arms at the new head when the rollup still describes the old one", async () => {
+    // The ordinary shape right after the flush and push: CI has not started on
+    // the new commit. Refusing here would refuse the exact case `--auto` is for.
+    expect(await decide(
+      observed({ headRefOid: "sha-new", rollupCommitOid: "sha-old", rollupState: "SUCCESS" }),
+      { localHead: { kind: "head", sha: "sha-new" }, arming: true },
+    )).toEqual({ action: "arm", sha: "sha-new" });
+  });
+
+  it("does not read a lagging rollup's FAILURE as the armed commit's", async () => {
+    // A failure on the commit the push replaced says nothing about the new one,
+    // and reading it would refuse the request that push was made to arm.
+    expect(await decide(
+      observed({ headRefOid: "sha-new", rollupCommitOid: "sha-old", rollupState: "FAILURE" }),
+      { localHead: { kind: "head", sha: "sha-new" }, arming: true },
+    )).toEqual({ action: "arm", sha: "sha-new" });
+  });
+
+  it.each([
+    ["a draft", observed({ isDraft: true }), "draft"],
+    ["failing checks on the armed commit", observed({ rollupState: "FAILURE" }), "checks-failing"],
+    ["a required review", observed({ reviewDecision: "REVIEW_REQUIRED" }), "review-required"],
+    ["a closed pull request", observed({ prState: "CLOSED" }), "not-open"],
+    ["an unreadable read", { kind: "unreadable", reason: "no answer" } as MergeObservation, "unreadable"],
+  ])("still refuses arming for %s", async (_name, observation, reason) => {
+    const decision = await decide(observation, { localHead: LOCAL, arming: true });
+    expect(decision).toMatchObject({ action: "refuse", reason });
+  });
+
+  it("still requires the pull request head to be this workspace's commit", async () => {
+    // req 14 is not waived by arming: binding a request to a commit this session
+    // is not on would ask ShipIt to merge somebody else's push.
+    expect(await decide(observed(), { localHead: { kind: "head", sha: "sha-other" }, arming: true }))
+      .toMatchObject({ action: "refuse", reason: "local-head-differs" });
+  });
+
+  it("reports an already-merged pull request as merged, not as armable", async () => {
+    expect(await decide(observed({ prState: "MERGED" }), { localHead: LOCAL, arming: true }))
+      .toEqual({ action: "already-merged" });
   });
 });

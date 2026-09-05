@@ -156,7 +156,7 @@ The shim:
 | `gh pr ready [<n>]` | Mark a draft PR as ready for review. |
 | `gh pr close [<n>]` | Close a PR. |
 | `gh pr reopen <n>` | Reopen a closed PR. (PR number is required.) |
-| `gh pr merge [<n>] [--merge\|--squash\|--rebase] [--auto]` | **Only where the user enabled it** — in a Sandbox with "Allow merging PRs", or in a repository with "Allow agents to merge their own pull requests". Merges **the PR ShipIt opened for your session**, and no other. In a repo-bound session it commits and pushes your pending work first, which restarts CI, so the first call usually reports checks still running — wait and call again. Every check GitHub reports must pass. `--auto` is Sandbox-only; `--admin` (force-merge) is never available. See "Merging PRs" below. |
+| `gh pr merge [<n>] [--merge\|--squash\|--rebase] [--auto]` | **Only where the user enabled it** — in a Sandbox with "Allow merging PRs", or in a repository with "Allow agents to merge their own pull requests". Merges **the PR ShipIt opened for your session**, and no other. In a repo-bound session it commits and pushes your pending work first, which restarts CI, so a plain call usually reports checks still running — that is what `--auto` is for: it records a request bound to that exact commit and ShipIt merges it when the checks pass, reporting the result in this session's transcript. Every check GitHub reports must pass. `--admin` (force-merge) is never available. See "Merging PRs" below. |
 
 Every PR subcommand also accepts `--repo OWNER/NAME` (alias `-R`) to target a
 specific repo — useful in a Sandbox session where you've cloned more than one.
@@ -305,12 +305,11 @@ ends, so the command does that work itself, in this order:
 
 Three consequences, all normal:
 
-- **The push restarts CI, so the first call usually refuses.** It says the branch
-  had commits GitHub had not seen, and to merge again once the new head's checks
-  report. That is not a failure and not a reason to stop or to ask the user —
-  wait for the checks and call again. The command never waits by itself, and
-  **`--auto` is not available in a repo-bound session**; it is refused with a
-  message saying so.
+- **The push restarts CI, so a plain `gh pr merge` usually refuses.** It says the
+  branch had commits GitHub had not seen, and to merge again once the new head's
+  checks report. That is not a failure and not a reason to stop or to ask the
+  user. **This is what `--auto` is for** — see below; the plain command never
+  waits by itself.
 - **In the first seconds after a push, GitHub may report no checks at all.** The
   merge then refuses with *"reports no checks yet"* and waits out a short window
   (about twenty seconds) before it will accept an empty check set, because an
@@ -324,6 +323,34 @@ Three consequences, all normal:
 
 In a **Sandbox** session none of this applies: you own git there, so ShipIt
 commits and pushes nothing for you. Push your own work before you merge.
+
+#### `--auto` — merge it once the checks pass
+
+`gh pr merge --auto` does not merge now. It records a **request**, and ShipIt
+performs the merge itself when the checks report green. Use it whenever the work
+is finished and CI is the only thing left — it is the normal way to land a
+turn's own work, because the commit and push the command makes first are exactly
+what restarted CI.
+
+- **It is bound to one commit**, the one the branch is on when you ask. ShipIt
+  merges that commit and nothing else.
+- **It never merges inline**, even when the checks are already green. One flag,
+  one meaning. If you want the merge now, call `gh pr merge` without `--auto`.
+- **Pushing again cancels the request**, and ShipIt says so in the transcript.
+  That is deliberate: the new commit is not the one you asked to merge. Call
+  `--auto` again to arm the new one.
+- **The user turning the repository's permission off cancels it too**, with a
+  notice. So does the pull request being closed, becoming a draft, needing a
+  review, or its checks failing — each says which.
+- **The result always appears in this session's transcript**, whether it merged
+  or the request ended. Do not poll for it and do not call `--auto` repeatedly to
+  check; a second call only re-arms the same request.
+- **A merge and a turn never overlap.** ShipIt merges only while the session is
+  idle, and a message that arrives during the merge starts as soon as it is done.
+- The request survives a restart of ShipIt.
+
+In a **Sandbox** session `--auto` arms GitHub's own merge-when-green instead, as
+it always has.
 
 #### The guardrails
 

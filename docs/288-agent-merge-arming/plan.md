@@ -1,247 +1,293 @@
 ---
 issue: planning#505
 title: Merge it when the checks pass — design
-description: A durable, commit-bound merge request that ShipIt performs itself, executed from the PR poller's tick and excluded against turns by admission.
+description: A durable, commit-bound merge request that ShipIt performs itself from its own executor, excluded against turns by a runner-held merge hold.
 ---
 
 # Merge it when the checks pass — design
 
-> **Parked, 2026-09-03, until `docs/287-agent-merge-per-repo` is implemented and
-> merged.** This feature's foundation — the durable claim, the pull-request
-> provenance, the live observation and settlement — is 287's, and reviewing this
-> design against *that design* rather than against shipped code produced repeated
-> rework: three consecutive reviews returned blockers here while 287's half stayed
-> stable. Nothing below is abandoned; it waits for something real to sit on.
->
-> **Re-verify these against the implementation when this is picked up**, because
-> each is written against a foundation that does not exist yet:
->
-> - **The claim table's extension.** This adds `pending`, `origin` and `revoked`
->   to 287's `agent_merge_claims`. Check the shipped columns and states first.
-> - **The admission gate.** A background merge must exclude turns, and turn starts
->   are not confined to the two obvious entry points — the queue drain and
->   `runDispatchedTurn` also start work. Confirm the shipped set.
-> - **Queue release.** Every background-claim exit must call the shared
->   `releaseQueuedTurn()`; a background merge has no owning turn whose completion
->   would drain the queue.
-> - **Revocation semantics.** "Cancel every request at any time" cannot be met
->   literally for a request already in flight. The in-flight contract here —
->   re-check the grant at `pending → merging`, mark rather than delete, never
->   return a revoked row to `pending` — needs stating in requirement terms rather
->   than as a mechanism.
-> - **Turn ownership.** A turn-owned claim assumes the caller is inside a live
->   turn, and the route checks no turn identity today. Bind it to a turn identity,
->   not to a mutable boolean.
-> - **The immediate-green case.** A review argued `--auto` should merge at once
->   when the observed commit is already green, rather than always deferring —
->   requirement 1 says "once the checks pass", which an immediate merge satisfies.
->   Settle that against the shipped observation.
-
 Implements [requirements.md](./requirements.md). Builds directly on
-[`docs/287-agent-merge-per-repo`](../287-agent-merge-per-repo/plan.md) and changes
-nothing it decided: the repository grant, the ownership tuple, the flush, the live
-read and its observation, merging at an exact SHA, the durable claim and
-settlement are all that feature's, and are used here as they are.
+[`docs/287-agent-merge-per-repo`](../287-agent-merge-per-repo/plan.md), now
+shipped, and changes nothing it decided: the repository grant, the ownership
+tuple, the flush, the live read and its observation, merging at an exact SHA, the
+durable claim and settlement are all that feature's and are used as they are.
+
+## Verified against the shipped foundation
+
+This design was written before docs/287 existed and was parked until it did.
+Every claim it made about that foundation has now been read at the source; the
+six that were wrong or unsettled are recorded here rather than silently fixed,
+because each changed a decision.
+
+| Claim as parked | What the code says | Effect |
+|---|---|---|
+| the row is keyed by `repo_key` | `agent_merge_claims.repo_id`, matched on `repoId()` (`agent-merge-claims.ts:19`) | column names below corrected; revocation matches on `repoId`, not `canonicalRepoKey` |
+| the row already carries the merge method | it does not — the columns are `session_id, repo_id, pr_number, expected_sha, state, created_at` | a `method` column is added; a request is performed long after the flag was passed |
+| four turn-start entry points need a check | three admission sites, and `releaseQueuedTurn` **routes through `runner.dispatch`** (`queue-drain.ts:105`), so the drain is covered by the `dispatchOnRunner` check | the gate is two checks plus the existing drain guard, not four |
+| revocation must mark in-flight rows `revoked` | only matters if reconciliation returns a row to `pending`; it does not (see *One request, one attempt*) | the `revoked` column is dropped |
+| the executor must become an input to the polling supervisor and the global gate | `pr-polling-supervisor.ts` and `polling-global-gate.ts` would both need a new first-class concept | replaced by a small dedicated executor — strictly less mechanism (see *Where the executor runs*) |
+| the immediate-green case is unsettled | — | settled: `--auto` never merges inline (see *What this adds*) |
 
 ## What this adds
 
 `gh pr merge --auto`, in a repo-bound session, stops being a refusal and becomes a
 **request**: the observation that would have refused for pending checks instead
-records what to merge, and ShipIt performs that merge later. `--auto` never merges
-inline, even when the checks are already green — one flag, one meaning. An agent
-that wants the merge now calls `gh pr merge` without it.
+records what to merge, and ShipIt performs that merge later (req 1).
 
+`--auto` **never merges inline**, even when the checks are already green. One flag,
+one meaning: an agent that wants the merge now calls `gh pr merge` without it,
+and gets the answer in the command's own reply. Requirement 1's "once the checks
+pass" is satisfied either way, so this is chosen for being the single rule rather
+than for being forced.
 
 `--auto` does **not** use GitHub's own merge-when-green. `expectedHeadOid` is a
 precondition checked when the arming is *enabled*, not a binding on the merge
 GitHub later performs, and GitHub keeps an arming alive across a push by anyone
 with write access — so a native arming can land a commit the agent never
-authorised, and withdrawing the grant cannot cancel it. The existing
-ShipIt-managed loop is no better on its own: `AutoMergeState` holds neither a
-pull-request number nor a SHA, and it selects through the branch-keyed map.
+authorised, and withdrawing the grant cannot cancel it (requirements, resolved
+2026-09-03).
 
-**Repo-bound sessions only.** A sandbox has no `session.remoteUrl`, may target
-several repositories, is not tracked by the repository poller, and is governed by
-`dangerousGitHubOps` rather than the repository grant. `docs/287-agent-merge-per-repo` req 12 settles it:
-sandbox behaviour does not change, and none of this section applies there.
+**Repo-bound sessions only** (req 7). A sandbox has no `session.remoteUrl`, may
+target several repositories, and is governed by `dangerousGitHubOps` rather than
+the repository grant. Its `--auto` keeps arming GitHub's native auto-merge exactly
+as before; nothing below applies there.
 
-It **extends `agent_merge_claims`** (docs/287) rather than adding a second table
-— the row already carries repository, pull request, expected SHA, method and
-state, and a request is the same thing with a life before the merge call:
+### The row
+
+It **extends `agent_merge_claims`** rather than adding a second table — the row
+already carries repository, pull request, expected SHA and state, and a request is
+the same thing with a life before the merge call:
 
 ```sql
-ALTER TABLE agent_merge_claims ADD COLUMN origin  TEXT NOT NULL DEFAULT 'direct';
-ALTER TABLE agent_merge_claims ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0;
-CREATE INDEX idx_agent_merge_claims_repo ON agent_merge_claims(repo_key);
+ALTER TABLE agent_merge_claims ADD COLUMN origin TEXT NOT NULL DEFAULT 'direct';
+ALTER TABLE agent_merge_claims ADD COLUMN method TEXT NOT NULL DEFAULT 'merge';
 -- `state` gains a third value, `pending`, which only an `origin = 'auto'` row uses
 ```
 
-There is deliberately no `armed_at`: nothing times a request out, and a column no
-code reads is a column that will drift.
+`method` is new and load-bearing: the direct merge passes squash/merge/rebase
+straight into the REST call in the same function, while a request is performed
+minutes later by different code, which has nowhere else to read it from.
+
+There is deliberately no `armed_at` and no repository index: nothing times a
+request out, at most one row exists per session, and a column or index no code
+reads is one that will drift.
 
 ### The state machine
 
-`pending → merging → settling → deleted`, and the claim is written **before** the
+`pending → merging → settling → deleted`, and `merging` is written **before** the
 REST call, never after it. An executor that only recorded success would have an
 unrepresentable window: the row it is merging could be replaced or cleared while
 the call is in flight, leaving its own success nowhere to land.
 
-| State | Written | Who may touch it |
+| State | Written | Who may replace or clear it |
 |---|---|---|
-| `pending` | when `--auto` records the request | every lifecycle clear, revocation, a second `--auto` |
+| `pending` | when `--auto` records the request | a second `--auto`, a direct `gh pr merge`, revocation, the executor |
 | `merging` | durably, immediately **before** the REST call | only the performer |
 | `settling` | on a witnessed REST success | only settlement |
 
-A second `--auto` while a row is `merging` or `settling` is **refused**, so one
-row per session stays true and the primary key cannot collide. `merging` and
-`settling` are **monotonic**: an origin change, archive, a re-arm, a reset, an
-unarchive, a repository removal and revocation all act on `pending` rows only.
-Only settlement, or destroying the session (through the cascade), removes a
-`merging` or `settling` row.
+`merging` and `settling` stay **monotonic**: nothing may write over an attempt
+whose outcome is unknown, which is docs/287's single-flight rule unchanged. What
+this feature adds is that a `pending` row is *not* an attempt and may be replaced
+— an agent that pushes again and re-arms at the new commit is the ordinary case,
+and a direct `gh pr merge` supersedes a request it makes redundant. Only
+settlement, or destroying the session through the cascade, removes a `merging` or
+`settling` row.
 
-**A merge attempt has three outcomes, not two.** The REST call is a plain
-`fetch`, which can reject *after* GitHub accepted the request — so "it threw" does
-not mean "it did not merge", and treating it as a failure would discard the
-record of a merge that already happened:
+### Reconciliation must stand down for a merge in flight
 
-| Outcome | What it means | What happens to the row |
-|---|---|---|
-| **witnessed success** | a parsed response saying the merge landed | → `settling` |
-| **definitive refusal** | GitHub answered no — conflict, protection, moved head | deleted, reason surfaced once |
-| **indeterminate** | a transport error, a timeout, an unparseable body | stays `merging`, reconciled from the tuple |
+The worst interleaving this feature can produce, and the one that needs a
+mechanism a row cannot carry. The executor writes `merging` and then awaits
+GitHub **with no turn running**, so docs/287's reconciliation — whose busy check
+is about turns — saw an idle session, read the pull request as still open, and
+deleted the row as unmerged. GitHub then accepts the outstanding request and the
+merge is recorded nowhere at all.
 
-A definitive refusal **ends the claim**, whatever its origin: the row is deleted
-and GitHub's reason is surfaced once. The requirements ask ShipIt to wait for
-*checks*, not to keep an arming alive after GitHub has said no — a conflict or a
-branch-protection refusal at a fixed commit does not resolve itself, and a
-lingering arming that retries every tick is both surprising and noisy. A direct
-refusal reaches the agent as the command's answer; an arming's refusal reaches
-the transcript as a notice.
+`AgentMergeClaimStore.isMergeInFlight()` is what closes it, and it is deliberately
+**in memory rather than a column**: the question is "is this process merging this
+row right now?", and a `merging` row left by a crash must be reconciled while one
+being merged this instant must not. A restart empties the set, which is the crash
+case answering correctly.
 
-An indeterminate outcome — and equally a crash — leaves the row `merging`, and it
-is resolved from its own tuple: read that pull request in that repository and ask
-whether `expected_sha` merged. Merged ⇒ `settling`. Still open ⇒ back to
-`pending` for an arming, deleted for a direct claim — unless the row is `revoked`,
-which terminates it instead. Nothing is decided from the shape of the error.
+### One request, one attempt
 
-**A `pending` row also needs terminal handling.** The observation table refuses
-every non-open pull request, so without this a row whose pull request was merged
-or closed by somebody else — the user, the pull-request card's own auto-merge —
-would refuse for ever, and keep the polling gate open with it:
+**A request that leaves `pending` never returns to it.** Once the executor has
+written `merging`, the row is resolved exactly as docs/287 resolves a direct
+claim: merged ⇒ settle, definitively refused ⇒ delete and say so,
+indeterminate ⇒ leave it for reconciliation, which reads the tuple and either
+settles or deletes.
+
+This is the decision that removes the `revoked` column. A row that can never merge
+again after one attempt is already, by construction, cancelled by revocation:
+deleting the `pending` rows is the whole of requirement 4. Retrying an attempt
+whose outcome was never learned is also the one retry that could merge twice, and
+an arming that quietly retries every tick is the surprising behaviour the refusal
+rule below rejects for the same reason.
+
+The cost is that a transient failure ends the request instead of retrying it. The
+agent is told, in the transcript, and can ask again. Nothing in the requirements
+promises a retry.
+
+### What the executor waits for, and what ends the request
+
+Each tick reads the pull request through docs/287's `readMergeObservation` — the
+same single query, so the two paths cannot diverge — and applies one rule:
+
+> **Wait only while the checks are running. Merge when they are green. End the
+> request, with a notice, in every other case.**
 
 | What the read finds | The row |
 |---|---|
-| `MERGED` at `expected_sha` | settle, with the narrower "the agent asked for this commit and it is now merged" attribution (req 9) |
-| `MERGED` or closed at a different head | cancel as moved-head, with the req 3 notice |
-| closed without merging | delete, with a terminal notice |
+| unreadable | stays `pending`; try the next tick — but see *A bounded run of unreadable answers* |
+| the rollup describes a different commit | stays `pending` — the armed commit's checks have not reported |
+| head is no longer `expected_sha` | cancelled, with the req 3 notice |
+| `MERGED` at `expected_sha` | settled, with docs/287's narrower recovery wording |
+| `MERGED` or `CLOSED` at another head | cancelled as moved-head (req 3) |
+| `CLOSED` unmerged | ended, with a notice |
+| draft, review not `APPROVED`, checks `FAILURE`/`ERROR` | ended, with a notice naming the reason |
+| checks `PENDING`/`EXPECTED` | stays `pending` — the one waiting state |
+| no checks at all | docs/287's zero-check grace decides: wait, or merge |
+| checks `SUCCESS` | merge |
 
-### Where the executor runs, and what it excludes
+Ending on a red or unapproved pull request rather than waiting is deliberate.
+Waiting is defensible — a re-run can turn a flake green, a reviewer can approve —
+but it makes a request that never terminates, and an unbounded background job the
+user cannot see. The notice is the value: the agent learns the merge is not coming
+and can act. In practice the common repair (push a fix) moves the head, which
+cancels the request under req 3 regardless.
 
-In the PR status poller's existing tick, beside the managed auto-merge loop —
-not a second timer. Durability alone would not reach it: the polling supervisor
-iterates `tracker.sessionRepos` and the global gate opens only for in-memory
-automation, so after a restart with no viewer a persisted arming would never
-receive a tick. Armings are therefore a **first-class input to the supervisor and
-the gate** — loaded at startup, `ensure()`d when one is written, and their
-repository ticked even when no ordinarily tracked session would keep polling
-alive. They are **activated only after `reattachInFlightTurns()` completes**,
-because `trackSession()` polls immediately when the gate is open and the poller
-exists before reattachment; activating at construction could merge a session's
-pre-turn head while a surviving turn still holds uncommitted work.
+**The rollup must describe the commit being merged.** Arming deliberately
+ignores a lagging rollup — that lag is *why* the request exists — so the executor
+is the place that must not. Reading a lagging `SUCCESS` here would merge a head
+CI has never seen, which is exactly the fail-open docs/287's
+`head-moved-since-checks` rule exists to stop.
 
-**A merge and a turn are mutually exclusive, through admission (docs/266 req 2).**
-A busy check alone cannot give that: `PostTurnHold.begin()` only increments a
-counter, interactive admission (`ws-handlers/send-message.ts`) tests `running`
-and `systemTurnInProgress`, dispatched admission (`session-runner.ts`) does the
-same, and none of them consults `agentBusy` — so a turn can start *during* the
-REST call, after which its push is refused and its work is stranded. That is a
-documented failure of the existing managed loop, not a hypothetical.
+**A bounded run of unreadable answers ends the request.** An unreadable read is
+transient by assumption, and the assumption has a limit: a deleted repository, a
+revoked credential or a pull request ShipIt can no longer see would otherwise
+leave the row pending for ever with the agent never told. Counted rather than
+timed, and in memory rather than in a column, because the question is "have this
+process's own reads kept failing?" — a restart re-earns the benefit of the doubt,
+which is the right answer for an outage that spanned it. Any answer at all clears
+the run; the limit is on *consecutive* failures.
 
-The exclusion is a **session-scoped merge claim**, and it has two kinds, because
-the two performers stand in opposite relations to the turn:
+**A throw from the merge call is `indeterminate`, never a failure.** The manager's
+wrapper reads the pull request before it sends the merge, so a rejection can come
+from either — and the second can reject after GitHub accepted it. The shape of an
+error never decides whether something merged.
 
-| Claim | Taken by | Precondition |
+**The request names its own repository, and the session can be repointed while it
+waits.** Without an identity check the grant is read from the session's *current*
+remote while the merge is sent to the *claim's* repository: arm in A, repoint
+`origin` to B where merging is allowed, and B's permission merges A. So the
+executor confirms the session's remote still resolves to the claim's `repo_id`
+and that its provenance still names this pull request, before either check.
+
+### Where the executor runs
+
+**Its own small loop in the orchestrator process** (`services/agent-merge-executor.ts`),
+built and started in `bootstrapManagers` immediately after
+`reattachInFlightTurns()`. The interval runs unconditionally; a tick with no
+`pending` row is one indexed `SELECT` and no GitHub call at all.
+
+The parked design put it in the PR poller's tick. That is a second timer avoided
+at the price of making armings a first-class input to **both** the polling
+supervisor and the global gate — because the supervisor iterates
+`tracker.sessionRepos` and the gate opens only for in-memory automation, so a
+persisted request after a restart with no viewer would never receive a tick. Two
+subsystems gain a concept; this one gains a timer. The timer is less. It also
+needs no gate of its own: it makes a GitHub call only when a row exists, so an
+idle ShipIt is exactly as quiet as before. It is stopped from the app's
+`onClose` — the interval is `unref`'d and does not hold the process open, but a
+tick firing after `app.close()` would query a closed database.
+
+Starting **after** `reattachInFlightTurns()` is not incidental: until the adoption
+sweep completes the runner registry is empty, so "is this session busy?" answers
+no for everything and the executor could merge a surviving turn's pre-turn head
+while that turn still holds uncommitted work. Same ordering, and the same reason,
+as docs/287's startup reconciliation directly above it.
+
+### A merge and a turn are mutually exclusive (req 6)
+
+Two directions, and they need different mechanisms.
+
+**The merge does not start while the agent is working.** The executor takes a row
+only when the session is idle: no runner, or a runner that is not `running`, not
+`agentBusy`, not holding `systemTurnInProgress`, with an empty queue.
+
+**A turn does not start while the merge is in progress.** A busy check cannot give
+that — `PostTurnHold.begin()` only increments a counter, and neither admission
+site consults `agentBusy` — so the executor sets `runner.mergeHold` for the
+duration of the attempt, and the two admission sites consult it beside the flag
+they already consult:
+
+| Site | Existing check | Turn start |
 |---|---|---|
-| **turn-owned** | the direct `gh pr merge` route | none — it belongs to the turn that is already running, and that route documents that its own runner is always running |
-| **background** | the arming executor | the session is idle **and** its queue is empty |
+| `session-runner.ts` `dispatchOnRunner` | `runner.systemTurnInProgress` | dispatched turns **and** `releaseQueuedTurn`, which routes through `runner.dispatch` |
+| `ws-handlers/send-message.ts` `handleSendMessage` | `runner.running \|\| runner.systemTurnInProgress` | the interactive send |
+| `ws-handlers/send-message.ts` `handleAnswerQuestion` | `assertCanDispatch` only | an `AskUserQuestion` answer — it does **not** go through `dispatch`, it sets `running = true` and calls `runAgentWithMessage` itself, which is why it is the path most easily missed |
+| `queue-drain.ts` `releaseQueuedTurn` | same | refuses to dequeue at all |
 
-An idle-only rule would make the direct path impossible, since that HTTP call is
-issued from inside the active turn. A turn-owned claim instead says "this turn is
-merging", which is exactly what a later turn must wait for.
+**A runner is not always there to hold.** A session with no container has no
+runner at all, and the user opening it *during* the merge creates one — with
+`mergeHold` false, free to start a turn. So the executor also marks the session
+on the claim store (`markMergeInFlight`, in memory, not a column), and
+`onRunnerCreated` seeds a fresh runner's hold from it. The `finally`
+**re-resolves** the runner from the registry rather than using the one it
+captured, so the runner created mid-call is the one released.
 
-**The claim is only worth what admission is.** Turn starts are not confined to
-the two entry points named above: a queued turn re-enters through
-`ws-handlers/agent-execution.ts`'s drain, and `runDispatchedTurn`
-(`session-runner.ts`) deliberately bypasses the ordinary send-or-queue decision
-via `dispatched-turn.ts`. A check added to two of those four is not an exclusion.
-So every turn start — interactive send, dispatched turn, and queue drain —
-passes through **one authoritative admission gate** that consults the claim; a
-background claim makes a turn wait, and it is released when the merge has
-settled.
+`mergeHold` is a new field rather than a reuse of `systemTurnInProgress` for one
+reason: that flag is cleared by `turn-executor.ts` when a system turn ends, so two
+holders sharing it is a lost update that silently removes the exclusion. The
+rebase driver's flow (`rebase-driver.ts:421`) is the precedent for the shape, not
+for sharing the field.
 
 **Adoption after a restart is deliberately not gated.** It resumes a turn that
-already exists rather than starting a new one, startup already completes adoption
-before later automation, and gating it could block the very turn that owns a
-persisted direct claim. The gate is for new work only.
+already exists rather than starting a new one, and gating it could block the very
+turn that owns a persisted direct claim.
 
-**Releasing the claim must actively restart the queue.** Draining is
-event-driven: a finished turn drains once, and a background merge has no owning
-turn whose completion could drain afterwards — so a message that arrived while
-the claim was held would sit there until some unrelated event. Every exit from a
-background claim — settlement, cancellation, a refusal, or recovery — calls the
-shared `releaseQueuedTurn()` (`queue-drain.ts`), which exists for exactly this
-case: work with no turn of its own. It is called **after** the durable state
-change, so a crash in between leaves a row that reconciliation resolves rather
-than a queue released against a claim that still exists.
+**Releasing the hold must actively restart the queue.** Draining is event-driven:
+a finished turn drains once, and a background merge has no owning turn whose
+completion could drain afterwards — so a message that arrived while the hold was
+held would sit there until some unrelated event. Every exit from the attempt
+clears `mergeHold` and calls the shared `releaseQueuedTurn()`
+(`queue-drain.ts`), which exists for exactly this case: work with no turn of its
+own (req 6, last sentence). Both run in a `finally`, **after** the durable state
+change, so a crash in between leaves a row reconciliation resolves rather than a
+queue released against a hold that still exists.
 
 ### Revocation (req 4)
 
-Turning `allow_agent_merge` off deletes every **pending** arming whose `repo_key`
-matches — one statement in the same transaction as the flag, resolved by
-`canonicalRepoKey`, so every URL spelling of that repository is covered. Nothing
-network-dependent can fail and leave a merge armed while ShipIt reports the
-permission off, which is exactly what the native path could not avoid.
+Turning `allow_agent_merge` off deletes every **pending** row whose `repo_id`
+matches, resolved by `repoId()` so every URL spelling of that repository is
+covered — the same identity the grant itself is matched on, never
+`canonicalRepoKey`.
 
-Requirement 20 says *every* request that has not merged is cancelled, so the
-in-flight case is not waived. Three parts, because "wait for it to resolve"
-cannot be the whole answer — an indeterminate outcome deliberately leaves a row
-`merging`, so waiting could hang:
+Requirement 4 says *every* request that has not merged is cancelled, and the
+in-flight case is not waived, but it needs no second mechanism:
 
-- **The grant is re-checked atomically at `pending → merging`.** A claim is never
-  issued under a permission that has already been withdrawn.
-- **Revocation marks in-flight rows `revoked`, durably**, rather than deleting
-  them: a `merging` row must survive to be reconciled, but it must also carry the
-  fact that its permission is gone, or a restart would lose that intent.
-- **A revoked row never returns to `pending`.** Reconciliation reads its tuple: if
-  `expected_sha` merged, it settles (the merge already happened, and requirement 9
-  still wants the record); otherwise it terminates with a notice. Either way
-  nothing further is merged.
+- **The grant is re-checked twice**: once before the GitHub read, and again in
+  the instant before the merge call, since the first is taken a round trip too
+  early. This cannot be made atomic with the merge — **the residual window is the
+  REST call itself**, which no design can recall, and GitHub's own arming has the
+  same one. The late re-check is the whole of what is left.
+- **A row past `pending` can no longer merge anything** (*One request, one
+  attempt*): it is being settled, or it is being resolved from its tuple. There is
+  nothing left to cancel.
 
-Revocation reports the permission withdrawn once every row is `pending`-free —
-deleted, or marked and therefore incapable of merging again — not once every
-network call has returned.
+So revocation reports the permission withdrawn once no row can merge again, not
+once every network call has returned. A merge the user armed from the pull-request
+card is GitHub-native and untouched (req 4, second sentence).
 
-## Settlement, and what this feature adds to it
+## Settlement
 
-Settlement is `docs/287-agent-merge-per-repo`'s, unchanged: the same witnessed
-recording, the same canonical terminal promotion re-entered from a durable
-`settling` row, the same natural identity built from `(repo_key, pr_number,
-expected_sha)`, the same narrower wording when recovery cannot prove ShipIt
-performed the merge.
+Entirely docs/287's, unchanged: the same witnessed recording, the same terminal
+promotion, the same natural identity, the same narrower wording when recovery
+cannot prove ShipIt performed the merge. Two details are this feature's:
 
-Two things are this feature's own:
-
-- **A `pending` row needs terminal handling**, because the observation refuses
-  every non-open pull request — so without it a row whose pull request somebody
-  else merged or closed would refuse for ever and hold the polling gate open with
-  it:
-
-  | What the read finds | The row |
-  |---|---|
-  | `MERGED` at `expected_sha` | settle, with the narrower "the agent asked for this commit and it is now merged" attribution |
-  | `MERGED` or closed at a different head | cancel as moved-head, with the req 3 notice |
-  | closed without merging | delete, with a terminal notice |
-
+- The executor settles with `witnessed: true` and **no turn token**. That is
+  correct rather than a loophole: `settleAgentMerge` compares the token only
+  against a turn that is *currently running*, and the executor holds the session
+  idle for the whole attempt, so there is none to disagree with.
 - **Notices have no runner to reach.** A post-turn or post-restart executor may
   have none, so they go through `persistNoticeUnattached()`.
 
@@ -249,24 +295,27 @@ Two things are this feature's own:
 
 | File | Change |
 |---|---|
-| `src/server/shared/database.ts` | `agent_merge_claims` gains `origin`, `revoked`, the `pending` state and a repo index |
-| `src/server/orchestrator/agent-merge-claims.ts` | the request half: arm, terminal handling, revocation marking |
-| `src/server/orchestrator/pr-status-poller.ts` | the executor, in the existing tick |
-| `src/server/orchestrator/pr-polling-supervisor.ts`, `polling-global-gate.ts` | requests as a polling input, so a restart still carries them out |
-| `src/server/orchestrator/ws-handlers/send-message.ts`, `session-runner.ts`, `ws-handlers/agent-execution.ts` | one admission gate consulting the claim |
-| `src/server/orchestrator/queue-drain.ts` | `releaseQueuedTurn()` called on every background-claim exit |
-| `src/server/orchestrator/api-routes-session-repos.ts` | revocation marks in-flight rows and deletes pending ones |
-| `src/server/orchestrator/services/github.ts` | `--auto` records a request instead of refusing |
+| `src/server/shared/database.ts` | `agent_merge_claims` gains `origin` and `method`; `state` gains `pending` |
+| `src/server/orchestrator/agent-merge-claims.ts` | the request half: `arm`, `listPending`, `beginMerging`, `cancelPendingForRepo` |
+| `src/server/orchestrator/services/agent-merge-executor.ts` | new — the tick, the wait/merge/end rule, the hold |
+| `src/server/orchestrator/services/github.ts` | repo-bound `--auto` records a request instead of refusing |
+| `src/server/orchestrator/api-routes-github.ts` | the `onArm` hook: grant + provenance re-check, then the row |
+| `src/server/orchestrator/api-routes-session-repos.ts` | revocation deletes pending rows for the repository |
+| `src/server/orchestrator/session-runner.ts`, `container-session-runner.ts` | `mergeHold` on the runner; `dispatchOnRunner` consults it |
+| `src/server/orchestrator/ws-handlers/send-message.ts`, `queue-drain.ts` | the interactive send, the `AskUserQuestion` answer, and the drain consult it |
+| `src/server/orchestrator/runner-registry-factory.ts` | a runner created mid-merge is seeded held |
+| `src/server/orchestrator/services/agent-merge-settlement.ts` | reconciliation stands down for a merge in flight |
+| `src/server/orchestrator/bootstrap-managers.ts` | construct and start the executor after adoption; `route-registry.ts` and `startup-monitors.ts` take it from the runtime |
 | `src/server/shipit-docs/github.md` | the agent-facing `--auto` section |
 
 ## Tests
 
-- The state machine: `pending → merging → settling`, a second `--auto` refused
-  while in flight, and the three merge outcomes.
-- Terminal handling of a `pending` row for each of the three read results.
+- The row: `arm` replaces a `pending` row, is refused over `merging`/`settling`;
+  a direct claim supersedes `pending` and is still refused over the other two.
+- The rule table above, one case per row.
 - Restart: a persisted request is carried out with no viewer and no tracked
-  session, and only after `reattachInFlightTurns()` completes.
-- A full admission lifecycle: a turn queues, waits, is released and **starts** —
+  session, and only after adoption.
+- Admission: a turn queues while the hold is held, and **starts** when it clears —
   interactive, dispatched, and through the drain.
-- Revocation: pending rows deleted, an in-flight row marked and never returned to
-  `pending`, and a timeout-plus-restart case.
+- Revocation: pending rows for that repository deleted, another repository's left
+  alone, and the grant re-check refusing at `pending → merging`.

@@ -1193,7 +1193,7 @@ describe("repo-aware PR brokering (docs/211)", () => {
   );
 
   it(
-    "refuses failing checks, and refuses --auto by naming where arming lives",
+    "refuses failing checks, and records --auto as a request instead of merging",
     { timeout: 15_000 },
     async () => {
       await githubAuth.setToken("test-token");
@@ -1213,16 +1213,24 @@ describe("repo-aware PR brokering (docs/211)", () => {
         success: false, message: expect.stringContaining("failing checks"),
       });
 
-      // req 12/13 — arming is docs/288, and the refusal says so rather than
-      // merging something the agent did not ask for.
+      // docs/288 req 1 — the case the whole feature exists for: the flush and
+      // push restarted CI, so the checks are running and `gh pr merge` alone
+      // could never land this work. `--auto` records the request, at the exact
+      // commit (req 2), and merges NOTHING now.
       githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "PENDING" });
       const auto = await withLiveTurn(sessionId, () => app.inject({
-        method: "POST", url: `/api/sessions/${sessionId}/pr/7/merge`, payload: { auto: true },
+        method: "POST", url: `/api/sessions/${sessionId}/pr/7/merge`, payload: { auto: true, method: "squash" },
       }));
       expect(auto.json()).toMatchObject({
-        success: false, message: expect.stringContaining("docs/288-agent-merge-arming"),
+        success: true, message: expect.stringContaining("once its checks pass"),
       });
       expect(githubAuth.mergePullRequestCalls).toHaveLength(before);
+      expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toMatchObject({
+        state: "pending", origin: "auto", prNumber: 7, expectedSha: head,
+        // The method is carried on the row: the merge happens minutes later,
+        // in code that has nowhere else to read the flag from.
+        method: "squash",
+      });
     },
   );
 

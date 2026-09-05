@@ -27,6 +27,28 @@ import {
 } from "./services/index.js";
 import { canonicalRepoKey, hasUrlCredentials, repoId } from "./git-utils.js";
 import { getErrorMessage } from "./validation.js";
+import { persistNoticeUnattached } from "./chat-card-persistence.js";
+
+/**
+ * docs/288 req 4 — cancel every merge request for a repository whose grant was
+ * just withdrawn, and tell each session why in its own transcript. Matched on
+ * {@link repoId}, the identity the grant itself is matched on, so every URL
+ * spelling of that repository is covered.
+ */
+function cancelAgentMergeRequests(deps: ApiDeps, id: string): void {
+  if (!id || !deps.agentMergeClaims) return;
+  // The notice rides the delete's transaction: a request the user cancelled
+  // must not vanish leaving no record of why (req 3's guarantee, req 4's case).
+  deps.agentMergeClaims.cancelPendingForRepo(id, (claim) => {
+    persistNoticeUnattached(
+      deps.chatHistoryManager,
+      claim.sessionId,
+      `Cancelled the merge request for pull request #${claim.prNumber}: agent merging was turned off `
+      + "for this repository. Nothing was merged.",
+      "info",
+    );
+  });
+}
 
 export async function registerSessionReposRoutes(
   app: FastifyInstance,
@@ -338,6 +360,14 @@ export async function registerSessionReposRoutes(
             reply.code(404).send({ error: "Repository not found" });
             return;
           }
+          // docs/288 req 4 — withdrawing the permission cancels every request
+          // that has not merged. Only `pending` rows: a row past it is being
+          // settled or resolved from its tuple and can no longer merge anything.
+          //
+          // AFTER the flag, and deliberately not in one transaction with it: the
+          // executor re-checks the grant at `pending → merging`, so a crash in
+          // between leaves a row that refuses itself rather than one that merges.
+          if (!allowAgentMerge) cancelAgentMergeRequests(deps, repoId(url) ?? "");
         }
         // Broadcast so every connected tab updates its sidebar immediately —
         // same pattern as add/remove/reorder.

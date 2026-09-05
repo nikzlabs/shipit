@@ -52,7 +52,7 @@ export async function startStartupMonitors(
     loopDetector, oomBreaker, chatHistoryManager,
     repoPrefetcher, claudeOAuthRefresherRef, codexOAuthRefresherRef,
     startupTimer, authManagers, dockerProxyServer, databaseManager,
-    mergeWatchManager, autoPushScheduler,
+    mergeWatchManager, autoPushScheduler, agentMergeExecutor,
   } = rt;
 
   // ---- Docker memory stats broadcast (every 10s) ----
@@ -441,6 +441,10 @@ export async function startStartupMonitors(
 
   // Graceful shutdown
   app.addHook("onClose", async () => {
+    // docs/288 — its interval is unref'd, so it does not hold the process open;
+    // this is about the database. A tick that fires after `app.close()` queries
+    // a DatabaseManager the caller has already closed.
+    agentMergeExecutor.stop();
     if (memoryStatsInterval) clearInterval(memoryStatsInterval);
     if (idleEnforcementInterval) clearInterval(idleEnforcementInterval);
     if (diskEscalationInterval) clearInterval(diskEscalationInterval);

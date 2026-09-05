@@ -40,6 +40,7 @@ function claimOne(over: { prNumber?: number; expectedSha?: string } = {}) {
     repoId: REPO,
     prNumber: over.prNumber ?? 7,
     expectedSha: over.expectedSha ?? "sha-head",
+    method: "merge",
   });
 }
 
@@ -77,10 +78,10 @@ describe("AgentMergeClaimStore", () => {
     // as settled. The pull request merged and nothing recorded it (cross-agent
     // review finding).
     expect(claims.claim({
-      sessionId: SESSION, repoId: REPO, prNumber: 7, expectedSha: "sha-a",
+      sessionId: SESSION, repoId: REPO, prNumber: 7, expectedSha: "sha-a", method: "merge",
     })).toBe(true);
     expect(claims.claim({
-      sessionId: SESSION, repoId: REPO, prNumber: 8, expectedSha: "sha-b",
+      sessionId: SESSION, repoId: REPO, prNumber: 8, expectedSha: "sha-b", method: "merge",
     })).toBe(false);
     expect(claims.list()).toHaveLength(1);
     expect(claims.get(SESSION)).toMatchObject({ prNumber: 7, expectedSha: "sha-a", state: "merging" });
@@ -92,7 +93,7 @@ describe("AgentMergeClaimStore", () => {
     claimOne();
     claims.markSettling(SESSION, "sha-head");
     expect(claims.claim({
-      sessionId: SESSION, repoId: REPO, prNumber: 9, expectedSha: "sha-c",
+      sessionId: SESSION, repoId: REPO, prNumber: 9, expectedSha: "sha-c", method: "merge",
     })).toBe(false);
     expect(claims.get(SESSION)).toMatchObject({ prNumber: 7, state: "settling" });
   });
@@ -103,7 +104,7 @@ describe("AgentMergeClaimStore", () => {
     claimOne();
     claims.release(SESSION, "sha-head");
     expect(claims.claim({
-      sessionId: SESSION, repoId: REPO, prNumber: 8, expectedSha: "sha-b",
+      sessionId: SESSION, repoId: REPO, prNumber: 8, expectedSha: "sha-b", method: "merge",
     })).toBe(true);
     expect(claims.get(SESSION)).toMatchObject({ prNumber: 8, expectedSha: "sha-b" });
   });
@@ -117,7 +118,7 @@ describe("AgentMergeClaimStore", () => {
       const first = new DatabaseManager(file);
       new SessionManager(first).track(SESSION, "A session");
       new AgentMergeClaimStore(first).claim({
-        sessionId: SESSION, repoId: REPO, prNumber: 7, expectedSha: "sha-head",
+        sessionId: SESSION, repoId: REPO, prNumber: 7, expectedSha: "sha-head", method: "merge",
       });
       first.close();
 
@@ -197,6 +198,171 @@ describe("AgentMergeClaimStore", () => {
     claimOne();
     expect(claims.releaseUnmerged(SESSION, "sha-head")).toBe(true);
     expect(claims.get(SESSION)).toBeNull();
+  });
+});
+
+/**
+ * docs/288 — the same row with a life BEFORE the merge call. The distinction the
+ * tests are about: `pending` is a REQUEST and may be replaced; `merging` and
+ * `settling` are an ATTEMPT and may not.
+ */
+describe("AgentMergeClaimStore — merge requests", () => {
+  function armOne(over: { prNumber?: number; expectedSha?: string } = {}) {
+    return claims.arm({
+      sessionId: SESSION,
+      repoId: REPO,
+      prNumber: over.prNumber ?? 7,
+      expectedSha: over.expectedSha ?? "sha-head",
+      method: "squash",
+    });
+  }
+
+  it("records a request in `pending`, carrying the merge method", () => {
+    // The method is on the row because the merge happens minutes later, in code
+    // that has nowhere else to read the flag the agent passed.
+    expect(armOne()).toBe(true);
+    expect(claims.get(SESSION)).toMatchObject({
+      state: "pending", origin: "auto", prNumber: 7, expectedSha: "sha-head", method: "squash",
+    });
+  });
+
+  it("replaces a request at a newer commit", () => {
+    // An agent that pushes again and re-arms is the ORDINARY case, not a
+    // collision: the old request names a commit that no longer exists on the
+    // branch, so refusing here would strand the session on a dead request.
+    armOne();
+    expect(armOne({ expectedSha: "sha-new" })).toBe(true);
+    expect(claims.get(SESSION)).toMatchObject({ expectedSha: "sha-new", state: "pending" });
+    expect(claims.listPending()).toHaveLength(1);
+  });
+
+  it("refuses a request over an attempt whose outcome is unknown", () => {
+    // Single-flight, unchanged from docs/287: writing over a `merging` row loses
+    // a merge that may already have happened.
+    claimOne();
+    expect(armOne({ expectedSha: "sha-later" })).toBe(false);
+    expect(claims.get(SESSION)).toMatchObject({ state: "merging", expectedSha: "sha-head" });
+  });
+
+  it("lets a direct merge supersede a request", () => {
+    // `gh pr merge` is the agent saying "now", which makes the request it
+    // replaces redundant. Refusing would answer with docs/287's "an earlier
+    // merge has not been resolved" for something that never started.
+    armOne();
+    expect(claims.claim({
+      sessionId: SESSION, repoId: REPO, prNumber: 7, expectedSha: "sha-head", method: "merge",
+    })).toBe(true);
+    expect(claims.get(SESSION)).toMatchObject({ state: "merging", origin: "direct" });
+  });
+
+  it("keeps requests out of reconciliation's work list", () => {
+    // `list()` feeds settlement, which asks "did this merge?" and DELETES the row
+    // when the answer is no. A request has not been attempted, so that question
+    // would destroy every one of them at the first end of turn.
+    armOne();
+    expect(claims.list()).toEqual([]);
+    expect(claims.listPending()).toHaveLength(1);
+  });
+
+  it("answers `getAttempt` with nothing while the request is only a request", () => {
+    // What reconciliation reads. It resolves ATTEMPTS, and asking "did this
+    // merge?" about a request that was never attempted answers no.
+    armOne();
+    expect(claims.getAttempt(SESSION)).toBeNull();
+    claims.beginMerging(SESSION, "sha-head");
+    expect(claims.getAttempt(SESSION)).toMatchObject({ state: "merging" });
+  });
+
+  it("promotes to `merging` from `pending` only", () => {
+    armOne();
+    expect(claims.beginMerging(SESSION, "other-sha")).toBe(false);
+    expect(claims.beginMerging(SESSION, "sha-head")).toBe(true);
+    expect(claims.get(SESSION)?.state).toBe("merging");
+    // The filter is what stops two executors, or an executor and a revocation,
+    // both acting on one request.
+    expect(claims.beginMerging(SESSION, "sha-head")).toBe(false);
+  });
+
+  it("will not settle a request, which has not been attempted", () => {
+    armOne();
+    expect(claims.markSettling(SESSION, "sha-head")).toBe(false);
+    expect(claims.get(SESSION)?.state).toBe("pending");
+  });
+
+  it("cancels this repository's requests and leaves the others alone", () => {
+    // req 4 — revocation is per repository, matched on the same `repoId` the
+    // grant is, so one repository's withdrawal cannot cancel another's request.
+    sessions.track("s2", "Another session");
+    armOne();
+    claims.arm({
+      sessionId: "s2", repoId: "github:acme/other", prNumber: 3, expectedSha: "sha-2",
+      method: "merge",
+    });
+    const cancelled = claims.cancelPendingForRepo(REPO);
+    expect(cancelled).toHaveLength(1);
+    expect(cancelled[0]).toMatchObject({ sessionId: SESSION, prNumber: 7 });
+    expect(claims.get(SESSION)).toBeNull();
+    expect(claims.get("s2")).not.toBeNull();
+  });
+
+  it("leaves an attempt alone when the permission is withdrawn", () => {
+    // A row past `pending` is being settled or resolved from its tuple, and can
+    // no longer merge anything — so there is nothing left to cancel, and
+    // deleting it would destroy the only evidence a merge happened.
+    claimOne();
+    expect(claims.cancelPendingForRepo(REPO)).toEqual([]);
+    expect(claims.get(SESSION)).not.toBeNull();
+  });
+
+  it("writes the cancellation notice in the same transaction as the delete", () => {
+    // req 3 promises the transcript says WHY a request was cancelled. "Delete,
+    // then append" loses that explanation for good if anything fails between
+    // them, and the row is gone so nothing will ever say it again.
+    armOne();
+    const chatHistory = new ChatHistoryManager(dbManager);
+    expect(() => claims.releasePending(SESSION, "sha-head", () => {
+      chatHistory.append(SESSION, {
+        id: "m1", role: "system", text: "cancelled", timestamp: new Date().toISOString(),
+      } as never);
+      throw new Error("something later failed");
+    })).toThrow();
+
+    expect(claims.get(SESSION)).not.toBeNull();
+    expect(chatHistory.load(SESSION)).toHaveLength(0);
+  });
+
+  it("writes revocation's notices in the same transaction as its deletes", () => {
+    armOne();
+    const chatHistory = new ChatHistoryManager(dbManager);
+    expect(() => claims.cancelPendingForRepo(REPO, () => {
+      chatHistory.append(SESSION, {
+        id: "m1", role: "system", text: "revoked", timestamp: new Date().toISOString(),
+      } as never);
+      throw new Error("something later failed");
+    })).toThrow();
+
+    expect(claims.get(SESSION)).not.toBeNull();
+    expect(chatHistory.load(SESSION)).toHaveLength(0);
+  });
+
+  it("tracks which sessions have a merge REST call in flight", () => {
+    // Deliberately NOT a column: a `merging` row left by a crash must be
+    // reconciled, while one being merged this instant must not — and a restart
+    // emptying this set is the crash case answering correctly.
+    expect(claims.isMergeInFlight(SESSION)).toBe(false);
+    claims.markMergeInFlight(SESSION);
+    expect(claims.isMergeInFlight(SESSION)).toBe(true);
+    claims.clearMergeInFlight(SESSION);
+    expect(claims.isMergeInFlight(SESSION)).toBe(false);
+  });
+
+  it("ends a request without touching an attempt", () => {
+    armOne();
+    expect(claims.releasePending(SESSION, "other-sha")).toBe(false);
+    expect(claims.releasePending(SESSION, "sha-head")).toBe(true);
+    claimOne();
+    expect(claims.releasePending(SESSION, "sha-head")).toBe(false);
+    expect(claims.get(SESSION)).not.toBeNull();
   });
 });
 

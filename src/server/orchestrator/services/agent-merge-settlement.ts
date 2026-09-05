@@ -72,6 +72,11 @@ export async function settleAgentMerge(
   if (live?.expectedSha !== claim.expectedSha) {
     return { result: "deferred", reason: "the claim has already been resolved" };
   }
+  // docs/288 — a request has not been attempted, so "is it merged?" has no
+  // bearing on it and a `not-merged` answer here would DELETE it.
+  if (live.state === "pending") {
+    return { result: "deferred", reason: "this is a merge request the executor has not attempted" };
+  }
   if (!deps.prStatusPoller) return { result: "deferred", reason: "no pull-request poller" };
   const target = ownerRepoFor(claim);
   if (!target) return { result: "deferred", reason: "the claim has no readable repository" };
@@ -93,6 +98,7 @@ export async function settleAgentMerge(
   if (opts.stillSafeToSettle && !opts.stillSafeToSettle()) {
     return { result: "deferred", reason: "a turn started on this session" };
   }
+
 
   const read = await deps.prStatusPoller.promoteMergedPrByNumber({
     sessionId: claim.sessionId,
@@ -204,7 +210,10 @@ export async function reconcileAgentMergeClaims(
   opts: { sessionId?: string } = {},
 ): Promise<void> {
   const claims = opts.sessionId
-    ? [deps.claims.get(opts.sessionId)].filter((c): c is AgentMergeClaim => c !== null)
+    // `getAttempt`, not `get`: `settleAgentMerge` refuses a request on its own,
+    // so this is not what keeps one safe — it keeps the end of every turn from
+    // logging a deferral for a request that is simply still waiting.
+    ? [deps.claims.getAttempt(opts.sessionId)].filter((c): c is AgentMergeClaim => c !== null)
     : deps.claims.list();
 
   for (const claim of claims) {
@@ -227,8 +236,18 @@ export async function reconcileAgentMergeClaims(
   }
 }
 
-/** Broader than "the claim's own turn": ANY turn may be editing and pushing. */
+/**
+ * Broader than "the claim's own turn": ANY turn may be editing and pushing.
+ *
+ * docs/288 adds the second clause, and it is not a turn at all. The executor
+ * writes `merging` and then awaits GitHub with no turn running, so without it a
+ * session activation reconciles that row, reads the pull request as still open,
+ * and DELETES it — after which GitHub accepts the outstanding request and the
+ * merge has no record anywhere. It is checked on the store rather than on the
+ * runner because a session with no container has no runner to ask.
+ */
 function hasActiveTurn(deps: AgentMergeSettlementDeps, claim: AgentMergeClaim): boolean {
+  if (deps.claims.isMergeInFlight(claim.sessionId)) return true;
   const runner = deps.runnerRegistry?.get(claim.sessionId);
   if (!runner) return false;
   return runner.agentBusy || runner.running;
