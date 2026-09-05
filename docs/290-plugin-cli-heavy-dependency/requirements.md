@@ -26,7 +26,14 @@ heavy dependency, not about one tool.
 
 ## Requirement provenance
 
-All three numbered requirements are the user's own words, dated above.
+All four numbered requirements are the user's own words, dated above.
+Requirement 4 came from a direct answer to an open question, with its receipt
+below.
+
+**On the number 4.** An earlier draft used it for an observability statement the
+agent had derived. That statement was demoted to an open question and then
+scoped out to planning#511 before any implementation cited it, so the number is
+reused here deliberately rather than left as a gap.
 
 Two things the agent supplied are deliberately **not** requirements:
 
@@ -61,16 +68,24 @@ because it changed the design's conclusion when it went away.
 3. The plugin stays **self-contained**: the plugin repository alone carries
    what its CLI needs. Consuming it requires no separately published artifact
    and no action from whoever operates the ShipIt instance.
+4. Moving an **already-running session** to a new plugin commit — a
+   `shipit plugin refresh` — also costs close to zero when the heavy dependency
+   itself did not change. A plugin repository commits often, and an ordinary
+   commit must not make a session re-fetch or rebuild what it already has.
 
 ## Open questions
 
-- **Does requirement 2 hold across a plugin refresh of an existing session?**
-  The requirement names a new session. A plugin repository commits often, and
-  `shipit plugin refresh` moves a *running* session to a new commit. If the
-  dependency itself did not change, must that refresh also cost close to zero?
+None open.
 
 ## Resolved questions
 
+- 2026-09-05 — Asked whether requirement 2 holds across a `shipit plugin
+  refresh` of an already-running session, when the plugin commits but its heavy
+  dependency does not change. The user's answer: **yes**. Recorded as
+  requirement 4. The constraint it carries is sharp: whatever identifies the
+  delivered dependency must be keyed to the **dependency's own content**, not to
+  the plugin commit — a commit-keyed identity would rebuild or re-fetch on every
+  ordinary commit, which is exactly what this requirement forbids.
 - 2026-09-05 — Asked whether requirement 2 binds the first session on a given
   host, which must pay the download or build once. The user's answer: **"No,
   only 2+ session."** Requirement 2 now says so. The constraint it carries: a

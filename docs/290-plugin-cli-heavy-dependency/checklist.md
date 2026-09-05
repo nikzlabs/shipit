@@ -1,7 +1,8 @@
 # Checklist
 
-Nothing here may start while a bullet remains under `## Open questions` in
-[requirements.md](requirements.md).
+All open questions in [requirements.md](requirements.md) are answered, so the
+M3 work below is unblocked. Its first item is the prerequisite, not the
+plugin-facing surface.
 
 ## Requirements
 
@@ -11,15 +12,16 @@ Nothing here may start while a bullet remains under `## Open questions` in
 - [x] Review findings folded in: a derived requirement demoted to an open
       question, a withdrawn open question recorded, M3 extended to cover the CLI
       surface, and three overstated claims corrected
-- [ ] Open questions answered by a human, with dated receipts under
-      `## Resolved questions`
+- [x] Open questions answered by a human, with dated receipts under
+      `## Resolved questions` — none open; implementation is unblocked
 
-## M3 — plugin-supplied Dockerfile (the target: reqs 1, 2, 3)
+## M3 — plugin-supplied Dockerfile (the target: reqs 1–4)
 
 - [ ] Build-time egress containment designed — the prerequisite, and its own doc
 - [ ] Manifest field by which a plugin names the Dockerfile its **CLI** runs on
 - [ ] Build-and-adopt flow that replaces `PluginCliDeps.image` at invocation
-- [ ] Image identity keyed to the plugin commit
+- [ ] Image identity keyed to the CONTENT of the Dockerfile and its declared
+      inputs — never to the plugin commit, which req 4 forbids
 - [ ] Build context resolved to the pristine checkout, with `install:` and a
       Dockerfile mutually exclusive
 - [ ] Image pruning tied to generation pruning

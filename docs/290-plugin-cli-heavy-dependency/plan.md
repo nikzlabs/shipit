@@ -98,22 +98,37 @@ not be sequenced against this feature's work.
 
 ### M2 — the plugin names a published image for its CLI
 
-Satisfies reqs 1 and 2. **Fails req 3**, which a human has already decided
+Satisfies reqs 1, 2 and 4. **Fails req 3**, which a human has already decided
 (see the resolved question). Recorded as a rejected alternative, not as a
 staged step: reviving it means changing req 3 and its receipt first.
 
 ### M3 — the plugin ships a Dockerfile and ShipIt builds it
 
-The only candidate that satisfies reqs 1, 2 and 3 together, and therefore the
-target.
+The only candidate that satisfies reqs 1–4 together, and therefore the target.
 
 **What it must include to be a CLI mechanism at all.** Lifting the fragment
 `build:` refusal is a *service* change and does not reach a companion CLI. M3
 must additionally define (a) a manifest field by which a plugin names the
 Dockerfile its CLI runs on, (b) the build-and-adopt flow that selects the
 resulting image at invocation time, replacing `PluginCliDeps.image`, and (c) an
-image identity keyed to the plugin commit, so req 2's identity is the one req 15
-already guarantees. Without those, a built image serves services only.
+image identity keyed to the **content** of the Dockerfile and the inputs it
+declares. Without those, a built image serves services only.
+
+**Requirement 4 decides (c), and rules out the obvious answer.** Keying the
+image to the plugin commit is the intuitive choice and it is wrong: a plugin
+repository commits often, and a commit-keyed tag would rebuild a gigabyte-sized
+image on every one of them — exactly the cost req 4 forbids a refresh from
+paying. The identity must be content-addressed, the same way the existing
+dependency store keys a base by the content of an install's declared inputs
+rather than by the commit (`plugin-dep-store.ts`, module docstring).
+
+Two consequences follow. A build context of `.` defeats it, because every commit
+changes the context and invalidates the layer — so the design must let a plugin
+declare what its build actually consumes, for which `install-inputs` is the
+existing precedent. And one image will legitimately serve many commits, so the
+tie between "the running plugin" and "one commit" (`docs/262-plugins` req 15) is
+held by the checkout and the generation, not by the image. That is already true
+of dependency-store bases today, so it is a precedent rather than an exception.
 
 **Two things make it smaller than the record suggests.** The refusal's stated
 reason — a build context cannot be a Docker volume, and pointing it at the
@@ -170,8 +185,8 @@ What it does trade is set out under [The M4 trade](#the-m4-trade).
 **Nothing here should be built before the open questions in `requirements.md`
 are answered.** With that said, the shape follows from req 1 taken whole:
 
-1. **M3 is the target**, because it is the only candidate that satisfies reqs 1,
-   2 and 3 together. Its first piece of work is **contained builds**, not the
+1. **M3 is the target**, because it is the only candidate that satisfies
+   reqs 1–4 together. Its first piece of work is **contained builds**, not the
    plugin-facing surface.
 2. **M2 is rejected** — it fails req 3, which a human has already decided.
 3. **M4 is an optimisation of M3**, never a reason to choose it.
