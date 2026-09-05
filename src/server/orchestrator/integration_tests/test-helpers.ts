@@ -579,11 +579,7 @@ export class StubGitHubAuthManager extends EventEmitter {
     return this._mergeResult ?? { success: true, message: "Pull request merged" };
   }
 
-  /**
-   * docs/287 — the three-way attempt the agent merge uses. Recorded in the same
-   * list as the boolean wrapper so a test can assert what was pinned either way,
-   * and answered from `_mergeAttempt` when a test needs a specific outcome.
-   */
+  /** docs/287 — the three-way attempt, recorded in the same list as the wrapper. */
   async mergePullRequestAttempt(
     owner: string, repo: string, pullNumber: number, method = "merge", expectedSha?: string,
   ) {
@@ -664,20 +660,14 @@ export class StubGitHubAuthManager extends EventEmitter {
   }
 
   /**
-   * docs/287 — the merge gate's own query is answered from its own slot.
-   *
-   * Dispatching on the query text rather than returning one value for every
-   * GraphQL call is deliberate: the gate read and the poller's bulk read want
-   * opposite-shaped answers, and a stub that aliases them cannot fail a test
-   * that wires the wrong one.
+   * docs/287 — the merge gate's query gets its own slot, dispatched on the query
+   * text: it and the poller's bulk read want opposite-shaped answers, and a stub
+   * aliasing them cannot fail a test that wires the wrong one.
    */
   async graphqlQuery<T>(query: string, _variables: Record<string, unknown>): Promise<T> {
     if (query.includes("MergeGate")) {
-      // Runs INSIDE the gate's round trip, which is where the window the merge
-      // route has to survive actually is: everything the route decided — the
-      // grant, the ownership tuple — was decided before this call and can change
-      // during it. A test that mutates state before the request instead cannot
-      // reach that window at all.
+      // Runs INSIDE the gate's round trip, which is the window the merge route
+      // has to survive. Mutating state before the request cannot reach it.
       await this._onMergeGateRead?.();
       return this._mergeGateResult as T;
     }

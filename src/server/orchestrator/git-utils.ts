@@ -149,17 +149,11 @@ export function canonicalRepoKey(url: string): string {
   }
 }
 
-/**
- * GitHub owner and repository name character sets, as GitHub itself accepts
- * them: a login is alphanumeric with single hyphens, a repository name also
- * allows `.` and `_`. Anchored on purpose — see {@link repoId}.
- */
+/** GitHub's own character sets. Anchored on purpose — see {@link repoId}. */
 const GITHUB_OWNER = String.raw`[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?`;
 const GITHUB_REPO = String.raw`[A-Za-z0-9._-]+`;
-// Case-insensitive, because a host name is: `https://GitHub.com/acme/repo` is
-// the same remote as the lower-case spelling, and refusing it told the user
-// their own repository was not a GitHub remote. The owner/repo groups already
-// span both cases and the identity is lower-cased below, so `i` widens nothing.
+// Case-insensitive, because a host name is. The groups already span both cases
+// and the identity is lower-cased below, so `i` widens nothing.
 const GITHUB_HTTPS_REMOTE = new RegExp(
   String.raw`^https?://github\.com/(${GITHUB_OWNER})/(${GITHUB_REPO}?)/?$`, "i",
 );
@@ -169,22 +163,10 @@ const GITHUB_SSH_REMOTE = new RegExp(
 
 /**
  * The identity of a GitHub repository, for an **authorization** decision:
- * `github:<owner>/<repo>`, lower-cased because GitHub treats both parts
- * case-insensitively. Returns `null` for anything it cannot parse with
- * certainty.
- *
- * Deliberately NOT {@link canonicalRepoKey}: that one lower-cases only the
- * scheme and host and sends SCP-style remotes down a lowercase-everything
- * fallback, so three spellings of one repository produce three keys — and a
- * grant written under one would silently not exist under another. Not
- * {@link parseGitHubRemote} either, which is unanchored and never refuses a
- * host. Refusing is the safe direction: no identity matches no grant.
- *
- * Two acceptances are deliberate, and both keep the property that matters — two
- * spellings share an identity only when they name the same repository.
- * `http://` is accepted because a scheme says nothing about which repository a
- * remote is; userinfo, query and fragment are stripped before the match,
- * because a token in a URL is a credential and not an identity.
+ * `github:<owner>/<repo>`, lower-cased, `null` for anything it cannot parse
+ * with certainty. NOT {@link canonicalRepoKey}, which gives three keys for three
+ * spellings, so a grant written under one would not exist under another. `http`
+ * and stripped userinfo/query/fragment are accepted: neither names a repository.
  */
 export function repoId(url: string): string | null {
   const trimmed = stripRemoteUrlCredentials((url ?? "").trim());
@@ -195,17 +177,10 @@ export function repoId(url: string): string | null {
 }
 
 /**
- * The same identity, from an owner and repository name that have **already**
- * been resolved — what a create returns after GitHub answered.
- *
- * Exists so provenance is recorded against the repository the pull request
- * actually landed in, rather than the URL the caller hoped it would use. Those
- * differ in a real case: a create with no explicit remote reads the clone's own
- * `origin`, so re-deriving the identity from the request would record a
- * repository nobody verified.
- *
- * Validated, not merely lower-cased: these strings reach an authorization key,
- * and an empty or path-bearing value would forge one (`github:a/b/../c`).
+ * The same identity from an ALREADY-resolved owner and repository — what a
+ * create returns — so provenance records where the pull request landed rather
+ * than the URL the caller hoped for. Validated, not merely lower-cased: these
+ * strings reach an authorization key, and a path-bearing value would forge one.
  */
 export function repoIdFromOwnerRepo(owner: string, repo: string): string | null {
   const o = (owner ?? "").trim();
@@ -545,12 +520,9 @@ export async function isWorkspaceCloneInSyncWithCache(
 }
 
 /**
- * Parse owner/repo from a GitHub remote URL — the ACTION resolver, used to
- * address the GitHub API. {@link repoId} is the authorization identity, and the
- * two must agree on where a repository name ends: this group used to be
- * `[^/.]+`, so a grant on `acme/foo.bar` authorised operations on `acme/foo`.
- * The name now runs to the next path separator, with only a terminal `.git`
- * stripped.
+ * Parse owner/repo from a GitHub remote URL — the ACTION resolver. It must
+ * agree with {@link repoId} on where a name ends: this group used to be
+ * `[^/.]+`, so a grant on `acme/foo.bar` authorised work on `acme/foo`.
  */
 export function parseGitHubRemote(url: string): { owner: string; repo: string } | null {
   // Handle HTTPS: https://github.com/owner/repo.git
@@ -563,9 +535,8 @@ export function parseGitHubRemote(url: string): { owner: string; repo: string } 
 }
 
 /**
- * `github:owner/repo` back to the pair the GitHub API takes — for the paths that
- * must address a repository the SESSION may no longer point at, such as settling
- * a merge claim on a session that has since been repointed.
+ * `github:owner/repo` back to the pair the GitHub API takes — for paths that
+ * address a repository the SESSION may no longer point at.
  */
 export function ownerRepoFromRepoId(identity: string): { owner: string; repo: string } | null {
   const match = /^github:([^/]+)\/([^/]+)$/.exec((identity ?? "").trim());

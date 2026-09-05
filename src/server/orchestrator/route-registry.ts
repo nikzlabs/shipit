@@ -313,9 +313,7 @@ export async function registerRoutes(
     clientDir, logStore, buildId,
   } = rt;
   const { kickDiskEscalation } = monitors;
-  // docs/287-agent-merge-per-repo §4 — one store for the route deps AND the
-  // activation reconciliation below. A stateless wrapper over the shared
-  // database, so two instances could not disagree; one is simply clearer.
+  // docs/287 §4 — one store for the route deps and the activation trigger below.
   const agentMergeClaims = new AgentMergeClaimStore(databaseManager);
   const wsOriginPolicy = readOriginPolicyFromEnv();
 
@@ -1376,11 +1374,9 @@ export async function registerRoutes(
         if (dir !== activeSessionDir) {
           activeSessionDir = dir;
         }
-        // docs/287-agent-merge-per-repo req 9 — the activation reconciliation
-        // trigger, the third of three. A claim stranded by a transient GitHub or
-        // authentication failure must not wait for a process restart, and a
-        // session being opened is both a natural retry point and the moment its
-        // user is most likely to be looking at the card the settlement writes.
+        // req 9 — the third reconciliation trigger. A claim stranded by a
+        // transient GitHub failure must not wait for a process restart, and an
+        // opened session is both a retry point and when its user is watching.
         void reconcileAgentMergeClaims({
           claims: agentMergeClaims,
           sessionManager,

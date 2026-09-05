@@ -650,11 +650,8 @@ export class GitHubAuthManager extends EventEmitter {
     );
   }
 
-  /**
-   * docs/287 req 9 — the same merge, reporting which of its three outcomes
-   * happened. Used by the agent merge, whose durable claim is kept or dropped
-   * on exactly that distinction.
-   */
+  /** docs/287 req 9 — the same merge, reporting which of its three outcomes
+   * happened. The agent merge keeps or drops its claim on that distinction. */
   async mergePullRequestAttempt(
     owner: string,
     repo: string,

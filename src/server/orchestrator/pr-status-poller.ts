@@ -459,18 +459,10 @@ export class PrStatusPoller {
   /**
    * docs/287-agent-merge-per-repo — the merge gate's zero-check decision.
    *
-   * Reached through the poller rather than the tracker because the tracker is
-   * private to it AND because the decision depends on state the poll loop
-   * preloads: `ensureWorkflowsLoaded` is what makes the "no workflow can fire
-   * for this pull request" short-circuit available, and a merge may be the first
-   * thing that ever asks about this repository.
-   *
-   * It awaits the workflow LOAD, never the grace window. The command does not
-   * wait by itself (req 17): a `true` here is a refusal the agent retries.
-   *
-   * `prNumber` is explicit, not derived from the session, because a session can
-   * ask about a pull request the poller is not tracking for it, and because two
-   * pull requests in one repository can share a head SHA.
+   * Here because the decision needs state the poll loop preloads
+   * (`ensureWorkflowsLoaded`). It awaits that LOAD, never the grace window — the
+   * command does not wait by itself (req 17). `prNumber` is explicit because a
+   * session can ask about a pull request the poller is not tracking for it.
    */
   async awaitCiGraceDecision(args: {
     repoUrl: string | undefined;
@@ -1389,16 +1381,10 @@ export class PrStatusPoller {
   }
 
   /**
-   * docs/287-agent-merge-per-repo req 11 — the ONE terminal-promotion
-   * operation. Everything a merged or closed pull request does to a session
-   * happens here: the persisted snapshot, `merged_at`, `mergedHeadSha`, reset
-   * eligibility, the notify-on-merge watch, and the issue lifecycle.
-   *
-   * It takes the pull request's FACTS rather than fetching them, because its
-   * two callers find the pull request differently and only one of them can:
-   * detection knows the branch, settlement knows the number, and a
-   * branch-addressed lookup answers about the wrong pull request after a
-   * re-arm or an unarchive in the same repository.
+   * docs/287 req 11 — the ONE terminal-promotion operation: the snapshot,
+   * `merged_at`, `mergedHeadSha`, reset eligibility, the merge watch and the
+   * issue lifecycle all happen here. Takes the FACTS rather than fetching them,
+   * because detection knows the branch and settlement knows the number.
    */
   private promoteTerminal(args: {
     sessionId: string;
@@ -1438,18 +1424,11 @@ export class PrStatusPoller {
     // GitHub's own flag is the only record of a native arming ShipIt never
     // stored, e.g. the merge button's pending-checks fallback.
     const nativeArmedOnGitHub = this.tracker.lastKnown.get(sessionId)?.autoMergeEnabled === true;
-    // docs/287-agent-merge-per-repo req 11 — `force` re-enters the once-per-merge
-    // effects even when the persisted state already reads terminal.
-    //
-    // Without it this method is NOT crash-reentrant, and silently so: it
-    // persists the terminal snapshot first, derives `alreadyTerminal` from that
-    // persisted state, and writes `mergedHeadSha`, `merged_at` and the
-    // downstream merge handling later and only when `!alreadyTerminal`. A crash
-    // between the two therefore restarts into `prevState === "merged"` and
-    // suppresses those writes for ever — the session left with a merged card,
-    // no `merged_at`, and no reset eligibility, with nothing anywhere saying so.
-    // A durable `settling` claim is exactly the evidence that those effects have
-    // not run, so it re-enters rather than trusting the snapshot.
+    // req 11 — without `force` this is NOT crash-reentrant: the snapshot
+    // persists first, `alreadyTerminal` is derived from it, and `merged_at` /
+    // `mergedHeadSha` are written later and only when `!alreadyTerminal`. A
+    // crash between the two suppresses them for ever. A `settling` claim is the
+    // evidence they did not run, so it re-enters rather than trust the snapshot.
     const alreadyTerminal = force
       ? false
       : this.tracker.mergedSessions.has(sessionId)
@@ -1622,19 +1601,10 @@ export class PrStatusPoller {
    * docs/287-agent-merge-per-repo req 11 — promote a pull request ShipIt just
    * merged, addressed by NUMBER.
    *
-   * This is what settlement calls instead of `forceVerifySessionPrState()`.
-   * That one resolves the tracker's current repository and the session's
-   * current branch, and the lookup beneath it takes the most recently updated
-   * pull request on that branch — so a re-arm or an unarchive is enough to make
-   * it settle a different pull request than the one that merged.
-   *
-   * Returns the facts it read and whether it promoted from them; `null` when
-   * GitHub does not answer, which leaves the claim for another attempt.
-   *
-   * `guard` is the caller's last word, asked AFTER the read and immediately
-   * before the first write. Every precondition the caller checked was checked
-   * across an awaited request, and two can change inside it: a turn can start,
-   * and the facts decide whether this is the commit the caller meant.
+   * Not `forceVerifySessionPrState()`, which resolves the session's CURRENT
+   * branch and settles a different pull request after a re-arm. `guard` is asked
+   * AFTER the read and before the first write: the caller's preconditions were
+   * checked across an awaited request, and a turn can start inside it.
    */
   async promoteMergedPrByNumber(args: {
     sessionId: string;
@@ -1645,10 +1615,8 @@ export class PrStatusPoller {
   }): Promise<{ pr: TerminalPrFacts; promoted: boolean } | null> {
     const pr = await this.githubAuth.findPullRequestByNumber(args.owner, args.repo, args.prNumber);
     if (!pr) return null;
-    // Terminal state only. The caller may be resolving an attempt that never
-    // reached GitHub, and forcing an OPEN pull request through here overwrites
-    // its status with the terminal placeholder and drops its remediation and
-    // auto-merge state, after which polling skips it until it is re-tracked.
+    // Terminal state only: forcing an OPEN pull request through here drops its
+    // remediation and auto-merge state, after which polling skips it.
     if (pr.merged_at === null && pr.state !== "closed") return { pr, promoted: false };
     if (args.guard && !args.guard(pr)) return { pr, promoted: false };
     this.promoteTerminal({
@@ -1663,11 +1631,9 @@ export class PrStatusPoller {
   }
 
   /**
-   * Read one pull request by number, promoting nothing.
-   *
-   * For the settlement path that must ask about a pull request this session no
-   * longer owns: the merge may still have happened, and the answer belongs in
-   * the transcript, but no session state may move on the strength of it.
+   * Read one pull request by number, promoting nothing — for the settlement path
+   * that asks about a pull request this session no longer owns, where the answer
+   * belongs in the transcript but no session state may move on it.
    */
   async readPrByNumber(owner: string, repo: string, prNumber: number): Promise<TerminalPrFacts | null> {
     return this.githubAuth.findPullRequestByNumber(owner, repo, prNumber);

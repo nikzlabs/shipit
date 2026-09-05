@@ -1533,33 +1533,26 @@ const MIGRATIONS: Migration[] = [
     db.exec("ALTER TABLE messages ADD COLUMN client_request_id TEXT");
   },
   // docs/287 — per-repository permission for agent-performed merges. Modelled on
-  // `repos.trusted` (docs/178) with one deliberate difference: NO backfill.
-  // `trusted` backfilled existing rows to 1 because its gate arrived after the
-  // repositories did and flipping them would have broken every current repo;
-  // this is a new capability, so every repository starts without it.
+  // `repos.trusted` (docs/178) with one difference: NO backfill, because this is
+  // a new capability rather than a gate arriving after the repositories.
   (db) => {
     const columns = db.prepare("PRAGMA table_info(repos)").all() as { name: string }[];
     if (columns.some((c) => c.name === "allow_agent_merge")) return;
     db.exec("ALTER TABLE repos ADD COLUMN allow_agent_merge INTEGER NOT NULL DEFAULT 0");
   },
-  // docs/287 — provenance for "the pull request this session opened". Recorded
-  // ONLY when ShipIt witnessed the create, and stored WITH the repository
-  // identity it was created in: `sessions.remote_url` is mutable (replacing
-  // `origin` rewrites it in place) and pull-request numbers coincide across
-  // forks, so a number alone would authorise a different repository's PR of the
-  // same number. Never backfilled from `pr_status`, which also holds pull
-  // requests a person opened.
+  // docs/287 — provenance for "the pull request this session opened", recorded
+  // ONLY on a witnessed create and stored WITH its repository identity, since
+  // `remote_url` is mutable and numbers coincide across forks. Never backfilled
+  // from `pr_status`, which also holds pull requests a person opened.
   (db) => {
     addSessionColumnIfMissing(db, "pr_repo_id");
     const columns = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
     if (columns.some((c) => c.name === "pr_number")) return;
     db.exec("ALTER TABLE sessions ADD COLUMN pr_number INTEGER");
   },
-  // docs/287 — the durable merge claim, written immediately BEFORE the REST
-  // merge call and deleted only once the merge is recorded. It exists because
-  // the call can reject after GitHub accepted it: without a durable row, a
-  // transport error or a crash in that window loses the fact that a merge
-  // happened, and the transcript record requirement 9 asks for with it.
+  // docs/287 — the durable merge claim, written BEFORE the REST call and
+  // deleted once the merge is recorded. The call can reject AFTER GitHub
+  // accepted it, and without the row that merge loses its req 9 record.
   (db) => {
     db.exec(`
       CREATE TABLE IF NOT EXISTS agent_merge_claims (
@@ -1567,7 +1560,6 @@ const MIGRATIONS: Migration[] = [
         repo_id      TEXT NOT NULL,
         pr_number    INTEGER NOT NULL,
         expected_sha TEXT NOT NULL,
-        turn_id      TEXT NOT NULL,
         state        TEXT NOT NULL,
         created_at   TEXT NOT NULL
       );

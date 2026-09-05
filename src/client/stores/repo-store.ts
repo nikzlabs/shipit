@@ -333,13 +333,11 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   },
 
   /**
-   * docs/287 — the two failure shapes are handled differently. A **rejected**
-   * request is a definitive answer, so the optimistic write is undone. A
-   * **thrown** fetch is not an answer at all: the request may have been
-   * committed and its response lost, and this switch is a permission — flipping
-   * the UI back to "off" while the database says "on" tells the user agents
-   * cannot merge when they can. So it re-reads from the server, and reverts only
-   * when even that fails.
+   * docs/287 — a **rejected** request is a definitive answer, so the optimistic
+   * write is undone. A **thrown** fetch is not: it may have been committed and
+   * its response lost, and showing "off" while the database says "on" tells the
+   * user agents cannot merge when they can. So it re-reads, and reverts only if
+   * that fails too.
    */
   setRepoAllowAgentMerge: async (url, allow) => {
     const previous = get().repos.find((r) => r.url === url)?.allowAgentMerge ?? false;

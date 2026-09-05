@@ -290,10 +290,9 @@ export async function registerSessionReposRoutes(
         const url = decodeURIComponent(request.params.url);
         const hidden = request.body?.hidden;
         const colorIndex = request.body?.colorIndex;
-        // docs/287 — the agent-merge grant rides this route rather than getting
-        // one of its own, so it inherits the browser-only boundary: this route
-        // carries no `containerAccessible` opt-in, which is exactly what keeps
-        // the permission out of reach of the agent it governs.
+        // docs/287 — the grant rides this route rather than getting its own, so
+        // it inherits the browser-only boundary: no `containerAccessible` opt-in
+        // is what keeps the permission out of reach of the agent it governs.
         const allowAgentMerge = request.body?.allowAgentMerge;
         if (hidden === undefined && colorIndex === undefined && allowAgentMerge === undefined) {
           reply.code(400).send({
@@ -316,16 +315,10 @@ export async function registerSessionReposRoutes(
           return;
         }
         if (colorIndex !== undefined) assertValidRepoColorIndex(colorIndex);
-        // docs/287 — the grant's own precondition (a parseable GitHub identity
-        // naming a stored repository) is checked HERE, with the type checks and
-        // before ANY field is written. Doing it at the write instead broke the
-        // guarantee the comment above states: `{hidden: true, allowAgentMerge:
-        // true}` on a GitLab repository hid it and then answered 400, so a
-        // rejected request had mutated the row.
-        //
-        // The error deliberately does not quote the url back. It arrives from
-        // the caller and may carry `user:password@`, which would put a
-        // credential into a response body and every log that records it.
+        // docs/287 — checked HERE, before ANY field is written: doing it at the
+        // write let `{hidden: true, allowAgentMerge: true}` on a GitLab remote
+        // hide the repository and THEN answer 400. The error does not quote the
+        // url back, which may carry `user:password@`.
         if (allowAgentMerge !== undefined) {
           const id = repoId(url);
           if (!id) {

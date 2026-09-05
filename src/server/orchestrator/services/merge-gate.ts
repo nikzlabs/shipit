@@ -2,20 +2,15 @@
  * docs/287-agent-merge-per-repo §3 — the one live read an agent merge is decided
  * from, and the table that decides it.
  *
- * Why nothing existing is reused. The poller's SUMMARY can be stale — a forced
- * refresh that failed leaves the previous state standing, the poll indexes open
- * pull requests by `headRefName` so two from one branch overwrite each other,
- * and it carries no head SHA. The poller's QUERY has no `isDraft` and fixes
- * `prState` to `"open"`. And `getCheckStatus()` maps "no checks configured" and
- * a swallowed API failure to the same `"none"`, which the merge path treats as
- * permission to merge — a live fail-open on the sandbox path, which is why this
- * read replaces it for BOTH session kinds.
+ * Nothing existing is reused: the poller's summary can be stale and has no head
+ * SHA, its query has no `isDraft`, and `getCheckStatus()` maps "no checks" and a
+ * swallowed API failure to one value the merge path treats as permission — a
+ * live fail-open, which this replaces for BOTH session kinds.
  *
- * One round trip, both SHAs: `headRefOid` is the branch tip, the rollup's
- * `commit.oid` is the commit the checks describe. They differ exactly when
- * something advanced the branch after CI started. The selection is minimal on
- * purpose — `mergeable` is never consulted and `contexts` is never enumerated,
- * because counting a bounded list is how a fail-open gate gets built.
+ * One round trip, both SHAs: `headRefOid` is the branch tip and the rollup's
+ * `commit.oid` is what the checks describe, differing exactly when something
+ * advanced the branch after CI started. `mergeable` is never consulted and
+ * `contexts` never enumerated — counting a bounded list builds a fail-open.
  */
 
 import type { GitHubAuthManager } from "../github-auth.js";
@@ -50,9 +45,8 @@ interface MergeGateResponse {
 }
 
 /**
- * What the read saw. A structured observation rather than a boolean, so each
- * refusal can say the right thing — and so `docs/288-agent-merge-arming` can
- * attach a second behaviour to the same facts without a second read.
+ * What the read saw — structured, not a boolean, so each refusal says the right
+ * thing and docs/288 can reuse the same facts without a second read.
  */
 export type MergeObservation =
   | { kind: "unreadable"; reason: string }
@@ -72,12 +66,9 @@ export type MergeObservation =
   };
 
 /**
- * Read the pull request for a merge decision.
- *
- * **Any GraphQL `errors` makes this unreadable, before anything else is
- * examined.** `graphqlQuery()` logs non-rate-limit errors and still returns the
- * body, so a partial response can carry `errors` AND a null rollup — which would
- * otherwise read as "this repository has no CI" and merge.
+ * Read the pull request for a merge decision. **Any GraphQL `errors` makes this
+ * unreadable**: `graphqlQuery()` returns the body anyway, so a partial response
+ * can carry `errors` AND a null rollup, which would read as "no CI" and merge.
  */
 export async function readMergeObservation(
   githubAuthManager: Pick<GitHubAuthManager, "graphqlQuery">,
@@ -93,8 +84,8 @@ export async function readMergeObservation(
   } catch (err) {
     return { kind: "unreadable", reason: err instanceof Error ? err.message : String(err) };
   }
-  // `null` is what `graphqlQuery` returns for unauthenticated, non-2xx, rate
-  // limited, and unparseable-body. All of them mean the same thing here.
+  // `graphqlQuery` returns null for unauthenticated, non-2xx, rate-limited and
+  // unparseable-body alike. All mean the same thing here.
   if (!body) return { kind: "unreadable", reason: "GitHub did not answer the pull-request read" };
   if (Array.isArray(body.errors) && body.errors.length > 0) {
     return { kind: "unreadable", reason: "GitHub answered the pull-request read with errors" };
@@ -119,18 +110,14 @@ export async function readMergeObservation(
     reviewDecision: pr.reviewDecision ?? null,
     headRefOid,
     rollupCommitOid,
-    // Absent and explicitly null mean the same thing: GitHub is reporting no
-    // checks for this commit.
+    // Absent and explicitly null both mean "no checks for this commit".
     rollupState: lastCommit?.statusCheckRollup?.state ?? null,
   };
 }
 
 /**
- * docs/287 req 15 — why a merge stopped at the flush, in the agent's words.
- *
- * Each of these means "this turn's work is not on the branch", and each has a
- * different remedy, so they are not collapsed into one message. `committed` and
- * `nothing-to-commit` never reach here — they are the two outcomes that proceed.
+ * docs/287 req 15 — why a merge stopped at the flush, in the agent's words. Not
+ * collapsed, because each has a different remedy.
  */
 export function mergeFlushRefusal(
   flush: { kind: "blocked-secret" | "blocked-unreadable" | "blocked-conflict" | "partial-unreadable" },
@@ -155,8 +142,8 @@ export function mergeFlushRefusal(
   }
 }
 
-/** Why a merge was refused. The caller branches on it only for `checks-pending`,
- * which is the one state a sandbox `--auto` turns into an arming. */
+/** Why a merge was refused. The caller branches only on `checks-pending`, the
+ * one state a sandbox `--auto` turns into an arming. */
 export type MergeRefusalReason =
   | "unreadable"
   | "already-merged"
@@ -176,22 +163,17 @@ export type MergeDecision =
   | { action: "refuse"; reason: MergeRefusalReason; message: string };
 
 /**
- * The observation table (docs/287 plan §3), in order. The order is the design:
- * an unreadable answer refuses before any field is examined, and the two SHA
- * comparisons come before the state checks because a stale answer about the
- * wrong commit should not be reported as a CI failure.
- *
- * `graceSaysWait` is called ONLY for the zero-check case, so a merge with green
- * checks never starts a grace timer as a side effect.
+ * The observation table (docs/287 plan §3). The ORDER is the design: unreadable
+ * refuses before any field is read, and the SHA comparisons precede the state
+ * checks so a stale answer is not reported as a CI failure.
  */
 export async function decideMerge(args: {
   observation: MergeObservation;
   prNumber: number;
   /**
-   * What this workspace's current commit is, as three DISTINCT answers. A
-   * sandbox owns its own git and genuinely skips req 14's check; a repo-bound
-   * workspace whose HEAD could not be read has NOT passed it. Separate values so
-   * a caller cannot express the failure as the exemption.
+   * Three DISTINCT answers. A sandbox genuinely skips req 14's check; a
+   * repo-bound workspace whose HEAD could not be read has NOT passed it, and
+   * separate values stop a caller expressing that failure as the exemption.
    */
   localHead:
     | { kind: "sandbox" }
@@ -211,10 +193,9 @@ export async function decideMerge(args: {
     };
   }
 
-  // Terminal, and terminal beats everything below: no comparison of SHAs or
-  // checks can change the answer for a pull request that has already merged,
-  // and running them first would report a moved head to somebody whose merge
-  // has already happened. Nothing is merged on this path.
+  // Terminal beats everything below: nothing can change the answer for a pull
+  // request that already merged, and the SHA checks would report a moved head to
+  // somebody whose merge has happened. Nothing is merged on this path.
   if (observation.prState === "MERGED") return { action: "already-merged" };
 
   // req 16 — the checks describe a commit that is no longer the head. Merging on
@@ -229,10 +210,9 @@ export async function decideMerge(args: {
     };
   }
 
-  // req 14 — the pull request's head must be what this session just committed
-  // and pushed. `guardMergeSync` cannot cover this: it compares against the
-  // remote-TRACKING ref and proceeds whenever it cannot tell, while this
-  // compares the live head and fails closed.
+  // req 14 — the head must be what this session just committed and pushed.
+  // `guardMergeSync` cannot cover it: that compares the remote-TRACKING ref and
+  // proceeds when it cannot tell, while this reads live and fails closed.
   if (args.localHead.kind === "unreadable") {
     return {
       action: "refuse",
@@ -269,9 +249,8 @@ export async function decideMerge(args: {
   }
 
   const rollup = observation.rollupState;
-  // req 7 — EVERY check GitHub reports for the commit must pass, required or
-  // not. The rollup aggregates all of them, which is why this reads the rollup
-  // state rather than enumerating and filtering contexts.
+  // req 7 — EVERY check GitHub reports must pass, required or not. The rollup
+  // aggregates all of them, which is why this reads it rather than enumerating.
   if (rollup === "FAILURE" || rollup === "ERROR") {
     return {
       action: "refuse",
@@ -282,10 +261,8 @@ export async function decideMerge(args: {
     };
   }
 
-  // req 8 — a review gate GitHub is enforcing, checked after CI so the more
-  // actionable message wins when both apply. A WHITELIST: naming the refusals
-  // GitHub documents today lets one it adds tomorrow fall through to a merge.
-  // `null` is "no review is configured for this repository".
+  // req 8 — checked after CI so the more actionable message wins. A WHITELIST:
+  // naming today's refusals lets one GitHub adds tomorrow fall through.
   if (observation.reviewDecision !== null && observation.reviewDecision !== "APPROVED") {
     const reason =
       observation.reviewDecision === "CHANGES_REQUESTED" ? "changes requested"
@@ -309,9 +286,8 @@ export async function decideMerge(args: {
   }
 
   if (rollup === null) {
-    // Zero checks. That is either a repository with no CI, or a push whose
-    // workflows GitHub has not registered yet — and those are indistinguishable
-    // in this instant, which is what the grace window exists for.
+    // Zero checks is either a repository with no CI or a push whose workflows
+    // are not registered yet — indistinguishable now, hence the grace window.
     if (await args.graceSaysWait()) {
       return {
         action: "refuse",

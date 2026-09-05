@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
-import { AgentMergeClaimStore, currentTurnId } from "../agent-merge-claims.js";
-import { settleAgentMerge, reconcileAgentMergeClaims, activeTurnIdFor } from "./agent-merge-settlement.js";
+import { AgentMergeClaimStore } from "../agent-merge-claims.js";
+import { settleAgentMerge, reconcileAgentMergeClaims, captureTurn } from "./agent-merge-settlement.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { TerminalPrFacts } from "../github-auth-prs.js";
@@ -98,7 +98,6 @@ function claimOne(over: { prNumber?: number; expectedSha?: string } = {}) {
     repoId: REPO_ID,
     prNumber: over.prNumber ?? 7,
     expectedSha: over.expectedSha ?? "sha-head",
-    turnId: currentTurnId(1),
   };
   claims.claim(claim);
   return { ...claim, state: "merging" as const, createdAt: new Date().toISOString() };
@@ -302,18 +301,52 @@ describe("settleAgentMerge", () => {
     expect(claims.get(SESSION)).not.toBeNull();
   });
 
-  it("stands down when the turn that claimed the merge has ended", async () => {
+  it("stands down when a DIFFERENT turn is running than the one that claimed", async () => {
     // The merge and the settlement are separated by a GitHub round trip. A turn
     // that ended in between no longer owns the session state this would write.
     const claim = claimOne();
     const p = poller();
+    const runner = { running: true, turnEpoch: 4 };
+    const reg = registry(runner);
+    const turn = captureTurn(reg, SESSION);
+    runner.turnEpoch = 5; // the claimed turn ended; its successor is running
+
     const out = await settleAgentMerge(
-      deps({ prStatusPoller: p, runnerRegistry: registry({ running: true, turnEpoch: 99 }) }),
-      claim, { witnessed: true },
+      deps({ prStatusPoller: p, runnerRegistry: reg }), claim, { witnessed: true, turn },
     );
 
     expect(out).toMatchObject({ result: "deferred" });
     expect(p.promoteMergedPrByNumber).not.toHaveBeenCalled();
+  });
+
+  it("stands down when the RUNNER was recreated under the same epoch", async () => {
+    // `turnEpoch` restarts at 0 whenever a runner is recreated — a container
+    // restart does that without restarting the orchestrator — so an epoch alone
+    // reads a fresh runner's first turn as the turn that claimed the merge. The
+    // token carries the runner, and a recreated runner is a different object.
+    const claim = claimOne();
+    const p = poller();
+    const turn = captureTurn(registry({ running: true, turnEpoch: 0 }), SESSION);
+    const afterRestart = registry({ running: true, turnEpoch: 0 });
+
+    const out = await settleAgentMerge(
+      deps({ prStatusPoller: p, runnerRegistry: afterRestart }), claim, { witnessed: true, turn },
+    );
+
+    expect(out).toMatchObject({ result: "deferred" });
+    expect(p.promoteMergedPrByNumber).not.toHaveBeenCalled();
+  });
+
+  it("settles when the claiming turn is still the one running", async () => {
+    const claim = claimOne();
+    const p = poller();
+    const reg = registry({ running: true, turnEpoch: 4 });
+    const out = await settleAgentMerge(
+      deps({ prStatusPoller: p, runnerRegistry: reg }),
+      claim, { witnessed: true, turn: captureTurn(reg, SESSION) },
+    );
+
+    expect(out).toEqual({ result: "settled", merged: true });
   });
 
   it("re-asks whether it is safe to settle, after the caller's own await", async () => {
@@ -406,14 +439,14 @@ describe("reconcileAgentMergeClaims", () => {
   });
 });
 
-describe("activeTurnIdFor", () => {
+describe("captureTurn", () => {
   it("answers null when nothing is running, so the merge route refuses", () => {
-    expect(activeTurnIdFor(registry(null), SESSION)).toBeNull();
-    expect(activeTurnIdFor(registry({ running: false, turnEpoch: 4 }), SESSION)).toBeNull();
+    expect(captureTurn(registry(null), SESSION)).toBeNull();
+    expect(captureTurn(registry({ running: false, turnEpoch: 4 }), SESSION)).toBeNull();
   });
 
-  it("identifies the running turn", () => {
-    expect(activeTurnIdFor(registry({ running: true, turnEpoch: 4 }), SESSION))
-      .toBe(currentTurnId(4));
+  it("carries the runner as well as the epoch", () => {
+    const runner = { running: true, turnEpoch: 4 };
+    expect(captureTurn(registry(runner), SESSION)).toEqual({ runner, epoch: 4 });
   });
 });

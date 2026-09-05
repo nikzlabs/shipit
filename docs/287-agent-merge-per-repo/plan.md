@@ -307,7 +307,6 @@ CREATE TABLE agent_merge_claims (
   repo_id      TEXT NOT NULL,      -- github:<owner>/<repo>, case-normalised
   pr_number    INTEGER NOT NULL,
   expected_sha TEXT NOT NULL,      -- the head the live read observed
-  turn_id      TEXT NOT NULL,      -- the turn that owns this claim
   state        TEXT NOT NULL       -- merging | settling
 );
 ```
@@ -320,9 +319,10 @@ with no live turn at all. So a process inside the container could merge after it
 turn ended, or during a later turn, attaching its flush, its claim and its
 transcript record to the wrong one.
 
-So the route **requires an active turn on the session's runner, and the claim
-records that turn's identity**. A request arriving with no active turn is
-refused; a claim whose recorded turn is no longer the active one is not settled
+So the route **requires an active turn on the session's runner, and holds that
+turn's identity for the length of the request**. A request arriving with no
+active turn is refused; a claim whose turn is no longer the active one is not
+settled
 into that session's state. `runner.running` alone is not enough — it is a mutable
 boolean that says something is running, not that *this* request belongs to it.
 (`docs/288-agent-merge-arming` extends this table for merges ShipIt performs on
@@ -460,6 +460,7 @@ justify an otherwise empty navigation category.
 | `src/server/orchestrator/services/github.ts` | flush outcome; the merge-gate read and observation; both merge paths; `quickCreatePr()` gains `alreadyExisted` |
 | `src/server/orchestrator/github-auth-prs.ts` | expected `sha` on the REST merge; typed three-way merge and create outcomes |
 | `src/server/orchestrator/pr-status-poller.ts` | `awaitCiGraceDecision()`; the canonical, re-enterable terminal promotion, with the caller's `guard` asked between the read and the first write; `readPrByNumber()` for the promote-nothing case |
+| `src/server/orchestrator/services/agent-merge-settlement.ts` | settlement, the three reconciliation triggers, and `captureTurn()` — the in-memory turn token (runner identity + epoch) a witnessed settlement is checked against |
 | `src/server/orchestrator/ci-grace-tracker.ts` | a merge entry point (repo + PR + SHA; unknown history waits) |
 | `src/server/orchestrator/services/branch-sync.ts` | `pushed` on the hold verdict |
 | `src/server/orchestrator/services/merge-gate.ts` | the merge-only read, the observation, and the decision table |

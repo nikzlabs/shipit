@@ -70,8 +70,9 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
 ## The durable claim and settlement (req 9, 10, 11)
 
 - [x] Migration: `agent_merge_claims` (session PK with `ON DELETE CASCADE`,
-      repo id, PR number, expected SHA, `turn_id`, `state` = merging | settling).
-      No `method`: nothing after the REST attempt reads it — **done**
+      repo id, PR number, expected SHA, `state` = merging | settling). No
+      `method`, and no `turn_id`: nothing reads either after the REST attempt,
+      and the turn identity is held in memory for the request instead — **done**
 - [x] Three merge outcomes: witnessed success → `settling`; definitive GitHub
       refusal → deleted, reason reaches the agent; indeterminate (transport
       error, timeout, unparseable body) → stays `merging`
@@ -112,9 +113,9 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
       and it is now merged"; "the agent merged it" needs a witnessed REST success
 - [x] Session-state writes require the current `pr_repo_id` **and** `pr_number`
       to equal the row's, checked BEFORE the promotion (which is what writes
-      that state). Reconciliation's turn rule is stronger than the row's
-      `turn_id`: it stands down for ANY active turn, because the hazard is
-      writing while something else pushes, not whether the ids match
+      that state). Reconciliation's turn rule is the stronger one: it stands
+      down for ANY active turn, because the hazard is writing while something
+      else pushes, not whether the ids match
 - [x] The row is deleted only after settlement is written
 - [x] Success is reported only after settlement, so the agent's next
       `shipit branch reset-to-base` cannot see `not-merged`

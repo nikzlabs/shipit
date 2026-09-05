@@ -2,21 +2,14 @@
  * docs/287-agent-merge-per-repo §4 — settling an agent merge, and recovering one
  * whose outcome was never learned.
  *
- * A merge GitHub performed is not finished until the session says so:
- * `merged_at`, the merged snapshot, `mergedHeadSha` and reset eligibility have
- * to land, or the agent's next step — `shipit branch reset-to-base` — reads
- * `not-merged` for work that shipped. Settlement promotes, records, then drops
- * the claim.
+ * A merge is not finished until the session says so, or the agent's next
+ * `shipit branch reset-to-base` reads `not-merged` for work that shipped.
+ * Settlement promotes, records, then drops the claim.
  *
- * `witnessed` decides what the record may SAY. A REST success records "the agent
- * merged it"; recovery that merely finds `expected_sha` merged records "the
- * agent asked for this commit, and it is now merged", because a user or GitHub's
- * own auto-merge could have landed it (`merge-attribution.ts`).
- *
- * Reconciliation must not race the turn a claim belongs to: reattachment returns
- * while the adopted turn keeps editing and pushing, so settling behind its back
- * would mark the session merged mid-turn. A session with an active turn is
- * skipped and picked up when that turn ends.
+ * `witnessed` decides what the record may SAY: a REST success records "the agent
+ * merged it", recovery only "that commit is now merged", since a user or GitHub
+ * auto-merge could have landed it (`merge-attribution.ts`). Reconciliation
+ * stands down for any active turn, which could still be pushing.
  */
 
 import type { SessionManager } from "../sessions.js";
@@ -24,7 +17,7 @@ import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { AgentMergeClaim, AgentMergeClaimStore } from "../agent-merge-claims.js";
-import { currentTurnId, mergeRecordId } from "../agent-merge-claims.js";
+import { mergeRecordId } from "../agent-merge-claims.js";
 import { persistNoticeUnattached } from "../chat-card-persistence.js";
 import { ownerRepoFromRepoId, repoId } from "../git-utils.js";
 
@@ -40,16 +33,12 @@ export interface AgentMergeSettlementDeps {
 export type SettlementOutcome =
   /** Promoted and recorded; the claim is gone. */
   | { result: "settled"; merged: true }
-  /** The pull request is not merged after all — the claim is gone, nothing recorded. */
+  /** Not merged after all — the claim is gone, nothing recorded. */
   | { result: "not-merged" }
-  /** GitHub did not answer, or the session moved on. The claim stays. */
+  /** No answer, or the session moved on. The claim stays. */
   | { result: "deferred"; reason: string };
 
-/**
- * Does this session still own the claim's pull request? Both halves are
- * required: pull-request numbers coincide across repositories, so a number alone
- * could point the promotion at a different repository's #N.
- */
+/** Both halves: a number alone could name a different repository's #N. */
 function sessionStillOwns(deps: AgentMergeSettlementDeps, claim: AgentMergeClaim): boolean {
   const session = deps.sessionManager.get(claim.sessionId);
   if (!session) return false;
@@ -58,33 +47,27 @@ function sessionStillOwns(deps: AgentMergeSettlementDeps, claim: AgentMergeClaim
   return repoId(session.remoteUrl ?? "") === claim.repoId;
 }
 
-/**
- * The pair the GitHub API takes, from the CLAIM's identity rather than the
- * session's current `remoteUrl` — a repointed session would answer about the
- * wrong repository.
- */
+/** From the CLAIM's identity — a repointed session names the wrong repository. */
 function ownerRepoFor(claim: AgentMergeClaim): { owner: string; repo: string } | null {
   return ownerRepoFromRepoId(claim.repoId);
 }
 
 /**
  * Settle one claim: promote the pull request, record the merge, release the row.
- *
- * `witnessed` distinguishes the two things the record may say. Pass true only
- * when THIS process saw a merge response come back.
+ * Pass `witnessed` only when THIS process saw a merge response come back.
  */
 export async function settleAgentMerge(
   deps: AgentMergeSettlementDeps,
   claim: AgentMergeClaim,
   opts: {
     witnessed: boolean;
-    /** Re-asked immediately before the first write. A caller that awaited I/O
-     * to get here cannot rely on a check made before that await. */
+    /** The claiming turn, from {@link captureTurn}. Witnessed settlements only. */
+    turn?: TurnToken | null;
+    /** Re-asked immediately before the first write, past the caller's await. */
     stillSafeToSettle?: () => boolean;
   },
 ): Promise<SettlementOutcome> {
-  // Operates on the ROW, not the object handed in: the caller's copy can be
-  // stale, and re-promoting a settled claim re-runs once-per-merge effects.
+  // The ROW, not the object handed in: a stale copy re-runs once-per-merge work.
   const live = deps.claims.get(claim.sessionId);
   if (live?.expectedSha !== claim.expectedSha) {
     return { result: "deferred", reason: "the claim has already been resolved" };
@@ -98,13 +81,11 @@ export async function settleAgentMerge(
     return settleWithoutSession(deps, claim, target);
   }
 
-  // req 9 — a settlement running INSIDE a turn must still be that turn's. The
-  // merge and the settlement are separated by a GitHub round trip, and a turn
-  // that ended in between no longer owns the state this writes. Reconciliation
-  // runs with no turn at all and is exempt; its own rule is stronger.
+  // req 9 — a settlement inside a turn must still be that turn's: a round trip
+  // separates the merge from this. Reconciliation has no turn and is exempt.
   if (opts.witnessed && deps.runnerRegistry) {
-    const active = activeTurnIdFor(deps.runnerRegistry, claim.sessionId);
-    if (active !== null && active !== claim.turnId) {
+    const active = captureTurn(deps.runnerRegistry, claim.sessionId);
+    if (active !== null && !isSameTurn(active, opts.turn)) {
       return { result: "deferred", reason: "the turn that claimed this merge has ended" };
     }
   }
@@ -118,14 +99,12 @@ export async function settleAgentMerge(
     owner: target.owner,
     repo: target.repo,
     prNumber: claim.prNumber,
-    // Asked after GitHub answered and before anything is written. Both halves
-    // are also checked outside this call, on the wrong side of the await —
-    // they decide what to do with the ROW; this decides whether to write.
+    // After GitHub answered, before anything is written. The same checks outside
+    // decide the ROW's fate; this decides whether to write.
     guard: (pr) => {
       if (opts.stillSafeToSettle && !opts.stillSafeToSettle()) return false;
-      // A witnessed merge is exempt: the REST call pinned `expected_sha`, so
-      // GitHub enforced the match, and `head_sha` can legitimately read
-      // differently on a repository that deletes the branch.
+      // Witnessed is exempt: the REST call pinned `expected_sha`, and `head_sha`
+      // reads differently on a repository that deletes the branch.
       if (!opts.witnessed && pr.merged_at !== null && pr.head_sha !== claim.expectedSha) return false;
       return true;
     },
@@ -134,9 +113,8 @@ export async function settleAgentMerge(
   const facts = read.pr;
 
   if (facts.merged_at === null) {
-    // A `settling` row means a merge response CAME BACK, and GitHub's
-    // read-after-write is not instant — so an open answer here is a stale read,
-    // not a contradiction. Only a `merging` row may resolve as not-merged.
+    // `settling` means a merge response CAME BACK, so an open answer here is a
+    // stale read. Only a `merging` row may resolve as not-merged.
     if (live.state === "settling") {
       return { result: "deferred", reason: "the pull request does not read as merged yet" };
     }
@@ -145,9 +123,8 @@ export async function settleAgentMerge(
     return { result: "not-merged" };
   }
 
-  // It merged — but was it THIS commit? A pull request can be force-pushed and
-  // merged at another head, and `merged_at` cannot tell those apart. The guard
-  // already stopped the promotion; this decides what to do with the row.
+  // Merged — but at THIS commit? A force-push merges another head, and
+  // `merged_at` cannot tell them apart. The guard already stopped the write.
   if (!opts.witnessed && facts.head_sha !== claim.expectedSha) {
     console.warn(
       `[agent-merge] ${mergeRecordId(claim)} — PR #${claim.prNumber} merged at `
@@ -157,8 +134,7 @@ export async function settleAgentMerge(
     return { result: "not-merged" };
   }
 
-  // The only remaining reason the guard refused: a turn started while GitHub
-  // was answering. Nothing was written, so the row stays for the next pass.
+  // The only guard reason left: a turn started while GitHub was answering.
   if (!read.promoted) return { result: "deferred", reason: "a turn started on this session" };
 
   const message = opts.witnessed
@@ -168,8 +144,7 @@ export async function settleAgentMerge(
       + `pull request #${claim.prNumber}.`;
 
   deps.claims.releaseAfterRecording(claim.sessionId, claim.expectedSha, () => {
-    // Unattached by construction: a settlement can run post-turn or after a
-    // restart, when there is no runner to emit through.
+    // Unattached: a settlement can run post-turn, with no runner to emit through.
     persistNoticeUnattached(deps.chatHistoryManager, claim.sessionId, message, "info");
   });
 
@@ -177,13 +152,10 @@ export async function settleAgentMerge(
 }
 
 /**
- * Resolve a claim whose session has moved on — a repointed `origin`, a re-arm, a
- * replacement pull request.
- *
- * The merge may still have happened, and the row is the last copy of that
- * evidence, so the question is asked of GitHub against the CLAIM's repository
- * and the answer goes in the transcript (req 9). Session state is left alone:
- * nothing here promotes, anchors or archives.
+ * Resolve a claim whose session has moved on. The merge may still have happened
+ * and the row is the last copy of that evidence, so GitHub is asked about the
+ * CLAIM's repository and the answer goes in the transcript (req 9). Nothing here
+ * promotes, anchors or archives.
  */
 async function settleWithoutSession(
   deps: AgentMergeSettlementDeps,
@@ -191,16 +163,14 @@ async function settleWithoutSession(
   target: { owner: string; repo: string },
 ): Promise<SettlementOutcome> {
   const recordId = mergeRecordId(claim);
-  // A deleted session has no transcript to record into, and its claim row went
-  // with it under `ON DELETE CASCADE`. Nothing to ask GitHub about.
+  // No transcript to record into, and the row went with it under CASCADE.
   if (!deps.sessionManager.get(claim.sessionId)) {
     deps.claims.release(claim.sessionId, claim.expectedSha);
     return { result: "not-merged" };
   }
   const facts = await deps.prStatusPoller?.readPrByNumber(target.owner, target.repo, claim.prNumber);
   if (facts === undefined || facts === null) {
-    // Keep the row: the answer is still available on the next pass, and this is
-    // the case where deleting it destroys the only evidence there is.
+    // Keep the row — deleting it here destroys the only evidence there is.
     return { result: "deferred", reason: "GitHub did not answer about the moved pull request" };
   }
   if (facts.merged_at === null || facts.head_sha !== claim.expectedSha) {
@@ -225,10 +195,9 @@ async function settleWithoutSession(
 }
 
 /**
- * Resolve every outstanding claim that is safe to touch. Runs at startup, at the
- * end of any turn on that session, and on session activation — three triggers
- * because a transient GitHub failure must not strand a row (which, with
- * single-flight claims, also blocks the session's next merge) until a restart.
+ * Resolve every outstanding claim that is safe to touch. Three triggers —
+ * startup, end of turn, session activation — because a transient GitHub failure
+ * must not strand a row, which also blocks the session's next merge.
  */
 export async function reconcileAgentMergeClaims(
   deps: AgentMergeSettlementDeps,
@@ -243,8 +212,7 @@ export async function reconcileAgentMergeClaims(
     try {
       const outcome = await settleAgentMerge(deps, claim, {
         witnessed: false,
-        // Re-checked before anything is written: this loop awaits a GitHub
-        // round trip, and a turn can start during it.
+        // Re-checked past the await below: a turn can start during it.
         stillSafeToSettle: () => !hasActiveTurn(deps, claim),
       });
       if (outcome.result === "deferred") {
@@ -259,23 +227,36 @@ export async function reconcileAgentMergeClaims(
   }
 }
 
-/**
- * Is a turn running on this session? Broader than "the claim's own turn" on
- * purpose: the hazard is writing session state while anything is editing and
- * pushing, not whether the ids match.
- */
+/** Broader than "the claim's own turn": ANY turn may be editing and pushing. */
 function hasActiveTurn(deps: AgentMergeSettlementDeps, claim: AgentMergeClaim): boolean {
   const runner = deps.runnerRegistry?.get(claim.sessionId);
   if (!runner) return false;
   return runner.agentBusy || runner.running;
 }
 
-/** The turn identity to record on a claim, or null when no turn is running. */
-export function activeTurnIdFor(
+/**
+ * A running turn's identity, held in memory for one request.
+ *
+ * The RUNNER as well as the epoch: `turnEpoch` restarts at 0 whenever a runner
+ * is recreated, so an epoch alone reads a fresh runner's first turn as the turn
+ * that claimed the merge. Never persisted — the only settlement that consults it
+ * runs inside the request that captured it.
+ */
+export interface TurnToken {
+  runner: object;
+  epoch: number;
+}
+
+/** The turn running on this session, or null when none is — the route's 409. */
+export function captureTurn(
   runnerRegistry: SessionRunnerRegistry | undefined,
   sessionId: string,
-): string | null {
+): TurnToken | null {
   const runner = runnerRegistry?.get(sessionId);
   if (!runner?.running) return null;
-  return currentTurnId(runner.turnEpoch ?? 0);
+  return { runner, epoch: runner.turnEpoch ?? 0 };
+}
+
+function isSameTurn(active: TurnToken, claimed: TurnToken | null | undefined): boolean {
+  return claimed?.runner === active.runner && claimed.epoch === active.epoch;
 }

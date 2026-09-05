@@ -274,12 +274,9 @@ export class RepoStore {
   /**
    * docs/287 — may agents merge their own pull requests in this repository?
    *
-   * Matched on {@link repoId}, NOT on `canonicalRepoKey` like {@link isTrusted}.
-   * That key lower-cases only the scheme and host and sends SCP-style remotes
-   * down a different branch entirely, so three spellings of one repository
-   * produce three keys — survivable for "have we seen this repo before",
-   * unacceptable for a permission, where the split means a grant silently does
-   * not apply. A remote with no parseable identity is never granted.
+   * Matched on {@link repoId}, NOT `canonicalRepoKey` like {@link isTrusted}:
+   * that produces three keys for three spellings, which is survivable for "seen
+   * this repo before" and not for a permission. No identity, no grant.
    */
   allowsAgentMerge(url: string): boolean {
     const id = repoId(url);
@@ -291,18 +288,10 @@ export class RepoStore {
   }
 
   /**
-   * docs/287 — set the agent-merge grant for every stored row that resolves to
-   * the same GitHub repository. Transactional for the reason {@link setTrusted}
-   * is: a concurrent reader must never see it half-applied across duplicate rows.
-   *
-   * Returns `"no-identity"` when `url` has no parseable GitHub identity and
-   * `"not-found"` when it parses but names no stored repository — so the caller
-   * can say WHICH nothing happened, and never report success for a write that
-   * matched no row. That last state is not hypothetical: granting a repository
-   * ShipIt has not been given would answer 200, store nothing, and leave the
-   * repository starting with the grant OFF whenever it was finally added
-   *. {@link setHidden} has always returned false
-   * for an untracked url; this now agrees with it.
+   * docs/287 — set the grant on every row resolving to the same repository.
+   * Transactional, so a reader never sees it half-applied. `"no-identity"` and
+   * `"not-found"` stop the caller reporting success for a write that matched no
+   * row, which would answer 200 and store nothing.
    */
   setAllowAgentMerge(url: string, allow: boolean): "ok" | "no-identity" | "not-found" {
     const id = repoId(url);

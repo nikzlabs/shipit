@@ -125,13 +125,9 @@ export interface ApiDeps {
   usageManager: UsageManager;
   runnerRegistry: SessionRunnerRegistry;
   /**
-   * docs/287-agent-merge-per-repo — durable claims for agent-performed merges.
-   *
-   * Always supplied by `route-registry.ts`, so the repo-bound agent merge always
-   * has one. Optional in the type only for hand-built `ApiDeps` in unit tests;
-   * without it that merge path performs no claim, which is why the route treats
-   * its absence as "not a claimable merge" rather than as permission to merge
-   * unrecorded.
+   * docs/287 — durable claims for agent-performed merges. Always supplied by
+   * `route-registry.ts`; optional only for hand-built test deps, and the route
+   * refuses rather than merging unrecorded when it is absent.
    */
   agentMergeClaims?: AgentMergeClaimStore;
   /**

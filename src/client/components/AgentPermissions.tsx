@@ -6,10 +6,9 @@ import { ICON_SIZE } from "../design-tokens.js";
  * docs/287 — per-repository agent permissions, in the Project Settings dialog.
  *
  * Currently one grant: may an agent merge the pull request its own session
- * opened? It lives here rather than in a tab of its own because a single toggle
- * does not justify a navigation category, and it is deliberately NOT declarable
- * in `shipit.yaml` — the agent can write that file, so a permission stated there
- * would be one it could grant itself.
+ * opened? Here rather than in a tab of its own — one toggle does not justify a
+ * navigation category — and NOT declarable in `shipit.yaml`, which the agent
+ * can write.
  */
 export function AgentPermissions({ repoUrl }: { repoUrl: string }) {
   const repo = useRepoStore((s) => s.repos.find((r) => r.url === repoUrl));

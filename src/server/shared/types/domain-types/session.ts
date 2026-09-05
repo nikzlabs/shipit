@@ -438,20 +438,10 @@ export interface SessionInfo {
    */
   pendingAgentNotice?: string;
   /**
-   * docs/287 — the pull request ShipIt **witnessed itself opening** for this
-   * session, with the repository identity it landed in. Present only as a pair.
-   *
-   * This is a provenance claim, and the only thing that answers "is this the
-   * agent's own pull request?" for the merge grant. It is deliberately NOT
-   * derived from `prStatus`, which also carries pull requests a person opened
-   * on the branch — adopting one of those would hand the agent merge rights
-   * over someone else's work, which requirement 5 excludes by name. A session
-   * that predates the columns, or whose pull request ShipIt merely discovered,
-   * carries neither field and cannot merge.
-   *
-   * The repository is stored beside the number because neither alone is stable:
-   * a number is unique only within a repository, and `remoteUrl` is rewritten
-   * in place when `origin` changes.
+   * docs/287 — the pull request ShipIt WITNESSED itself opening, and the
+   * repository it landed in. Present only as a pair, since a number is unique
+   * only within a repository. Never derived from `prStatus`, which also carries
+   * pull requests a person opened on the branch (req 5).
    */
   prNumber?: number;
   prRepoId?: string;
@@ -739,12 +729,9 @@ export interface RepoInfo {
    */
   trusted?: boolean;
   /**
-   * docs/287 — may an agent merge the pull request its own session opened in
-   * this repository? Off for every repository until the user turns it on, and
-   * never inferred from anything inside the repository: the agent can write
-   * `shipit.yaml`, so a permission declared there would be one it could grant
-   * itself. Set from Project Settings through the browser-only
-   * `PATCH /api/repos/:url`; the container neither reads nor writes it.
+   * docs/287 — may an agent merge its own session's pull request here? Off until
+   * the user turns it on, and never inferred from repository contents: the agent
+   * can write `shipit.yaml`. Browser-only to set; the container never sees it.
    */
   allowAgentMerge?: boolean;
   /**

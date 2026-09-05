@@ -119,11 +119,9 @@ interface SessionRow {
   /** docs/221 — one-shot `[System] …` line the next interactive turn prepends. NULL = nothing owed. */
   pending_agent_notice: string | null;
   /**
-   * docs/287 — the pull request ShipIt itself opened for this session, and the
-   * repository identity it was opened in. Always read as a PAIR: a number is
-   * unique only inside a repository, and `remote_url` can be repointed after
-   * the fact. Both NULL for every session that predates the columns, and for
-   * every pull request ShipIt merely discovered.
+   * docs/287 — the pull request ShipIt itself opened, and the repository it was
+   * opened in. Read as a PAIR. Both NULL for a session predating the columns,
+   * and for any pull request ShipIt merely discovered.
    */
   pr_repo_id: string | null;
   pr_number: number | null;
@@ -423,11 +421,8 @@ export class SessionManager {
     }
     if (row.merged_head_sha) info.mergedHeadSha = row.merged_head_sha;
     if (row.pending_agent_notice) info.pendingAgentNotice = row.pending_agent_notice;
-    // docs/287 — surfaced only as a PAIR. Half a provenance record cannot
-    // authorise anything: a number with no repository names a pull request in
-    // whatever repository the session happens to point at now, and a repository
-    // with no number names none. A row carrying one and not the other is a bug
-    // upstream, and reading it as absent is the answer that refuses the merge.
+    // docs/287 — a PAIR or nothing. Half a record authorises nothing, and
+    // reading it as absent is the answer that refuses the merge.
     if (row.pr_number && row.pr_repo_id) {
       info.prNumber = row.pr_number;
       info.prRepoId = row.pr_repo_id;
@@ -643,13 +638,9 @@ export class SessionManager {
   }
 
   /**
-   * docs/287 — record the pull request ShipIt just WITNESSED itself opening.
-   *
-   * Written as a pair, and only from a create that said it created something.
-   * Every discovery path calls nothing here: a discovered pull request may be a
-   * person's, and adopting it would grant the agent rights over their work
-   * (req 5). `repoIdentity` is the repository the create landed in, not the one
-   * the caller asked for.
+   * docs/287 — record the pull request ShipIt WITNESSED itself opening. A pair,
+   * only from a create that said it created something: a discovered pull
+   * request may be a person's (req 5). `repoIdentity` is where it landed.
    */
   recordPrProvenance(id: string, prNumber: number, repoIdentity: string): void {
     if (!Number.isInteger(prNumber) || prNumber <= 0 || !repoIdentity) return;
@@ -659,13 +650,9 @@ export class SessionManager {
   }
 
   /**
-   * docs/287 — forget the recorded pull request, as a pair.
-   *
-   * Called wherever the session's relationship to its pull request ends: the
-   * docs/202 re-arm, an explicit PR reset, unarchive deciding the old pull
-   * request no longer applies, and a change of `origin`. Clearing is always
-   * safe — the worst outcome is that the agent is told to merge from the card —
-   * while a stale record is an authorisation over the wrong pull request.
+   * docs/287 — forget the recorded pull request, as a pair. Called wherever the
+   * session's relationship to it ends. Clearing is always safe (the agent is
+   * told to merge from the card); a stale record authorises the wrong one.
    */
   clearPrProvenance(id: string): void {
     this.db
@@ -785,11 +772,9 @@ export class SessionManager {
     // docs/218 — also drop the merged-tip anchor: once un-merged there is no
     // merged tip, and a stale value must never let the auto-reset feature fire
     // against a session that is no longer in the merged state.
-    // docs/287 — and the merge provenance, in the same statement. The re-arm
-    // means this session's relationship to that pull request has ended: the
-    // recorded number now names a MERGED pull request, and leaving it would let
-    // the agent ask ShipIt to merge one that already shipped. A new pull request
-    // records a new number when ShipIt opens it.
+    // docs/287 — and the provenance, in the same statement: after a re-arm the
+    // recorded number names a MERGED pull request, and leaving it would let the
+    // agent ask ShipIt to merge one that already shipped.
     const result = this.db.prepare(
       "UPDATE sessions SET merged_at = NULL, previous_merged_pr = ?, merged_head_sha = NULL, "
       + "pr_number = NULL, pr_repo_id = NULL WHERE id = ? AND merged_at IS NOT NULL",
@@ -936,12 +921,9 @@ export class SessionManager {
   }
 
   /**
-   * Set the branch name on a session.
-   *
-   * docs/287 — a CHANGE of branch invalidates the merge provenance, as
-   * repointing `origin` does: the recorded pull request was opened from the old
-   * branch. Guarded on an actual change, so the creation-time callers that set
-   * the branch a session is born with clear nothing.
+   * Set the branch name. docs/287 — a CHANGE invalidates the merge provenance,
+   * as repointing `origin` does: the recorded pull request came from the old
+   * branch. Guarded on a real change, so creation-time callers clear nothing.
    */
   setBranch(id: string, branch: string): void {
     const previous = this.db

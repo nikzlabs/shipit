@@ -193,12 +193,10 @@ export class CiGraceTracker {
   }
 
   /**
-   * `repoKey#prNumber@headSha` → when a merge decision first saw zero checks
-   * for that exact pull request and commit. Separate from
-   * {@link firstObservedNoChecks}, which is per SESSION: two pull requests in
-   * one repository can share a head SHA (a branch pushed twice, a stacked pair),
-   * and one session can ask about a pull request that is not the one the poller
-   * is tracking for it.
+   * `repoKey#prNumber@headSha` → when a merge first saw zero checks for that
+   * exact commit. Separate from the per-SESSION {@link firstObservedNoChecks}:
+   * two pull requests can share a head SHA, and a session can ask about one the
+   * poller is not tracking for it.
    */
   private firstMergeNoChecks = new Map<string, number>();
 
@@ -206,13 +204,10 @@ export class CiGraceTracker {
    * docs/287-agent-merge-per-repo — should an agent merge WAIT, having read zero
    * checks for this commit?
    *
-   * The same question {@link shouldForcePending} answers for the poller, with
-   * one difference that matters: **an unknown CI history STARTS the grace here
-   * instead of ending it.** The poller can revise in a few seconds; a merge is
-   * one-shot, so "we do not know whether this repository runs CI" must not read
-   * as "it does not". The workflow short-circuit is kept — it is positive
-   * evidence, not absence. Keyed by repository + pull request + head SHA, so the
-   * window belongs to the commit being merged rather than to a session.
+   * {@link shouldForcePending}'s question, with one difference: **an unknown CI
+   * history STARTS the grace here instead of ending it.** The poller can revise
+   * in seconds; a merge is one-shot, so "we do not know" must not read as "it
+   * does not". The workflow short-circuit stays — that is evidence, not absence.
    */
   shouldWaitForMergeChecks(args: {
     repoKey: string;

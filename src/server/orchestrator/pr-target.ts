@@ -148,23 +148,17 @@ export function gitCredentialAllowed(
  * Merge is an outward-facing, effectively-irreversible act and the verb most
  * exposed to prompt-injection, so it is opt-in everywhere. Which opt-in applies
  * depends on what the session is:
- *   - `"allowed"` — a sandbox whose `dangerousGitHubOps` grant is on, or a
- *     repo-bound session in a repository the user granted (req 4, 12).
- *   - `"not-granted"` — a sandbox where the grant was left off at creation. The
- *     403 tells the agent the user must opt in when creating the sandbox.
- *   - `"not-granted-repo"` — a repo-bound session in a repository with the grant
- *     off. Off for every repository until the user turns it on (req 6).
- *   - `"not-sandbox"` — an **ops** session, whose behaviour requirement 13 keeps
- *     unchanged: it merges from the PR lifecycle card, not the shim. The wording
- *     is preserved deliberately, even though it now describes only one kind.
+ *   - `"allowed"` — a sandbox with `dangerousGitHubOps`, or a repo-bound
+ *     session in a granted repository (req 4, 12).
+ *   - `"not-granted"` — a sandbox whose grant was left off at creation.
+ *   - `"not-granted-repo"` — the repository's grant is off, as it is until the
+ *     user turns it on (req 6).
+ *   - `"not-sandbox"` — an **ops** session, unchanged by req 13. The wording is
+ *     kept even though it now describes only one kind.
  *
- * `repoAllowsAgentMerge` is a required parameter rather than something this
- * module resolves: it keeps the module pure, and a call site that has not
- * consulted the grant cannot compile, so it can never default to "allowed".
- *
- * Both grants are server-authoritative and never inferred from workspace files
- * — an agent can write `shipit.yaml`, so a permission stated there would be one
- * it could give itself.
+ * `repoAllowsAgentMerge` is a required parameter, so a call site that has not
+ * consulted the grant cannot compile. Both grants are server-authoritative and
+ * never read from workspace files — an agent can write `shipit.yaml`.
  */
 export function mergeDisposition(
   session: Pick<SessionInfo, "kind" | "capabilities">,
@@ -184,28 +178,16 @@ export type AgentMergeOwnershipRefusal = { status: number; error: string } | nul
  * docs/287 req 5 — is the pull request the agent asked to merge the one THIS
  * session opened?
  *
- * Every input is server-derived. The agent supplies only the number, and the
- * number is the one thing that proves nothing on its own: it is unique inside a
- * repository, so `#7` names a different pull request in every fork.
+ * Every input is server-derived. The agent supplies only the number, which
+ * proves nothing alone: `#7` names a different pull request in every fork.
+ * **`--repo` is refused**, not ignored, since `resolvePrTarget` retargets on it;
+ * **`cwd` is ignored**, since the shim sends it on every call. **The branch** is
+ * read with `currentBranchOrNull`, never `getCurrentBranch`, which answers
+ * `"main"` on a detached HEAD. **The recorded pull request** must match the
+ * number AND the repository identity, re-derived at merge time.
  *
- * - **`--repo` is refused**, not ignored. `resolvePrTarget` returns early on a
- *   parsed `--repo` and retargets the whole operation, so a merge carrying one
- *   would be checked against this session's repository and executed against
- *   another.
- * - **`cwd` is ignored, not refused.** The shim sends it on *every* call
- *   (`targetBody()` includes `deps.cwd`, defaulted to `process.cwd()`), so
- *   refusing it would reject the feature's own happy path. `resolvePrTarget`
- *   already ignores it for a repo-bound session.
- * - **The branch** must be the session's own, read with `currentBranchOrNull`
- *   and never `getCurrentBranch`, which answers `"main"` on a detached HEAD —
- *   a wrong answer that would pass a comparison against a `main`-based session.
- * - **The recorded pull request** must match both the number and the repository
- *   identity, re-derived from `remoteUrl` at merge time so a repointed origin
- *   invalidates an older record.
- *
- * Absence refuses, throughout. That is the opposite of `guardMergeSync`, where
- * "cannot tell" correctly proceeds: there the fallback is the status quo, here
- * it is a merge.
+ * Absence refuses throughout — the opposite of `guardMergeSync`, whose fallback
+ * is the status quo where this one's is a merge.
  */
 export function agentMergeOwnership(args: {
   session: Pick<SessionInfo, "remoteUrl" | "branch" | "prNumber" | "prRepoId">;

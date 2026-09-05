@@ -125,13 +125,9 @@ export async function resolveMergeSync(
 /**
  * What the merge route should do about the branch's sync state.
  *
- * `pushed` is deliberately one boolean and not a taxonomy of hold reasons: the
- * caller's only question is whether a synchronous push landed here, because the
- * debounced auto-push may be cancelled **only** then. That scheduler is keyed by
- * session (`services/auto-push-scheduler.ts`), so cancelling a pending push that
- * nothing replaced strands the commit with no retry and no error
- * (docs/287-agent-merge-per-repo req 17). The message stays the human-facing
- * half; nothing branches on its wording.
+ * `pushed` says whether a synchronous push landed here, because the debounced
+ * auto-push may be cancelled ONLY then — cancelling one that nothing replaced
+ * strands the commit with no retry and no error (docs/287 req 17).
  */
 export type MergeSyncVerdict =
   | { action: "proceed" }

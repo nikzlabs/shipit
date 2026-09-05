@@ -175,11 +175,9 @@ export interface RunnerRegistryDeps {
    */
   getPrStatusPoller?: () => PrStatusPoller | undefined;
   /**
-   * docs/287-agent-merge-per-repo req 9 — resolve this session's outstanding
-   * agent-merge claim, now that its turn is over. Fire-and-forget: a claim that
-   * cannot be resolved this time is resolved by one of the other two triggers
-   * (startup, session activation). Optional — a setup without it simply defers
-   * every claim to those.
+   * docs/287 req 9 — resolve this session's outstanding agent-merge claim now
+   * its turn is over. Fire-and-forget; the other two triggers (startup, session
+   * activation) catch whatever this pass cannot resolve.
    */
   reconcileAgentMergeClaimsFor?: (sessionId: string) => void;
   /**
@@ -353,12 +351,8 @@ export function createRunnerRegistry(
       // Fans out to BOTH the auto-fix and auto-resolve managers. Cooldown-driven
       // retry still runs through `handleTransition` on the next poll, not here.
       getPrStatusPoller?.()?.notifyRunnerIdle(sessionId);
-      // docs/287-agent-merge-per-repo req 9 — end of turn is one of the three
-      // reconciliation triggers. A claim left `merging` by an indeterminate
-      // merge is resolvable the moment its turn is over, and this is the
-      // earliest safe point: reconciliation refuses to settle while a turn is
-      // running, precisely so it cannot mark a session merged and delete its
-      // remote branch while the agent is still pushing.
+      // req 9 — the earliest safe reconciliation point: settling while a turn
+      // runs could mark the session merged mid-push.
       reconcileAgentMergeClaimsFor?.(sessionId);
     },
     onRunnerCreated: (runner) => {

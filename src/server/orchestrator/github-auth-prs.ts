@@ -162,14 +162,9 @@ export interface TerminalPrFacts {
 }
 
 /**
- * docs/287-agent-merge-per-repo req 11 — the same facts as
- * {@link findPullRequestAnyState}, addressed by NUMBER.
- *
- * Settlement cannot use the branch-addressed lookup. That one asks for the most
- * recently updated pull request on a branch, so a re-arm or an unarchive inside
- * the same repository is enough to make it answer about a different pull request
- * than the one that was merged — and settling the wrong pull request writes the
- * wrong session state. A number is exact.
+ * docs/287 req 11 — {@link findPullRequestAnyState}'s facts, addressed by
+ * NUMBER. Settlement cannot use the branch lookup: that takes the most recently
+ * updated pull request on a branch, so a re-arm answers about a different one.
  */
 export async function findPullRequestByNumber(
   token: string,
@@ -214,38 +209,26 @@ export async function findPullRequestByNumber(
  * commit. Callers should pass the PR title (and ideally body) so behavior is
  * independent of per-repo settings.
  *
- * docs/287-agent-merge-per-repo req 16 — `expectedSha` is GitHub's own
- * optimistic-concurrency check: it merges only while the head is still that
- * commit, and answers 409 otherwise. Any caller that decided to merge by
- * looking at a commit must pass the commit it looked at, or everything between
- * the check and this call merges unchecked. Omitted by callers with nothing to
- * pin (the UI card merges what the card shows).
+ * docs/287 req 16 — `expectedSha` is GitHub's optimistic-concurrency check: it
+ * merges only while the head is still that commit. A caller that decided by
+ * looking at a commit must pass it, or everything since merges unchecked.
  */
 export type MergeAttempt =
   /** A parsed response saying the merge landed. */
   | { outcome: "merged"; message: string; mergeCommitSha: string | null }
   /** GitHub answered no — conflict, protection, a moved head. It did not merge. */
   | { outcome: "refused"; message: string }
-  /**
-   * We never got an answer we can trust: a transport error, a 5xx, an
-   * unparseable body. The merge MAY have happened.
-   */
+  /** No answer we can trust — transport error, 5xx, unparseable body. It MAY
+   * have merged. */
   | { outcome: "indeterminate"; message: string };
 
 /**
- * docs/287-agent-merge-per-repo req 9 — the merge attempt, with the three
- * outcomes it actually has.
- *
- * The distinction is not cosmetic: it decides whether the durable claim
- * (`agent-merge-claims.ts`) is deleted or left for reconciliation. Collapsing
- * "GitHub refused" and "we never heard back" into one `success: false` — what
- * {@link mergePullRequest} did, and still presents to callers that only need a
- * boolean — discards the record of a merge that may already have happened.
- *
- * The classification errs toward `indeterminate`, because that is the outcome
- * whose recovery is a second look at GitHub. A 4xx is GitHub answering about
- * THIS merge and is taken as a refusal; a 5xx, a rejected fetch, and a 2xx we
- * cannot parse are not answers.
+ * docs/287 req 9 — the merge attempt, with the three outcomes it actually has.
+ * The distinction decides whether the durable claim is deleted or left for
+ * reconciliation, so collapsing "refused" and "never heard back" discards the
+ * record of a merge that may have happened. It errs toward `indeterminate`: a
+ * 4xx is GitHub answering about THIS merge; a 5xx, a rejected fetch and an
+ * unparseable 2xx are not answers at all.
  */
 export async function mergePullRequestAttempt(
   token: string,
@@ -296,10 +279,8 @@ export async function mergePullRequestAttempt(
     if (res.status === 405) {
       return { outcome: "refused", message: message || "PR is not mergeable" };
     }
-    // 409 with an `expectedSha` is specifically "the head moved between the
-    // check and this call" — the case the parameter exists to catch, and worth
-    // naming, because GitHub's own wording ("Head branch was modified") does not
-    // tell the caller what to do next.
+    // 409 with an `expectedSha` is "the head moved between the check and this
+    // call". Named, because GitHub's own wording does not say what to do next.
     if (res.status === 409 && expectedSha) {
       return {
         outcome: "refused",
@@ -322,18 +303,14 @@ export async function mergePullRequestAttempt(
       message: `GitHub accepted the merge of PR #${pullNumber} but returned a body ShipIt could not read.`,
     };
   }
-  // `merged === true` and nothing else. GitHub documents a 200 here only for a
-  // performed merge with a boolean `merged`, so anything else readable — `{}`,
-  // a bare string, `merged: null`, `merged: "false"` — is a response ShipIt does
-  // not understand, and reading an unrecognised body as a merge is how a merge
-  // that never happened gets recorded as one.
+  // `merged === true` and nothing else. GitHub documents a 200 only for a
+  // performed merge with a boolean `merged`; reading any other body as a merge
+  // is how one that never happened gets recorded.
   if (parsed.merged === true) {
     return { outcome: "merged", message: "Pull request merged", mergeCommitSha: parsed.sha ?? null };
   }
   if (parsed.merged === false) {
-    // req 7 — GitHub's own reason, word for word, when it sent one. The generic
-    // sentence used to replace it unconditionally, which threw away the only
-    // part of the answer the agent could act on.
+    // req 7 — GitHub's own reason, word for word, when it sent one.
     const reason = typeof parsed.message === "string" && parsed.message.trim() ? parsed.message.trim() : null;
     return {
       outcome: "refused",
@@ -351,10 +328,9 @@ export async function mergePullRequestAttempt(
 /**
  * Merge a pull request, for callers that only need "did it work".
  *
- * Both non-success outcomes collapse to `success: false` here on purpose: a
- * caller with no durable claim has nothing to do differently with an
- * indeterminate result. Callers that DO — the agent merge — use
- * {@link mergePullRequestAttempt}.
+ * Both non-success outcomes collapse to `success: false`: a caller with no
+ * durable claim does nothing differently with an indeterminate result. The agent
+ * merge, which does, uses {@link mergePullRequestAttempt}.
  */
 export async function mergePullRequest(
   token: string,

@@ -5,7 +5,7 @@ import path from "node:path";
 import { DatabaseManager } from "../shared/database.js";
 import { SessionManager } from "./sessions.js";
 import { ChatHistoryManager } from "./chat-history.js";
-import { AgentMergeClaimStore, currentTurnId, mergeRecordId } from "./agent-merge-claims.js";
+import { AgentMergeClaimStore, mergeRecordId } from "./agent-merge-claims.js";
 
 /**
  * docs/287-agent-merge-per-repo §4 — the durable claim.
@@ -34,13 +34,12 @@ afterEach(() => {
   dbManager.close();
 });
 
-function claimOne(over: { prNumber?: number; expectedSha?: string; turnId?: string } = {}) {
+function claimOne(over: { prNumber?: number; expectedSha?: string } = {}) {
   claims.claim({
     sessionId: SESSION,
     repoId: REPO,
     prNumber: over.prNumber ?? 7,
     expectedSha: over.expectedSha ?? "sha-head",
-    turnId: over.turnId ?? currentTurnId(1),
   });
 }
 
@@ -78,10 +77,10 @@ describe("AgentMergeClaimStore", () => {
     // as settled. The pull request merged and nothing recorded it (cross-agent
     // review finding).
     expect(claims.claim({
-      sessionId: SESSION, repoId: REPO, prNumber: 7, expectedSha: "sha-a", turnId: "t",
+      sessionId: SESSION, repoId: REPO, prNumber: 7, expectedSha: "sha-a",
     })).toBe(true);
     expect(claims.claim({
-      sessionId: SESSION, repoId: REPO, prNumber: 8, expectedSha: "sha-b", turnId: "t",
+      sessionId: SESSION, repoId: REPO, prNumber: 8, expectedSha: "sha-b",
     })).toBe(false);
     expect(claims.list()).toHaveLength(1);
     expect(claims.get(SESSION)).toMatchObject({ prNumber: 7, expectedSha: "sha-a", state: "merging" });
@@ -93,7 +92,7 @@ describe("AgentMergeClaimStore", () => {
     claimOne();
     claims.markSettling(SESSION, "sha-head");
     expect(claims.claim({
-      sessionId: SESSION, repoId: REPO, prNumber: 9, expectedSha: "sha-c", turnId: "t",
+      sessionId: SESSION, repoId: REPO, prNumber: 9, expectedSha: "sha-c",
     })).toBe(false);
     expect(claims.get(SESSION)).toMatchObject({ prNumber: 7, state: "settling" });
   });
@@ -104,7 +103,7 @@ describe("AgentMergeClaimStore", () => {
     claimOne();
     claims.release(SESSION, "sha-head");
     expect(claims.claim({
-      sessionId: SESSION, repoId: REPO, prNumber: 8, expectedSha: "sha-b", turnId: "t",
+      sessionId: SESSION, repoId: REPO, prNumber: 8, expectedSha: "sha-b",
     })).toBe(true);
     expect(claims.get(SESSION)).toMatchObject({ prNumber: 8, expectedSha: "sha-b" });
   });
@@ -118,7 +117,7 @@ describe("AgentMergeClaimStore", () => {
       const first = new DatabaseManager(file);
       new SessionManager(first).track(SESSION, "A session");
       new AgentMergeClaimStore(first).claim({
-        sessionId: SESSION, repoId: REPO, prNumber: 7, expectedSha: "sha-head", turnId: "t",
+        sessionId: SESSION, repoId: REPO, prNumber: 7, expectedSha: "sha-head",
       });
       first.close();
 
@@ -181,17 +180,6 @@ describe("AgentMergeClaimStore", () => {
     expect(written).toEqual([]);
   });
 
-  it("refuses a new claim while one is settling", () => {
-    // A `settling` row is proof a merge HAPPENED and its effects are still being
-    // written. Replacing it would discard that proof.
-    claimOne();
-    claims.markSettling(SESSION, "sha-head");
-    expect(claims.claim({
-      sessionId: SESSION, repoId: REPO, prNumber: 8, expectedSha: "sha-b", turnId: "t",
-    })).toBe(false);
-    expect(claims.get(SESSION)).toMatchObject({ prNumber: 7, state: "settling" });
-  });
-
   it("will not let a refusal delete a settling row", () => {
     // The concurrency case: two requests claim the same pull request at the same
     // head, one merges and moves the row to `settling`, and the other gets
@@ -209,19 +197,6 @@ describe("AgentMergeClaimStore", () => {
     claimOne();
     expect(claims.releaseUnmerged(SESSION, "sha-head")).toBe(true);
     expect(claims.get(SESSION)).toBeNull();
-  });
-});
-
-describe("turn identity", () => {
-  it("is the epoch plus a prefix, and is stable within a process", () => {
-    // What this can honestly assert. `turnEpoch` restarts at 0 whenever a runner
-    // is recreated, so the identity carries a prefix that a NEW process cannot
-    // reproduce — but a single test process has exactly one prefix, so the
-    // cross-process property is not observable from here and is not claimed.
-    expect(currentTurnId(0)).not.toBe("0");
-    expect(currentTurnId(0)).not.toBe(currentTurnId(1));
-    expect(currentTurnId(3)).toBe(currentTurnId(3));
-    expect(currentTurnId(3).endsWith(":3")).toBe(true);
   });
 });
 

@@ -1003,9 +1003,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     // manager is constructed inside the poller's constructor, which runs
     // after the registry, so the runner-idle hook reads through a getter.
     getAutoConflictResolveManager: () => prStatusPollerRef.ref?.autoConflictResolveManager,
-    // docs/287-agent-merge-per-repo req 9 — the end-of-turn reconciliation
-    // trigger. Same lazy shape as the poller for the same reason: settlement
-    // needs the poller, which is constructed after this registry.
+    // req 9 — the end-of-turn trigger. Lazy for the same reason as the poller:
+    // settlement needs it, and it is constructed after this registry.
     reconcileAgentMergeClaimsFor: (sessionId: string) => {
       void reconcileAgentMergeClaims({
         claims: agentMergeClaims,
@@ -1550,14 +1549,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // the first of three. A claim left `merging` by a crash mid-merge is resolved
   // from its own tuple.
   //
-  // Ordered AFTER the adoption sweep above, for the same reason the docs/196
-  // reconcile below is: until those turns are adopted the registry is EMPTY, so
-  // "does this session have an active turn?" answers no for every session and
-  // the guard passes vacuously. A claim belonging to a surviving turn would then
-  // be settled while that turn is still editing and pushing — marking the
-  // session merged and deleting its remote branch underneath it. (An earlier
-  // draft ran this before the sweep with a comment asserting it could not race;
-  // the assertion was never checked, and was wrong.)
+  // AFTER the adoption sweep, for the same reason the docs/196 reconcile below
+  // is: until those turns are adopted the registry is EMPTY, so "has an active
+  // turn?" answers no for everything and the guard passes vacuously — settling a
+  // surviving turn's claim while it is still editing and pushing.
   void reconcileAgentMergeClaims({
     claims: agentMergeClaims,
     sessionManager,

@@ -166,10 +166,8 @@ export async function emitPrLifecycleAfterCommit(args: {
             ? { baseBranch: previousMergedPr.baseBranch, forceWithLease: true }
             : undefined,
         );
-        // docs/287 — the auto-create path is a witnessed create, so it records
-        // provenance. The RECOVERY branch above deliberately does not: it finds
-        // a pull request by branch name, and a found pull request may be a
-        // person's.
+        // docs/287 — a witnessed create. The recovery branch above finds one by
+        // branch name, which may be a person's, so it records nothing.
         recordWitnessedPrCreate(deps.sessionManager, sessionId, result);
         if (session.remoteUrl) {
           deps.prStatusPoller.trackSession(sessionId, session.remoteUrl);

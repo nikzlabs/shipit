@@ -494,18 +494,11 @@ export async function mergePullRequest(
 }
 
 /**
- * Agent-driven merge backing `gh pr merge` — for a sandbox with the
- * `dangerousGitHubOps` grant (docs/224) and for a repo-bound session in a
- * repository the user granted (docs/287). Distinct from {@link mergePullRequest}
- * (the UI card's current-branch merge): the agent passes an explicit PR number,
- * and the guardrails are enforced inline because the poller's cached state
- * cannot carry this decision (`services/merge-gate.ts` says why at length).
- *
- * **One live read decides everything**, for BOTH kinds — the `getCheckStatus()`
- * gate this replaced merged on a swallowed API failure, a live fail-open on the
- * sandbox path and not just a gap in the new one (req 7). Refusals are the
- * caller's to relay verbatim, the merge pins the observed head SHA (req 16), and
- * branch protection stays GitHub's to enforce: no admin or force path exists.
+ * Agent-driven merge backing `gh pr merge` — for a sandbox with
+ * `dangerousGitHubOps` (docs/224) and a repo-bound session in a granted
+ * repository (docs/287). Unlike {@link mergePullRequest}, the agent passes an
+ * explicit PR number. **One live read decides everything**, for both kinds: the
+ * `getCheckStatus()` gate it replaced merged on a swallowed API failure (req 7).
  */
 export async function agentMergePullRequest(
   git: GitManager,
@@ -516,36 +509,22 @@ export async function agentMergePullRequest(
     method?: string;
     auto?: boolean;
     remoteUrl?: string;
-    /**
-     * docs/287 — true for a session bound to a ShipIt-managed repository. It
-     * changes three things: the pull request's head must equal this workspace's
-     * HEAD (req 14), `--auto` is refused rather than arming (req 12/13), and the
-     * zero-check grace is consulted through the poller.
-     */
+    /** docs/287 — the head must equal this workspace's HEAD (req 14), `--auto`
+     * is refused (req 12/13), and the zero-check grace is consulted. */
     repoBound?: boolean;
     /** The repo-bound session's local HEAD, for the req 14 comparison. */
     localHead?: { kind: "head"; sha: string } | { kind: "unreadable"; reason: string };
-    /**
-     * The zero-check grace decision, supplied by the route (the tracker is
-     * private to the poller). Called ONLY when the read reports no checks, so a
-     * green merge never starts a grace timer as a side effect. Absent ⇒ no
-     * grace, which is the honest answer for a caller with no poller.
-     */
+    /** The zero-check grace. Called ONLY when the read reports no checks, so a
+     * green merge never starts a grace timer as a side effect. */
     graceSaysWait?: (headSha: string) => Promise<boolean>;
     /**
-     * docs/287 reqs 1 + 9 — the last gate before the REST call: re-check that
-     * the merge is still authorised, then write the durable claim. Returns a
-     * refusal message, or null to proceed; it owns the wording because its two
-     * refusals are different facts. Synchronous, so nothing can interleave
-     * between it and the call it guards.
+     * reqs 1 + 9 — the last gate before the REST call: re-check that the merge
+     * is still authorised, then write the durable claim. Returns a refusal
+     * message (its own wording; the two refusals are different facts) or null.
      */
     beforeMerge?: (expectedSha: string) => string | null;
-    /**
-     * The merge landed and was witnessed — settle before reporting success.
-     * `"deferred"` means the merge happened but the session state
-     * `shipit branch reset-to-base` reads may not be current, and the agent is
-     * told that instead of a bare success.
-     */
+    /** Settle before reporting success. `"deferred"` means it merged but the
+     * state `shipit branch reset-to-base` reads may not be current. */
     onMerged?: (expectedSha: string) => Promise<"settled" | "deferred">;
     /** GitHub answered no; the claim is spent. */
     onRefused?: (expectedSha: string) => Promise<void>;
@@ -561,9 +540,8 @@ export async function agentMergePullRequest(
   const { owner, repo } = resolved;
   const mergeMethod = (opts.method || "merge") as "merge" | "squash" | "rebase";
 
-  // req 12/13 — `--auto` is arming, not merging, and repo-bound arming is
-  // `docs/288`. Refused before the read, so the agent is told what to do rather
-  // than handed a merge it did not ask for. Sandbox `--auto` is untouched.
+  // req 12/13 — `--auto` is arming, not merging; repo-bound arming is docs/288.
+  // Refused before the read. Sandbox `--auto` is untouched.
   if (opts.auto && opts.repoBound) {
     return {
       success: false,
@@ -591,8 +569,8 @@ export async function agentMergePullRequest(
   }
 
   if (decision.action === "refuse") {
-    // A sandbox `--auto` on pending checks arms GitHub's own auto-merge, exactly
-    // as before. This is the one refusal a caller turns into something else.
+    // The one refusal a caller turns into something else: a sandbox `--auto` on
+    // pending checks arms GitHub's own auto-merge, as before.
     if (decision.reason === "checks-pending" && opts.auto && !opts.repoBound) {
       const graphqlMethod =
         mergeMethod === "merge" ? ("MERGE" as const)
@@ -607,9 +585,7 @@ export async function agentMergePullRequest(
         autoMergeEnabled: autoResult.success,
       };
     }
-    // A sandbox keeps the `--auto` affordance, so its pending refusal keeps
-    // naming it. A repo-bound session does not have one yet, which is why the
-    // gate's own wording says only "merge again once they report".
+    // A sandbox keeps the `--auto` affordance, so its refusal still names it.
     if (decision.reason === "checks-pending" && !opts.repoBound) {
       return {
         success: false,
@@ -619,12 +595,10 @@ export async function agentMergePullRequest(
     return { success: false, message: decision.message };
   }
 
-  // reqs 1 + 9 — the LAST gate before the irreversible call, and the only one on
-  // the far side of every await above it. The grant, the ownership tuple, the
-  // flush and the push were all decided before a commit, a push and two GitHub
-  // round trips; a permission withdrawn in that window has to stop the merge, or
-  // "withdraw at any time" means "withdraw between merges". The claim is written
-  // here for the same reason: the call can reject AFTER GitHub accepted it.
+  // reqs 1 + 9 — the LAST gate before the irreversible call, and the only one
+  // past every await above it: the grant and the ownership tuple were decided
+  // before a commit, a push and two round trips. The claim is written here for
+  // the same reason — the call can reject AFTER GitHub accepted it.
   const refusal = opts.beforeMerge?.(decision.sha);
   if (refusal) return { success: false, message: refusal };
 
@@ -634,9 +608,8 @@ export async function agentMergePullRequest(
     owner, repo, opts.number, mergeMethod, decision.sha,
   );
 
-  // req 9 — three outcomes, not two. `indeterminate` deliberately leaves the
-  // claim standing: the merge may have happened, and reconciliation resolves it
-  // from the row's own tuple rather than from the shape of this failure.
+  // req 9 — three outcomes, not two. `indeterminate` leaves the claim standing:
+  // the merge may have happened, and the tuple resolves it later.
   if (attempt.outcome === "indeterminate") {
     await opts.onIndeterminate?.(decision.sha);
     return { success: false, message: attempt.message };
@@ -656,10 +629,9 @@ export async function agentMergePullRequest(
     via: "gh pr merge",
     method: mergeMethod,
   });
-  // req 11 — success is reported only after settlement, so the agent's next
+  // req 11 — success only after settlement, so the agent's next
   // `shipit branch reset-to-base` cannot read `not-merged` for work that just
-  // shipped. A merge that could not settle is still reported; the follow-up
-  // step is simply not promised.
+  // shipped. A merge that could not settle is reported without that promise.
   const settlement = await opts.onMerged?.(decision.sha);
   if (settlement === "deferred") {
     return {
@@ -757,20 +729,14 @@ export async function quickCreatePr(
    * docs/287-agent-merge-per-repo — false only when THIS call created the pull
    * request; true when it found one already open on the branch.
    *
-   * The distinction is what makes the merge grant's ownership record
-   * trustworthy. A pull request ShipIt merely *discovered* on the branch was
-   * opened by someone unknown — a human, a laptop, an earlier session — and
-   * recording it as this session's would hand the agent merge rights over a
-   * pull request it did not open. Only a witnessed create is provenance, so
-   * every caller that records ownership reads this field.
-   *
-   * The two return sites are otherwise shaped identically, which is exactly why
-   * the caller could not tell them apart before.
+   * A pull request ShipIt merely DISCOVERED was opened by someone unknown, so
+   * recording it would hand the agent rights over work it did not do. The two
+   * return sites are otherwise identical, which is why callers could not tell
+   * them apart before.
    */
   alreadyExisted: boolean;
-  /** The repository the pull request actually lives in — `--repo` can retarget
-   * it away from the session's own remote, so ownership is checked against this
-   * rather than against `session.remoteUrl`. */
+  /** Where it actually lives — `--repo` can retarget it off the session's own
+   * remote, so ownership is checked against this, not `session.remoteUrl`. */
   owner: string;
   repo: string;
 }> {
@@ -995,18 +961,12 @@ async function removePrLabels(
  * docs/287-agent-merge-per-repo req 15 — the complete answer to "did this turn's
  * work reach the branch?".
  *
- * `autoCommit()` has four ways to NOT commit the work and only two of them were
- * ever reported: the booleans this replaced said nothing about unresolved
- * conflicts (a null hash, indistinguishable from a clean tree) or about a
- * partial commit that omitted an unreadable directory. A caller that merges on
- * "no error" would merge a branch missing the very edits it just asked to
- * include, so the outcome is enumerated and the caller decides per case.
- *
- * The `unreadable: "omitted"` state is orthogonal in `autoCommit` — it can ride
- * along with any other result — so the flat union states a **precedence**:
- * secret, then blocked-unreadable, then conflict, then partial. Every one of
- * them means "not the whole tree", which is why the merge accepts `committed`
- * and `nothing-to-commit` and nothing else.
+ * `autoCommit()` has four ways to NOT commit the work and the booleans this
+ * replaced reported two: an unresolved conflict looked like a clean tree, and a
+ * partial commit like a whole one. `unreadable: "omitted"` is orthogonal there,
+ * so the flat union states a PRECEDENCE — secret, blocked-unreadable, conflict,
+ * partial — and all four mean "not the whole tree", which is why the merge
+ * accepts only `committed` and `nothing-to-commit`.
  */
 export type TurnCommitFlush =
   /** The whole working tree is on the branch, in this commit. */
@@ -1115,18 +1075,15 @@ export async function flushPendingTurnCommit(
     runner?.emitMessage({ type: "git_committed", hash: commitHash, message: summary });
   }
 
-  // docs/287-agent-merge-per-repo req 15 — precedence, most-blocking first. The
-  // three refusals are mutually exclusive in `autoCommit` (each returns early),
-  // but they are ordered rather than assumed so a future path that produces two
-  // at once still fails closed instead of picking whichever branch runs first.
+  // req 15 — precedence, most-blocking first. The three refusals are mutually
+  // exclusive today, but ordering them keeps a future double failing closed.
   if (secretBlocked) return { kind: "blocked-secret" };
   if (unreadableBlocked) return { kind: "blocked-unreadable" };
   if (conflictedFiles.length > 0 || rebaseInProgress) {
     return { kind: "blocked-conflict", conflictedFiles, rebaseInProgress };
   }
-  // An `omitted` path is orthogonal to the commit: it can accompany a landed
-  // commit (partial) or a "clean" tree whose only changes git could not see.
-  // Both mean the branch does not carry the whole tree, so both are `partial`.
+  // `omitted` can accompany a landed commit or a "clean" tree git could not
+  // fully see. Both mean the branch lacks the whole tree, so both are `partial`.
   if (unreadable) return { kind: "partial-unreadable", commitHash };
   if (!commitHash) return { kind: "nothing-to-commit" };
   return { kind: "committed", commitHash };
@@ -1191,12 +1148,8 @@ export async function agentCreatePr(
   insertions: number;
   deletions: number;
   alreadyExisted: boolean;
-  /**
-   * docs/287 — the repository the pull request actually lives in, as GitHub
-   * resolved it. `--repo` retargets the create away from the session's own
-   * remote, so provenance is recorded against this, never against the URL the
-   * request asked for.
-   */
+  /** docs/287 — where the pull request landed, as GitHub resolved it. `--repo`
+   * retargets the create, so provenance is recorded against this. */
   owner: string;
   repo: string;
   /**
@@ -1258,10 +1211,8 @@ export async function agentCreatePr(
   // as the thing to prevent — it was only ever wired for one of its two causes
   // (review finding).
   //
-  // These two are the only kinds that abort a `gh pr create`. `blocked-conflict`
-  // and `partial-unreadable` fall through exactly as they did when the flush
-  // reported two booleans: docs/287 req 15 is about what may be MERGED, and
-  // what may be PUSHED is not that feature's decision to change.
+  // The only two kinds that abort a `gh pr create`. The others fall through as
+  // before: req 15 is about what may be MERGED, not what may be PUSHED.
   if (flush.kind === "blocked-unreadable") {
     throw new ServiceError(
       422,
@@ -1476,9 +1427,8 @@ export async function agentCreatePr(
     insertions: stats.insertions,
     deletions: stats.deletions,
     alreadyExisted: false,
-    // docs/287 — where the pull request actually landed. `--repo` can retarget
-    // the create away from the session's own remote, so provenance is recorded
-    // against this rather than against what the caller asked for.
+    // docs/287 — where it landed, which `--repo` can move off the session's own
+    // remote, so provenance is recorded against this and not the request.
     owner: resolved.owner,
     repo: resolved.repo,
     labelWarning,
