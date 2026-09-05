@@ -175,31 +175,41 @@ export function claudeModelArg(modelId: string): string {
   // Exact lookup only. `getContextWindowForModel`'s substring fallback would
   // guess a window for an id the catalogue has no row for, and guessing HIGH
   // here tells the CLI not to compact a session that really is 200K.
+  //
+  // Keyed by model id and not by the `(service, mode, model)` selection, which
+  // `contextWindowFor` would want: a turn on the harness's own vendor carries no
+  // `ServiceRouting` at all, so the selection is not available at every spawn
+  // this shapes. The two answers can only differ for a model whose row declares
+  // a `byHarness` override or whose window differs BETWEEN services, and the
+  // catalogue has neither today. Revisit when it gains one.
   if ((MODEL_CONTEXT_WINDOWS[modelId] ?? 0) < LONG_CONTEXT_TOKENS) return modelId;
   return `${modelId}[1m]`;
 }
 
 /**
  * The catalogue id behind a model the Claude CLI reports back, undoing
- * {@link claudeModelArg}.
+ * {@link claudeModelArg} against the id the spawn actually selected.
  *
  * The CLI echoes the `--model` value verbatim in `system.init` and as the
  * `modelUsage` key, so without this a ShipIt-appended suffix leaks into the
  * usage row's `model`, the Usage modal's label, and the harness-switch "keep the
  * model" lookup — none of which have a row for `claude-fable-5-1[1m]`.
  *
- * Two guards rather than a blanket strip, and both are load-bearing. A reported
- * id the catalogue already knows is returned as-is — `glm-5.3[1m]` IS a row id,
- * and stripping it would hand every downstream lookup a *different* row
- * (`glm-5.3`, the metered-key one). And past that, only a suffix
- * `claudeModelArg` would itself have produced is removed, so a `[…]` that came
- * from somewhere else survives instead of being silently rewritten.
+ * **`selected` is required, not a convenience.** A context-free inverse cannot
+ * do this job, because the shaped spelling of one row can be another row's real
+ * id: Z.ai's subscription mode declares `glm-5.3[1m]` while its key mode
+ * declares `glm-5.3`, so the string `glm-5.3[1m]` reported back is the canonical
+ * id under one selection and a ShipIt artefact under the other. Only what the
+ * spawn selected tells them apart — found in review, after a suffix-shaped
+ * inverse got the key-mode row wrong.
+ *
+ * Anything else passes through untouched, which is the honest answer for a model
+ * the CLI switched to on its own (`/model` mid-session): it is not the id this
+ * spawn shaped, so there is nothing to undo.
  */
-export function unshapeClaudeModelId(reported: string): string {
-  if (MODEL_CONTEXT_WINDOWS[reported] !== undefined) return reported;
-  if (!VARIANT_SUFFIX.test(reported)) return reported;
-  const stripped = reported.replace(VARIANT_SUFFIX, "");
-  return claudeModelArg(stripped) === reported ? stripped : reported;
+export function unshapeClaudeModelId(reported: string, selected: string | undefined): string {
+  if (selected === undefined) return reported;
+  return reported === claudeModelArg(selected) ? selected : reported;
 }
 
 /** Codex's `wire_api` value for a resolved style, or `undefined` if it has none. */

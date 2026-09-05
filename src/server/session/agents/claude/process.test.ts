@@ -393,6 +393,40 @@ describe("ClaudeProcess", () => {
       expect(existsSync(path)).toBe(false);
     });
 
+    // CLI 2.1.251 holds a session on an id it does not recognize to the 200K
+    // window it assumes, so a 1M model needs `[1m]` on the flag or it silently
+    // runs at a fifth of its window. Both spawn paths carry that, and they are
+    // asserted separately because only the streaming one is resident.
+    it("tells the CLI a 1M model's real window on the one-shot spawn", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      new ClaudeProcess().run({ prompt: "hi", model: "claude-fable-5-1" });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      expect(args[args.indexOf("--model") + 1]).toBe("claude-fable-5-1[1m]");
+    });
+
+    it("tells the CLI a 1M model's real window on the streaming spawn", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      new StreamingClaudeProcess().run({ prompt: "hi", model: "claude-fable-5-1" });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      expect(args[args.indexOf("--model") + 1]).toBe("claude-fable-5-1[1m]");
+    });
+
+    it("leaves a 200K model's flag alone", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      new ClaudeProcess().run({ prompt: "hi", model: "haiku" });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      expect(args[args.indexOf("--model") + 1]).toBe("haiku");
+    });
+
     it("writes no system-prompt file when there is no system prompt", () => {
       const mockProc = createMockChildProcess();
       mockChildSpawn.mockReturnValue(mockProc as any);

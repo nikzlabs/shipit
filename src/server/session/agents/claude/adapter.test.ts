@@ -81,6 +81,52 @@ describe("ClaudeAdapter", () => {
     });
   });
 
+  // The spawn appends `[1m]` to a 1M model's `--model` so CLI 2.1.251 does not
+  // hold an id it fails to recognize to its assumed 200K window. The CLI echoes
+  // that value back, so `agent_init` has to report the catalogue id instead —
+  // it is what the usage row, the model label and the harness-switch seed key on.
+  it("reports the selected catalogue id, not the [1m] the spawn appended", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+    adapter.run({ prompt: "hi", cwd: "/tmp", model: "claude-fable-5-1" } as AgentRunParams);
+
+    inner.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "sess-fable",
+      model: "claude-fable-5-1[1m]",
+    } satisfies ClaudeEvent);
+
+    expect((events[0] as any).model).toBe("claude-fable-5-1");
+  });
+
+  it("keeps [1m] when it is the selected catalogue id itself", () => {
+    // Z.ai's subscription row IS `glm-5.3[1m]`; its key-mode row is `glm-5.3`.
+    // One reported string, two right answers — only the selection separates them.
+    const subInner = new FakeInnerProcess();
+    const subAdapter = new ClaudeAdapter(subInner as any);
+    const subEvents: unknown[] = [];
+    subAdapter.on("event", (e) => subEvents.push(e));
+    subAdapter.run({ prompt: "hi", cwd: "/tmp", model: "glm-5.3[1m]" } as AgentRunParams);
+    subInner.emit("event", {
+      type: "system", subtype: "init", session_id: "s", model: "glm-5.3[1m]",
+    } satisfies ClaudeEvent);
+    expect((subEvents[0] as any).model).toBe("glm-5.3[1m]");
+
+    const keyInner = new FakeInnerProcess();
+    const keyAdapter = new ClaudeAdapter(keyInner as any);
+    const keyEvents: unknown[] = [];
+    keyAdapter.on("event", (e) => keyEvents.push(e));
+    keyAdapter.run({ prompt: "hi", cwd: "/tmp", model: "glm-5.3" } as AgentRunParams);
+    keyInner.emit("event", {
+      type: "system", subtype: "init", session_id: "s", model: "glm-5.3[1m]",
+    } satisfies ClaudeEvent);
+    expect((keyEvents[0] as any).model).toBe("glm-5.3");
+  });
+
   it("maps the init event's permissionMode to agent_init (docs/138)", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
