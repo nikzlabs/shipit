@@ -18,6 +18,7 @@ import type {
 } from "../../../shared/types.js";
 import { CLAUDE_PERMISSION_MODES } from "../../../shared/types.js";
 import { CLAUDE_MODELS, CLAUDE_TOOL_NAMES } from "../../../shared/agent-registry.js";
+import { unshapeClaudeModelId } from "../../../shared/spawn-routing.js";
 import type {
   AgentId,
   AgentCapabilities,
@@ -100,6 +101,13 @@ export class ClaudeAdapter
    * other supplied — which is the whole GLM case.
    */
   private latestCallContextTokens: number | undefined;
+
+  /**
+   * The catalogue model id this spawn selected, kept so the id the CLI echoes
+   * back can be turned into the one every catalogue lookup keys on. See
+   * {@link unshapeClaudeModelId} for why the reported string alone is not enough.
+   */
+  private selectedModel: string | undefined;
 
   readonly capabilities: AgentCapabilities = {
     supportsResume: true,
@@ -216,7 +224,10 @@ export class ClaudeAdapter
               type: "agent_init",
               agentId: "claude",
               sessionId: raw.session_id,
-              model: raw.model,
+              // The CLI echoes `--model` verbatim, so undo the `[1m]` the spawn
+              // may have appended (`claudeModelArg`) before this id reaches the
+              // usage row, the model label, or any other catalogue lookup.
+              model: raw.model === undefined ? undefined : unshapeClaudeModelId(raw.model, this.selectedModel),
               tools: raw.tools,
               // docs/138 — authoritative guarded-mode availability signal.
               permissionMode: raw.permissionMode,
@@ -476,6 +487,7 @@ export class ClaudeAdapter
       this.wireEvents(streaming);
     }
 
+    this.selectedModel = params.model;
     this.inner.run({
       prompt: params.prompt,
       sessionId: params.sessionId,

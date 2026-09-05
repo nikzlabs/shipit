@@ -18,6 +18,7 @@
  * a naming turn ends up authenticating differently from the turn it names.
  */
 
+import { MODEL_CONTEXT_WINDOWS } from "./model-windows.js";
 import type { AgentId, ServiceRouting } from "./types.js";
 import type { ApiStyle } from "./catalogue/types.js";
 
@@ -131,6 +132,85 @@ export function applyServiceRouting(
  * provider the user configured under the same name.
  */
 export const SHIPIT_PROVIDER_ID = "shipit";
+
+/** A trailing Claude-Code variant suffix, e.g. the `[1m]` in `glm-5.2[1m]`. */
+const VARIANT_SUFFIX = /\[[^\]]*\]$/;
+
+/** The window at which Claude Code needs telling, via `[1m]`, that it may go past 200K. */
+const LONG_CONTEXT_TOKENS = 1_000_000;
+
+/**
+ * The `--model` value for a Claude Code spawn: the catalogue id, plus `[1m]`
+ * when the model has a 1M window.
+ *
+ * **Why this is needed at all.** Claude Code carries a fixed list of model ids,
+ * and CLI 2.1.251 changed what it does with an id outside that list: auto-compact
+ * now holds the session to the 200K window it *assumes*, where it used to wait
+ * for the API's answer. Every model ShipIt drives through this harness that
+ * Anthropic did not ship — DeepSeek's, the gateways' rows, OpenCode Zen's, and
+ * Anthropic's own `claude-fable-5-1`, which the pinned CLI predates — is such an
+ * id, so a 1M model selected in ShipIt silently ran at a fifth of its window and
+ * compacted five times as often. MEASURED on CLI 2.1.251, reading
+ * `result.modelUsage.<model>.contextWindow`: `claude-fable-5-1` reports 200_000
+ * and `claude-fable-5-1[1m]` reports 1_000_000, against `claude-opus-5` (a
+ * recognized id) reporting 1_000_000 either way.
+ *
+ * `[1m]` and not `CLAUDE_CODE_MAX_CONTEXT_TOKENS`: that variable is a **cap**
+ * (`Math.min` against the assumed window), so it can lower a window and never
+ * raise one — setting it to 1M silences the CLI's startup notice while leaving
+ * the session at 200K, which is the worst of both.
+ *
+ * The suffix is a Claude-Code instruction, not an id: the CLI consumes it and
+ * strips it before the request goes out, which is why it may only be added HERE,
+ * at this harness's spawn, and never to a catalogue row shared with a harness
+ * that would forward it verbatim. (GLM's rows spell it inline because their mode
+ * is `carriers: ["claude"]`; Anthropic's key mode is not — OpenCode can carry it.)
+ * An id that already carries a suffix is returned untouched.
+ *
+ * {@link unshapeClaudeModelId} is the exact inverse, for the id the CLI reports
+ * back.
+ */
+export function claudeModelArg(modelId: string): string {
+  if (VARIANT_SUFFIX.test(modelId)) return modelId;
+  // Exact lookup only. `getContextWindowForModel`'s substring fallback would
+  // guess a window for an id the catalogue has no row for, and guessing HIGH
+  // here tells the CLI not to compact a session that really is 200K.
+  //
+  // Keyed by model id and not by the `(service, mode, model)` selection, which
+  // `contextWindowFor` would want: a turn on the harness's own vendor carries no
+  // `ServiceRouting` at all, so the selection is not available at every spawn
+  // this shapes. The two answers can only differ for a model whose row declares
+  // a `byHarness` override or whose window differs BETWEEN services, and the
+  // catalogue has neither today. Revisit when it gains one.
+  if ((MODEL_CONTEXT_WINDOWS[modelId] ?? 0) < LONG_CONTEXT_TOKENS) return modelId;
+  return `${modelId}[1m]`;
+}
+
+/**
+ * The catalogue id behind a model the Claude CLI reports back, undoing
+ * {@link claudeModelArg} against the id the spawn actually selected.
+ *
+ * The CLI echoes the `--model` value verbatim in `system.init` and as the
+ * `modelUsage` key, so without this a ShipIt-appended suffix leaks into the
+ * usage row's `model`, the Usage modal's label, and the harness-switch "keep the
+ * model" lookup — none of which have a row for `claude-fable-5-1[1m]`.
+ *
+ * **`selected` is required, not a convenience.** A context-free inverse cannot
+ * do this job, because the shaped spelling of one row can be another row's real
+ * id: Z.ai's subscription mode declares `glm-5.3[1m]` while its key mode
+ * declares `glm-5.3`, so the string `glm-5.3[1m]` reported back is the canonical
+ * id under one selection and a ShipIt artefact under the other. Only what the
+ * spawn selected tells them apart — found in review, after a suffix-shaped
+ * inverse got the key-mode row wrong.
+ *
+ * Anything else passes through untouched, which is the honest answer for a model
+ * the CLI switched to on its own (`/model` mid-session): it is not the id this
+ * spawn shaped, so there is nothing to undo.
+ */
+export function unshapeClaudeModelId(reported: string, selected: string | undefined): string {
+  if (selected === undefined) return reported;
+  return reported === claudeModelArg(selected) ? selected : reported;
+}
 
 /** Codex's `wire_api` value for a resolved style, or `undefined` if it has none. */
 export function wireApiForStyle(style: ApiStyle): string | undefined {

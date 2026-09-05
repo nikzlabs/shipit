@@ -38,7 +38,7 @@ function scrubEnvAuthForScopedHome(env: Record<string, string>, scopedHome: stri
  * is where every existing importer and test looks for it; the ordering contract
  * is unchanged — call it AFTER {@link scrubEnvAuthForScopedHome}.
  */
-import { applyServiceRouting } from "../../../shared/spawn-routing.js";
+import { applyServiceRouting, claudeModelArg } from "../../../shared/spawn-routing.js";
 export { applyServiceRouting };
 
 /**
@@ -502,7 +502,7 @@ export class ClaudeProcess extends EventEmitter {
     }
 
     if (model) {
-      args.push("--model", model);
+      args.push("--model", claudeModelArg(model));
     }
 
     if (reasoningEffort) {
@@ -909,7 +909,7 @@ export class StreamingClaudeProcess extends EventEmitter {
     // docs/193 — see ClaudeProcess.run above. Honored in --print stream-json
     // mode too; routes the sensitive-file gate to ShipIt's approve/deny card.
     if (permissionPromptTool) args.push("--permission-prompt-tool", permissionPromptTool);
-    if (model) args.push("--model", model);
+    if (model) args.push("--model", claudeModelArg(model));
     if (reasoningEffort) args.push("--effort", reasoningEffort);
     if (settingsPath) args.push("--settings", settingsPath);
     if (systemPrompt) {
