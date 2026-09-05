@@ -17,4 +17,10 @@ blocked on the open questions in [requirements.md](requirements.md).
 - [x] List the experiments that must precede implementation, and mark the one
       fail-open reading that must be tested rather than inferred.
 - [x] Create the tracker issue and cross-link it from the doc's frontmatter.
-- [x] Independent review.
+- [x] Independent review, and fold its findings in: the description of today's
+      default build networking was wrong and is corrected at source; the
+      recommended shape gained a simpler configuration and lost two mechanisms;
+      a rootless/user-mapped shape and a client-side fetch route were added;
+      the offline option no longer doubles as the fail-closed path; and the
+      decisions that had leaked into settled prose moved back to open
+      questions.
