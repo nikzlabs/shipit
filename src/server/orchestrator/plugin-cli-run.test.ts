@@ -188,9 +188,12 @@ function fakeDocker(opts: {
    * (nikzlabs/shipit#2495). The workspace volume is left alone.
    */
   vanishNamedVolumesOnCreate?: boolean;
+  /** The daemon refusing to remove the invocation container after it exits. */
+  removeError?: string;
 } = {}) {
   const containers: Created[] = [];
   const started: string[] = [];
+  const removedContainers: string[] = [];
   // The workspace volume already exists in production; the overlay's daemon-path
   // translation inspects it for its mountpoint.
   const volumes = new Set<string>(["shipit-ws"]);
@@ -263,11 +266,17 @@ function fakeDocker(opts: {
         start: async () => { started.push(id); },
         wait: async () => ({ StatusCode: opts.exit ?? 0 }),
         kill: async () => undefined,
-        remove: async () => undefined,
+        remove: async () => {
+          if (opts.removeError) throw new Error(opts.removeError);
+          removedContainers.push(id);
+        },
       };
     },
   };
-  return { docker: docker as unknown as Docker, containers, networks, volumes, connected, started };
+  return {
+    docker: docker as unknown as Docker,
+    containers, networks, volumes, connected, started, removedContainers,
+  };
 }
 
 /**
@@ -780,6 +789,67 @@ exports:
       // including the many with no dependencies at all, over a daemon hiccup.
       expect(result.error).toBeUndefined();
       expectBoundaryHolds(fake.containers[0].opts, ["/plugin", "/plugin-state", "/project"]);
+    });
+  });
+
+  /**
+   * A teardown failure strands a container that nothing running will reap.
+   * `reapOrphanPluginInstalls` is called from the startup janitor alone, boot-only
+   * because an orphan is taken to imply a died process and therefore the restart
+   * that reaps it. A swallowed removal failure is the one case that breaks that
+   * reasoning: the orchestrator keeps running, so no restart is implied, and prod
+   * is deployed by hand. Swallowing stays right — the exit code and the output are
+   * already computed and must not change; being silent about it does not.
+   */
+  describe("when the daemon refuses to remove the container", () => {
+    it("logs the failure and still returns the command's own exit code and output", async () => {
+      declareConsumer();
+      publishGeneration();
+      const fake = fakeDocker({ exit: 3, stdout: "out\n", stderr: "err\n", removeError: "device or resource busy" });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+      try {
+        const result = await runPluginCommand(deps(fake.docker), call);
+
+        // The command's own answer is untouched by a teardown that failed after
+        // it was computed — this is what the swallow is FOR.
+        expect(result.error).toBeUndefined();
+        expect(result.exitCode).toBe(3);
+        expect(result.stdout).toBe("out\n");
+        expect(result.stderr).toBe("err\n");
+        // …and the orphan it left is now findable. The session id is what ties
+        // the stranded container to the session whose files it still holds.
+        const line = warn.mock.calls.map((c) => c.join(" ")).find((c) => c.includes(fake.containers[0].id));
+        expect(line).toBeDefined();
+        expect(line).toContain("s1");
+        expect(line).toContain("device or resource busy");
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    // The complement, so the assertion above cannot be satisfied by a warning
+    // this path emits on every call: an ordinary run says nothing.
+    it("says nothing when the removal succeeds", async () => {
+      declareConsumer();
+      publishGeneration();
+      const fake = fakeDocker({ stdout: "ok\n" });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+      try {
+        const result = await runPluginCommand(deps(fake.docker), call);
+
+        expect(result.exitCode).toBe(0);
+        expect(fake.removedContainers).toEqual([fake.containers[0].id]);
+        // Scoped to this path's own line rather than to `console.warn` at
+        // large: the fixture's unprivileged chowns and the fake image's missing
+        // PATH warn on every run, and asserting silence over all of them would
+        // fail for reasons that have nothing to do with teardown.
+        expect(warn.mock.calls.map((c) => c.join(" ")).filter((c) => c.includes(fake.containers[0].id)))
+          .toEqual([]);
+      } finally {
+        warn.mockRestore();
+      }
     });
   });
 });
