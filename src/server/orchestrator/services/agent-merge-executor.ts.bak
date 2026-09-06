@@ -628,6 +628,8 @@ function isIdle(
   // have started since without setting `running` — which admission forbids under
   // the hold. A turn is the only thing that can appear in the gap, and it is
   // exactly what the two lines above catch.
+  if (opts.underHold === true) return true;
+
   if (runner.agentBusy) return false;
   // Draining a queued message starts a turn, so one blocks STARTING a merge.
   if (runner.queueLength > 0) return false;
