@@ -15,7 +15,7 @@ interface ServiceListProps {
   onStop: (name: string) => void;
   onRestart: (name: string) => void;
   onSelectPreview: (name: string, port: number) => void;
-  /** When provided, clicking the service / log button navigates to its log view. */
+  /** When provided, the per-service log button navigates to its log view. */
   onSelect?: (name: string) => void;
   /** Prefill the composer with a fix request for a crashed service. */
   onAskFix?: (svc: ManagedServiceState) => void;
@@ -128,6 +128,10 @@ export function ServiceList({
         const isOom = !!svc.error && /oom/i.test(svc.error);
         const isError = svc.status === "error";
         const externalUrl = externalUrlFor?.(svc) ?? null;
+        // The name is the service itself, so it pivots the preview to it — the
+        // same action as its `:port` chip. Logs have their own button beside it.
+        // A service with nothing to show in the preview keeps a plain label.
+        const previewable = svc.status === "running" && !!svc.port;
         return (
           <div
             key={svc.name}
@@ -142,11 +146,11 @@ export function ServiceList({
 
               <div className="min-w-0 flex flex-col gap-0.5">
                 <div className="flex items-center gap-2 min-w-0">
-                  {onSelect ? (
+                  {previewable ? (
                     <button
                       type="button"
-                      onClick={() => onSelect(svc.name)}
-                      title={`View ${svc.name} logs`}
+                      onClick={() => onSelectPreview(svc.name, svc.port!)}
+                      title={`Show ${svc.name} in the preview`}
                       className="font-semibold text-(--color-text-primary) text-sm truncate hover:text-(--color-text-link) transition-[color] duration-(--duration-fast) cursor-pointer text-left"
                     >
                       {svc.name}

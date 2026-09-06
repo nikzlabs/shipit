@@ -77,13 +77,24 @@ describe("PreviewServicesDrawer", () => {
     const services = [svc({ name: "web", port: 3000 }), svc({ name: "db", status: "stopped" })];
     render(<PreviewServicesDrawer services={services} {...baseProps()} />);
     fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
-    fireEvent.click(screen.getByRole("button", { name: "web" }));
+    fireEvent.click(screen.getByRole("button", { name: "View web logs" }));
     // Log toolbar affordances appear...
     expect(screen.getByRole("button", { name: "Back to services" })).toBeInTheDocument();
     expect(screen.getByText("Send to Agent")).toBeInTheDocument();
     // ...and the LogView mounted on the service channel.
     const view = screen.getByTestId("log-view");
     expect(view.getAttribute("data-channel")).toBe("service:web");
+  });
+
+  it("clicking a service name pivots the preview to it instead of opening logs", () => {
+    const props = baseProps();
+    const services = [svc({ name: "web", port: 3000 }), svc({ name: "api", port: 4000 })];
+    render(<PreviewServicesDrawer services={services} {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
+    fireEvent.click(screen.getByRole("button", { name: "api" }));
+    expect(props.onSelectPreviewPort).toHaveBeenCalledWith(4000);
+    // The list stays put — the name is not a drill-in.
+    expect(screen.queryByRole("button", { name: "Back to services" })).toBeNull();
   });
 
   it("does NOT mount the LogView when the preview tab is inactive", () => {
@@ -119,7 +130,7 @@ describe("PreviewServicesDrawer", () => {
     const two = [svc({ name: "web", port: 3000 }), svc({ name: "db", status: "stopped" })];
     const { rerender } = render(<PreviewServicesDrawer services={two} {...props} />);
     fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
-    fireEvent.click(screen.getByRole("button", { name: "web" }));
+    fireEvent.click(screen.getByRole("button", { name: "View web logs" }));
     expect(screen.getByRole("button", { name: "Back to services" })).toBeInTheDocument();
     // db disappears → only web remains → fall back to the focus card, not the
     // drill-in toolbar with its dangling "Back to services".
