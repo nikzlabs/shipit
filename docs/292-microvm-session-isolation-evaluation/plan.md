@@ -18,14 +18,16 @@ or Cloud Hypervisor integration.** The honest answer is the same as 264's, on
 fresh evidence, for reasons that are properties of ShipIt rather than of any
 one VMM:
 
-1. **Both deploy targets lose a microVM.** The local install runs on macOS via
-   Docker Desktop (`deployment/local/setup.sh:396-399`), where a Linux
+1. **It cannot be the default.** The local install supports macOS, Linux and
+   WSL2 (`deployment/local/setup.sh:396-399`); on macOS Docker Desktop a Linux
    container gets no `/dev/kvm` on any chip today (Apple exposes nested
    virtualization only on M3+/macOS 15, and Docker has not enabled it —
-   docker/desktop-feedback#314 still open). Hetzner Cloud, a typical VPS
-   target, answers "not possible on cloud server" in its FAQ. A boundary that
-   cannot be the default anywhere is an operator opt-in, exactly like
-   `SESSION_RUNTIME=runsc` is today.
+   docker/desktop-feedback#314 still open). The VPS install targets any Linux
+   host with Docker, and a common one, Hetzner Cloud, answers "not possible on
+   cloud server" in its FAQ; AWS added it to virtualized Intel instances only
+   in 2026-02, opt-in. A boundary that supported hosts cannot provide is an
+   operator opt-in, exactly like `SESSION_RUNTIME=runsc` is today — never the
+   thing ShipIt's isolation story rests on.
 2. **Firecracker has no shared filesystem, by design.** virtio-fs was rejected
    upstream in 2020 on attack-surface grounds and is "not on our roadmap"; the
    generic vhost-user device that would let an external `virtiofsd` attach is
@@ -64,12 +66,16 @@ one VMM:
 **What to do instead, if and when a kernel boundary is wanted:** the cheapest
 form of a *hardware* boundary in this codebase is not a VMM integration but an
 OCI VM runtime — **Kata Containers** — selected through the same
-`HostConfig.Runtime` knob that already selects gVisor
+`HostConfig.Runtime` mechanism that already selects gVisor
 (`container-hardening.ts:47-50`), and applied first to the **untrusted tier
-only**: plugin containers and the contained BuildKit worker. That is the
-"middle option" and it is where the boundary is actually missing today. It is
-not free either; the concrete prerequisite is moving egress enforcement off
-the netns-join mechanism (below). Whether to do it at all is a product
+only**: plugin containers and the contained BuildKit worker. Note that today
+`SESSION_RUNTIME` reaches the agent container alone
+(`container-lifecycle.ts:1368`); neither `plugin-install.ts:771` nor
+`plugin-cli-run.ts:857` passes a `Runtime`, so per-tier selection is new
+wiring, not a setting. That is the "middle option" and it is where the
+boundary is actually missing today. It is not free either; the concrete
+prerequisite is replacing the netns-join egress enforcement, which a VM
+runtime bypasses (below). Whether to do it at all is a product
 decision this doc does not make; the triggers are restated at the end in
 checkable terms.
 
@@ -81,10 +87,9 @@ checkable terms.
 |---|---|
 | Docker Sandboxes: `sbx` CLI only, no programmatic API | **Changed.** Docker published generated SDKs on 2026-09-02/03 — `@docker/sbx-api` 0.36.0 (npm), `docker-sbx-api` (PyPI), `github.com/docker/sandboxes-api` (Go) — a Connect-RPC contract served by a local `sandboxd` daemon and a cloud endpoint. Nothing on docs.docker.com documents it, the source repo returns 404, and the local socket path and auth are unpublished. 264's trigger 1 ("a *documented* programmatic API") is in motion but not met. |
 | Ports publish to the host | Still true: `[[HOST_IP:]HOST_PORT:]SANDBOX_PORT`, loopback by default; no bridge join documented. |
-| Docker Desktop required | No longer: `sbx` runs natively on Ubuntu 24.04+ with KVM; the Desktop `docker sandbox` plugin was removed in 4.80.0. |
 | Nested virtualization "many cloud instance types do not" support | Weaker now: AWS added nested virtualization on virtualized Intel 7i/8i instances on 2026-02-16 (opt-in, no ARM/AMD/T-family); GCE and Azure support it on most x86 series. Still absent on Hetzner Cloud, Linode, macOS Docker Desktop. |
 | "rejects `--privileged` and host mounts" | Overstated: binds *under the session workspace* are allowed (`docker-proxy-sanitize.ts:123-141`); only out-of-workspace paths, `Devices`, `VolumesFrom` are rejected. |
-| Kernel hardening opt-ins default-off | Still true, and they apply only to the agent container — Compose services get `cap_drop: [NET_RAW]` and no runtime/seccomp/ro-rootfs (`compose-generator.ts:1827-1836`); plugin containers get `CapDrop: ALL` but no runtime either (`plugin-install.ts:788-793`). |
+| Kernel hardening opt-ins default-off | Still true, and they apply only to the agent container — Compose services get `cap_drop: [NET_RAW]` (plus `SETUID`/`SETGID` and `no-new-privileges` under containment) and no runtime/seccomp/ro-rootfs (`compose-generator.ts:1827-1836`); plugin containers get `CapDrop: ALL` but no runtime either (`plugin-install.ts:788-793`). |
 
 Which of 264's objections survive a direct VMM design: **2** (hypervisor in
 the orchestrator), **3** (network position as identity) and **4** (Compose
@@ -121,10 +126,13 @@ container at all.
 ShipIt-shaped guest could not be booted here. What could be measured: this
 session container sits at ~500 MB cgroup usage (`memory.current`), of which
 the agent CLI is ~350 MB RSS and the worker processes ~330 MB. A guest running
-the same would start at that plus a guest kernel plus 130–320 MiB of VMM/shim
-overhead, and then grow with page cache. Call it **≥ 1 GiB resident per idle
-session before any workload**, against ~500 MB today — the number to confirm
-on a live host before anything is designed.
+the same would add a guest kernel and the VMM/shim, then grow with page cache
+that the host cannot see. Kata's declared 130–320 MiB `podFixed` allowances
+cover guest *and* host overhead and are described upstream as
+over-provisioned, so they are an accounting budget, not a measured RSS.
+Hypothesis, unmeasured: **roughly 0.7–1 GiB resident per idle session**
+against ~500 MB today. That is the first number to take on a live host
+before anything is designed.
 
 ## What ShipIt already has
 
@@ -136,15 +144,18 @@ matter here, verified:
   (`container-lifecycle.ts:1342-1390`); root-to-`gosu` drop in the entrypoint.
 - **Opt-in, agent container only:** `SESSION_RUNTIME` (gVisor `runsc`),
   `SESSION_SECCOMP`, `SESSION_READONLY_ROOTFS` — all default-off
-  (`container-hardening.ts`). docs/172's checklist records gVisor was never
-  verified on a live host.
+  (`container-hardening.ts`). `docs/172-agent-containment` checklist records gVisor was
+  never verified on a live host.
 - **Egress containment, default ON:** `SESSION_EGRESS_ENFORCE` defaults on
   (`egress-firewall-install.ts:46-47`; the "default-off" comment at
   `session-container.ts:1085-1086` is stale). Tier A/B/C are separate
-  containers with `NetworkMode: container:<id>` and `CAP_NET_ADMIN` that
-  install iptables/dnsmasq/an SNI proxy **inside the target's network
+  containers with `NetworkMode: container:<id>` — the firewall installer and
+  the resolver with `CAP_NET_ADMIN`, the SNI proxy with none — that install
+  iptables rules, dnsmasq and a loopback proxy **inside the target's network
   namespace** (`egress-firewall-install.ts:188-231`,
-  `egress-dns-install.ts:156-157`, `egress-proxy-install.ts:136`). Plugin
+  `egress-dns-install.ts:156-157`, `egress-proxy-install.ts:131-136`). The
+  rules are `OUTPUT`-chain rules with uid-owner exemptions, a DNS redirect and
+  a loopback proxy target (`docker/egress-sidecar/init-firewall.sh:145-230`). Plugin
   containers and Compose services get the same holders (`plugin-egress.ts`,
   `compose-service-egress.ts:265-336`).
 - **Identity by network position:** loopback = own agent, bridge + token =
@@ -162,18 +173,25 @@ matter here, verified:
 1. **Repo-authored plugin code** (docs/262). It runs non-root with every
    capability dropped, but on the shared kernel, with nothing but Docker's
    default seccomp between it and the host.
-2. **Repo-declared builds.** The contained-builds design concluded that a
-   BuildKit worker must be a *privileged* container and that a Dockerfile
-   `RUN` executes as root under the default OCI capability set and seccomp
-   profile — a wider kernel surface than any session container. A VM is the
+2. **Repo-declared builds.** The contained-builds design (on an unmerged
+   branch at the time of writing; `docs/263-compose-service-egress` leaves
+   builds outside its scope at `plan.md:47`) concluded that a BuildKit worker
+   must be a *privileged* container and that a Dockerfile `RUN` executes as
+   root under the default OCI capability set and seccomp profile — a wider kernel surface than any session container. A VM is the
    natural home for "privileged, but only inside its own kernel".
 3. **Docker-access sessions**, where a private in-guest daemon would make
    `docker-proxy.ts` unnecessary. This is 264's point 2 and is unchanged.
 
-The session container itself is *not* on this list. Its agent is the user's
-own agent acting on the user's own repository; the threat there is prompt
-injection reaching credentials and the network, which the egress tiers and
-the trust boundaries already address and a VM does not improve.
+The session container is deliberately *not* on this list, and that is a
+risk decision rather than an absence of benefit. A session does execute
+repository and dependency code — `agent.install` runs through a shell in the
+workspace (`session/install-controller.ts:637`), and so do tests and dev
+servers — and `container-hardening.ts:4` names the residual container-escape
+surface. A kernel boundary would cover that. The judgement here is that the
+session's dominant threat is prompt injection reaching credentials and the
+network, which the egress tiers and trust boundaries address, and that the
+cost side (every item in the recommendation) is paid per session, whereas the
+untrusted tier pays it per plugin or build.
 
 ## The three options
 
@@ -182,9 +200,13 @@ the trust boundaries already address and a VM does not improve.
 Rejected, for the five numbered reasons in the recommendation. Two more
 details from the code: the preview proxy dials each **Compose service's** IP
 before the agent's (`preview-proxy.ts:946-949`), so services inside a guest
-would need an in-guest multiplexer; and the worker token is keyed by
-`http://<bridge-ip>:9100` (`orchestrator/worker-auth.ts:15-20`), so the whole
-identity plane, not just the transport, moves.
+would need an in-guest multiplexer; and inbound caller classification is
+by source IP in three places. The worker-token registry itself is keyed by a
+base URL string (`orchestrator/worker-auth.ts:15-20, 56`) and would accept any
+URL; what is Docker-bound is how the token is provisioned and re-read on
+adoption (`container-lifecycle.ts:1440`, `worker-auth.ts:97-107`), and the
+transport is plain `http.request` (`worker-http.ts:181`), not something ready
+for a remote hop.
 
 ### B. Kata Containers as a runtime, for the untrusted tier — the middle option
 
@@ -201,9 +223,9 @@ What this preserves and what it breaks, per ShipIt mechanism:
 | Bind mounts, Subpath volumes, overlay dep-dir volumes, `/plugins` ro | preserved as mounts, delivered by **virtio-fs**; the daemon still performs the overlay mount on the host (`overlay-volume.ts:10-18`), the guest sees the merged tree |
 | `clone --local` hardlinks, shared cache uid rules | preserved — all host-side |
 | Idle reclaim, health, adoption | preserved — still Docker containers |
-| **Egress Tier A/B/C** | **broken.** The sidecars install rules in the container's netns, but Kata's default TC-filter redirection moves packets tap↔veth below netfilter — that is precisely why Kata's experimental L3-forwarding mode exists "where the CNI sets up iptables rules". Kata also lists `--net=container:` as unsupported. Enforcement must move to the host side of the per-session bridge (docs/263 already creates `shipit-egress-<id>` NAT bridges) — and host-side is the *correct* side for a boundary, since in-guest rules are inside the thing being contained. |
+| **Egress Tier A/B/C** | **broken.** The sidecars install rules in the container's netns, but Kata's default TC-filter redirection moves packets tap↔veth below netfilter — that is precisely why Kata's experimental L3-forwarding mode exists "where the CNI sets up iptables rules". Kata also lists `--net=container:` as unsupported. The existing topology is incompatible, and relocating the rules is not enough: they are `OUTPUT` rules with uid-owner exemptions, a DNS redirect to a namespace-local resolver and a loopback SNI proxy (`init-firewall.sh:145-230`), none of which apply to forwarded guest packets. Replacement enforcement on the host side of the per-session bridge (docs/263 already creates `shipit-egress-<id>` NAT bridges) has to be designed and validated, including how the resolver and proxy are reached from the guest. |
 | Memory sizing | changed — Kata sizes the VM from the container limit (`static_sandbox_resource_mgmt`), so the half-host ceiling becomes guest RAM; touched pages only are resident, but the guest page cache stays resident unless `reclaim_guest_freed_memory` (free-page reporting, default off) or a balloon returns it. Needs a real budget. |
-| Docker inside the guest | not needed for the agent (its `docker` CLI still points at the host-side proxy); needed for a BuildKit worker, where `/var/lib/docker` must be a block or tmpfs volume |
+| Docker / BuildKit inside the guest | not needed for the agent (its `docker` CLI still points at the host-side proxy). A BuildKit worker runs its own daemon, not dockerd, but the same constraint applies: its snapshotter storage (`/var/lib/buildkit`) cannot live on virtio-fs, which cannot be an overlay upper, so it needs a block or tmpfs volume |
 | `privileged` | a privileged container under Kata is privileged **inside the guest**; the Go runtime has `privileged_without_host_devices` to keep host devices out — verify the Rust runtime's equivalent before relying on it |
 | Start cost | ~2 s per container (Edera, 4 vCPU/4 GiB); hidden by the warm pool for sessions, but paid on every plugin CLI invocation, which spawns a container per call (`plugin-cli-run.ts:840-870`) |
 | Hypervisor choice | QEMU is the only Docker-tested path (320 MiB fixed overhead); Cloud Hypervisor is a supported Kata hypervisor (130 MiB) but not Docker-tested; **Firecracker under Kata + Docker is broken** and Kata pins an out-of-support Firecracker |
@@ -261,12 +283,12 @@ What *is* shared:
 
 - **Model A composes with option B.** The provider passes `/dev/kvm` into
   Linux instances (its nested-virtualization page: `linux/amd64` supported, no
-  flag needed in a devbox), so a ShipIt running inside one instance can turn
-  on `SESSION_RUNTIME=kata` or `runsc` for its untrusted tier exactly as on a
-  bare-metal VPS. The runtime knob is the shared infrastructure; nothing else
-  needs to be.
-- **Host-side egress enforcement** — the prerequisite for Kata — is also what
-  a provider's egress policy replaces in Model A (#204 already plans
+  flag needed in a devbox), so a ShipIt running inside one instance can use
+  the `HostConfig.Runtime` mechanism (once wired to the untrusted tier) with
+  `kata` or `runsc` exactly as on a bare-metal VPS. That mechanism is the
+  shared infrastructure; nothing else needs to be.
+- **Host-side egress enforcement** — the prerequisite for any VM runtime — is
+  also what a provider's egress policy replaces in Model A (#204 already plans
   `SESSION_EGRESS_ENFORCE=0` there). Moving enforcement to the bridge is the
   design that survives both.
 - **The provider's own API** (gRPC/Connect, scoped tokens, ingress with
@@ -284,9 +306,9 @@ Restated so each can be checked rather than argued:
    option B on the untrusted tier.
 2. **A review concluding the Sentry is not an acceptable boundary for root in
    a build**, recorded on the contained-builds issue. Same trigger.
-3. **Host-side egress enforcement lands** (rules on the per-session bridge
-   rather than inside the netns). Until it does, no VM runtime can be turned
-   on without silently disabling containment.
+3. **Replacement egress enforcement lands and is validated** (host side of
+   the per-session bridge, with resolver and proxy reachable from a guest).
+   Until it does, turning on a VM runtime silently disables containment.
 4. **A live-host measurement** of resident memory per idle Kata session and
    per idle plugin container, and of plugin CLI invocation latency, against
    the ~500 MB / sub-second figures today. If sessions ever go on the list,

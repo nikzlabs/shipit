@@ -6,5 +6,5 @@
 - [x] State plainly which measurement could not be made in this environment and the numbers to confirm on a live host.
 - [x] Evaluate the middle option (a VM runtime for the untrusted tier only) as a first-class option, including what it breaks (netns-join egress).
 - [x] Say concretely what a microVM buys over gVisor and for which threat.
-- [x] Assess what a self-run VM tier could share with the remote-provider backend in planning#204, keeping provider-specific detail on that issue.
+- [x] Assess what a self-run VM tier could share with a remote-provider backend, keeping provider-specific detail on that tracker issue.
 - [x] Restate the conditions that would change the recommendation in checkable terms.
