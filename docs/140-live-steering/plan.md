@@ -631,11 +631,16 @@ in which that state is not this turn's:
 - **No re-dispatch.** The quota failover and the auth-heal retry re-run
   `input.prompt` on a fresh credential. That prompt is the USER's; re-running it
   because an adopted turn hit a limit repeats work the agent already did and
-  still doesn't retry what failed. Both stand down. (The *quota* half is reasoned
-  from the code and **not** pinned by a test — reaching the failover needs the
-  credential-selection harness on a streaming *dispatched* turn, which no
-  existing harness builds, and a test against the executor harness alone passes
-  with the guard removed.)
+  still doesn't retry what failed. Both stand down.
+
+  **But standing down is not the whole obligation, and reading it that way cost
+  a user a silent turn and a garbage commit** — see Phase 6.12. The parenthesis
+  that used to close this bullet claimed the quota half could not be tested
+  because reaching the failover "needs the credential-selection harness on a
+  streaming *dispatched* turn". That was wrong twice over: the WS streaming path
+  reaches the same gate, and `turn-self-wake-commit.test.ts` already wires the
+  `prepareAgentEnv` + `routeProfile` pair that gate reads. Both halves are pinned
+  now.
 
   **"No re-dispatch" is the whole rule, and reading it as "no recovery" cost a
   user a false sign-in card.** `willRecoverAuth` used to return `false` here, and
@@ -743,6 +748,99 @@ already-held head; that head is sampled at the adoption edge, so a commit the
 adopted turn makes itself is still scanned and pushed; two adoption edges build
 one re-arm and take one sample) and `live-steering.test.ts` (the session
 reads busy, the accumulator is clean, and each turn persists once).
+
+**Phase 6.12 — a stand-down that said nothing (quota, adopted turn).**
+Production 2026-09-06, session `cdde30c2`, deployed commit `4a68ad1`. The Claude
+CLI reported a spent subscription as an ordinary assistant message
+(`You've hit your session limit · resets 6:40pm (UTC)`) and ended the turn
+`subtype: "success"` — the shape `detectHardExhaustionInTurnText` exists for.
+Detection worked and the req-7 bench worked. The turn was an **adopted** one, so
+`quotaRetryAllowed()` correctly declined the req-14 failover; the rule is right
+and is unchanged. What was wrong is that declining was implemented as a bare
+`return false`, so the turn retired through the ordinary post-turn path and three
+things followed:
+
+- **No explanation anywhere.** The retry is what posts the req-11 notice, and the
+  listener had already suppressed the terminal error row *on the premise that the
+  retry would run*. An adopted turn that streamed nothing visible therefore ended
+  with the user told nothing at all.
+- **The provider's notice became the commit subject.** `turnSummary` still held
+  it, so `postTurnCommit` labelled the turn's work with it and the auto-push
+  shipped `7d15650 "You've hit your session limit · resets 6:40pm (UTC)"`. This is
+  the exact symptom `detectHardExhaustionInTurnText`'s docstring records as its
+  reason for existing; the detector only ever fixed it for turns that go on to
+  retry, because there the retry owns the commit.
+- **The account hop cost a user round-trip.** The bench is correct, so the *next*
+  turn routes elsewhere on its own (`residentRouteNeedsRelease` releases the
+  resident process, env-prep posts "Continuing on Y") — but with nothing said,
+  the user's only signal was a session that had gone quiet.
+
+The correlation was exact in the incident's own logs: six sessions on the same
+account in the same minutes, the two inside an adopted-turn window failed over,
+the four outside it did.
+
+Fix, deliberately **not** "carry the adopted turn's prompt so a retry is safe".
+That direction cannot work for the general case — a self-wake has no prompt of
+its own at all — so it would fix one adoption edge and leave the other. Instead
+`retireOnSpentAccount` (`turn-executor.ts`) makes the stand-down complete:
+
+- the turn ends with a persisted, req-11-shaped account notice naming the
+  credential and saying the next message continues elsewhere. It promises no
+  account, because selection has not run — the wording follows
+  `credentialSetAsideMessage`'s "if you have one";
+- `turnSummary` and the `agent_result` snapshot `runCommit` falls back to are
+  cleared **when the summary IS the notice** (exhaustion read from turn text, not
+  from an error), so the subject drops to the activity label / "Agent turn". The
+  commit itself still runs — CLAUDE.md's "every terminal path runs the commit" is
+  untouched, only its label is;
+- the notice half is gated **twice** — the turn is adopted, AND the credential
+  could have failed over at all. Adoption is a harness capability
+  (`startsOwnTurns`), not a billing one, so a **metered key** reaches this branch
+  too; a key never fails over (req 12) and `markCredentialRouteExhausted` refuses
+  to bench one, so "ShipIt has set that account aside — your next message will
+  continue on another account" would be false twice over. That user's explanation
+  is the terminal error row the listener keeps for them (planning#453). The
+  second gate is `quotaRefusalCanFailOver` asked again *without* the adoption
+  argument. The summary half is not gated at all — a limit notice is never a
+  description of work, whoever the credential belongs to. (Both raised by the
+  docs/261 reviewer; the first draft gated on adoption alone.)
+- the whole stand-down runs through `postTurnStep`. It fires BEFORE the terminal
+  sequence, inside an un-awaited async listener, and it writes to SQLite and the
+  viewer transports — planning#279's un-skippable-commit invariant exactly. An
+  unguarded throw would have abandoned the drain, the commit and the push as an
+  unhandled rejection, with no `done` coming from a resident streaming process to
+  pick the turn up: the fix for a silent turn would have cost the turn its work.
+  Also the reviewer's finding.
+
+**And the second module was asking a different question.**
+`quotaRefusalCanFailOver` had no knowledge of `servingAdoptedTurn`, and its
+docstring called the asymmetry safe: "it can only make the listener *keep* a row
+the executor then declines to replace". That has the direction backwards — the
+listener DROPS a row on `true`. So the adopted turn got the suppression *and* no
+retry, which is precisely the over-suppression the docstring said was impossible.
+The condition is now the function's third argument, so both modules ask with the
+same three inputs; the listener receives it through a new `isServingAdoptedTurn`
+opt.
+
+Both gates read `servingCliStartedTurn()` — `servingAdoptedTurn || rearmInFlight
+!== null` — rather than the flag alone. `servingAdoptedTurn` is set at the END of
+`rearmForCliStartedTurn`, so for the seconds the predecessor's commit + PR
+round-trip takes it describes the wrong turn. `recoverAuth` closes that window by
+awaiting `rearmInFlight`; the listener's suppression decision and
+`willRetryOnQuotaError` are synchronous by contract and cannot, so they read the
+same fact synchronously instead. That also closes the same window on the
+adapter-`error` quota path, which had it unguarded.
+
+Coverage, every assertion verified red on its own: `turn-self-wake-commit.test.ts`
+— "does not re-dispatch a CLI-started turn that hits the account's quota limit"
+(no second `run`, a persisted notice, `Agent turn` as the subject with the work
+still committed, the req-7 bench still stamped); "does not promise an account
+move to a CLI-started turn billed to a metered key"; "still commits the adopted
+turn when persisting the quota notice throws"; and "keeps the limit notice out of
+the commit even when a second turn is adopted first", which is what pins the
+`resultTurnSummary` half — the other cases commit while `turnIsCurrent()` is
+still true and so never read the snapshot. Plus `agent-listeners.test.ts` ("DOES
+add a row for a quota refusal on a CLI-started turn").
 
 **Phase 6.10 — a mid-session model change never reached the resident process.**
 User report: "if a model was Fable and I change it to Opus, after the turn ends

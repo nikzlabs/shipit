@@ -201,6 +201,17 @@ export interface WireListenersOpts {
    */
   getCapturedRoutePolicy?: () => CredentialFailurePolicy | undefined;
   /**
+   * docs/140 — is the turn now ending one the CLI started on its own (a
+   * self-wake, or a live steer it acked too late to apply)?
+   *
+   * The third input to `quotaRefusalCanFailOver`, and the one this module cannot
+   * work out for itself: the executor refuses to re-dispatch such a turn, so the
+   * terminal error row suppressed below has nothing coming to replace it. Wired
+   * by `turn-executor.ts`; absent (tests, non-executor callers) reads false,
+   * which is the pre-existing behaviour.
+   */
+  isServingAdoptedTurn?: () => boolean;
+  /**
    * The permission mode this turn actually requested from the CLI (docs/138),
    * AFTER any guarded→auto downgrade. When this is `"guarded"`, the
    * `agent_init` handler reads `init.permissionMode` to confirm the
@@ -979,6 +990,11 @@ export function wireAgentListeners(
       // reloaded transcript with a failed turn and no reason in it. The two
       // modules now ask one shared question so they cannot drift apart again;
       // `quotaRefusalCanFailOver`'s docstring carries the reasoning.
+      //
+      // …and the ADOPTED-turn condition is the third input, added after the
+      // same drift recurred on the docs/140 path (production 2026-09-06). The
+      // executor never re-dispatches a turn the CLI started on its own, so
+      // suppressing the row there left the user nothing at all.
       sawHardExhaustionThisTurn =
         detected !== null
         && quotaRefusalCanFailOver(
@@ -987,6 +1003,7 @@ export function wireAgentListeners(
           // this capture). Undefined only in tests, where the policy resolves
           // to "can fail over" and behaviour is unchanged.
           opts.capturedSessionId ? deps.sessionManager.get(opts.capturedSessionId) : undefined,
+          opts.isServingAdoptedTurn?.() ?? false,
         );
       const exhaustedSessionId = opts.capturedSessionId;
       if (exhaustedSessionId && deps.markSessionAccountExhausted && detected) {

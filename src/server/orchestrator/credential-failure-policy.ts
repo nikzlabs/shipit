@@ -138,17 +138,32 @@ export function stopsOnCredentialFailure(session: CredentialFailureSubject | und
  * Latent until a key-billed harness produced quota wording the classifier
  * recognized, which is what planning#453's Grok fix started doing.
  *
- * The executor applies one further condition this cannot see — it refuses to
- * re-dispatch an ADOPTED turn (docs/140), whose prompt belongs to the previous
- * turn. That asymmetry is deliberately left: it can only make the listener
- * *keep* a row the executor then declines to replace, which is the safe
- * direction. An over-suppression loses the failure; an over-persistence costs
- * one extra row.
+ * **`servingCliStartedTurn` is the third input, and leaving it out was the same
+ * bug a second time.** The executor refuses to re-dispatch a turn the CLI
+ * started on its own (docs/140), whose prompt belongs to the previous turn. That
+ * asymmetry used to be documented here as safe — "it can only make the listener
+ * *keep* a row the executor declines to replace" — and that reading was simply
+ * wrong about which module suppresses what. The listener does not keep a row on
+ * a `true`; it DROPS one, on the premise that the retry will explain the failure
+ * instead. So on an adopted turn the listener answered `true`, suppressed the
+ * terminal error row, and the executor then declined the retry: an adopted turn
+ * that streamed no visible content ended with no explanation anywhere — the
+ * exact over-suppression the old paragraph said could not happen (production
+ * 2026-09-06, session cdde30c2). Both modules must ask with the same three
+ * inputs, so the condition lives in the shared question rather than in one
+ * caller.
+ *
+ * The listener cannot read the executor's flag directly, so it is passed in
+ * (`isServingAdoptedTurn` on the listener opts). See `turn-executor.ts`'s
+ * `servingCliStartedTurn` for why the answer must also count an adoption whose
+ * hand-over is still in flight.
  */
 export function quotaRefusalCanFailOver(
   capturedRoutePolicy: CredentialFailurePolicy | undefined,
   session: CredentialFailureSubject | undefined,
+  servingCliStartedTurn = false,
 ): boolean {
+  if (servingCliStartedTurn) return false;
   if (capturedRoutePolicy) return !capturedRoutePolicy.stopsOnFailure;
   return !stopsOnCredentialFailure(session);
 }
