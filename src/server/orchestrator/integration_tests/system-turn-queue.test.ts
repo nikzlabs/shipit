@@ -47,6 +47,7 @@ import {
 import { DatabaseManager } from "../../shared/database.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
 import { TURN_COMPLETED } from "../turn-settlement.js";
+import { releaseQueuedTurn } from "../queue-drain.js";
 
 type AnyMsg = any;
 
@@ -210,7 +211,7 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     client.close();
   });
 
-  it("docs/288 req 6: a typed message is QUEUED while ShipIt is merging, and starts when the hold clears", async () => {
+  it("docs/288 req 6: a typed message is QUEUED while ShipIt is merging, then STARTS when the hold clears", async () => {
     // The interactive send has its own admission check, separate from
     // `dispatchOnRunner`'s. Without the hold there, a user typing during a
     // background merge starts a turn that pushes behind a merge in flight.
@@ -234,6 +235,89 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     expect(runner.queueLength).toBe(1);
     expect(lastClaude).toBe(before); // no new agent was spawned
 
+    // req 6's last sentence: "a turn held back for that reason starts as soon as
+    // the merge has finished". Asserting only the queueing above would pass just
+    // as well if the message were stranded for ever, which is the failure mode
+    // the explicit release exists to prevent.
+    runner.mergeHold = false;
+    expect(releaseQueuedTurn(runner)).toBe(true);
+    const resumed = await waitForClaude(() => lastClaude, before ?? undefined);
+    expect(resumed.lastPrompt).toContain("typed during the merge");
+    expect(runner.queueLength).toBe(0);
+    resumed.finish("resumed-session");
+
+    client.close();
+  });
+
+  it("docs/288 req 6: a message is queued even when the hold arrives DURING the send", async () => {
+    // The check at the top of the handler is separated from the turn start by
+    // attachment resolution, session activation and filesystem reads. A session
+    // whose runner does not exist yet takes exactly that path: the first check
+    // sees no runner at all, the registry creates one seeded held from the
+    // executor's in-flight mark, and only the late re-check can catch it.
+    const claims = (app as unknown as { agentMergeClaims: { markMergeInFlight(id: string): void } })
+      .agentMergeClaims;
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // The production shape: the container went idle and was reclaimed while the
+    // merge ran, so there is no runner when the message arrives.
+    const registry = (app as unknown as {
+      runnerRegistry: { dispose(id: string, o?: { force?: boolean }): void; get(id: string): unknown };
+    }).runnerRegistry;
+    registry.dispose(client.sessionId, { force: true });
+    expect(registry.get(client.sessionId)).toBeUndefined();
+
+    claims.markMergeInFlight(client.sessionId);
+    const before = lastClaude;
+    client.send({ type: "send_message", text: "typed as the merge began" });
+    await drainUntil(client, (m) => m.type === "message_queued");
+
+    const runner = runnerFor(client.sessionId);
+    expect(runner.mergeHold).toBe(true);
+    expect(runner.running).toBe(false);
+    expect(runner.queueLength).toBe(1);
+    expect(lastClaude).toBe(before);
+
+    client.close();
+  });
+
+  it("docs/288 req 6: a resident streaming agent is not steered into during a merge", async () => {
+    // `shouldSteerMessage` asks about a *running* turn. With live steering on and
+    // a resident process left over from the previous turn, the merge-held branch
+    // is reached with the session idle — and steering there injects the message
+    // into an agent that would start work against a branch a merge is landing.
+    credentialStore.setLiveSteering(true);
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "First" });
+    const first = await waitForClaude(() => lastClaude);
+    first.initSession("first-session");
+    first.finish("first-session");
+    const runner = runnerFor(client.sessionId);
+    await waitUntil(() => !runner.running, "first turn finished");
+    // The resident process survives the turn — that is what makes it steerable.
+    // Set explicitly because this harness clears the ref on `finish`; the point
+    // under test is what the HANDLER decides given a steerable session, not how
+    // the process came to be resident.
+    runner.isStreamingActive = true;
+    runner.setAgent(first as never);
+    // Preconditions, asserted so this test cannot go quietly blind: with no
+    // resident agent the steer branch is unreachable and the assertion below
+    // would pass for the wrong reason.
+    expect(runner.getAgent()).not.toBeNull();
+    expect(credentialStore.getLiveSteering()).toBe(true);
+
+    runner.mergeHold = true;
+    client.send({ type: "send_message", text: "steer me mid-merge" });
+    await drainUntil(client, (m) => m.type === "message_queued");
+
+    // `sendUserMessage` writes to stdin — the steer's only observable effect.
+    expect(first.stdinData).toEqual([]);
+    expect(runner.queueLength).toBe(1);
+    expect(runner.running).toBe(false);
+
     client.close();
   });
 
@@ -253,11 +337,22 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
 
     runner.mergeHold = true;
     const before = lastClaude;
-    client.send({ type: "answer_question", toolUseId: "tu1", answers: { q: "yes" }, text: "yes" });
+    client.send({
+      type: "answer_question", toolUseId: "tu1", answers: { q: "yes" }, text: "yes",
+      permissionMode: "plan",
+    });
     await drainUntil(client, (m) => m.type === "message_queued");
     expect(runner.running).toBe(false);
     expect(runner.queueLength).toBe(1);
     expect(lastClaude).toBe(before);
+
+    // The queued entry carries the answer AND its permission mode. The ordinary
+    // answer path preserves the client's mode (or the resident process's); this
+    // one hand-builds its dispatch, so an omitted field would silently drop the
+    // user out of plan mode because a merge happened to be running.
+    const queued = runner.dequeue();
+    expect(queued?.text).toContain("yes");
+    expect(queued?.permissionMode).toBe("plan");
 
     client.close();
   });

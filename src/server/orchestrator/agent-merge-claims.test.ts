@@ -269,18 +269,25 @@ describe("AgentMergeClaimStore — merge requests", () => {
     // merge?" about a request that was never attempted answers no.
     armOne();
     expect(claims.getAttempt(SESSION)).toBeNull();
-    claims.beginMerging(SESSION, "sha-head");
+    claims.beginMerging({
+      sessionId: SESSION, repoId: REPO, prNumber: 7, expectedSha: "sha-head", method: "squash",
+    });
     expect(claims.getAttempt(SESSION)).toMatchObject({ state: "merging" });
   });
 
   it("promotes to `merging` from `pending` only", () => {
     armOne();
-    expect(claims.beginMerging(SESSION, "other-sha")).toBe(false);
-    expect(claims.beginMerging(SESSION, "sha-head")).toBe(true);
+    const id = { sessionId: SESSION, repoId: REPO, prNumber: 7, method: "squash" as const };
+    expect(claims.beginMerging({ ...id, expectedSha: "other-sha" })).toBe(false);
+    // The WHOLE identity: a stale pass must not promote a replacement request
+    // that happens to name the same commit.
+    expect(claims.beginMerging({ ...id, prNumber: 9, expectedSha: "sha-head" })).toBe(false);
+    expect(claims.beginMerging({ ...id, method: "merge", expectedSha: "sha-head" })).toBe(false);
+    expect(claims.beginMerging({ ...id, expectedSha: "sha-head" })).toBe(true);
     expect(claims.get(SESSION)?.state).toBe("merging");
-    // The filter is what stops two executors, or an executor and a revocation,
-    // both acting on one request.
-    expect(claims.beginMerging(SESSION, "sha-head")).toBe(false);
+    // The state filter is what stops two executors, or an executor and a
+    // revocation, both acting on one request.
+    expect(claims.beginMerging({ ...id, expectedSha: "sha-head" })).toBe(false);
   });
 
   it("will not settle a request, which has not been attempted", () => {
@@ -320,7 +327,9 @@ describe("AgentMergeClaimStore — merge requests", () => {
     // them, and the row is gone so nothing will ever say it again.
     armOne();
     const chatHistory = new ChatHistoryManager(dbManager);
-    expect(() => claims.releasePending(SESSION, "sha-head", () => {
+    expect(() => claims.releasePending({
+      sessionId: SESSION, repoId: REPO, prNumber: 7, expectedSha: "sha-head", method: "squash",
+    }, () => {
       chatHistory.append(SESSION, {
         id: "m1", role: "system", text: "cancelled", timestamp: new Date().toISOString(),
       } as never);
@@ -358,10 +367,14 @@ describe("AgentMergeClaimStore — merge requests", () => {
 
   it("ends a request without touching an attempt", () => {
     armOne();
-    expect(claims.releasePending(SESSION, "other-sha")).toBe(false);
-    expect(claims.releasePending(SESSION, "sha-head")).toBe(true);
+    const id = { sessionId: SESSION, repoId: REPO, prNumber: 7, method: "squash" as const };
+    expect(claims.releasePending({ ...id, expectedSha: "other-sha" })).toBe(false);
+    // A stale pass must not cancel a replacement request and explain it with the
+    // wrong reason, so the whole identity has to match here too.
+    expect(claims.releasePending({ ...id, prNumber: 9, expectedSha: "sha-head" })).toBe(false);
+    expect(claims.releasePending({ ...id, expectedSha: "sha-head" })).toBe(true);
     claimOne();
-    expect(claims.releasePending(SESSION, "sha-head")).toBe(false);
+    expect(claims.releasePending({ ...id, expectedSha: "sha-head", method: "merge" })).toBe(false);
     expect(claims.get(SESSION)).not.toBeNull();
   });
 });

@@ -67,6 +67,38 @@ Built on `docs/287-agent-merge-per-repo`, shipped.
 - [x] Cancellation notices are written in the same transaction as the delete,
       both for a moved branch and for revocation (req 3)
 
+## From the second independent review
+
+- [x] The grant is re-read between the merge wrapper's own preparatory read and
+      the PUT it sends, so the uncancellable window is the PUT alone (req 4)
+- [x] Live steering cannot inject into a resident agent under the hold (req 6)
+- [x] The interactive send re-checks the hold past its awaits, so a hold arriving
+      mid-handler cannot be missed (req 6)
+- [x] `beginMerging` / `releasePending` match the whole claim identity, so a
+      stale pass cannot merge one pull request under another's row (req 2)
+- [x] The executor takes the post-turn lease, so idle reclamation cannot discard
+      the message waiting behind the merge (req 6)
+- [x] A message queued *under* the hold no longer aborts the merge halfway
+- [x] The tick resolves stranded `merging` / `settling` rows, and a check that
+      finds the pull request unmerged says so in the transcript (req 1)
+- [x] The rollup-identity check precedes every rollup state read, so a failure on
+      an older commit cannot cancel a valid request (req 1)
+- [x] A queued `AskUserQuestion` answer keeps its permission mode
+- [x] Cancellation notices reach connected viewers, sharing one `noticeId` with
+      the persisted row (req 3)
+
+### Test-quality findings, fixed rather than argued
+
+- [x] The queue-release test now queues a message and asserts it starts — it
+      previously kept the queue empty, so deleting the release would not fail it
+- [x] The runner-seeding hook is tested against the real `createRunnerRegistry`;
+      the executor's fake was seeding itself and proving its own premise
+- [x] The `beforeSend` hook is tested against the real `GitHubAuthManager`, for
+      the same reason
+- [x] The steering test asserts its preconditions, having been unreachable —
+      there was no resident agent, so the branch under test never ran
+- [x] The WS admission tests assert resumption, not only queueing
+
 ## Quality
 
 - [x] Tests as listed in plan.md

@@ -203,11 +203,20 @@ export class AgentMergeClaimStore {
    * docs/288 — `pending → merging`, the instant before the REST call. The
    * `state = 'pending'` filter is what makes two executors, or an executor and a
    * revocation, unable to both act on one request.
+   *
+   * Matched on the WHOLE identity, not session + SHA: a session can switch
+   * branches and arm a DIFFERENT pull request at the same commit while a pass is
+   * awaiting GitHub. On a narrower match that stale pass promotes the
+   * replacement row and then merges its own older `pr_number` with its own
+   * `method`, leaving the merge that happened described by a row naming another
+   * pull request entirely.
    */
-  beginMerging(sessionId: string, expectedSha: string): boolean {
+  beginMerging(claim: Pick<AgentMergeClaim, "sessionId" | "expectedSha" | "prNumber" | "repoId" | "method">): boolean {
     const res = this.db.prepare(
-      "UPDATE agent_merge_claims SET state = 'merging' WHERE session_id = ? AND expected_sha = ? AND state = 'pending'",
-    ).run(sessionId, expectedSha);
+      `UPDATE agent_merge_claims SET state = 'merging'
+       WHERE session_id = ? AND expected_sha = ? AND pr_number = ? AND repo_id = ? AND method = ?
+         AND state = 'pending'`,
+    ).run(claim.sessionId, claim.expectedSha, claim.prNumber, claim.repoId, claim.method);
     return res.changes > 0;
   }
 
@@ -241,12 +250,19 @@ export class AgentMergeClaimStore {
    * so, and "delete, then append" loses the explanation for good if anything
    * fails in between. `record` must be synchronous and do no I/O.
    */
-  releasePending(sessionId: string, expectedSha: string, record?: () => void): boolean {
+  releasePending(
+    claim: Pick<AgentMergeClaim, "sessionId" | "expectedSha" | "prNumber" | "repoId" | "method">,
+    record?: () => void,
+  ): boolean {
     let released = false;
     this.db.transaction(() => {
+      // Whole identity, for the same reason as `beginMerging`: a stale pass must
+      // not cancel a replacement request and explain it with the wrong reason.
       const res = this.db.prepare(
-        "DELETE FROM agent_merge_claims WHERE session_id = ? AND expected_sha = ? AND state = 'pending'",
-      ).run(sessionId, expectedSha);
+        `DELETE FROM agent_merge_claims
+         WHERE session_id = ? AND expected_sha = ? AND pr_number = ? AND repo_id = ? AND method = ?
+           AND state = 'pending'`,
+      ).run(claim.sessionId, claim.expectedSha, claim.prNumber, claim.repoId, claim.method);
       if (res.changes === 0) return;
       record?.();
       released = true;

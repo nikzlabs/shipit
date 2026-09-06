@@ -145,6 +145,7 @@ same single query, so the two paths cannot diverge — and applies one rule:
 | `CLOSED` unmerged | ended, with a notice |
 | draft, review not `APPROVED`, checks `FAILURE`/`ERROR` | ended, with a notice naming the reason |
 | checks `PENDING`/`EXPECTED` | stays `pending` — the one waiting state |
+| the rollup describes an earlier commit | stays `pending`, **before any state is read**: that rollup is wrong in both directions, and reading its `FAILURE` cancels the very request the push was made to arm |
 | no checks at all | docs/287's zero-check grace decides: wait, or merge |
 | checks `SUCCESS` | merge |
 
@@ -181,6 +182,23 @@ remote while the merge is sent to the *claim's* repository: arm in A, repoint
 `origin` to B where merging is allowed, and B's permission merges A. So the
 executor confirms the session's remote still resolves to the claim's `repo_id`
 and that its provenance still names this pull request, before either check.
+
+**A request's identity is the whole tuple, not the session and the commit.** A
+session can switch branches and arm a *different* pull request at the same commit
+while a pass is awaiting GitHub. On a narrower match that stale pass promotes the
+replacement row and then merges its own older `pr_number` with its own `method` —
+leaving a merge that happened described by a row naming another pull request. So
+`beginMerging` and `releasePending` match session, SHA, pull request, repository
+and method.
+
+**The tick also resolves stranded attempts.** An indeterminate outcome leaves a
+`merging` row, and the pending work list does not include it; docs/287's three
+reconciliation triggers are startup, session activation and end of turn, and an
+**unattended** session gets none of them. Without this the notice promising that
+"ShipIt is checking" is true only for a session somebody later opens. And when
+that check finds the pull request unmerged, the row disappearing is the last
+chance to say so — a request's agent never got an answer at the time, unlike a
+direct merge, which got one as the command's reply.
 
 ### Where the executor runs
 
@@ -223,9 +241,16 @@ they already consult:
 | Site | Existing check | Turn start |
 |---|---|---|
 | `session-runner.ts` `dispatchOnRunner` | `runner.systemTurnInProgress` | dispatched turns **and** `releaseQueuedTurn`, which routes through `runner.dispatch` |
-| `ws-handlers/send-message.ts` `handleSendMessage` | `runner.running \|\| runner.systemTurnInProgress` | the interactive send |
-| `ws-handlers/send-message.ts` `handleAnswerQuestion` | `assertCanDispatch` only | an `AskUserQuestion` answer — it does **not** go through `dispatch`, it sets `running = true` and calls `runAgentWithMessage` itself, which is why it is the path most easily missed |
+| `ws-handlers/send-message.ts` `handleSendMessage`, twice | `runner.running \|\| runner.systemTurnInProgress` | the interactive send. **Twice**, because the first check is separated from the turn start by attachment resolution, session activation and filesystem reads, and the hold can arrive inside that gap — the same shape as the executor's own re-check under its hold |
+| `ws-handlers/send-message.ts`, the steer branch | `shouldSteerMessage` | a resident streaming process. That predicate asks about a *running* turn, and the merge-held branch is reached with the session **idle**, so steering there injects the message into an agent that would work against a branch a merge is landing |
+| `ws-handlers/send-message.ts` `handleAnswerQuestion` | `assertCanDispatch` only | an `AskUserQuestion` answer — it does **not** go through `dispatch`, it sets `running = true` and calls `runAgentWithMessage` itself, which is why it is the path most easily missed. Its queued entry carries the permission mode, or answering a plan-mode question during a merge silently leaves plan mode |
 | `queue-drain.ts` `releaseQueuedTurn` | same | refuses to dequeue at all |
+
+**`mergeHold` gates admission and nothing else, so the executor also takes the
+post-turn lease** (`beginPostTurnWork`, CLAUDE.md invariant 5). Without it the
+idle enforcer — which reads `agentBusy` — can reclaim the session mid-merge, and
+disposal CLEARS the queue: the message waiting behind the hold is discarded, and
+the release that was going to start it has nothing left to start.
 
 **A runner is not always there to hold.** A session with no container has no
 runner at all, and the user opening it *during* the merge creates one — with
@@ -265,11 +290,14 @@ covered — the same identity the grant itself is matched on, never
 Requirement 4 says *every* request that has not merged is cancelled, and the
 in-flight case is not waived, but it needs no second mechanism:
 
-- **The grant is re-checked twice**: once before the GitHub read, and again in
-  the instant before the merge call, since the first is taken a round trip too
-  early. This cannot be made atomic with the merge — **the residual window is the
-  REST call itself**, which no design can recall, and GitHub's own arming has the
-  same one. The late re-check is the whole of what is left.
+- **The grant is re-checked three times**: before the GitHub read, before the
+  merge call, and — through `mergePullRequestAttempt`'s `beforeSend` hook —
+  between that call's own preparatory read and the PUT it sends. The third is not
+  belt-and-braces: the wrapper fetches the pull request's title and body first,
+  and that is a full network round trip, so stopping at the second would leave a
+  **cancellable** read inside the window. With `beforeSend`, **the residual
+  window is the merge PUT alone**, which no design can recall and which GitHub's
+  own arming shares.
 - **A row past `pending` can no longer merge anything** (*One request, one
   attempt*): it is being settled, or it is being resolved from its tuple. There is
   nothing left to cancel.
@@ -288,8 +316,14 @@ cannot prove ShipIt performed the merge. Two details are this feature's:
   correct rather than a loophole: `settleAgentMerge` compares the token only
   against a turn that is *currently running*, and the executor holds the session
   idle for the whole attempt, so there is none to disagree with.
-- **Notices have no runner to reach.** A post-turn or post-restart executor may
-  have none, so they go through `persistNoticeUnattached()`.
+- **Notices are persisted AND emitted.** A post-turn or post-restart executor may
+  have no runner, in which case `persistNoticeUnattached()` is the whole of it —
+  but when one is attached, a persist-only notice leaves a watching user seeing
+  the request vanish with no explanation until they reload. The cancellation
+  notice is split around its transaction: persisted **inside** the delete so a
+  failure cannot lose it, emitted **after** the commit so a rollback cannot leave
+  a card on screen that history does not have. One `buildSystemNotice` builds
+  both halves, or the two carry different ids and a reload shows it twice.
 
 ## Key files
 

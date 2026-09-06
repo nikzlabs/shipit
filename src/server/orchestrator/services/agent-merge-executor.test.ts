@@ -87,8 +87,17 @@ function github(opts: {
       };
     }),
     mergePullRequestAttempt: vi.fn(
-      async (_o: string, _r: string, _n: number, method: string, sha?: string) => {
+      async (
+        _o: string, _r: string, _n: number, method: string, sha?: string,
+        beforeSend?: () => string | null,
+      ) => {
+        // `onMerge` stands in for the wrapper's own pull-request read, which
+        // happens BEFORE `beforeSend` and before the PUT. Modelling that order is
+        // the whole point: the hook exists because that read is a network round
+        // trip during which authorisation can be withdrawn.
         opts.onMerge?.();
+        const refusal = beforeSend?.();
+        if (refusal) return { outcome: "refused", message: refusal } as MergeAttempt;
         merges.push({ method, sha });
         return opts.attempt ?? { outcome: "merged", message: "Merged" } as MergeAttempt;
       },
@@ -127,21 +136,37 @@ function poller(opts: { grace?: boolean } = {}) {
   } as unknown as PrStatusPoller;
 }
 
-/** A runner that records the two things the exclusion is made of. */
+/**
+ * A runner recording the three things the exclusion is made of: the admission
+ * flag, the disposal lease, and what the queue did.
+ *
+ * `leaseDepth` is counted rather than flagged so a test can tell "took and
+ * released" from "never took" — a fake exposing only a boolean would read the
+ * same either way once the call has finished.
+ */
 function fakeRunner(over: Partial<{ running: boolean; agentBusy: boolean; queueLength: number }> = {}) {
-  return {
+  const runner = {
     running: false,
     agentBusy: false,
     systemTurnInProgress: false,
     queueLength: 0,
     mergeHold: false,
     canRunDispatchedTurn: true,
-    holdSeen: [] as boolean[],
-    dequeue: () => null,
-    emitMessage: () => {},
-    dispatch: () => {},
+    leaseDepth: 0,
+    dispatched: [] as unknown[],
+    dequeue: () => {
+      runner.queueLength -= 1;
+      return { text: "queued while merging", execution: "dispatched" as const };
+    },
+    getQueueSnapshot: () => [],
+    emitted: [] as { type?: string; message?: string }[],
+    emitMessage: (m: unknown) => { runner.emitted.push(m as { type?: string; message?: string }); },
+    dispatch: (o: unknown) => { runner.dispatched.push(o); },
+    beginPostTurnWork: () => { runner.leaseDepth += 1; },
+    endPostTurnWork: () => { runner.leaseDepth -= 1; },
     ...over,
   };
+  return runner;
 }
 
 function registry(runner: object | null) {
@@ -257,6 +282,24 @@ describe("runOneRequest — ending the request", () => {
     // req 3 — "and says so in the transcript". Silence here is the failure: the
     // agent asked for a merge and would otherwise never learn it is not coming.
     expect(notices().join(" ")).toContain("the branch has moved past");
+  });
+
+  it("shows the cancellation to whoever is watching, not only to history", async () => {
+    // The notice is written inside the delete's transaction, which persists it
+    // and nothing more. A user with the session open would see the request
+    // vanish with no explanation until they reloaded.
+    const runner = fakeRunner();
+    const gh = github({ read: observation({ headRefOid: "sha-newer", rollupCommitOid: "sha-newer" }) as never });
+    await runOneRequest(
+      deps({ githubAuthManager: gh, runnerRegistry: registry(runner) }),
+      armed(),
+    );
+
+    const notice = runner.emitted.find((m) => m.type === "system_notice");
+    expect(notice?.message).toContain("the branch has moved past");
+    // The same notice, not a second one: the emitted card and the persisted row
+    // share a `noticeId`, or a reload shows the user the cancellation twice.
+    expect(notices()).toHaveLength(1);
   });
 
   it.each([
@@ -487,6 +530,26 @@ describe("runOneRequest — the permission (req 4)", () => {
     expect(notices().join(" ")).toContain("was withdrawn");
   });
 
+  it("does not send the merge when the grant goes during the wrapper's own read", async () => {
+    // The last window there is. `mergePullRequestAttempt` fetches the pull
+    // request's title and body before it sends the PUT, and that fetch is a full
+    // round trip — so a single check before the call leaves a cancellable read
+    // inside the uncancellable window. `beforeSend` closes it to the PUT alone.
+    let granted = true;
+    const gh = github({ onMerge: () => { granted = false; } });
+
+    const out = await runOneRequest(
+      deps({ githubAuthManager: gh, repoStore: { allowsAgentMerge: () => granted } }),
+      armed(),
+    );
+
+    expect(out.result).toBe("ended");
+    // The wrapper was entered — this is not the earlier check firing…
+    expect(gh.mergePullRequestAttempt).toHaveBeenCalled();
+    // …and no merge was sent.
+    expect(gh.merges).toEqual([]);
+  });
+
   it("does not merge under a permission that was withdrawn after arming", async () => {
     // Revocation deletes pending rows; this covers the row that was mid-pass
     // while it did, and the restart that finds a row under a grant that is gone.
@@ -526,17 +589,22 @@ describe("runOneRequest — a merge and a turn are mutually exclusive (req 6)", 
     expect(gh.graphqlQuery).not.toHaveBeenCalled();
   });
 
-  it("holds the session for the whole call and releases the queue after it", async () => {
-    // The hold is what a turn started mid-merge would collide with: it would push
-    // behind a merge already in flight. `releaseQueuedTurn` is the other half —
-    // draining is event-driven, and a background merge has no owning turn whose
-    // completion would drain the queue afterwards.
+  it("holds the session for the whole call and STARTS the message that waited", async () => {
+    // The hold is what a turn started mid-merge would collide with. Releasing the
+    // queue is the other half, and it needs a message actually waiting to mean
+    // anything — the previous version of this test kept the queue empty, so
+    // deleting the release call would not have failed it.
     const runner = fakeRunner();
     let heldDuringCall = false;
-    const gh = github({ onMerge: () => { heldDuringCall = runner.mergeHold; } });
-    const dispatched: unknown[] = [];
-    runner.queueLength = 0;
-    runner.dispatch = ((o: unknown) => { dispatched.push(o); }) as typeof runner.dispatch;
+    let leasedDuringCall = 0;
+    const gh = github({
+      onMerge: () => {
+        heldDuringCall = runner.mergeHold;
+        leasedDuringCall = runner.leaseDepth;
+        // The user types while ShipIt is merging; admission queues it.
+        runner.queueLength = 1;
+      },
+    });
 
     const out = await runOneRequest(
       deps({ githubAuthManager: gh, runnerRegistry: registry(runner) }),
@@ -545,8 +613,16 @@ describe("runOneRequest — a merge and a turn are mutually exclusive (req 6)", 
 
     expect(out).toEqual({ result: "merged" });
     expect(heldDuringCall).toBe(true);
-    // Cleared afterwards, or the session can never start another turn.
+    // The disposal lease was held too, or the idle enforcer could have reclaimed
+    // the session mid-merge — and disposal CLEARS the queue, discarding the very
+    // message the release below is supposed to start.
+    expect(leasedDuringCall).toBe(1);
+    // Cleared afterwards, or the session can never start another turn…
     expect(runner.mergeHold).toBe(false);
+    expect(runner.leaseDepth).toBe(0);
+    // …and the waiting message was actually started, not merely unblocked.
+    expect(runner.dispatched).toHaveLength(1);
+    expect(runner.queueLength).toBe(0);
   });
 
   it("releases the hold when something after the merge throws", async () => {
@@ -566,17 +642,25 @@ describe("runOneRequest — a merge and a turn are mutually exclusive (req 6)", 
     expect(claims.isMergeInFlight(SESSION)).toBe(false);
   });
 
-  it("seeds a runner created DURING the merge, and releases it afterwards", async () => {
-    // A session with no container has no runner to hold. Opening it mid-merge
-    // creates one, which must not start a turn — the store's in-flight mark is
-    // what a fresh runner is seeded from (`runner-registry-factory.ts`), and
-    // this is the half of that contract the executor owns.
+  it("keeps the in-flight mark up for the whole call, and releases a runner born under it", async () => {
+    // A session with no container has no runner to hold. The store's mark is what
+    // covers that gap — `runner-registry-factory.ts` seeds a fresh runner's
+    // `mergeHold` from it, and THAT half is tested against the real factory in
+    // `runner-registry-factory.test.ts`; the fake here would seed itself, which
+    // is the fake proving its own premise.
+    //
+    // What this owns is the executor's two halves: the mark is up for the whole
+    // REST call, and the `finally` re-resolves the registry rather than using the
+    // runner it captured — so a runner that did not exist at the start is
+    // released instead of left wedged.
     let created: ReturnType<typeof fakeRunner> | null = null;
-    let markedWhenCreated = false;
+    let markedDuringCall = false;
     const gh = github({
       onMerge: () => {
-        markedWhenCreated = claims.isMergeInFlight(SESSION);
-        created = fakeRunner({ mergeHold: markedWhenCreated } as never);
+        markedDuringCall = claims.isMergeInFlight(SESSION);
+        // Born held — as the production factory would make it, given the mark.
+        created = fakeRunner();
+        created.mergeHold = true;
       },
     });
 
@@ -589,12 +673,11 @@ describe("runOneRequest — a merge and a turn are mutually exclusive (req 6)", 
     );
 
     expect(out).toEqual({ result: "merged" });
-    // The mark was up while the call was in flight, so the new runner was born
-    // held…
-    expect(markedWhenCreated).toBe(true);
-    // …and the `finally` re-resolves the registry rather than using the runner
-    // it captured at the start, so the new one is released instead of wedged.
+    expect(markedDuringCall).toBe(true);
     expect(created!.mergeHold).toBe(false);
+    // …and the mark itself is down, or reconciliation could never touch the
+    // session again.
+    expect(claims.isMergeInFlight(SESSION)).toBe(false);
   });
 
   it("treats a throw from the merge call as indeterminate, not as a failure", async () => {

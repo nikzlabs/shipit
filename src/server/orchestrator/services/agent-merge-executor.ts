@@ -23,11 +23,13 @@ import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { MergeAttempt } from "../github-auth-prs.js";
 import type { AgentMergeClaim, AgentMergeClaimStore } from "../agent-merge-claims.js";
-import { persistNoticeUnattached } from "../chat-card-persistence.js";
+import {
+  persistNoticeUnattached, emitNoticePostTurn, buildSystemNotice,
+} from "../chat-card-persistence.js";
 import { ownerRepoFromRepoId, repoId } from "../git-utils.js";
 import { mergeDisposition } from "../pr-target.js";
 import { readMergeObservation } from "./merge-gate.js";
-import { settleAgentMerge } from "./agent-merge-settlement.js";
+import { settleAgentMerge, reconcileAgentMergeClaims } from "./agent-merge-settlement.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
 
 export interface AgentMergeExecutorDeps {
@@ -94,6 +96,23 @@ export class AgentMergeExecutor {
 
 /** One pass over every request. A throw on one must not strand the others. */
 export async function runAgentMergeRequests(deps: AgentMergeExecutorDeps): Promise<void> {
+  // An attempt whose outcome was never learned leaves a `merging` row, and this
+  // loop only reads `pending` ones — so without this the notice promising that
+  // "ShipIt is checking" would be true only for a session someone later opens.
+  // docs/287's three triggers are startup, session activation and end of turn,
+  // and an unattended session gets none of them. Reconciliation stands down on
+  // its own for an active turn and for a merge in flight, so this is safe to
+  // call unconditionally; it is a no-op when no attempt is outstanding.
+  await reconcileAgentMergeClaims({
+    claims: deps.claims,
+    sessionManager: deps.sessionManager,
+    chatHistoryManager: deps.chatHistoryManager,
+    ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
+    ...(deps.runnerRegistry ? { runnerRegistry: deps.runnerRegistry } : {}),
+  }).catch((err: unknown) => {
+    console.error("[agent-merge] reconciling stranded attempts failed:", err);
+  });
+
   for (const claim of deps.claims.listPending()) {
     try {
       const outcome = await runOneRequest(deps, claim);
@@ -117,7 +136,7 @@ export async function runOneRequest(
   const session = deps.sessionManager.get(claim.sessionId);
   if (!session) {
     // The cascade normally takes the row with the session; a race gets here.
-    deps.claims.releasePending(claim.sessionId, claim.expectedSha);
+    deps.claims.releasePending(claim);
     return { result: "ended", reason: "the session is gone" };
   }
 
@@ -214,6 +233,17 @@ export async function runOneRequest(
       + "and ask again.",
     );
   }
+  // req 1 — EVERY rollup read below is about this commit or about nothing. A
+  // rollup describing an earlier commit is the ordinary shape moments after the
+  // push that armed the request, and it is wrong in BOTH directions: its
+  // `SUCCESS` would merge a head CI has never seen (the fail-open docs/287's
+  // `head-moved-since-checks` rule exists to stop), and its `FAILURE` would
+  // cancel the request that push was made to arm, reporting that the new commit
+  // failed checks that never ran on it. Hence: before any state is read.
+  if (observation.rollupCommitOid !== observation.headRefOid) {
+    return { result: "waiting", reason: "the checks for this commit have not reported" };
+  }
+
   if (observation.rollupState === "FAILURE" || observation.rollupState === "ERROR") {
     return end(
       deps, claim,
@@ -230,15 +260,6 @@ export async function runOneRequest(
       `Cancelled the merge request for pull request #${claim.prNumber}: GitHub reports it needs `
       + `review (${observation.reviewDecision}). Ask again once it is approved.`,
     );
-  }
-
-  // req 1 — the checks that pass must be THIS commit's. A rollup describing an
-  // earlier commit is the ordinary shape moments after the push that armed the
-  // request, and reading its `SUCCESS` would merge a head CI has never seen —
-  // the same fail-open docs/287's `head-moved-since-checks` rule exists to stop,
-  // which arming deliberately skips at record time and must not skip here.
-  if (observation.rollupCommitOid !== observation.headRefOid) {
-    return { result: "waiting", reason: "the checks for this commit have not reported" };
   }
 
   // The one waiting state.
@@ -283,7 +304,17 @@ async function performMerge(
   // needs none: it is what stops RECONCILIATION resolving this row mid-call, and
   // it is what a runner created during the call is seeded from.
   deps.claims.markMergeInFlight(claim.sessionId);
-  if (runner) runner.mergeHold = true;
+  if (runner) {
+    runner.mergeHold = true;
+    // CLAUDE.md invariant 5 — `mergeHold` gates turn ADMISSION and nothing else,
+    // so on its own it leaves the session reclaimable: the idle enforcer reads
+    // `agentBusy`, a non-forced `dispose()` reads the post-turn hold, and
+    // disposal CLEARS the queue. A message waiting behind the merge would be
+    // thrown away, and the `releaseQueuedTurn` below would have nothing to
+    // start. This lease is the existing mechanism for exactly that — counted,
+    // deadline-bounded, and paired in the `finally`.
+    runner.beginPostTurnWork();
+  }
   try {
     if (!isIdle(deps, claim.sessionId, { underHold: true })) {
       return { result: "waiting", reason: "a turn started while ShipIt was reading GitHub" };
@@ -291,14 +322,16 @@ async function performMerge(
     // `pending → merging`, durably, BEFORE the call: it can reject after GitHub
     // accepted it, and a success with nowhere to land is a merge with no record.
     // The `state = 'pending'` filter is the single-flight point.
-    if (!deps.claims.beginMerging(claim.sessionId, claim.expectedSha)) {
+    if (!deps.claims.beginMerging(claim)) {
       return { result: "waiting", reason: "the request was resolved by something else" };
     }
 
-    // req 4 — the LAST read of the grant, in the instant before the irreversible
-    // call. The one above it was taken before a GitHub round trip. This cannot
-    // be made atomic with the merge — the residual window is the REST call
-    // itself, which no design can recall — but it is the whole of what is left.
+    // req 4 — a first read of the grant before the call, and `beforeSend` below
+    // for the last one. Two, because the manager's wrapper fetches the pull
+    // request's title and body before it sends the merge: a single check here
+    // would leave that whole GET inside the uncancellable window, and it is a
+    // network round trip during which the user can withdraw the permission.
+    // With both, the window is the merge PUT alone — which no design can recall.
     if (!isStillGranted(deps, claim)) {
       deps.claims.releaseUnmerged(claim.sessionId, claim.expectedSha);
       notify(
@@ -318,6 +351,11 @@ async function performMerge(
     try {
       attempt = await deps.githubAuthManager.mergePullRequestAttempt(
         target.owner, target.repo, claim.prNumber, claim.method, claim.expectedSha,
+        // The last possible instant: after the wrapper's own read, before the PUT.
+        () => (isStillGranted(deps, claim)
+          ? null
+          : `The permission to merge in ${target.owner}/${target.repo} was withdrawn, so ShipIt `
+            + `did not merge pull request #${claim.prNumber}.`),
       );
     } catch (err) {
       attempt = { outcome: "indeterminate", message: err instanceof Error ? err.message : String(err) };
@@ -350,6 +388,9 @@ async function performMerge(
     // RE-RESOLVED, not the one captured above: a session with no container has
     // no runner to hold, and activating it during the call creates one — seeded
     // held from the mark cleared just now, so it is this that unwedges it.
+    // Released on the runner that TOOK it, which may differ from the one holding
+    // `mergeHold` below: the lease is a counter on one object.
+    runner?.endPostTurnWork();
     const held = deps.runnerRegistry?.get(claim.sessionId) ?? runner;
     if (held) {
       held.mergeHold = false;
@@ -377,7 +418,7 @@ async function settle(
   // unwitnessed case gets here because somebody else merged the armed commit;
   // promoting the row is what lets reconciliation finish the job from the tuple
   // if this settlement cannot. A no-op when the merge path already promoted it.
-  deps.claims.beginMerging(claim.sessionId, claim.expectedSha);
+  deps.claims.beginMerging(claim);
   if (witnessed) deps.claims.markSettling(claim.sessionId, claim.expectedSha);
   const live = deps.claims.get(claim.sessionId);
   if (live?.expectedSha !== claim.expectedSha) return true;
@@ -414,11 +455,11 @@ function end(
   // GitHub, that attempt owns it now. The notice is written INSIDE the delete's
   // transaction — req 3 promises the transcript says why, and "delete, then
   // append" loses the explanation for good if anything fails in between.
-  if (!deps.claims.releasePending(
-    claim.sessionId, claim.expectedSha, () => notify(deps, claim, message, "info"),
-  )) {
+  const notice = splitNotice(deps, claim, message);
+  if (!deps.claims.releasePending(claim, notice.persist)) {
     return { result: "waiting", reason: "the request was resolved by something else" };
   }
+  notice.announce();
   return { result: "ended", reason: message };
 }
 
@@ -442,14 +483,51 @@ function unreadableKey(claim: AgentMergeClaim): string {
   return `${claim.sessionId}@${claim.expectedSha}`;
 }
 
-/** Unattached: this runs post-turn, and often with no runner to emit through. */
+/**
+ * Persist the notice AND show it to whoever is watching.
+ *
+ * Persisting is not optional — a card the user expects to still be there
+ * tomorrow has a row in the database (CLAUDE.md). Emitting is not optional
+ * either: without it the explanation req 3 promises exists only in history, and
+ * a user watching the session sees the request vanish with no word until they
+ * reload.
+ *
+ * `emitNoticePostTurn` does both. It runs post-turn by definition here, so there
+ * is no in-progress turn to interleave with; when the session has no runner at
+ * all — reclaimed container, nobody attached — the persist is the whole of it.
+ */
 function notify(
   deps: AgentMergeExecutorDeps,
   claim: AgentMergeClaim,
   message: string,
   level: "info" | "warn",
 ): void {
-  persistNoticeUnattached(deps.chatHistoryManager, claim.sessionId, message, level);
+  const runner = deps.runnerRegistry?.get(claim.sessionId);
+  if (!runner) {
+    persistNoticeUnattached(deps.chatHistoryManager, claim.sessionId, message, level);
+    return;
+  }
+  emitNoticePostTurn(
+    (m) => runner.emitMessage(m), deps.chatHistoryManager, claim.sessionId, message, level,
+  );
+}
+
+/**
+ * A notice whose two halves are split around a transaction: `persist` runs
+ * INSIDE the delete that ends the request, so a failure cannot lose the
+ * explanation, and `announce` runs only once that has committed — an emit
+ * cannot be rolled back, and broadcasting inside would leave a card on a
+ * watching user's screen that the rollback removed from history.
+ *
+ * One `buildSystemNotice`, so both halves carry the same `noticeId`; two would
+ * show the reader the same cancellation twice after a reload.
+ */
+function splitNotice(deps: AgentMergeExecutorDeps, claim: AgentMergeClaim, message: string) {
+  const { ws, persisted } = buildSystemNotice(claim.sessionId, message, "info");
+  return {
+    persist: (): void => { deps.chatHistoryManager.append(claim.sessionId, persisted); },
+    announce: (): void => { deps.runnerRegistry?.get(claim.sessionId)?.emitMessage(ws); },
+  };
 }
 
 /**
@@ -466,7 +544,12 @@ function isIdle(
   // No runner is genuinely idle: a session with no container is not mid-turn.
   if (!runner) return true;
   if (runner.running || runner.agentBusy || runner.systemTurnInProgress) return false;
-  if (runner.queueLength > 0) return false;
+  // A queued message blocks STARTING a merge, because draining it starts a turn.
+  // Under the hold it must not: a message arriving there was queued BY the hold,
+  // and treating it as busy would abandon the merge halfway — leaving the row
+  // unsettled and the very message unstarted, since the release that would have
+  // started it comes after the settlement.
+  if (opts.underHold !== true && runner.queueLength > 0) return false;
   // The hold this pass just took is its own, not somebody else's.
   return opts.underHold === true || !runner.mergeHold;
 }

@@ -209,7 +209,12 @@ export async function handleSendMessage(
       // docs/163 — single shared steer-or-queue predicate. The dispatch path
       // (`runner.dispatch` → `trySteerDispatch`) consults the identical
       // `shouldSteerMessage` so the WS and programmatic paths can't diverge.
-      if (shouldSteerMessage({
+      // docs/288 req 6 — NOT while ShipIt is merging. `shouldSteerMessage` asks
+      // about a *running* turn, and this branch is now also reached with the
+      // session idle and the merge hold up: a resident streaming agent left over
+      // from the previous turn would take `sendUserMessage` and start work
+      // against a branch a merge is landing. Fall through to the queue instead.
+      if (!heldByMerge && shouldSteerMessage({
         steeringCapable,
         liveSteering,
         streamingActive,
@@ -616,6 +621,29 @@ export async function handleSendMessage(
   // Mark the runner as running. Resolve via registry so this stays correct
   // even if the WS disconnects between handler entry and `await` resumption.
   const turnRunner = resolveRunner(ctx);
+  // docs/288 req 6 — re-asked here because the check at the top of this handler
+  // is separated from this line by attachment resolution, session activation and
+  // filesystem reads. The executor can take the hold inside that gap, and then
+  // this would start a turn on top of a merge already in flight. Same shape as
+  // the executor's own re-check under its hold, for the same reason.
+  if (turnRunner?.mergeHold) {
+    turnRunner.dispatch(prepareDispatch({
+      text: userText,
+      agentInterface: undefined,
+      execution: "interactive",
+      images: allImages,
+      files: validatedFiles,
+      uploads: msg.uploads,
+      permissionMode: msg.permissionMode,
+      activity: undefined,
+      postTurn: undefined,
+      systemTurn: undefined,
+      onTurnComplete: undefined,
+      deliveryId: undefined,
+      dictated: msg.dictated,
+    }));
+    return;
+  }
   if (turnRunner) turnRunner.running = true;
   await runAgentWithMessage(ctx, {
     userText,
@@ -685,7 +713,10 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
       images: undefined,
       files: undefined,
       uploads: undefined,
-      permissionMode: undefined,
+      // The client's mode, else the one the resident process is already on.
+      // `undefined` here would silently drop plan mode: an answer to a
+      // plan-mode question would resume under the default after the hold clears.
+      permissionMode: msg.permissionMode ?? runnerEarly.appliedPermissionMode,
       activity: undefined,
       postTurn: undefined,
       systemTurn: undefined,

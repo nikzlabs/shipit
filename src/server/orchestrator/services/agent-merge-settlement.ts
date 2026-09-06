@@ -125,6 +125,17 @@ export async function settleAgentMerge(
       return { result: "deferred", reason: "the pull request does not read as merged yet" };
     }
     // Resolved from the tuple, never from the shape of an error.
+    // docs/288 — a request's agent asked for this and got no answer at the time,
+    // so the row disappearing is the LAST chance to say what happened. A direct
+    // merge already got its answer as the command's reply.
+    if (claim.origin === "auto") {
+      persistNoticeUnattached(
+        deps.chatHistoryManager, claim.sessionId,
+        `ShipIt checked, and pull request #${claim.prNumber} did not merge at `
+        + `${claim.expectedSha.slice(0, 8)}. Nothing was merged; ask again to retry.`,
+        "warn",
+      );
+    }
     deps.claims.release(claim.sessionId, claim.expectedSha);
     return { result: "not-merged" };
   }
