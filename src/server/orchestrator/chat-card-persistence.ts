@@ -448,7 +448,15 @@ export function persistCardTransition(
  * notice can never ship emit-only (the historical bug — notices survived a
  * reconnect via the buffer but vanished on a full reload).
  */
-function buildSystemNotice(
+/**
+ * The two halves of one notice, sharing a `noticeId`.
+ *
+ * Exported for docs/288, whose cancellation notice is persisted INSIDE the
+ * transaction that deletes the request (so a failure cannot lose the
+ * explanation) and broadcast only once that has committed. Both halves must
+ * carry the same id, or the reloaded row and the live card are two notices.
+ */
+export function buildSystemNotice(
   sessionId: string,
   message: string,
   level: "info" | "warn",

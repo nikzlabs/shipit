@@ -1566,6 +1566,21 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_agent_merge_claims_state ON agent_merge_claims(state);
     `);
   },
+  // docs/288 — a claim gains a life BEFORE the merge call: `origin = 'auto'` in
+  // state `pending` is `gh pr merge --auto`'s request, performed later by the
+  // executor. `method` is what makes that possible — the direct merge passes it
+  // into the REST call in the same function, while a request is carried out
+  // minutes later by different code with nowhere else to read it from.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(agent_merge_claims)").all() as { name: string }[];
+    const has = (name: string): boolean => columns.some((c) => c.name === name);
+    if (!has("origin")) {
+      db.exec("ALTER TABLE agent_merge_claims ADD COLUMN origin TEXT NOT NULL DEFAULT 'direct'");
+    }
+    if (!has("method")) {
+      db.exec("ALTER TABLE agent_merge_claims ADD COLUMN method TEXT NOT NULL DEFAULT 'merge'");
+    }
+  },
 ];
 
 /**

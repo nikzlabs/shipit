@@ -1,4 +1,3 @@
-import { AgentMergeClaimStore } from "./agent-merge-claims.js";
 import { reconcileAgentMergeClaims } from "./services/agent-merge-settlement.js";
 import type { FastifyInstance } from "fastify";
 import { nativeServiceForHarness, selectionExists, selectionHonoursEffort } from "../shared/catalogue/index.js";
@@ -313,8 +312,10 @@ export async function registerRoutes(
     clientDir, logStore, buildId,
   } = rt;
   const { kickDiskEscalation } = monitors;
-  // docs/287 §4 — one store for the route deps and the activation trigger below.
-  const agentMergeClaims = new AgentMergeClaimStore(databaseManager);
+  // docs/287 §4 — the store the route deps and the activation trigger below
+  // share, and docs/288's executor, both built and started by
+  // `bootstrapManagers` (the executor needs the post-adoption ordering there).
+  const { agentMergeClaims, agentMergeExecutor } = rt;
   const wsOriginPolicy = readOriginPolicyFromEnv();
 
   // ---- HTTP API routes ----
@@ -337,6 +338,7 @@ export async function registerRoutes(
     marketplaceStore,
     usageManager,
     agentMergeClaims,
+    agentMergeExecutor,
     runnerRegistry,
     chatHistoryManager,
     authManager,

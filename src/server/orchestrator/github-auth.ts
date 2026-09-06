@@ -652,15 +652,27 @@ export class GitHubAuthManager extends EventEmitter {
 
   /** docs/287 req 9 — the same merge, reporting which of its three outcomes
    * happened. The agent merge keeps or drops its claim on that distinction. */
+  /**
+   * `beforeSend` (docs/288 req 4) is asked immediately before the PUT, and it is
+   * there because of the `viewPullRequestImpl` above it: that read supplies the
+   * merge commit's title and body, and it is a full network round trip during
+   * which a caller's authorisation can be withdrawn. Without the hook the
+   * caller's last check has to sit before this whole method, which makes the
+   * uncancellable window a preparatory GET plus the merge instead of the merge
+   * alone. Returning a message refuses without sending anything.
+   */
   async mergePullRequestAttempt(
     owner: string,
     repo: string,
     pullNumber: number,
     method: "merge" | "squash" | "rebase" = "merge",
     expectedSha?: string,
+    beforeSend?: () => string | null,
   ): Promise<MergeAttempt> {
     if (!this._token) return { outcome: "refused", message: "Not authenticated" };
     const pr = await viewPullRequestImpl(this._token, owner, repo, pullNumber);
+    const refusal = beforeSend?.();
+    if (refusal) return { outcome: "refused", message: refusal };
     return mergePullRequestAttemptImpl(
       this._token, owner, repo, pullNumber, method, pr?.title, pr?.body, expectedSha,
     );

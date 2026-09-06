@@ -105,6 +105,7 @@ describe("releaseQueuedTurn (planning#338)", () => {
   function fakeReleaseRunner(opts: {
     running?: boolean;
     systemTurnInProgress?: boolean;
+    mergeHold?: boolean;
     queueLength?: number;
   }) {
     const dispatched: AgentDispatchOptions[] = [];
@@ -113,6 +114,7 @@ describe("releaseQueuedTurn (planning#338)", () => {
       sessionId: "s1",
       running: opts.running ?? false,
       systemTurnInProgress: opts.systemTurnInProgress ?? false,
+      mergeHold: opts.mergeHold ?? false,
       queueLength: opts.queueLength ?? 0,
       canRunDispatchedTurn: true,
       dequeue: () => {
@@ -133,6 +135,20 @@ describe("releaseQueuedTurn (planning#338)", () => {
     const { runner, dispatched, dequeueCount } = fakeReleaseRunner({
       running: false,
       systemTurnInProgress: true,
+      queueLength: 1,
+    });
+    expect(releaseQueuedTurn(runner)).toBe(false);
+    expect(dispatched).toEqual([]);
+    expect(dequeueCount()).toBe(0);
+  });
+
+  it("refuses to release while ShipIt is merging this session's pull request", () => {
+    // docs/288 req 6 — `dispatch` would only re-queue the entry under the hold,
+    // so dequeuing here costs a `queue_updated` broadcast showing the queue
+    // shrink and grow again for no reason.
+    const { runner, dispatched, dequeueCount } = fakeReleaseRunner({
+      running: false,
+      mergeHold: true,
       queueLength: 1,
     });
     expect(releaseQueuedTurn(runner)).toBe(false);

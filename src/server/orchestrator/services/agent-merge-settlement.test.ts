@@ -98,9 +98,13 @@ function claimOne(over: { prNumber?: number; expectedSha?: string } = {}) {
     repoId: REPO_ID,
     prNumber: over.prNumber ?? 7,
     expectedSha: over.expectedSha ?? "sha-head",
+    method: "merge" as const,
   };
   claims.claim(claim);
-  return { ...claim, state: "merging" as const, createdAt: new Date().toISOString() };
+  return {
+    ...claim, state: "merging" as const, origin: "direct" as const,
+    createdAt: new Date().toISOString(),
+  };
 }
 
 function notices(): string[] {
@@ -448,5 +452,77 @@ describe("captureTurn", () => {
   it("carries the runner as well as the epoch", () => {
     const runner = { running: true, turnEpoch: 4 };
     expect(captureTurn(registry(runner), SESSION)).toEqual({ runner, epoch: 4 });
+  });
+});
+
+
+/**
+ * docs/288 — a REQUEST's agent never got an answer at the time, unlike a direct
+ * merge whose answer was the command's reply. So every path that deletes its row
+ * is the last chance to say what happened, and a pass acting on a stale snapshot
+ * can destroy a live merge's only record.
+ */
+describe("settleAgentMerge — docs/288 requests", () => {
+  function armOne(over: { expectedSha?: string; prNumber?: number } = {}) {
+    claims.arm({
+      sessionId: SESSION,
+      repoId: REPO_ID,
+      prNumber: over.prNumber ?? 7,
+      expectedSha: over.expectedSha ?? "sha-head",
+      method: "squash",
+    });
+    const claim = claims.get(SESSION)!;
+    claims.beginMerging(claim);
+    return { ...claim, state: "merging" as const };
+  }
+
+  it("tells the agent when a checked attempt turns out not to have merged", async () => {
+    // Otherwise the row disappears and the last thing the transcript said is
+    // "ShipIt is checking, and will say so here once it knows".
+    const claim = armOne();
+    const out = await settleAgentMerge(
+      deps({ prStatusPoller: poller(facts({ merged_at: null, state: "open" })) }),
+      claim, { witnessed: false },
+    );
+
+    expect(out).toEqual({ result: "not-merged" });
+    expect(notices().join(" ")).toContain("did not merge");
+  });
+
+  it("tells the agent when the pull request merged at a different commit", async () => {
+    const claim = armOne();
+    const out = await settleAgentMerge(
+      deps({ prStatusPoller: poller(facts({ head_sha: "somebody-elses-sha" })) }),
+      claim, { witnessed: false },
+    );
+
+    expect(out).toEqual({ result: "not-merged" });
+    expect(notices().join(" ")).toContain("merged at a different commit");
+  });
+
+  it("does not delete a row that changed while GitHub was answering", async () => {
+    // Two reconciliations overlap: the first resolves the row, a replacement
+    // request is armed at the same commit and starts merging, and the second
+    // finally returns "open". Deleting on that stale answer destroys a LIVE
+    // merge's only record — the merge then succeeds and nothing recorded it.
+    const claim = armOne();
+    const p = poller(facts({ merged_at: null, state: "open" }), {
+      onFetch: () => {
+        claims.release(SESSION, "sha-head");
+        claims.arm({
+          sessionId: SESSION, repoId: REPO_ID, prNumber: 9, expectedSha: "sha-head",
+          method: "merge",
+        });
+        claims.beginMerging(claims.get(SESSION)!);
+        claims.markMergeInFlight(SESSION);
+      },
+    });
+
+    const out = await settleAgentMerge(deps({ prStatusPoller: p }), claim, { witnessed: false });
+
+    expect(out).toMatchObject({ result: "deferred" });
+    // The replacement — a different pull request — is untouched.
+    expect(claims.get(SESSION)).toMatchObject({ prNumber: 9, state: "merging" });
+    claims.clearMergeInFlight(SESSION);
   });
 });

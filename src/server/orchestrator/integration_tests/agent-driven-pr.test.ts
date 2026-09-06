@@ -1193,7 +1193,7 @@ describe("repo-aware PR brokering (docs/211)", () => {
   );
 
   it(
-    "refuses failing checks, and refuses --auto by naming where arming lives",
+    "refuses failing checks, and records --auto as a request instead of merging",
     { timeout: 15_000 },
     async () => {
       await githubAuth.setToken("test-token");
@@ -1213,16 +1213,24 @@ describe("repo-aware PR brokering (docs/211)", () => {
         success: false, message: expect.stringContaining("failing checks"),
       });
 
-      // req 12/13 — arming is docs/288, and the refusal says so rather than
-      // merging something the agent did not ask for.
+      // docs/288 req 1 — the case the whole feature exists for: the flush and
+      // push restarted CI, so the checks are running and `gh pr merge` alone
+      // could never land this work. `--auto` records the request, at the exact
+      // commit (req 2), and merges NOTHING now.
       githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "PENDING" });
       const auto = await withLiveTurn(sessionId, () => app.inject({
-        method: "POST", url: `/api/sessions/${sessionId}/pr/7/merge`, payload: { auto: true },
+        method: "POST", url: `/api/sessions/${sessionId}/pr/7/merge`, payload: { auto: true, method: "squash" },
       }));
       expect(auto.json()).toMatchObject({
-        success: false, message: expect.stringContaining("docs/288-agent-merge-arming"),
+        success: true, message: expect.stringContaining("once its checks pass"),
       });
       expect(githubAuth.mergePullRequestCalls).toHaveLength(before);
+      expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toMatchObject({
+        state: "pending", origin: "auto", prNumber: 7, expectedSha: head,
+        // The method is carried on the row: the merge happens minutes later,
+        // in code that has nowhere else to read the flag from.
+        method: "squash",
+      });
     },
   );
 
@@ -1301,6 +1309,89 @@ describe("repo-aware PR brokering (docs/211)", () => {
       expect(res.statusCode).toBe(409);
       expect(res.json()).toMatchObject({ error: expect.stringContaining("had not reached GitHub") });
       expect(githubAuth.mergePullRequestCalls).toHaveLength(before);
+    },
+  );
+
+  it(
+    "docs/288 — `--auto` arms past its OWN push, which is its whole use case",
+    { timeout: 15_000 },
+    async () => {
+      // The same branch state as the test above, and the opposite answer. The
+      // agent edits, calls `gh pr merge --auto`, and the command commits and
+      // pushes first — so `guardMergeSync` reporting "just pushed" is the
+      // ORDINARY path, not an edge. Refusing there made `--auto` unreachable in
+      // the workflow its own documentation describes: the request was never
+      // recorded, and nothing merged when CI later turned green.
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+
+      const env = { ...process.env, HOME: tmpDir };
+      const run = (cmd: string) => execSync(cmd, { cwd: sessionDir, env }).toString().trim();
+      const pushedTip = run("git rev-parse HEAD");
+      fs.writeFileSync(path.join(sessionDir, "later.txt"), "work\n");
+      run("git add -A && git commit -q -m 'Work GitHub has not seen'");
+      run(`git update-ref refs/remotes/origin/shipit/test-feature ${pushedTip}`);
+      const newTip = run("git rev-parse HEAD");
+
+      // CI has not started on the new head yet — the state `--auto` waits out.
+      githubAuth.setMergeGateResult({ headRefOid: newTip, rollupState: "PENDING" });
+      const before = githubAuth.mergePullRequestCalls.length;
+
+      const res = await withLiveTurn(sessionId, () => app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/7/merge`,
+        payload: { auto: true },
+      }));
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({
+        success: true, message: expect.stringContaining("once its checks pass"),
+      });
+      // Nothing merged now, and the request names the commit the push created.
+      expect(githubAuth.mergePullRequestCalls).toHaveLength(before);
+      expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toMatchObject({
+        state: "pending", origin: "auto", expectedSha: newTip,
+      });
+    },
+  );
+
+  it(
+    "docs/288 — a diverged branch still refuses `--auto`, since the commit is not on GitHub",
+    { timeout: 15_000 },
+    async () => {
+      // The control for the test above. `pushed: false` means the branch never
+      // reached GitHub, so arming would bind to a commit GitHub does not have —
+      // it could never merge, and the request would wait for ever.
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+
+      const env = { ...process.env, HOME: tmpDir };
+      const run = (cmd: string) => execSync(cmd, { cwd: sessionDir, env }).toString().trim();
+      // Diverge: the remote has a commit this session does not.
+      fs.writeFileSync(path.join(sessionDir, "local.txt"), "local\n");
+      run("git add -A && git commit -q -m 'Local only'");
+      const local = run("git rev-parse HEAD");
+      run(`git branch -f other ${local}~1`);
+      run("git checkout -q other");
+      fs.writeFileSync(path.join(sessionDir, "remote.txt"), "remote\n");
+      run("git add -A && git commit -q -m 'Remote only'");
+      const remoteOnly = run("git rev-parse HEAD");
+      run("git checkout -q shipit/test-feature");
+      run(`git update-ref refs/remotes/origin/shipit/test-feature ${remoteOnly}`);
+
+      githubAuth.setMergeGateResult({ rollupState: "PENDING" });
+      const res = await withLiveTurn(sessionId, () => app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/7/merge`,
+        payload: { auto: true },
+      }));
+
+      expect(res.statusCode).toBe(409);
+      expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toBeNull();
     },
   );
 

@@ -159,6 +159,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _agentId: AgentId;
   private _isRunning = false;
   private _systemTurnInProgress = false;
+  /** docs/288 — ShipIt is merging this session's PR; no turn may start. */
+  private _mergeHold = false;
   private _wasInterrupted = false;
   /** See `SessionRunnerInterface.turnEpoch`. */
   turnEpoch = 0;
@@ -476,6 +478,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   set running(v: boolean) { this._isRunning = v; }
   get systemTurnInProgress(): boolean { return this._systemTurnInProgress; }
   set systemTurnInProgress(v: boolean) { this._systemTurnInProgress = v; }
+  get mergeHold(): boolean { return this._mergeHold; }
+  set mergeHold(v: boolean) { this._mergeHold = v; }
 
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }

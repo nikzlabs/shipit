@@ -38,6 +38,21 @@ export type SettlementOutcome =
   /** No answer, or the session moved on. The claim stays. */
   | { result: "deferred"; reason: string };
 
+/**
+ * docs/288 — tell the agent how a REQUEST ended, on any path that deletes its
+ * row. A direct `gh pr merge` already got its answer as the command's reply; a
+ * request's agent got only "ShipIt is checking", so a silent delete strands that
+ * promise for good.
+ */
+function noticeForRequest(
+  deps: AgentMergeSettlementDeps,
+  claim: AgentMergeClaim,
+  message: string,
+): void {
+  if (claim.origin !== "auto") return;
+  persistNoticeUnattached(deps.chatHistoryManager, claim.sessionId, message, "warn");
+}
+
 /** Both halves: a number alone could name a different repository's #N. */
 function sessionStillOwns(deps: AgentMergeSettlementDeps, claim: AgentMergeClaim): boolean {
   const session = deps.sessionManager.get(claim.sessionId);
@@ -72,6 +87,11 @@ export async function settleAgentMerge(
   if (live?.expectedSha !== claim.expectedSha) {
     return { result: "deferred", reason: "the claim has already been resolved" };
   }
+  // docs/288 — a request has not been attempted, so "is it merged?" has no
+  // bearing on it and a `not-merged` answer here would DELETE it.
+  if (live.state === "pending") {
+    return { result: "deferred", reason: "this is a merge request the executor has not attempted" };
+  }
   if (!deps.prStatusPoller) return { result: "deferred", reason: "no pull-request poller" };
   const target = ownerRepoFor(claim);
   if (!target) return { result: "deferred", reason: "the claim has no readable repository" };
@@ -94,6 +114,7 @@ export async function settleAgentMerge(
     return { result: "deferred", reason: "a turn started on this session" };
   }
 
+
   const read = await deps.prStatusPoller.promoteMergedPrByNumber({
     sessionId: claim.sessionId,
     owner: target.owner,
@@ -113,12 +134,33 @@ export async function settleAgentMerge(
   const facts = read.pr;
 
   if (facts.merged_at === null) {
+    // The row as it is NOW, not the snapshot this pass read before its GitHub
+    // await. Two reconciliations can overlap: the first resolves the row, a
+    // replacement request is armed and starts merging at the same commit, and
+    // the second returns "open" and would delete THAT — a live merge with its
+    // only record gone. Identity, not just the SHA, and never a row whose PUT
+    // is in flight.
+    const now = deps.claims.get(claim.sessionId);
+    if (
+      now?.expectedSha !== claim.expectedSha || now.prNumber !== claim.prNumber
+      || now.state !== live.state || deps.claims.isMergeInFlight(claim.sessionId)
+    ) {
+      return { result: "deferred", reason: "the claim changed while GitHub was answering" };
+    }
     // `settling` means a merge response CAME BACK, so an open answer here is a
     // stale read. Only a `merging` row may resolve as not-merged.
     if (live.state === "settling") {
       return { result: "deferred", reason: "the pull request does not read as merged yet" };
     }
     // Resolved from the tuple, never from the shape of an error.
+    // docs/288 — a request's agent asked for this and got no answer at the time,
+    // so the row disappearing is the LAST chance to say what happened. A direct
+    // merge already got its answer as the command's reply.
+    noticeForRequest(
+      deps, claim,
+      `ShipIt checked, and pull request #${claim.prNumber} did not merge at `
+      + `${claim.expectedSha.slice(0, 8)}. Nothing was merged; ask again to retry.`,
+    );
     deps.claims.release(claim.sessionId, claim.expectedSha);
     return { result: "not-merged" };
   }
@@ -129,6 +171,14 @@ export async function settleAgentMerge(
     console.warn(
       `[agent-merge] ${mergeRecordId(claim)} — PR #${claim.prNumber} merged at `
       + `${facts.head_sha ?? "an unknown commit"}, not the claimed commit. Recording nothing.`,
+    );
+    // docs/288 — terminal for a request, and its agent has had no answer since
+    // the "ShipIt is checking" notice. Silence here strands that promise.
+    noticeForRequest(
+      deps, claim,
+      `Pull request #${claim.prNumber} merged at a different commit than the `
+      + `${claim.expectedSha.slice(0, 8)} this session asked ShipIt to merge. Nothing this session `
+      + "asked for was merged.",
     );
     deps.claims.release(claim.sessionId, claim.expectedSha);
     return { result: "not-merged" };
@@ -178,6 +228,11 @@ async function settleWithoutSession(
       `[agent-merge] ${recordId} — the session's pull request moved on, and the claimed commit is `
       + "not merged. Nothing to record.",
     );
+    noticeForRequest(
+      deps, claim,
+      `ShipIt checked, and the commit this session asked to merge (${claim.expectedSha.slice(0, 8)}) `
+      + `is not merged in pull request #${claim.prNumber}. Nothing was merged.`,
+    );
     deps.claims.release(claim.sessionId, claim.expectedSha);
     return { result: "not-merged" };
   }
@@ -204,7 +259,10 @@ export async function reconcileAgentMergeClaims(
   opts: { sessionId?: string } = {},
 ): Promise<void> {
   const claims = opts.sessionId
-    ? [deps.claims.get(opts.sessionId)].filter((c): c is AgentMergeClaim => c !== null)
+    // `getAttempt`, not `get`: `settleAgentMerge` refuses a request on its own,
+    // so this is not what keeps one safe — it keeps the end of every turn from
+    // logging a deferral for a request that is simply still waiting.
+    ? [deps.claims.getAttempt(opts.sessionId)].filter((c): c is AgentMergeClaim => c !== null)
     : deps.claims.list();
 
   for (const claim of claims) {
@@ -227,8 +285,18 @@ export async function reconcileAgentMergeClaims(
   }
 }
 
-/** Broader than "the claim's own turn": ANY turn may be editing and pushing. */
+/**
+ * Broader than "the claim's own turn": ANY turn may be editing and pushing.
+ *
+ * docs/288 adds the second clause, and it is not a turn at all. The executor
+ * writes `merging` and then awaits GitHub with no turn running, so without it a
+ * session activation reconciles that row, reads the pull request as still open,
+ * and DELETES it — after which GitHub accepts the outstanding request and the
+ * merge has no record anywhere. It is checked on the store rather than on the
+ * runner because a session with no container has no runner to ask.
+ */
 function hasActiveTurn(deps: AgentMergeSettlementDeps, claim: AgentMergeClaim): boolean {
+  if (deps.claims.isMergeInFlight(claim.sessionId)) return true;
   const runner = deps.runnerRegistry?.get(claim.sessionId);
   if (!runner) return false;
   return runner.agentBusy || runner.running;

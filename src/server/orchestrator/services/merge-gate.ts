@@ -159,6 +159,8 @@ export type MergeRefusalReason =
 
 export type MergeDecision =
   | { action: "merge"; sha: string }
+  /** docs/288 — record a request to merge `sha` once its checks pass. */
+  | { action: "arm"; sha: string }
   | { action: "already-merged" }
   | { action: "refuse"; reason: MergeRefusalReason; message: string };
 
@@ -180,8 +182,18 @@ export async function decideMerge(args: {
     | { kind: "head"; sha: string }
     | { kind: "unreadable"; reason: string };
   graceSaysWait: () => Promise<boolean>;
+  /**
+   * docs/288 — decide for a repo-bound `--auto`. ONE table, two verdicts: every
+   * refusal below is a refusal for arming too, and the three answers that mean
+   * "this commit may merge, now or once CI reports" become `arm` instead.
+   */
+  arming?: boolean;
 }): Promise<MergeDecision> {
   const { observation, prNumber } = args;
+  // The verdict for a commit that is allowed to merge. An arming binds to it and
+  // ShipIt performs the merge later; `--auto` never merges inline.
+  const proceed = (sha: string): MergeDecision =>
+    args.arming ? { action: "arm", sha } : { action: "merge", sha };
 
   if (observation.kind === "unreadable") {
     return {
@@ -200,7 +212,13 @@ export async function decideMerge(args: {
 
   // req 16 — the checks describe a commit that is no longer the head. Merging on
   // the strength of them would merge code CI never saw.
-  if (observation.rollupCommitOid !== observation.headRefOid) {
+  //
+  // docs/288 — and it is exactly what an arming is FOR: the push that just
+  // happened is why the rollup lags, and the request binds to `headRefOid` and
+  // waits for that commit's own checks. Skipping the rule keeps the rest of the
+  // order intact, so an arming still refuses on a draft, a review or a failure
+  // rather than being recorded and cancelled a tick later.
+  if (!args.arming && observation.rollupCommitOid !== observation.headRefOid) {
     return {
       action: "refuse",
       reason: "head-moved-since-checks",
@@ -248,7 +266,14 @@ export async function decideMerge(args: {
     };
   }
 
-  const rollup = observation.rollupState;
+  // docs/288 — when arming past a lagging rollup, that rollup describes a
+  // DIFFERENT commit and says nothing about the one being armed, in either
+  // direction: reading a failure from it refuses the request the push was made
+  // to arm, and reading a success from it would arm on checks that never ran.
+  // Not yet reported is the honest value, and the one the request waits on.
+  const rollup = args.arming && observation.rollupCommitOid !== observation.headRefOid
+    ? "PENDING"
+    : observation.rollupState;
   // req 7 — EVERY check GitHub reports must pass, required or not. The rollup
   // aggregates all of them, which is why this reads it rather than enumerating.
   if (rollup === "FAILURE" || rollup === "ERROR") {
@@ -276,6 +301,8 @@ export async function decideMerge(args: {
   }
 
   if (rollup === "PENDING" || rollup === "EXPECTED") {
+    // docs/288 req 1 — the state the whole feature exists for.
+    if (args.arming) return proceed(observation.headRefOid);
     // req 17 — the command never waits by itself.
     return {
       action: "refuse",
@@ -289,6 +316,8 @@ export async function decideMerge(args: {
     // Zero checks is either a repository with no CI or a push whose workflows
     // are not registered yet — indistinguishable now, hence the grace window.
     if (await args.graceSaysWait()) {
+      // docs/288 — an arming waits out the grace in the executor, not here.
+      if (args.arming) return proceed(observation.headRefOid);
       return {
         action: "refuse",
         reason: "awaiting-checks",
@@ -297,7 +326,7 @@ export async function decideMerge(args: {
           + "have not registered; merge again in a moment.",
       };
     }
-    return { action: "merge", sha: observation.headRefOid };
+    return proceed(observation.headRefOid);
   }
 
   if (rollup !== "SUCCESS") {
@@ -309,5 +338,5 @@ export async function decideMerge(args: {
     };
   }
 
-  return { action: "merge", sha: observation.headRefOid };
+  return proceed(observation.headRefOid);
 }

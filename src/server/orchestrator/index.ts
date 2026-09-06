@@ -251,6 +251,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   app.decorate("sessionManager", rt.sessionManager);
   app.decorate("chatHistoryManager", rt.chatHistoryManager);
   app.decorate("usageManager", rt.usageManager);
+  // docs/288 — the in-flight mark lives in memory on this instance, so a test
+  // driving the merge/turn exclusion has to reach the app's own store.
+  app.decorate("agentMergeClaims", rt.agentMergeClaims);
 
   return app;
 }

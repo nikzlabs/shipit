@@ -444,6 +444,14 @@ export function dispatchOnRunner(
     return enqueueAndReport();
   }
 
+  // docs/288 req 6 — ShipIt is merging this session's pull request right now.
+  // Unlike the flag above this has NO exception: the rebase driver's resolution
+  // turn is a step inside a git operation that driver owns, whereas any turn at
+  // all here would run against a branch a merge is landing. `releaseQueuedTurn`
+  // routes through `dispatch`, so this one check covers the drain too — and the
+  // executor calls it when the hold clears, which is what starts the held turn.
+  if (runner.mergeHold) return enqueueAndReport();
+
   // docs/260-turn-level-account-routing req 13 — a resident process holding background work (a sub-agent
   // review, agent-started background tasks) may not be displaced by a system
   // turn: a system turn always spawns fresh, and the fresh spawn retires the
@@ -1181,6 +1189,19 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * false in the `done` handler.
    */
   systemTurnInProgress: boolean;
+  /**
+   * docs/288 req 6 — set while ShipIt is merging this session's pull request for
+   * a `gh pr merge --auto` request. A turn started in that window would push
+   * behind a merge already in flight, so the three admission sites treat it
+   * exactly like `systemTurnInProgress` and queue instead.
+   *
+   * A field of its own rather than a reuse of that flag: `turn-executor.ts`
+   * clears `systemTurnInProgress` when a system turn ends, so two holders
+   * sharing it is a lost update that silently removes the exclusion. Owned by
+   * `services/agent-merge-executor.ts`, cleared in its `finally` beside the
+   * `releaseQueuedTurn()` that lets the held-back turn start.
+   */
+  mergeHold: boolean;
   wasInterrupted: boolean;
   /**
    * planning#318 follow-up — monotonic per-runner TURN identity, bumped by
@@ -1771,6 +1792,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _agentId: AgentId;
   private _isRunning = false;
   private _systemTurnInProgress = false;
+  /** docs/288 — ShipIt is merging this session's PR; no turn may start. */
+  private _mergeHold = false;
   private _wasInterrupted = false;
   /** See `SessionRunnerInterface.turnEpoch`. */
   turnEpoch = 0;
@@ -1844,6 +1867,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set running(v: boolean) { this._isRunning = v; }
   get systemTurnInProgress(): boolean { return this._systemTurnInProgress; }
   set systemTurnInProgress(v: boolean) { this._systemTurnInProgress = v; }
+  get mergeHold(): boolean { return this._mergeHold; }
+  set mergeHold(v: boolean) { this._mergeHold = v; }
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
   get lastTurnErrored(): boolean { return this._lastTurnErrored; }

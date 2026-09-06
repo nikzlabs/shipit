@@ -28,6 +28,40 @@ import {
 import { canonicalRepoKey, hasUrlCredentials, repoId } from "./git-utils.js";
 import { getErrorMessage } from "./validation.js";
 import { stopWarmPreview } from "./warm-preview.js";
+import { buildSystemNotice } from "./chat-card-persistence.js";
+import type { WsServerMessage } from "../shared/types.js";
+
+/**
+ * docs/288 req 4 — cancel every merge request for a repository whose grant was
+ * just withdrawn, and tell each session why in its own transcript. Matched on
+ * {@link repoId}, the identity the grant itself is matched on, so every URL
+ * spelling of that repository is covered.
+ */
+function cancelAgentMergeRequests(deps: ApiDeps, id: string): void {
+  if (!id || !deps.agentMergeClaims) return;
+  // Split around the transaction, like the executor's own cancellation. The
+  // notice is PERSISTED inside the delete — a request the user cancelled must
+  // not vanish leaving no record of why (req 3's guarantee, req 4's case) — and
+  // BROADCAST only once that has committed, since an emit cannot be rolled back.
+  // Both halves come from one `buildSystemNotice`, so the live card and the
+  // reloaded row are one notice rather than two.
+  const pending: { sessionId: string; ws: WsServerMessage }[] = [];
+  deps.agentMergeClaims.cancelPendingForRepo(id, (claim) => {
+    const { ws, persisted } = buildSystemNotice(
+      claim.sessionId,
+      `Cancelled the merge request for pull request #${claim.prNumber}: agent merging was turned off `
+      + "for this repository. Nothing was merged.",
+      "info",
+    );
+    deps.chatHistoryManager.append(claim.sessionId, persisted);
+    pending.push({ sessionId: claim.sessionId, ws });
+  });
+  // A user watching the session would otherwise see the request disappear with
+  // no explanation until they reloaded the transcript.
+  for (const { sessionId, ws } of pending) {
+    deps.runnerRegistry?.get(sessionId)?.emitMessage(ws);
+  }
+}
 
 export async function registerSessionReposRoutes(
   app: FastifyInstance,
@@ -339,6 +373,14 @@ export async function registerSessionReposRoutes(
             reply.code(404).send({ error: "Repository not found" });
             return;
           }
+          // docs/288 req 4 — withdrawing the permission cancels every request
+          // that has not merged. Only `pending` rows: a row past it is being
+          // settled or resolved from its tuple and can no longer merge anything.
+          //
+          // AFTER the flag, and deliberately not in one transaction with it: the
+          // executor re-checks the grant at `pending → merging`, so a crash in
+          // between leaves a row that refuses itself rather than one that merges.
+          if (!allowAgentMerge) cancelAgentMergeRequests(deps, repoId(url) ?? "");
         }
         // Broadcast so every connected tab updates its sidebar immediately —
         // same pattern as add/remove/reorder.
