@@ -1210,6 +1210,41 @@ describe("Docker API proxy", () => {
       expect(res.status).toBe(200);
     });
 
+    it("allows a harmless POST /build networkmode", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/build?t=app&networkmode=none");
+      expect(res.status).toBe(200);
+    });
+
+    /**
+     * The build endpoint takes its network mode as a QUERY parameter, so the
+     * container-create sanitizer never sees it. Same daemon, same host
+     * namespace — one rule.
+     */
+    it("blocks POST /build?networkmode=host", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/build?t=app&networkmode=host");
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("NetworkMode host/container is not allowed");
+    });
+
+    it("blocks POST /build sharing another container's namespace", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/build?networkmode=container%3Aorchestrator");
+      expect(res.status).toBe(403);
+    });
+
+    it("blocks POST /build on a network the session does not own", async () => {
+      daemon.networks.set("foreign-net", { labels: { [PARENT_SESSION_LABEL]: "other-session" } });
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/build?networkmode=foreign-net");
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("does not belong to this session");
+    });
+
+    it("allows POST /build on a network the session owns", async () => {
+      const created = await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", { Name: "owned-net" });
+      const netId = (created.body as any).Id as string;
+      const res = await makeRequest(proxyUrl, "POST", `/v1.41/build?networkmode=${netId}`);
+      expect(res.status).toBe(200);
+    });
+
     it("blocks DELETE /images/{id} (shared resource protection)", async () => {
       const res = await makeRequest(proxyUrl, "DELETE", "/v1.41/images/alpine:latest");
       expect(res.status).toBe(403);

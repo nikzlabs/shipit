@@ -34,6 +34,56 @@ function isNamedNetwork(mode: string | undefined): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Image build sanitization
+// ---------------------------------------------------------------------------
+
+/**
+ * `POST /build` — the same NetworkMode rule as container create, in the other
+ * spelling Docker offers.
+ *
+ * The build endpoint takes its network mode as a QUERY PARAMETER
+ * (`NetworkMode: r.FormValue("networkmode")` in moby's
+ * `api/server/router/build/build_routes.go`), so nothing in the JSON body a
+ * sanitizer would inspect carries it. Until this check, the route was a plain
+ * `pipeToDocker` passthrough: `POST /build?networkmode=host` reached the daemon
+ * and every `RUN` step ran in the daemon's own network namespace — the host's —
+ * even though `sanitizeContainerCreate` refuses exactly that for a container
+ * the same session asks to create. Same daemon, same escape, one rule.
+ *
+ * Unconditional, like its sibling: this is not a containment rule, it is the
+ * rule that a session's Docker access does not reach the host's namespace.
+ *
+ * The build context (a tar in the body) is not touched — see the route's own
+ * note. This checks the one parameter that decides which namespace the build
+ * containers get.
+ */
+export async function sanitizeBuildRequest(
+  url: string,
+  session: SessionInfo,
+  socketPath: string,
+): Promise<{ error?: string }> {
+  const queryStart = url.indexOf("?");
+  if (queryStart === -1) return {};
+  const networkMode = new URLSearchParams(url.slice(queryStart + 1)).get("networkmode") ?? undefined;
+
+  if (networkMode === "host" || networkMode?.startsWith("container:")) {
+    return { error: "NetworkMode host/container is not allowed" };
+  }
+
+  // A named network must belong to this session, for the reason
+  // `sanitizeContainerCreate` states: a build container placed on the
+  // orchestrator's own network has an IP the API guard does not know as a
+  // session container, and so reads as a trusted origin.
+  if (networkMode && isNamedNetwork(networkMode)) {
+    if (!(await networkBelongsToSession(socketPath, networkMode, session.sessionId))) {
+      return { error: `Network "${networkMode}" does not belong to this session` };
+    }
+  }
+
+  return {};
+}
+
+// ---------------------------------------------------------------------------
 // Container create sanitization
 // ---------------------------------------------------------------------------
 

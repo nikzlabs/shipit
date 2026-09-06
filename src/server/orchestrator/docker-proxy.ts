@@ -31,7 +31,7 @@ import {
   volumeBelongsToSession,
   getExecParentContainerId,
 } from "./docker-proxy-auth.js";
-import { sanitizeContainerCreate } from "./docker-proxy-sanitize.js";
+import { sanitizeBuildRequest, sanitizeContainerCreate } from "./docker-proxy-sanitize.js";
 
 // ---------------------------------------------------------------------------
 // Re-exports for backwards compatibility
@@ -62,7 +62,7 @@ export {
   getExecParentContainerId,
   isPathUnderWorkspace,
 } from "./docker-proxy-auth.js";
-export { sanitizeContainerCreate } from "./docker-proxy-sanitize.js";
+export { sanitizeBuildRequest, sanitizeContainerCreate } from "./docker-proxy-sanitize.js";
 
 // ---------------------------------------------------------------------------
 // Route definitions
@@ -476,7 +476,15 @@ function buildRoutes(): Route[] {
   // host — this is a known Docker limitation, not a proxy-layer concern.
   // Resource limits on child containers (injected via sanitizeContainerCreate)
   // bound the impact of builds.
+  //
+  // The one thing checked before forwarding is `?networkmode=` — the build
+  // endpoint's spelling of a rule `sanitizeContainerCreate` already enforces.
+  // See `sanitizeBuildRequest`.
   route("POST", /^(?:\/v[\d.]+)?\/build(\?.*)?$/, async (ctx) => {
+    const result = await sanitizeBuildRequest(ctx.req.url ?? "", ctx.session, ctx.socketPath);
+    if (result.error) {
+      forbidden(ctx.res, result.error); return;
+    }
     void pipeToDocker(ctx.socketPath, ctx.req, ctx.res);
   });
 
