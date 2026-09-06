@@ -481,7 +481,12 @@ function buildRoutes(): Route[] {
   // endpoint's spelling of a rule `sanitizeContainerCreate` already enforces.
   // See `sanitizeBuildRequest`.
   route("POST", /^(?:\/v[\d.]+)?\/build(\?.*)?$/, async (ctx) => {
-    const result = await sanitizeBuildRequest(ctx.req.url ?? "", ctx.session, ctx.socketPath);
+    const result = await sanitizeBuildRequest(
+      ctx.req.url ?? "",
+      ctx.req.headers["content-type"],
+      ctx.session,
+      ctx.socketPath,
+    );
     if (result.error) {
       forbidden(ctx.res, result.error); return;
     }

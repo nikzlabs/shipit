@@ -625,15 +625,16 @@ steps. BuildKit runs build commands in daemon-managed containers before the
 service exists, so a build step still has ordinary Docker egress even in a
 contained session — the allowlist does not reach it. What a contained session's
 build step may not do is ask for a *wider* namespace than the builder's default:
-`build.network` may only be `none` or the default (`build.network: host` would
-put every `RUN` in the host's network namespace), and `build.privileged` and
-`build.entitlements` are rejected. ShipIt requires Docker Compose 2.24.4 or
-newer for contained service network replacement.
+`build.network` may only be `none` or the default (`build.network: host` makes
+the host's network namespace the build's default for every `RUN`), and a
+`build.privileged: true` or a non-empty `build.entitlements` is rejected.
+ShipIt requires Docker Compose 2.24.4 or newer for contained service network
+replacement.
 
 Contained services cannot add Linux capabilities, use `deploy.restart_policy`,
 request `use_api_socket`, add lifecycle hooks, declare a `build.network` other
-than `none`/default, set `build.privileged` or `build.entitlements`, or declare
-labels in ShipIt's reserved `shipit-egress-*` namespace. Service `extends` is
+than `none`/default, ask for `build.privileged` or a `build.entitlements` entry,
+or declare labels in ShipIt's reserved `shipit-egress-*` namespace. Service `extends` is
 also rejected in contained sessions because ShipIt cannot safely validate and override
 definitions from a second file. Compose `include:` is rejected in **every**
 session for the same reason — the effective model would be the root file plus

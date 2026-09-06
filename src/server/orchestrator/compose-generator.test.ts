@@ -615,6 +615,33 @@ services:
     expect(() => parseComposeFile(harmless, { dockerSocket: false, containEgress: true })).not.toThrow();
   });
 
+  /**
+   * The false half of compose-go's `toBoolean` — `n`/`no`/`off` alongside
+   * `false` — must not read as a privilege request, or the refusal fires on a
+   * file that asked for nothing (review finding). Its true half must still be
+   * refused, and an unrecognised spelling stays refused: Compose rejects the
+   * file for it anyway.
+   */
+  it("reads every boolean spelling Compose reads for build.privileged", () => {
+    const dir = setup();
+    const write = (value: string) => writeCompose(dir, `
+services:
+  app:
+    user: "1001"
+    build:
+      context: .
+      privileged: ${value}
+`);
+    for (const no of ['"no"', '"off"', '"n"', '"FALSE"', "false"]) {
+      expect(() => parseComposeFile(write(no), { dockerSocket: false, containEgress: true }),
+        `expected \`privileged: ${no}\` to be read as false`).not.toThrow();
+    }
+    for (const yes of ['"yes"', '"on"', '"y"', '"TRUE"', "true", '"perhaps"']) {
+      expect(() => parseComposeFile(write(yes), { dockerSocket: false, containEgress: true }),
+        `expected \`privileged: ${yes}\` to be refused`).toThrow("build.privileged");
+    }
+  });
+
   it("rejects volumes_from in contained services", () => {
     const dir = setup();
     const p = writeCompose(dir, `services:\n  web:\n    image: attacker/example\n    user: "1001"\n    volumes_from: [docker-socket-proxy]\n`);

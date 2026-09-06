@@ -951,13 +951,22 @@ function meansNotExternal(value: unknown): boolean {
 }
 
 /**
- * Is a present boolean-ish value a NO? Same enumerate-the-false-spellings
- * reasoning as {@link meansNotExternal}, for a key where "not false" is the
- * refusable state.
+ * Is a present boolean-ish value a NO?
+ *
+ * Same enumerate-the-false-spellings reasoning as {@link meansNotExternal}, for
+ * a key where "not false" is the refusable state — so the enumeration has to be
+ * COMPLETE or a legitimate `no` is refused as a privilege request. It is taken
+ * from compose-go's `toBoolean` (`loader/interpolate.go`), which is the one
+ * function a quoted boolean passes through: `true`/`false` exactly, plus
+ * `y`/`yes`/`on` → true and `n`/`no`/`off` → false with a YAML-1.2
+ * compatibility warning, and an error on anything else. So `y`/`yes`/`on` are
+ * deliberately absent here (they mean YES), and an unrecognised spelling stays
+ * "not false" — Compose would refuse the file for it anyway (review finding).
  */
 function meansFalse(value: unknown): boolean {
   if (value === false) return true;
-  return typeof value === "string" && value.trim().toLowerCase() === "false";
+  return typeof value === "string"
+    && ["false", "n", "no", "off"].includes(value.trim().toLowerCase());
 }
 
 /**
@@ -1202,14 +1211,16 @@ function validateServiceEnvFile(name: string, envFile: unknown): void {
  *           context: .
  *           network: host
  *
- * and every `RUN` step of that build would execute in the HOST's network
- * namespace — its loopback services, its network position, its link-local
- * addresses. Traced end to end, at source:
+ * and the build's default network — what every `RUN` step gets unless the
+ * Dockerfile narrows it per instruction with `RUN --network=none` — would be
+ * the HOST's namespace: its loopback services, its network position, its
+ * link-local addresses. Traced end to end, at source:
  *
- *  - Compose passes `build.network` straight through on BOTH build paths:
- *    `NetworkMode: build.Network` into the bake target (`pkg/compose/build_bake.go`,
- *    bake being the default since `COMPOSE_BAKE` defaults to `"true"` there) and
- *    into `build.Options` on the classic path (`pkg/compose/build.go`).
+ *  - Compose passes `build.network` straight through on BOTH of its build
+ *    paths: `NetworkMode: build.Network` into the bake target
+ *    (`pkg/compose/build_bake.go`, bake being the default since `COMPOSE_BAKE`
+ *    defaults to `"true"` there) and into `build.Options` on its internal
+ *    non-bake path (`pkg/compose/build.go`).
  *  - buildx turns it into the solve request AND grants itself the entitlement:
  *    `case "host": FrontendAttrs["force-network-mode"] = …;
  *    AllowedEntitlements = append(…, entitlements.EntitlementNetworkHost…)`
@@ -1250,9 +1261,10 @@ function validateServiceEnvFile(name: string, envFile: unknown): void {
  *    resting on one.
  *
  * **Deliberately not covered.** The rest of `build:` that touches the host is a
- * READ surface, not a namespace: `context`/`additional_contexts` (an absolute
- * path is tarred up client-side), `ssh:` (a key file read client-side),
- * `cache_from`/`cache_to` (`type=local` paths). Those belong with the
+ * FILESYSTEM surface, not a namespace: `context`/`additional_contexts` (an
+ * absolute path is tarred up client-side), `ssh:` (a key file read
+ * client-side), `cache_from` (read) and `cache_to` (a `type=local` WRITE —
+ * review finding). Those belong with the
  * `validateReadablePath` family (planning#386) and its unfinished half
  * (planning#373), which is where the client-side-vs-daemon-side analysis lives;
  * closing them by halves here would put the same surface in two places.
