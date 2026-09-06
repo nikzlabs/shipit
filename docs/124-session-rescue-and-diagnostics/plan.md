@@ -94,31 +94,42 @@ through the Docker proxy.
 
 So ShipIt's own plumbing was reported to the user as their services
 crashing. Compose egress containment force-removes and relaunches a
-service's sidecars on every `compose up`, so a **healthy** session start
-emitted a burst of anonymous `[compose] service exited with code 137.`
-lines — the `serviceName` field was optional and fell back to the literal
-word "service". A field report recorded 19 of them during a normal
+service's sidecars whenever that service starts or its policy changes
+(`compose-service-egress.ts` skips a service whose containment is already
+current), so a **healthy** session start emitted a burst of anonymous
+`[compose] service exited with code 137.` lines — the `serviceName` field
+was optional and fell back to the literal word "service". A field report
+recorded 19 of them during a normal
 two-minute startup of a session whose four services had `RestartCount=0`
 and had never exited; the ops log surface counts that line's shape under
 `compose: service exited`, so infrastructure churn and a crash-looping dev
 server read identically in the session's Logs panel, in the orchestrator's
 stdout, and in the withheld-shape breakdown. It cost a real investigation.
 
-**Fix:** Path 2 tests **positively** for `shipit-service-name`, the label
-`compose-generator.ts` stamps on every service it generates (the
-repository's own and a plugin's alike). Only those reach `service_exited`,
+**Fix:** Path 2 identifies a project service **positively**, by name, in
+two forms — `shipit-service-name`, which `compose-generator.ts` stamps on
+every service it generates (the repository's own and a plugin's alike),
+and Compose's own `com.docker.compose.service`, which a stack the session
+brought up itself through the Docker proxy carries and the generated
+override never reaches. Only a named service reaches `service_exited`,
 whose `serviceName` is now **required** — the type is the guarantee that
-this event always names a service the user owns. Everything else
-session-parented emits `session_child_exited`, which `startup-tasks.ts`
-writes to the orchestrator console and deliberately does **not**
-`broadcastLog`, does not turn into a runner message, and does not raise
-`service_oom` — that card's remediation is "increase memory limits in
-`docker-compose.yml`", and a sidecar has no entry there to raise. Because
-nothing is broadcast, the split needs no new `WITHHELD_SHAPES` entry.
+this event always names a service the user owns.
 
 A positive test rather than a sidecar denylist: a new kind of
 ShipIt-parented container is then silent by default instead of becoming
-the next false alarm nobody remembered to exclude.
+the next false alarm nobody remembered to exclude. One denylist clause
+survives on top of it as a hard precondition — a container carrying an
+egress label is never a project service, whatever else it carries — so the
+guarantee this incident is about cannot be weakened by a later widening of
+what counts as a service name.
+
+Everything else session-parented emits `session_child_exited`, which
+`startup-tasks.ts` writes to the orchestrator console and deliberately
+does **not** `broadcastLog`, does not turn into a runner message, and does
+not raise `service_oom` — that card's remediation is "increase memory
+limits in `docker-compose.yml`", and a sidecar has no entry there to
+raise. Because nothing is broadcast, the split needs no new
+`WITHHELD_SHAPES` entry.
 
 The `start` half of the same handler is **correct as written** and was
 left alone. Its `attrs[shipit-parent-session]` predicate feeds the API

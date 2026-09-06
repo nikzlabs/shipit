@@ -973,8 +973,9 @@ describe("setupContainerHealthMonitoring → oomBreaker integration", () => {
   // -------------------------------------------------------------------------
   // ShipIt's own session children (`session_child_exited`) — console only.
   //
-  // Containment force-removes and relaunches a service's egress sidecars on
-  // every `compose up`, so a healthy startup produces a burst of these deaths.
+  // Containment force-removes and relaunches a service's egress sidecars
+  // whenever that service starts or its policy changes, so a healthy startup
+  // produces a burst of these deaths.
   // While they shared `service_exited` with the project's services, that burst
   // reached the session's Logs panel as compose-service crashes: a field report
   // recorded 19 of them during a normal two-minute startup of a session whose
@@ -1048,6 +1049,28 @@ describe("setupContainerHealthMonitoring → oomBreaker integration", () => {
     // `compose: service exited`.
     expect(logs).toHaveLength(0);
     expect(logs.some((l) => /^\[compose\] \S+ exited with code/.test(l.text))).toBe(false);
+  });
+
+  it("still tells the OPERATOR, on the console", () => {
+    // The other half of "fewest false alarms AND no lost signal", and the half
+    // the tests around it cannot see: every assertion here is about silence, so
+    // deleting the listener outright would satisfy all of them. A genuine sidecar
+    // crash loop has to stay legible to whoever reads orchestrator stdout.
+    const { manager, sessionId } = setup();
+    const console_ = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      manager.emit("session_child_exited", sessionId, {
+        containerId: "sidecar-1", exitCode: 137, oom: false, egressSidecar: true,
+      });
+      const line = console_.mock.calls.map((c) => String(c[0])).find((t) => t.includes("sidecar-1"));
+      expect(line).toContain("egress sidecar exited");
+      expect(line).toContain(sessionId);
+      // Not wearing the words that made this indistinguishable from the user's
+      // dev server dying.
+      expect(line).not.toContain("compose");
+    } finally {
+      console_.mockRestore();
+    }
   });
 
   it("sends no runner message for a dying egress sidecar, OOM included", () => {

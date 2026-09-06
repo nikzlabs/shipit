@@ -583,8 +583,8 @@ describe("container-health: egress sidecar reap on die/oom (planning#224)", () =
  * session, not only on the project's Compose services: the egress sidecars carry
  * it too (they must, so destroy-time cleanup reaps them). Path 2 keyed
  * `service_exited` on that label alone, so a sidecar being replaced — which
- * containment does on every `compose up`, force-removing the old one at exit 137
- * — was reported to the user as a compose service crashing.
+ * containment does whenever a service starts or its policy changes, force-removing
+ * the old one at exit 137 — was reported to the user as a compose service crashing.
  *
  * The field report this guards: a HEALTHY warm session, four services with
  * `RestartCount=0` and no exit ever recorded, produced 19 `compose: service
@@ -650,6 +650,39 @@ describe("container-health: compose service vs. ShipIt's own session children", 
     expect(childExited).toHaveBeenCalledWith("sess-1", {
       containerId: "c1", exitCode: 137, oom: false, egressSidecar: true,
     });
+  });
+
+  it("reports a service the SESSION brought up through the Docker proxy", () => {
+    // A Docker-enabled session can run `docker compose up` in its own terminal.
+    // `docker-proxy-sanitize.ts` stamps the parent label on what that creates but
+    // adds no ShipIt service name, and the generated override never reached it —
+    // so a `shipit-service-name`-only test would have taken this container's exit
+    // line away, which it had before. Compose's own label is the identification.
+    die({ [PARENT]: "sess-1", "com.docker.compose.service": "worker" });
+
+    expect(serviceExited).toHaveBeenCalledWith("sess-1", {
+      serviceName: "worker", containerId: "c1", exitCode: 137, oom: false,
+    });
+    expect(childExited).not.toHaveBeenCalled();
+  });
+
+  it("keeps a sidecar out of the service path even if it carries a compose label", () => {
+    // The incident report claimed an inspected sidecar carried
+    // `com.docker.compose.service`. No code path here writes one — ShipIt sets no
+    // `com.docker.compose.*` label anywhere and creates every sidecar through the
+    // Docker API with an explicit label map — so the claim is unsupported and
+    // could not be checked against a live daemon. The egress precondition is
+    // therefore a hard gate rather than an implication of the name lookup, and
+    // this is the test that says so: were the claim true after all, the fix still
+    // holds.
+    die({
+      [PARENT]: "sess-1",
+      "shipit-egress-service-sidecar": "true",
+      "com.docker.compose.service": "egress-sidecar",
+    });
+
+    expect(serviceExited).not.toHaveBeenCalled();
+    expect(childExited.mock.calls[0]?.[1]).toMatchObject({ egressSidecar: true });
   });
 
   it("does NOT report the agent's own Tier B/C sidecars as service exits", () => {

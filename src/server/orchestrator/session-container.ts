@@ -398,9 +398,9 @@ export interface SessionContainerManagerEvents {
    * Split out from `service_exited` because these two are not the same event
    * wearing different labels. A project service dying is the USER's problem and
    * belongs in their Logs panel; a sidecar being replaced is ShipIt's own
-   * routine churn — the containment pass force-removes and relaunches sidecars
-   * on every `compose up`, so a healthy two-minute startup produces a dozen of
-   * these. Reported as one event they were indistinguishable, and a normal
+   * routine churn — the containment pass force-removes and relaunches a
+   * service's sidecars whenever that service starts or its policy changes, so a
+   * healthy two-minute startup produces a dozen of these. Reported as one event they were indistinguishable, and a normal
    * session read as a crash-looping dev server.
    *
    * Consequently this is an OPERATOR signal only: `startup-tasks.ts` writes it

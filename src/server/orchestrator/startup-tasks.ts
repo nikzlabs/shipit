@@ -835,8 +835,8 @@ export function setupContainerHealthMonitoring(
    *
    * Console ONLY, and that is the point of the split. These are ShipIt's own
    * containers on ShipIt's own schedule: the containment pass force-removes and
-   * relaunches a service's sidecars on every `compose up`, so a healthy startup
-   * emits a burst of them. Broadcasting that burst to the session put ShipIt's
+   * relaunches a service's sidecars whenever that service starts or its policy
+   * changes, so a healthy startup emits a burst of them. Broadcasting that burst to the session put ShipIt's
    * routine churn in the user's Logs panel wearing the words "a compose service
    * exited", which is what made a fine session look like a crash loop.
    *
