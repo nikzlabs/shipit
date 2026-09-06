@@ -82,12 +82,25 @@ describe("createRunnerRegistry — docs/288 merge-hold seeding", () => {
     runner.dispose({ force: true });
   });
 
+  it("also leases the seeded runner against reclamation", () => {
+    // `mergeHold` only stops a turn STARTING. The idle enforcer reads
+    // `agentBusy` and disposal CLEARS the queue, so without the lease a viewer
+    // who opens the session mid-merge, queues a message and disconnects can
+    // have that message reclaimed away before the merge finishes.
+    const registry = makeRegistry(() => true);
+    const runner = registry.getOrCreate("merging-session", "/tmp/s1", "claude");
+    expect(runner.postTurnWorkInFlight).toBe(true);
+    expect(runner.agentBusy).toBe(true);
+    runner.dispose({ force: true });
+  });
+
   it("creates an ordinary runner unheld", () => {
     // The control: without it, a hook that returned true for everything would
     // look identical, and every new session would be unable to start a turn.
     const registry = makeRegistry((sessionId) => sessionId === "merging-session");
     const runner = registry.getOrCreate("other-session", "/tmp/s2", "claude");
     expect(runner.mergeHold).toBe(false);
+    expect(runner.postTurnWorkInFlight).toBe(false);
     runner.dispose({ force: true });
   });
 

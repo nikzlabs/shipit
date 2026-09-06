@@ -364,6 +364,16 @@ describe("PATCH /api/repos/:url (agent-merge grant, docs/287)", () => {
     const claims = new AgentMergeClaimStore(dbManager);
     sessionManager.track("s1", "A session");
     sessionManager.track("s2", "Another session");
+    // A live runner for s1 — without one there is no transport to emit through,
+    // and the assertion below would pass for the wrong reason.
+    const registry = (app as unknown as {
+      runnerRegistry: { getOrCreate(id: string, dir: string, agent: string): { emitMessage(m: unknown): void } };
+    }).runnerRegistry;
+    const runner = registry.getOrCreate("s1", tmpDir, "claude");
+    const seen: { type?: string }[] = [];
+    const realEmit = runner.emitMessage.bind(runner);
+    runner.emitMessage = (m: unknown): void => { seen.push(m as { type?: string }); realEmit(m); };
+    const broadcastsTo = (_id: string): { type?: string }[] => seen;
     claims.arm({
       sessionId: "s1", repoId: "github:owner/repo", prNumber: 7, expectedSha: "sha", method: "merge",
     });
@@ -390,6 +400,14 @@ describe("PATCH /api/repos/:url (agent-merge grant, docs/287)", () => {
     const said = new ChatHistoryManager(dbManager).load("s1")
       .map((m) => (m as { text?: string }).text ?? "").join(" ");
     expect(said).toContain("agent merging was turned off");
+
+    // …and a user who has the session OPEN sees it now, not on the next reload.
+    // Persisting alone leaves the request vanishing from a live transcript with
+    // no explanation at all.
+    const emitted = broadcastsTo("s1");
+    expect(emitted.some((m) => m.type === "system_notice"
+      && String((m as { message?: string }).message ?? "").includes("agent merging was turned off")))
+      .toBe(true);
   });
 
   it("leaves a merge already under way alone", async () => {

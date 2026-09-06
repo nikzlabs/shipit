@@ -391,6 +391,31 @@ describe("runOneRequest — ending the request", () => {
   });
 });
 
+describe("an attempt that can never resolve says so", () => {
+  it("reports a stuck attempt once, and keeps the row", async () => {
+    // After an indeterminate merge the row stays `merging`, and the agent was
+    // told "ShipIt is checking, and will say so here once it knows". If access
+    // to the repository is gone for good, reconciliation defers for ever: the
+    // promise stays open and the row silently blocks every later merge.
+    armed();
+    claims.beginMerging(claims.get(SESSION)!);
+    // A poller that can never answer — the shape of lost access.
+    const dead = {
+      promoteMergedPrByNumber: vi.fn(async () => null),
+      readPrByNumber: vi.fn(async () => null),
+      awaitCiGraceDecision: vi.fn(async () => false),
+    } as unknown as PrStatusPoller;
+
+    const d = deps({ prStatusPoller: dead });
+    for (let i = 0; i < 20; i++) await runAgentMergeRequests(d);
+
+    const said = notices().filter((t) => t.includes("still cannot tell"));
+    expect(said).toHaveLength(1);
+    // The row survives: it is the only evidence the merge may have happened.
+    expect(claims.get(SESSION)).toMatchObject({ state: "merging" });
+  });
+});
+
 describe("a request survives a restart (req 5)", () => {
   it("is carried out from the database alone, with no viewer and no runner", async () => {
     // The reason the request is a row and not a timer: the orchestrator can go
