@@ -69,6 +69,52 @@ function requiresUserApproval(params: Record<string, unknown>): boolean {
 }
 
 /**
+ * Per-field budgets for a config warning's log line. Budgeted separately, not
+ * as one total: `summary` is the sentence and `details` is the file, line and
+ * column — the part that says what to fix — so a long summary must not be able
+ * to spend the whole allowance and truncate the diagnosis away.
+ */
+const CONFIG_WARNING_SUMMARY_CHARS = 400;
+const CONFIG_WARNING_DETAILS_CHARS = 200;
+
+/**
+ * One readable line out of a `configWarning` notification, or null when the
+ * notification carries no text at all.
+ *
+ * Both shapes the pinned CLI (0.153.2) sends were captured off the real
+ * app-server and are the reason this joins two fields and flattens them:
+ *
+ *   { summary: "Invalid configuration; using defaults.",
+ *     details: "/root/.codex/config.toml:4:11: duplicate key", path, range }
+ *
+ *   { summary: "Project-local config, hooks, and exec policies are disabled in
+ *               the following folders until the project is trusted…\n
+ *               1. /workspace/.codex\n       To load project-local config…" }
+ *
+ * The second is multi-line and indented for a terminal; a log line is neither,
+ * so whitespace collapses and each field is clipped to its own budget.
+ *
+ * `path` and `range` are dropped: in every payload seen so far `details`
+ * already names the file and the position, so they would only repeat it.
+ */
+export function formatCodexConfigWarning(params: Record<string, unknown>): string | null {
+  const flatten = (value: unknown, budget: number): string | null => {
+    if (typeof value !== "string") return null;
+    const text = value.replace(/\s+/g, " ").trim();
+    if (text === "") return null;
+    return text.length > budget ? `${text.slice(0, budget).trimEnd()}…` : text;
+  };
+
+  const parts = [
+    flatten(params.summary, CONFIG_WARNING_SUMMARY_CHARS),
+    flatten(params.details, CONFIG_WARNING_DETAILS_CHARS),
+  ].filter((part): part is string => part !== null);
+
+  if (parts.length === 0) return null;
+  return `Codex configuration: ${parts.join(" — ")}`;
+}
+
+/**
  * The slice of the adapter the event handler depends on: emitting normalized
  * events/logs, the JSON-RPC transport, and process teardown. Implemented by
  * `CodexAdapter`, which retains the wire format and child-process lifecycle.
@@ -310,6 +356,27 @@ export class CodexEventHandler {
         const status = params.status as { activeFlags?: string[] } | undefined;
         const flags = status?.activeFlags?.join(",") ?? "";
         this.ctx.emitLog("codex-rpc", `thread/status/changed: ${flags || "active"}`);
+        break;
+      }
+
+      case "configWarning": {
+        // The app-server's own verdict on `$CODEX_HOME/config.toml`, sent right
+        // after `initialize` and mirrored to stderr as an ERROR. It is worth a
+        // line of its own because the consequence is INVISIBLE otherwise: an
+        // invalid config (a duplicate key is enough) makes Codex fall back to
+        // its defaults, which drops ShipIt's whole `[mcp_servers.*]` block —
+        // Playwright and the shipit bridge simply are not there, and the turn
+        // reports no error. The user sees tools missing with nothing to read.
+        //
+        // A log rather than a persisted chat card, by CLAUDE.md's dividing
+        // line: it reports a CONDITION the app-server re-evaluates on every
+        // spawn (a malformed config file, an exec policy it could not parse, a
+        // recovered database), so the next turn says it again until the cause
+        // is fixed. Logs have durable storage of their own, so nothing is lost.
+        // A capability-degrading warning arguably deserves a transcript card
+        // too — raised in review, and deliberately left as a separate change.
+        const text = formatCodexConfigWarning(params);
+        if (text) this.ctx.emitLog("server", text);
         break;
       }
 
