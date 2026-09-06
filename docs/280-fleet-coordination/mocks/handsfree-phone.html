@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hands-free phone app — Android frames (mock)</title>
+<style>
+  /* Self-contained mock. Lock-screen frames are dark by nature; app frames use the dark-theme tokens
+     from src/client/themes/dark.css (2026-08-23). */
+  :root {
+    --bg-primary:#030712; --bg-secondary:#111827; --bg-tertiary:#1f2937;
+    --text-primary:#f3f4f6; --text-secondary:#9ca3af; --text-tertiary:#6b7280;
+    --border-primary:#212c3b; --border-secondary:#374151;
+    --accent:#3b82f6; --accent-text:#ffffff; --accent-subtle:rgba(59,130,246,.15);
+    --success:#22c55e; --error:#ef4444; --error-subtle:rgba(239,68,68,.15);
+    --warning:#f59e0b; --warning-subtle:rgba(245,158,11,.15); --attention-text:#f59e0b;
+    --info:#60a5fa; --info-subtle:rgba(96,165,250,.15);
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font:14px/1.5 system-ui,-apple-system,Roboto,sans-serif; background:#0b0f1a; color:var(--text-primary);
+         padding:28px 16px 40px; }
+  h1 { font-size:16px; font-weight:600; text-align:center; margin-bottom:4px; }
+  .sub { text-align:center; color:var(--text-secondary); font-size:12px; margin-bottom:26px; }
+  .frames { display:flex; gap:26px; justify-content:center; flex-wrap:wrap; align-items:flex-start; }
+  .slot { width:300px; }
+  .phone { width:300px; height:610px; border-radius:28px; border:3px solid #2a3446; background:#000;
+           overflow:hidden; display:flex; flex-direction:column; position:relative; }
+  .cap { margin:10px 4px 0; font-size:12px; color:var(--text-secondary); text-align:center; }
+  .cap b { color:var(--text-primary); font-weight:600; display:block; }
+
+  /* ---------- frame 1: lock screen, speaking ---------- */
+  .lock { background:linear-gradient(180deg,#0a1020 0%,#060913 70%); flex:1; display:flex; flex-direction:column;
+          align-items:center; padding:34px 16px 22px; }
+  .clock { font-size:52px; font-weight:200; letter-spacing:1px; }
+  .date { color:var(--text-secondary); font-size:13px; margin-bottom:26px; }
+  .notif { width:100%; border-radius:16px; background:rgba(17,24,39,.92); border:1px solid var(--border-primary);
+           padding:13px 14px; }
+  .notif .app { display:flex; align-items:center; gap:8px; font-size:11px; color:var(--text-secondary); margin-bottom:8px; }
+  .applogo { width:16px; height:16px; border-radius:5px; background:var(--accent); display:inline-flex;
+             align-items:center; justify-content:center; color:#fff; font-size:10px; font-weight:700; }
+  .speaking { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--info); margin-bottom:8px; }
+  .eq { display:inline-flex; gap:2px; align-items:flex-end; height:12px; }
+  .eq i { width:3px; background:var(--info); border-radius:2px; animation:eq 1s ease-in-out infinite; }
+  .eq i:nth-child(1){height:6px} .eq i:nth-child(2){height:12px;animation-delay:.15s}
+  .eq i:nth-child(3){height:8px;animation-delay:.3s} .eq i:nth-child(4){height:11px;animation-delay:.45s}
+  @keyframes eq { 50% { transform:scaleY(.4); } }
+  @media (prefers-reduced-motion: reduce) { .eq i { animation:none; } }
+  .said { font-size:13px; color:var(--text-primary); }
+  .said em { color:var(--text-secondary); font-style:normal; }
+  .replyhint { margin-top:10px; font-size:11px; color:var(--text-tertiary); display:flex; gap:6px; align-items:center; }
+  .lock .spacer { flex:1; }
+  .lockfoot { color:var(--text-tertiary); font-size:11px; }
+
+  /* ---------- frame 2: native assistant reply ---------- */
+  .dim { background:linear-gradient(180deg,#0a1020 0%,#060913 70%); flex:1; position:relative; }
+  .dim .ghost { opacity:.28; padding:34px 16px; }
+  .asst { position:absolute; left:0; right:0; bottom:0; border-radius:22px 22px 0 0; background:#101725;
+          border-top:1px solid var(--border-secondary); padding:18px 16px 26px; }
+  .asst .listening { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+  .orb { width:34px; height:34px; border-radius:50%; background:radial-gradient(circle at 35% 30%, #60a5fa, #1d4ed8);
+         box-shadow:0 0 18px rgba(59,130,246,.5); }
+  .asst .lab { font-size:12px; color:var(--text-secondary); }
+  .heard { font-size:15px; }
+  .heard em { color:var(--text-tertiary); font-style:normal; font-size:11px; display:block; margin-top:8px; }
+
+  /* ---------- frames 3+4: the app, on demand ---------- */
+  .appscr { background:var(--bg-primary); flex:1; display:flex; flex-direction:column; }
+  .appbar { display:flex; align-items:center; gap:8px; padding:12px 14px; border-bottom:1px solid var(--border-primary); }
+  .appbar b { font-size:14px; }
+  .hf { margin-left:auto; display:flex; align-items:center; gap:6px; font-size:11px; color:var(--success); }
+  .hf .sw { width:30px; height:17px; border-radius:999px; background:var(--success); position:relative; }
+  .hf .sw::after { content:""; position:absolute; top:2px; right:2px; width:13px; height:13px; border-radius:50%; background:#fff; }
+  .hf.off { color:var(--text-tertiary); }
+  .hf.off .sw { background:var(--border-secondary); }
+  .hf.off .sw::after { right:auto; left:2px; }
+  .waithead { margin:10px 14px 6px; font-size:11px; color:var(--text-secondary); }
+  .qcard { margin:0 14px 6px; display:flex; gap:7px; align-items:flex-start; border:1px solid var(--border-primary);
+           border-left:3px solid var(--attention-text); border-radius:8px; padding:7px 9px; background:var(--bg-secondary);
+           font-size:11.5px; }
+  .qcard .qb { font-size:9.5px; padding:0 5px; border-radius:999px; background:var(--warning-subtle);
+               color:var(--attention-text); flex:none; margin-top:1px; }
+  .qcard .qt { color:var(--text-secondary); }
+  .chat { padding:12px 14px; display:flex; flex-direction:column; gap:10px; overflow:hidden; flex:1; }
+  .cmsg { font-size:12.5px; color:var(--text-primary); }
+  .cmsg .w { color:var(--text-tertiary); font-size:10px; margin-bottom:2px; }
+  .umsg { margin-left:auto; max-width:82%; background:var(--accent-subtle); border:1px solid var(--border-primary);
+          border-radius:10px 10px 3px 10px; padding:7px 10px; font-size:12.5px; }
+  .fail { margin:10px 14px; border-radius:10px; background:var(--error-subtle); border:1px solid var(--error);
+          padding:10px 12px; font-size:12.5px; }
+  .fail b { display:flex; gap:7px; align-items:center; color:var(--error); font-size:12px; margin-bottom:4px; }
+  .fail .muted { color:var(--text-secondary); font-size:11.5px; }
+  .appfoot { border-top:1px solid var(--border-primary); padding:10px 14px; display:flex; gap:8px; align-items:center; }
+  .appfoot .ph { color:var(--text-tertiary); font-size:12px; flex:1; }
+  .micb { width:34px; height:34px; border-radius:50%; background:var(--accent); display:flex; align-items:center;
+          justify-content:center; }
+  .micg { display:inline-block; width:9px; height:13px; border:2px solid #fff; border-radius:5px 5px 7px 7px; }
+  .note { max-width:640px; margin:26px auto 0; font-size:12px; color:var(--text-tertiary); text-align:center; }
+</style>
+</head>
+<body>
+  <h1>Hands-free — the first-party Android app (req 25)</h1>
+  <div class="sub">One item at a time, spoken on the lock screen; replies through the native assistant; the UI never required. Dark frames by nature of the lock screen.</div>
+
+  <div class="frames">
+
+    <!-- 1: lock screen, speaking -->
+    <div class="slot">
+      <div class="phone">
+        <div class="lock">
+          <div class="clock">9:41</div>
+          <div class="date">Saturday, August 23 · hands-free on</div>
+          <div class="notif">
+            <div class="app"><span class="applogo">S</span> ShipIt Coordinator · now</div>
+            <div class="speaking"><span class="eq"><i></i><i></i><i></i><i></i></span> speaking</div>
+            <div class="said">"Reef Quest, water reflections. The shader pass is done and the session asks which approach to keep for the vertical slice: planar — right from every angle but twice the draw calls in the harbor — or screen-space, nearly free but it breaks in your dawn shots. Want the harbor profiled first?"</div>
+            <div class="replyhint">◉ Hold the assistant button to reply — no need to unlock.</div>
+          </div>
+          <div class="spacer"></div>
+          <div class="lockfoot">phone stays locked · one topic per speaking turn</div>
+        </div>
+      </div>
+      <div class="cap"><b>Delivery, locked (reqs 22–23)</b>The coordinator speaks the moment you are free — its own words, never session text (req 18). Next item waits until this topic ends.</div>
+    </div>
+
+    <!-- 2: native assistant reply -->
+    <div class="slot">
+      <div class="phone">
+        <div class="dim">
+          <div class="ghost">
+            <div class="clock">9:42</div>
+            <div class="date">Saturday, August 23</div>
+          </div>
+          <div class="asst">
+            <div class="listening"><span class="orb"></span><span class="lab">Assistant · listening…</span></div>
+            <div class="heard">"Have it profile the harbor at both settings first."
+              <em>→ sent to ShipIt Coordinator · the reply reaches it without opening any UI (req 24)</em>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="cap"><b>Reply by voice (req 24)</b>The phone's own assistant controls carry your words to the coordinator. Ordinary language — there is no command vocabulary to learn (req 30).</div>
+    </div>
+
+    <!-- 3: the app, opened on demand -->
+    <div class="slot">
+      <div class="phone">
+        <div class="appscr">
+          <div class="appbar"><span class="applogo">S</span><b>Coordinator</b>
+            <span class="hf"><span>hands-free</span><span class="sw"></span></span>
+          </div>
+          <div class="waithead">1 waiting — spoken when you're free · tap to take it now</div>
+          <div class="qcard"><span class="qb">completed</span><span class="qt">Caves level generator — all 40 layouts came out clean after Thursday's tunnel-width fix. Nothing to decide unless you want spot checks.</span></div>
+          <div class="chat">
+            <div class="cmsg"><div class="w">Coordinator · 9:41</div>Reef Quest, water reflections — planar or screen-space for the slice? Offered to profile the harbor first.</div>
+            <div class="umsg">Have it profile the harbor at both settings first.</div>
+            <div class="cmsg"><div class="w">Coordinator · 9:58</div>Profiled: planar 3.1 ms, screen-space 1.2 ms with artifacts in your dawn shots. My read: keep planar, optimize later. Decide now or park it?</div>
+          </div>
+          <div class="appfoot"><span class="ph">Talk or type…</span><span class="micb"><span class="micg"></span></span></div>
+        </div>
+      </div>
+      <div class="cap"><b>Visibility on demand (reqs 26, 35–37)</b>The same one conversation and the same standing queue, whenever you look. Reading costs nothing; each waiting item carries the coordinator's cold-context brief, and a tap takes it into the conversation.</div>
+    </div>
+
+    <!-- 4: loud failure -->
+    <div class="slot">
+      <div class="phone">
+        <div class="appscr">
+          <div class="appbar"><span class="applogo">S</span><b>Coordinator</b>
+            <span class="hf off"><span>hands-free</span><span class="sw"></span></span>
+          </div>
+          <div class="fail">
+            <b>⚠ 2 items couldn't be spoken</b>
+            The channel dropped 14:02–14:20 while hands-free was on. Nothing is lost — both are still queued, in order.
+            <div class="muted" style="margin-top:6px">Say "what did I miss?" — or they surface on the next place you touch.</div>
+          </div>
+          <div class="chat">
+            <div class="cmsg"><div class="w">Coordinator · 14:21</div>While the channel was down: the kraken-boss investigation finished its survey and has one question; character generation #14 failed on the third asset. Want the kraken first?</div>
+          </div>
+          <div class="appfoot"><span class="ph">Talk or type…</span><span class="micb"><span class="micg"></span></span></div>
+        </div>
+      </div>
+      <div class="cap"><b>Silence is never a broken channel (req 29)</b>A dead channel announces itself at the next opportunity — the one thing allowed to break through routing suppression. The queue held everything.</div>
+    </div>
+
+  </div>
+
+  <div class="note">Mock only: bezels, assistant orb, and clock are scene-setting. The app speaks a coordinator-surface contract — speech and events in, utterances out — and holds no fleet access and no coordinator logic (plan §7). MVP auth: shared tailnet (I3 deferred).</div>
+</body>
+</html>
