@@ -793,11 +793,24 @@ its own at all — so it would fix one adoption edge and leave the other. Instea
   from an error), so the subject drops to the activity label / "Agent turn". The
   commit itself still runs — CLAUDE.md's "every terminal path runs the commit" is
   untouched, only its label is;
-- the notice half is gated on the adopted turn. A **metered key** also reaches
-  this branch (req 12: keys never fail over) and must not be told its next
-  message moves to another account; its explanation is the terminal error row the
-  listener keeps for it (planning#453). The summary half is not gated — a limit
-  notice is never a description of work, whoever the credential belongs to.
+- the notice half is gated **twice** — the turn is adopted, AND the credential
+  could have failed over at all. Adoption is a harness capability
+  (`startsOwnTurns`), not a billing one, so a **metered key** reaches this branch
+  too; a key never fails over (req 12) and `markCredentialRouteExhausted` refuses
+  to bench one, so "ShipIt has set that account aside — your next message will
+  continue on another account" would be false twice over. That user's explanation
+  is the terminal error row the listener keeps for them (planning#453). The
+  second gate is `quotaRefusalCanFailOver` asked again *without* the adoption
+  argument. The summary half is not gated at all — a limit notice is never a
+  description of work, whoever the credential belongs to. (Both raised by the
+  docs/261 reviewer; the first draft gated on adoption alone.)
+- the whole stand-down runs through `postTurnStep`. It fires BEFORE the terminal
+  sequence, inside an un-awaited async listener, and it writes to SQLite and the
+  viewer transports — planning#279's un-skippable-commit invariant exactly. An
+  unguarded throw would have abandoned the drain, the commit and the push as an
+  unhandled rejection, with no `done` coming from a resident streaming process to
+  pick the turn up: the fix for a silent turn would have cost the turn its work.
+  Also the reviewer's finding.
 
 **And the second module was asking a different question.**
 `quotaRefusalCanFailOver` had no knowledge of `servingAdoptedTurn`, and its
@@ -818,12 +831,16 @@ awaiting `rearmInFlight`; the listener's suppression decision and
 same fact synchronously instead. That also closes the same window on the
 adapter-`error` quota path, which had it unguarded.
 
-Coverage: `turn-self-wake-commit.test.ts` ("does not re-dispatch a CLI-started
-turn that hits the account's quota limit" — no second `run`, a persisted notice,
-`Agent turn` as the subject with the work still committed, and the req-7 bench
-still stamped; each assertion verified red on its own) and
-`agent-listeners.test.ts` ("DOES add a row for a quota refusal on a CLI-started
-turn").
+Coverage, every assertion verified red on its own: `turn-self-wake-commit.test.ts`
+— "does not re-dispatch a CLI-started turn that hits the account's quota limit"
+(no second `run`, a persisted notice, `Agent turn` as the subject with the work
+still committed, the req-7 bench still stamped); "does not promise an account
+move to a CLI-started turn billed to a metered key"; "still commits the adopted
+turn when persisting the quota notice throws"; and "keeps the limit notice out of
+the commit even when a second turn is adopted first", which is what pins the
+`resultTurnSummary` half — the other cases commit while `turnIsCurrent()` is
+still true and so never read the snapshot. Plus `agent-listeners.test.ts` ("DOES
+add a row for a quota refusal on a CLI-started turn").
 
 **Phase 6.10 — a mid-session model change never reached the resident process.**
 User report: "if a model was Fable and I change it to Opus, after the turn ends

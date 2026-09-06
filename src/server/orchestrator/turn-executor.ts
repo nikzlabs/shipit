@@ -1028,12 +1028,24 @@ export async function executeAgentTurn(
    *    so the subject drops to the dispatch activity label / "Agent turn". The
    *    turn's edits still commit — CLAUDE.md's "every terminal path runs the
    *    commit" is untouched, only its label is.
-   *  - **The notice**, for the adopted turn only. A *metered key* also reaches
-   *    here (req 12: keys never fail over) and must not be told its next message
-   *    will move to another account — that turn's explanation is the terminal
-   *    error row the listener keeps for it (planning#453). Nothing promises an
-   *    account either: selection has not run, and the next turn's own env-prep
-   *    posts "Continuing on X" when routing actually moves it.
+   *  - **The notice**, and only where the adoption is the WHOLE reason there was
+   *    no failover. Adoption is a harness capability (`startsOwnTurns`), not a
+   *    billing one, so an adopted turn can be running on a **metered key** — and
+   *    a key never fails over (req 12) and is never even benched
+   *    (`markCredentialRouteExhausted` returns `null` for one). Telling that user
+   *    the account was "set aside" and the next message moves on would be two
+   *    false statements; their explanation is the terminal error row the listener
+   *    keeps for them (planning#453). So the second gate asks the shared question
+   *    again *without* the adoption: could this credential have failed over at
+   *    all? Nothing promises an account either, even then — selection has not
+   *    run, and the next turn's own env-prep posts "Continuing on X" if routing
+   *    actually moves it.
+   *
+   * Called through `postTurnStep` (planning#279): this runs BEFORE the terminal
+   * sequence, inside an un-awaited async listener, and it touches SQLite and the
+   * viewer transports. A throw here would abandon the drain, the commit and the
+   * push as an unhandled rejection, with no later event to invoke them — the
+   * un-skippable-commit invariant, broken by the fix for a silent turn.
    */
   const retireOnSpentAccount = (opts: { summaryIsTheNotice: boolean }): void => {
     if (opts.summaryIsTheNotice) {
@@ -1041,6 +1053,10 @@ export async function executeAgentTurn(
       resultTurnSummary = "";
     }
     if (!servingCliStartedTurn()) return;
+    if (!quotaRefusalCanFailOver(
+      capturedRoutePolicy(),
+      deps.listenerDeps.sessionManager.get(sessionId),
+    )) return;
     const routeId = capturedCredentialRoute?.providerRouteId;
     const label = routeId ? (deps.routeLabel?.(routeId) ?? routeId) : "This account";
     console.log(
@@ -2064,8 +2080,11 @@ export async function executeAgentTurn(
       }
       // No failover will run for this turn, so nothing downstream is going to
       // explain it or replace its commit subject. Say what happened and stop the
-      // provider's notice from labelling the commit.
-      retireOnSpentAccount({ summaryIsTheNotice: !event.error });
+      // provider's notice from labelling the commit — guarded, because the
+      // commit that follows must stay unskippable (planning#279).
+      await postTurnStep("quota-stand-down", () => {
+        retireOnSpentAccount({ summaryIsTheNotice: !event.error });
+      });
     }
     // Cleared HERE, not at the top of this handler: the re-dispatch guards above
     // are exactly what an adopted turn's result must still be judged by, and the
