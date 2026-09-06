@@ -304,6 +304,55 @@ manager in `serviceManagers`, where `preStartWarmPreview` reads it as "a claim
 already built one" and declines. Without the new `stopPreview` hook the repair
 would rebuild the standby and silently restore no preview.
 
+### What the independent review changed
+
+Four more, all found by review of the first implementation.
+
+**Awaiting `runPreInstall` does not establish the install prerequisite.** The
+helper resolves on failure, on transport error, and on its own 15-minute ceiling
+— where it explicitly leaves the install running — so this design's "the install
+must have finished first" was not what the code said. A pre-started manager
+begins with an OPEN gate, so the pre-start would have launched every
+`dependsOnInstall` service into the docs/137 race the gate exists to remove.
+`runPreInstall` now returns a `PreInstallOutcome`, and the pre-start declines
+unless it settled.
+
+**Registration must not straddle an await.** Checking the registry, awaiting the
+overlay resolution and then registering let an activation landing in that gap
+build a rival manager for the same compose project name, which the warm path then
+overwrote. Registration is now in the same synchronous run as the check.
+
+**The queued start needs an ownership re-check, and the stop needs recording.**
+`ServiceManager.start()` resets `_disposed` and re-arms the poll loop, so a
+start still queued after the repair (or a repo delete, or tier 0) took the
+manager away would resurrect one nobody owns. And `stopWarmPreview` now records
+its stop in `composeStopPromises`, which the pre-start awaits — the repair stops
+and rebuilds within seconds, on the same project name.
+
+**Req 10 was unmet one level down.** The sweep asked only whether the standby
+CONTAINER was running. A `compose up` that failed, or a preview tier 0 reclaimed,
+left a healthy worker with no preview and no way back — and the memory argument
+above depends on warm previews coming back on their own. The sweep now re-runs
+the pre-start for every healthy standby; the pre-start is self-declining, so it
+no-ops when there is nothing to do. **Residual:** a preview whose containers were
+removed out from under a still-registered manager is not yet detected. That needs
+a per-service liveness probe and is not in this change.
+
+**A warm-adopted stack reconciles once (req 5).** Everything req 5 leans on — the
+bind mount, the dev server's watcher — reconciles SOURCE. It reconciles nothing
+about the stack DEFINITION, and docs/288 stretches the gap between "stack built"
+and "claim" from docs/127's seconds to hours across a `git reset --hard
+origin/main`. Nothing else would notice: the worker's config watcher starts only
+at activation, so it never sees the refresh that preceded it. Adoption now reads
+`ServiceManager.preStartedWarm`, adopts the freshly-resolved `compose:` block,
+and reconciles once — a `compose up -d` that recreates only what moved.
+
+**Known and NOT fixed here:** req 7's `preview.first-connect` measures from
+compose completion to the first proxied request, so a preview warmed overnight
+reports hours in that phase however fast it booted. The metric needs
+warm-vs-claim attribution before the before/after comparison this design asks for
+can be made. The checklist item stays unchecked.
+
 ## Key files
 
 - `src/server/orchestrator/warm-preview.ts` — the pre-start itself: the recency

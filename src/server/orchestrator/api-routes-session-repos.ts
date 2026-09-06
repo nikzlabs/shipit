@@ -378,7 +378,7 @@ export async function registerSessionReposRoutes(
           // strand a poll loop chasing a deleted session for the rest of the
           // process. Stop it first, so the stop is issued while its containers
           // still exist.
-          stopWarmPreview(deps.serviceManagers, repo.warmSessionId);
+          stopWarmPreview(deps.serviceManagers, repo.warmSessionId, deps.composeStopPromises);
           await deps.containerManager?.destroy(repo.warmSessionId);
           const runner = deps.runnerRegistry.get(repo.warmSessionId);
           // Forced — user is removing the repo, so the warm session is

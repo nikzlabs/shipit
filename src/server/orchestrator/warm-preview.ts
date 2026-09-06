@@ -23,6 +23,8 @@ import type { SessionManager } from "./sessions.js";
 import {
   buildServiceManager,
   applyOverlayDepDirsForSession,
+  trackComposeStop,
+  awaitComposeStop,
   type ServiceManagerBuildDeps,
 } from "./service-manager-setup.js";
 import { serializeStackOp } from "./stack-op-queue.js";
@@ -74,6 +76,22 @@ export interface WarmPreviewDeps extends ServiceManagerBuildDeps {
   /** The same registry `setupServiceManager` adopts from. */
   serviceManagers: Map<string, ServiceManager>;
   /**
+   * The same in-flight-`stop()` map the runner path uses. A warm start must wait
+   * on any outstanding `compose down` for this session before issuing its own
+   * `compose up`, because both address the project name `shipit-{sid12}`.
+   */
+  composeStopPromises?: Map<string, Promise<void>>;
+  /**
+   * Does this session have a runner right now? Asked only on the failure path,
+   * to tell "our pre-start failed and nobody is watching" from "a claim adopted
+   * this manager while the start was running" — the second of which makes the
+   * manager the runner's, not ours to unregister.
+   *
+   * Absent = "we cannot tell", and the cleanup then goes ahead: an orphaned
+   * failed manager is the more likely and the more harmful of the two.
+   */
+  isSessionActive?: (sessionId: string) => boolean;
+  /**
    * Test seam ONLY — production must leave this unset so the manager comes from
    * the one shared `buildServiceManager`. Standing up a real one here would need
    * a Docker daemon to reach four lines of decision;
@@ -105,6 +123,7 @@ export async function preStartWarmPreview(
 ): Promise<void> {
   const { sessionId, workspaceDir, repoUrl } = opts;
   const { repoStore, sessionManager, serviceManagers } = deps;
+  const composeStopPromises = deps.composeStopPromises ?? new Map<string, Promise<void>>();
   try {
     // docs/288 req 8 — only a recently-opened repo carries a standing preview.
     const repo = repoStore.get(repoUrl);
@@ -135,6 +154,16 @@ export async function preStartWarmPreview(
     const session = sessionManager.get(sessionId);
     const build = deps.createManager ?? buildServiceManager;
     const mgr = build({ sessionId, workspaceDir, session, shipitConfig, deps });
+    // Tell the adopting claim this stack was built against a tree the claim is
+    // about to move. See `ServiceManager.preStartedWarm`.
+    mgr.preStartedWarm = true;
+    // Registered in the SAME synchronous run as the `has` check above, and
+    // before either await below. The compose project name is derived from the
+    // session id, so two managers for one warm session are two owners of one
+    // stack; the registry entry is what makes an activation landing underneath
+    // us adopt this one instead of building a rival. Straddling an await with
+    // the check and the set is how that rival gets built.
+    serviceManagers.set(sessionId, mgr);
 
     // BEFORE the first `start()`, exactly as the runner path does it (docs/183
     // Phase 5) and for a reason specific to this path: a manager started
@@ -149,27 +178,61 @@ export async function preStartWarmPreview(
       });
     }
 
-    // Registered BEFORE the start, so a claim landing mid-start adopts this
-    // manager rather than building a second one for the same project name. The
-    // start goes through the session's stack queue for the same reason every
-    // other compose op does — an adoption's reconcile must not land inside it.
-    serviceManagers.set(sessionId, mgr);
+    // A prior stack's `compose down` for this session must finish first. Same
+    // project name (`shipit-{sid12}`) means the same Docker resources, so an
+    // outstanding down running beside our up tears down what we just built —
+    // and the warm tier makes this reachable, because the periodic repair stops
+    // a dead session's stack and immediately rebuilds it. The runner path has
+    // gated on this since docs/127; this one has to as well. Raised by review.
+    await awaitComposeStop(composeStopPromises, sessionId);
+
     const startedAt = Date.now();
     try {
-      await serializeStackOp(sessionId, () => mgr.start());
+      // On the session's stack queue like every other compose op: an adopting
+      // claim's reconcile must not land inside this start.
+      await serializeStackOp(sessionId, async () => {
+        // Checked as late as possible, immediately before the call, exactly as
+        // the runner path re-checks `runner.disposed` there. Every await above
+        // can outlive our ownership: the repair sweep, a repo delete or tier 0
+        // may have stopped this manager and dropped it from the registry. And
+        // `start()` RESETS `_disposed` and re-arms the poll loop, so going ahead
+        // would resurrect a manager nobody owns, polling Docker for a session
+        // nobody has, with nothing left that could stop it. Raised by review.
+        if (serviceManagers.get(sessionId) !== mgr) {
+          console.log(
+            `[warm-preview:${sessionId}] Abandoning pre-start — the session's stack changed hands while it was queued`,
+          );
+          return;
+        }
+        await mgr.start();
+      });
       console.log(
         `[warm-preview:${sessionId}] Compose stack pre-started for ${repoUrl} in ${Date.now() - startedAt}ms`,
       );
     } catch (err) {
-      // Leaving a failed manager registered would be worse than never having
-      // pre-started: activation adopts what it finds and never calls `start()`,
-      // so the session would get no preview at all. Drop it and let the claim
-      // build its own, which is exactly today's behaviour.
-      serviceManagers.delete(sessionId);
       console.warn(
         `[warm-preview:${sessionId}] Pre-start failed for ${repoUrl}: ${getErrorMessage(err)}`
         + " — the session stays warm and its preview starts on activation",
       );
+      // Leaving a FAILED manager registered is worse than never having
+      // pre-started: activation adopts what it finds and never calls `start()`
+      // itself, so the session would get no preview and no error. Drop it and
+      // let the claim build its own — which is exactly today's behaviour.
+      //
+      // Unless a runner already adopted it during the start. Then it is that
+      // runner's, and unregistering would leave the session's own manager
+      // invisible to every `serviceManagers.get` — the preview routes, the
+      // service list, the idle enforcer's `has`. Nothing here can start it
+      // again either; the runner owns its lifecycle from adoption on.
+      if (deps.isSessionActive?.(sessionId) === true) {
+        console.warn(
+          `[warm-preview:${sessionId}] A session was activated during the failed start —`
+          + " leaving the manager to its runner rather than unregistering it",
+        );
+        return;
+      }
+      if (serviceManagers.get(sessionId) !== mgr) return;
+      serviceManagers.delete(sessionId);
       await mgr.stop().catch(() => undefined);
     }
   } catch (err) {
@@ -179,7 +242,8 @@ export async function preStartWarmPreview(
 
 /**
  * Drop a warm session's pre-started stack: out of the registry first, then
- * stopped.
+ * stopped, with the stop RECORDED so the next start for this session waits on
+ * it.
  *
  * A pre-started manager is the one kind with **no runner to own its teardown**.
  * Every other stack is dropped by the runner's `disposed` handler
@@ -188,16 +252,29 @@ export async function preStartWarmPreview(
  * periodic repair rebuilding its standby, a repo being deleted — has to say so
  * here, or it leaves a manager polling Docker for a session that is gone.
  *
- * Fire-and-forget: the caller is usually about to destroy the container anyway,
- * and a `compose down` that fails must not fail the operation that asked.
+ * `composeStopPromises` is what makes the repair safe rather than merely tidy.
+ * The sweep stops a dead warm session's stack and rebuilds it moments later, and
+ * both use the compose project name `shipit-{sid12}` — so a discarded stop
+ * promise means the old `compose down` can be running beside the new `compose
+ * up` and tear down what it just built. This is the same handshake
+ * `trackComposeStop`/`awaitComposeStop` give the runner path. Raised by review.
+ *
+ * Fire-and-forget for the caller: it is usually about to destroy the container
+ * anyway, and a `compose down` that fails must not fail the operation that
+ * asked.
  */
 export function stopWarmPreview(
   serviceManagers: Map<string, ServiceManager> | undefined,
   sessionId: string,
+  composeStopPromises?: Map<string, Promise<void>>,
 ): void {
   const mgr = serviceManagers?.get(sessionId);
   if (!mgr) return;
   serviceManagers?.delete(sessionId);
+  if (composeStopPromises) {
+    trackComposeStop(composeStopPromises, sessionId, mgr);
+    return;
+  }
   void mgr.stop().catch((err: unknown) => {
     console.warn(`[warm-preview:${sessionId}] Stopping the pre-started stack failed: ${getErrorMessage(err)}`);
   });

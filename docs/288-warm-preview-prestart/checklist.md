@@ -24,5 +24,13 @@
       line can be compared (req 11).
 - [x] Warm-tier retirement at boot removes the pre-started compose containers,
       not just the standby agent container (req 6).
+- [ ] Give `preview.first-connect` warm-vs-claim attribution (req 7). It measures
+      from compose completion to the first proxied request, so a preview warmed
+      overnight reports hours in that phase however fast it booted — the metric
+      cannot currently substantiate the before/after below.
 - [ ] Measure a warm claim before and after: `preview.first-connect` should stop
       being paid on the warm path.
+- [ ] Detect a preview whose CONTAINERS were removed while its manager is still
+      registered (req 10, residual). The sweep now repairs a missing manager —
+      a failed pre-start, a tier-0 reclaim — but a stack the manager still
+      believes it owns needs a per-service liveness probe.

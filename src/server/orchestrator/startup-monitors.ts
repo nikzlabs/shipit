@@ -49,7 +49,7 @@ export async function startStartupMonitors(
     containerManager, runnerRegistry, broadcastLog, sessionManager,
     credentialStore,
     isTestMode, stateDir, repoStore, credentialsDir, githubAuthManager,
-    createRepoGit, getBareCacheDir, serviceManagers, createGitManager,
+    createRepoGit, getBareCacheDir, serviceManagers, composeStopPromises, createGitManager,
     loopDetector, oomBreaker, chatHistoryManager,
     repoPrefetcher, claudeOAuthRefresherRef, codexOAuthRefresherRef,
     startupTimer, authManagers, dockerProxyServer, databaseManager,
@@ -196,7 +196,11 @@ export async function startStartupMonitors(
         waitForWarmSession: rt.waitForWarmSession,
         // docs/288 — a repair rebuilds the standby, so the pre-started stack's
         // manager must go with the container it was built for.
-        stopPreview: (sessionId: string) => stopWarmPreview(serviceManagers, sessionId),
+        stopPreview: (sessionId: string) => stopWarmPreview(serviceManagers, sessionId, composeStopPromises),
+        // docs/288 req 10 — a healthy standby with no preview is the same
+        // absorbing state one level down. The pre-start declines on its own when
+        // there is nothing to repair.
+        ...(rt.preStartWarmPreview ? { repairPreview: rt.preStartWarmPreview } : {}),
         getMemoryStats: () => latestMemoryStats.value,
       })
     : null;

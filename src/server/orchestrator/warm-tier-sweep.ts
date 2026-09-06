@@ -85,6 +85,28 @@ export interface WarmTierSweepDeps {
    * quietly restore only half the warm tier.
    */
   stopPreview?: (sessionId: string) => void;
+  /**
+   * docs/288 req 10 — re-run the preview pre-start for a warm session whose
+   * standby is healthy.
+   *
+   * The sweep's original question, "is the standby container running?", stopped
+   * being the whole question the moment a warm session could also own a
+   * pre-started stack: a preview that never came up (the `compose up` failed) or
+   * that was reclaimed (tier 0 drops warm previews FIRST under memory pressure)
+   * leaves a perfectly healthy worker with no preview, and every later claim
+   * pays the full cold cost while still reporting a warm hit — the same
+   * absorbing state this sweep exists to break, one level down.
+   *
+   * The design leans on this directly: tier 0 is allowed to be aggressive about
+   * warm previews *because* they come back on their own once memory is not
+   * tight. Nothing else brings them back.
+   *
+   * Called unconditionally for a healthy standby, because the pre-start is
+   * self-declining: it no-ops when a manager is already registered, when the
+   * repo has fallen outside the recency window, and when the project declares no
+   * stack.
+   */
+  repairPreview?: (opts: { sessionId: string; workspaceDir: string; repoUrl: string }) => Promise<void>;
   getMemoryStats?: () => DockerMemoryStats | null;
 }
 
@@ -95,7 +117,8 @@ export interface WarmTierSweepDeps {
 export function createWarmTierSweep(deps: WarmTierSweepDeps): () => Promise<void> {
   const {
     repoStore, sessionManager, containerManager,
-    warmSessionForRepo, ensureStandbyForWarmSession, waitForWarmSession, stopPreview, getMemoryStats,
+    warmSessionForRepo, ensureStandbyForWarmSession, waitForWarmSession, stopPreview, repairPreview,
+    getMemoryStats,
   } = deps;
 
   /**
@@ -154,7 +177,21 @@ export function createWarmTierSweep(deps: WarmTierSweepDeps): () => Promise<void
         if (Date.now() - Date.parse(session.createdAt) < WARM_REPAIR_GRACE_MS) continue;
 
         const up = await standbyIsUp(warmId);
-        if (up !== false) continue;
+        if (up !== false) {
+          // The container is fine; the PREVIEW may not be. Re-asked every pass
+          // because the pre-start declines on its own when there is nothing to
+          // do — see `repairPreview`. The pointer re-check is the same one the
+          // rebuild below does: a claim may have taken this session during the
+          // Docker probe, and its own activation owns the stack from then on.
+          if (up === true && repoStore.get(repo.url)?.warmSessionId === warmId) {
+            await repairPreview?.({
+              sessionId: warmId,
+              workspaceDir: session.workspaceDir,
+              repoUrl: repo.url,
+            });
+          }
+          continue;
+        }
 
         // Re-read the pointer after the await. A claim clears `warmSessionId`
         // and takes the session for a user who is opening it right now; the

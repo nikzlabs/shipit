@@ -535,6 +535,56 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       expect(reconciles).toBe(1);
     });
 
+    /**
+     * docs/288 — a stack the WARM POOL pre-started was built against the tree as
+     * it stood before the claim, which has since reset the clone to
+     * `origin/main`. The bind mount and the dev server's own file watcher
+     * reconcile SOURCE; they reconcile nothing about the stack DEFINITION — a
+     * service added upstream, a port changed, `compose.file` moved. Nothing else
+     * would notice either: the worker's config watcher only starts once the
+     * session is activated, so it never sees the refresh that preceded it.
+     */
+    it("reconciles once when adopting a warm pre-started stack, even with nothing else changed", async () => {
+      const runner = makeRunner("s1");
+      let reconciles = 0;
+      const applied: { file: string; dockerSocket: boolean }[] = [];
+      const mgr = makeStubServiceManager() as StubServiceManager & {
+        setOverlayDepDirs: (v: unknown[]) => boolean;
+        reconcile: () => Promise<void>;
+        preStartedWarm: boolean;
+        updateComposeConfig: (c: { file: string; dockerSocket: boolean }) => boolean;
+      };
+      // Overlay UNCHANGED and containment unchanged — the warm marker is the
+      // only thing that can ask for a reconcile here.
+      mgr.setOverlayDepDirs = () => false;
+      mgr.reconcile = async () => { reconciles += 1; };
+      mgr.preStartedWarm = true;
+      mgr.updateComposeConfig = (c) => { applied.push(c); return false; };
+
+      adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
+        serviceManagers: new Map(),
+        composeStopPromises: new Map(),
+        containerManager: buildOverlayContainerManager(),
+        installPromise: null,
+        session: SESSION as never,
+        workspaceDir: "/ws/s1",
+        composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+        noProjectCompose: false,
+      });
+
+      runner.setWorkerUrl("http://10.0.0.42:4000");
+      for (let i = 0; i < 50; i++) await Promise.resolve();
+
+      // The CURRENT declaration is handed over, and the stack is reconciled
+      // against it once.
+      expect(applied).toEqual([{ file: "docker-compose.yml", dockerSocket: false }]);
+      expect(reconciles).toBe(1);
+      // Consumed: a later restart-adoption of the same manager is docs/127's
+      // case, where the stack and the tree never parted company.
+      expect(mgr.preStartedWarm).toBe(false);
+      runner.dispose({ force: true });
+    });
+
     it("does not reconcile when the set is identical", async () => {
       // The common case: volume names are session-stable, so a recreate mints
       // the same names and the override on disk is still correct. Reconciling

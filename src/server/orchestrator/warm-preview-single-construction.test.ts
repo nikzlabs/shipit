@@ -37,18 +37,29 @@ describe("one ServiceManager construction site (docs/288)", () => {
    * the docker-secrets config, the log store, the topology hook). Nothing tells
    * you at a call site which of them you left out.
    */
-  it("is constructed in exactly one production file", () => {
-    const sites = productionSources(SERVER_DIR)
-      .filter((f) => fs.readFileSync(f, "utf8").includes("new ServiceManager("))
-      .map((f) => path.relative(SERVER_DIR, f));
-    expect(sites).toEqual(["orchestrator/service-manager-setup.ts"]);
+  it("is constructed exactly once, in one production file", () => {
+    // Counted by OCCURRENCE, not by file: two construction sites inside
+    // `service-manager-setup.ts` would drift from each other exactly as readily
+    // as two in different files, and a file-level count cannot see it.
+    const sites: Record<string, number> = {};
+    for (const file of productionSources(SERVER_DIR)) {
+      const count = fs.readFileSync(file, "utf8").split("new ServiceManager(").length - 1;
+      if (count > 0) sites[path.relative(SERVER_DIR, file)] = count;
+    }
+    expect(sites).toEqual({ "orchestrator/service-manager-setup.ts": 1 });
   });
 
-  it("the warm pre-start goes through the shared builder", () => {
+  it("the warm pre-start builds no manager of its own", () => {
+    // The positive half — "it mentions `buildServiceManager`" — is satisfied by
+    // an import or a comment, so it cannot fail on the thing that matters. This
+    // is the half that can: the pre-start must construct nothing itself. It is
+    // covered by the occurrence count above as well, and stated here because
+    // THIS file is where a second site would be written.
     const src = fs.readFileSync(
       path.join(SERVER_DIR, "orchestrator/warm-preview.ts"), "utf8",
     );
-    expect(src).toContain("buildServiceManager");
+    expect(src).not.toContain("new ServiceManager(");
+    expect(src).toContain("deps.createManager ?? buildServiceManager");
   });
 });
 
@@ -78,6 +89,22 @@ describe("warm pre-start placement (docs/288 reqs 2, 3)", () => {
   });
 
   /**
+   * Ordering alone is not the prerequisite, which is what made this worth
+   * asserting separately. `runPreInstall` RESOLVES on failure, on transport
+   * error, and on its own 15-minute ceiling — where it explicitly leaves the
+   * install running — so "we awaited it" establishes nothing. A pre-started
+   * manager begins with an OPEN install gate, so starting one over a failed or
+   * still-changing dependency tree launches every `dependsOnInstall` service
+   * into exactly the docs/137 race the gate exists to remove. Raised by review.
+   */
+  it("declines the pre-start unless the pre-install actually settled", () => {
+    const settledCheck = src.indexOf("if (!install.settled)");
+    const preStart = src.indexOf("await preStartPreview?.(");
+    expect(settledCheck).toBeGreaterThan(-1);
+    expect(preStart).toBeGreaterThan(settledCheck);
+  });
+
+  /**
    * req 3 — pre-starting a preview must never delay the claim, the session
    * opening, or the user's first turn. The whole continuation is discarded by
    * its caller (`void ensureStandbyForWarmSession(...)`), which is what keeps it
@@ -103,7 +130,7 @@ describe("every path that ends a warm session drops its stack", () => {
     const src = fs.readFileSync(
       path.join(SERVER_DIR, "orchestrator/api-routes-session-repos.ts"), "utf8",
     );
-    const stop = src.indexOf("stopWarmPreview(deps.serviceManagers, repo.warmSessionId)");
+    const stop = src.indexOf("stopWarmPreview(deps.serviceManagers, repo.warmSessionId");
     const destroy = src.indexOf("containerManager?.destroy(repo.warmSessionId)");
     expect(stop).toBeGreaterThan(-1);
     expect(destroy).toBeGreaterThan(stop);

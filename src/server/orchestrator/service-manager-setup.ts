@@ -266,6 +266,15 @@ export function adoptExistingServiceManager(
      */
     onInstallDecision?: (fn: (decision: WorkerInstallDecision) => void) => void;
     /**
+     * docs/288 — the `compose:` block resolved from the workspace AS IT IS NOW.
+     * Adopted onto a warm-pre-started manager, which resolved its own before the
+     * claim moved the clone. Optional: absent on the docs/127 restart path's
+     * older test doubles, and unused unless the manager says it was pre-started.
+     */
+    composeConfig?: { file: string; dockerSocket: boolean };
+    /** Whether the project declares no compose file of its own (docs/262). */
+    noProjectCompose?: boolean;
+    /**
      * Fresh closure that reads the session's latest secrets (the OLD
      * closure baked into `mgr` references the disposed runner; safe today
      * because both closures read by sessionId, but defensive in case a
@@ -308,6 +317,30 @@ export function adoptExistingServiceManager(
     handleStackError(runner, err, broadcastLog);
   };
   mgr.on("stack_error", stackErrorListener);
+
+  // docs/288 — a stack the WARM POOL pre-started was built against the tree as
+  // it stood before this claim, which has since fetched and reset the clone to
+  // `origin/main`. Everything req 5 leans on for that — the bind mount, the dev
+  // server's own file watcher — reconciles SOURCE. It reconciles nothing about
+  // the stack DEFINITION: a service added upstream, a port changed, a
+  // `compose.file` moved. Nothing else would ever notice, because the worker's
+  // config watcher only starts once the session is activated and so never sees
+  // the refresh that preceded it.
+  //
+  // So adopt the newly-resolved `compose:` block, and reconcile once
+  // unconditionally. The reconcile is a `compose up -d` over the regenerated
+  // override with no stale-container sweep: Compose recreates the services whose
+  // definition moved and leaves the rest running, so a stack that did not change
+  // pays a sub-second no-op and the dev server never restarts — which is the
+  // whole thing this feature is buying. Consumed once; a later restart-adoption
+  // of the same manager is docs/127's case and unchanged. Raised by review.
+  const wasPreStartedWarm = mgr.preStartedWarm;
+  if (wasPreStartedWarm) {
+    mgr.preStartedWarm = false;
+    if (deps.composeConfig && typeof mgr.updateComposeConfig === "function") {
+      mgr.updateComposeConfig(deps.composeConfig, { noProjectCompose: deps.noProjectCompose ?? false });
+    }
+  }
 
   // Some injected test doubles predate this optional lifecycle seam.
   const containmentChanged = typeof mgr.updateEgressContainment === "function"
@@ -394,7 +427,7 @@ export function adoptExistingServiceManager(
           await policyTransition;
           await deps.resetSessionNetwork?.();
         }
-        if (containmentChanged || overlayChanged) {
+        if (containmentChanged || overlayChanged || wasPreStartedWarm) {
           // On the stack queue, like every other reconcile. This is the one
           // that was left off it: the adopted stack is deliberately still
           // RUNNING (`preserveComposeOnDispose`), and the new container's
@@ -412,7 +445,7 @@ export function adoptExistingServiceManager(
         const error = err instanceof Error ? err : new Error(msg);
         mgr.emit("stack_error", error);
       });
-  } else if (containmentChanged) {
+  } else if (containmentChanged || wasPreStartedWarm) {
     void (async () => {
       await policyTransition;
       await deps.resetSessionNetwork?.();
@@ -1100,6 +1133,10 @@ export function setupServiceManager(
       // #2426 — what the re-point needs to reach the new container's overlay.
       session,
       workspaceDir,
+      // docs/288 — the CURRENT compose declaration, for a manager that resolved
+      // its own before this claim moved the clone.
+      composeConfig: shipitConfig.compose ?? DEFAULT_COMPOSE_CONFIG,
+      noProjectCompose: !shipitConfig.compose,
     });
     // Clear any stale migration warning — compose is now set up (still).
     composeWarnings.delete(runner.sessionId);
