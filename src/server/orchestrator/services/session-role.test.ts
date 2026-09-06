@@ -73,7 +73,7 @@ function deps(roles: AgentRole[], routes?: CredentialRoute[]) {
 
 // ---- Which roles a user may start (reqs 10, 16) -----------------------------
 
-describe("listUserSelectableRoles / hasUserSelectableRole", () => {
+describe("listUserSelectableRoles", () => {
   it("never offers the reviewer (req 10)", async () => {
     const { listUserSelectableRoles } = await import("./session-role.js");
     const names = listUserSelectableRoles(deps([REVIEWER, DEEP_DIVE])).map((r) => r.name);
@@ -81,10 +81,10 @@ describe("listUserSelectableRoles / hasUserSelectableRole", () => {
   });
 
   it("does not count the reviewer towards 'the user has a role' (req 16)", async () => {
-    const { hasUserSelectableRole } = await import("./session-role.js");
+    const { listUserSelectableRoles } = await import("./session-role.js");
     // The rule dies on arrival if this is true: the reviewer is on every install.
-    expect(hasUserSelectableRole(deps([REVIEWER]))).toBe(false);
-    expect(hasUserSelectableRole(deps([REVIEWER, DEEP_DIVE]))).toBe(true);
+    expect(listUserSelectableRoles(deps([REVIEWER]))).toEqual([]);
+    expect(listUserSelectableRoles(deps([REVIEWER, DEEP_DIVE]))).toEqual([DEEP_DIVE]);
   });
 });
 

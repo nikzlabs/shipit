@@ -87,11 +87,6 @@ export function configureSessionIdentityRoots(next: Roots | null): void {
     };
 }
 
-/** The configured sessions root, or null. Exported for diagnostics. */
-export function sessionsRootOrNull(): string | null {
-  return roots?.sessionsRoot ?? null;
-}
-
 /**
  * The first path segment of `p` under `root`, or null when `p` is not inside
  * `root`. Resolves both sides first, so a `..` in the input cannot walk out of

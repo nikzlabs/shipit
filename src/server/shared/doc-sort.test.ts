@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { compareDocsByRecency, sortDocsByRecency } from "./doc-sort.js";
+import { compareDocsByRecency } from "./doc-sort.js";
 
 /** Sort bare paths newest-first and return them. Convenience for assertions. */
 function order(paths: string[]): string[] {
@@ -218,24 +218,5 @@ describe("compareDocsByRecency", () => {
         "docs/glossary.md",
       ]);
     });
-  });
-});
-
-describe("sortDocsByRecency", () => {
-  it("orders DocEntry-shaped objects by path and does not mutate the input", () => {
-    const input = [
-      { path: "docs/100-a/plan.md", title: "A" },
-      { path: "docs/168-b/plan.md", title: "B" },
-    ];
-    const result = sortDocsByRecency(input);
-    expect(result.map((d) => d.path)).toEqual([
-      "docs/168-b/plan.md",
-      "docs/100-a/plan.md",
-    ]);
-    // Original array order untouched.
-    expect(input.map((d) => d.path)).toEqual([
-      "docs/100-a/plan.md",
-      "docs/168-b/plan.md",
-    ]);
   });
 });

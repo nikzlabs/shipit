@@ -150,9 +150,10 @@ Occurrences (sample):
 - `src/server/orchestrator/services/github.ts:954-964, 1006-1010, 1047-1051`
 - `src/server/orchestrator/services/templates.ts:110-115`
 
-Proposed: `validateString / validateNumber / validateStringArray / validateNonEmptyString(value,
-fieldName)` returning the narrowed value, co-located with `ServiceError` (likely `validation.ts`).
-Each returns the typed value so call sites stay one line.
+Implemented: `validateString / validateStringArray / validateNonEmptyString(value,
+fieldName)` returning the narrowed value, in `services/validation.ts`, beside `ServiceError`.
+Each returns the typed value so call sites stay one line. The unused `validateNumber`
+helper was removed: no production caller needed it.
 
 ## Explicitly not doing
 
@@ -192,4 +193,23 @@ These came up as "duplication" but already route through a shared abstraction �
 - `src/client/utils/cn.ts` — className merge helper (use in any new primitive).
 - `src/client/utils/local-storage.ts` — refactor D target.
 - `src/server/orchestrator/worker-http.ts` — refactor C target.
-- `src/server/orchestrator/validation.ts` — refactor H helpers target.
+- `src/server/orchestrator/services/validation.ts` — refactor H helpers target.
+
+## Verified removals from the codebase review
+
+A source-wide scan of module references, exported helpers, store members, and
+package usage found six helpers with no production callers. They were removed:
+`activeFilterCount`, `sortDocsByRecency`, `validateNumber`,
+`hasUserSelectableRole`, `sessionsRootOrNull`, and `resolveOrchestratorBaseUrl`.
+Tests that only exercised these helpers were removed or redirected to the active
+API. Filtering, document ordering, role exclusion, session identity, and worker
+host fallback tests remain.
+
+Document sorting now reads the numeric prefix directly, without a parsed object
+whose text field had no reader. Worker host deduplication uses one `Set`, which
+preserves the configured fallback order. Neither change adds a new abstraction.
+
+The scan is a source-level review, not proof that every feature is necessary.
+Runtime entry points, test support, historical data compatibility, and planned
+starter-prompt behavior were not treated as dead code merely because they had
+few or no production imports.

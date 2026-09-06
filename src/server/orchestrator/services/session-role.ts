@@ -68,20 +68,6 @@ export function listUserSelectableRoles(deps: UserRoleDeps): AgentRole[] {
 }
 
 /**
- * Is there at least one role a user could start? — req 16's condition for the
- * composer showing anything about roles at all.
- *
- * **The reviewer does not count**, which is the whole reason this is a named
- * function rather than `getRoles().length > 0` at the call site. The reviewer is
- * present on every install including one where nobody has configured anything
- * (docs/264 req 2), so counting it would make this always true and req 16 dead
- * on arrival.
- */
-export function hasUserSelectableRole(deps: UserRoleDeps): boolean {
-  return listUserSelectableRoles(deps).length > 0;
-}
-
-/**
  * The sentence a role's unavailability is refused with — the same three states
  * docs/264 distinguishes, because the remedy differs in each and collapsing them
  * sends the user to the wrong place.

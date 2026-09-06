@@ -14,7 +14,6 @@ import {
   identityForPath,
   sessionDirFor,
   sessionIdForPath,
-  sessionsRootOrNull,
   type SessionIdentityDeps,
 } from "./session-identity.js";
 
@@ -32,7 +31,6 @@ describe("sessionIdForPath", () => {
   it("returns null everywhere when the roots are unconfigured", () => {
     // Local mode, dogfood, and every test. This is what keeps docs/270 inert
     // outside a containerized production orchestrator.
-    expect(sessionsRootOrNull()).toBeNull();
     expect(sessionIdForPath(`${SESSIONS}/s1/workspace`)).toBeNull();
   });
 

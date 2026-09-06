@@ -3,7 +3,6 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import {
   OrchestratorClient,
-  resolveOrchestratorBaseUrl,
   resolveOrchestratorBaseUrls,
 } from "./orchestrator-client.js";
 
@@ -20,7 +19,6 @@ describe("resolveOrchestratorBaseUrls", () => {
     process.env.SHIPIT_PORT = "4123";
     process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS = "shipit,shipit";
 
-    expect(resolveOrchestratorBaseUrl()).toBe("http://old-container-id:4123");
     expect(resolveOrchestratorBaseUrls()).toEqual([
       "http://old-container-id:4123",
       "http://shipit:4123",
@@ -31,7 +29,6 @@ describe("resolveOrchestratorBaseUrls", () => {
     delete process.env.SHIPIT_HOST;
     delete process.env.SHIPIT_PORT;
 
-    expect(resolveOrchestratorBaseUrl()).toBeNull();
     expect(resolveOrchestratorBaseUrls()).toEqual([]);
   });
 });

@@ -217,7 +217,6 @@ interface SessionState {
   setMessages: (
     messages: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[]),
   ) => void;
-  appendMessage: (message: ChatMessage) => void;
   updateLastMessage: (updater: (msg: ChatMessage) => ChatMessage) => void;
   setIsLoading: (loading: boolean) => void;
   setActivity: (activity: StreamingActivity | undefined) => void;
@@ -302,7 +301,6 @@ interface SessionState {
         ) => { text: string; position: number }[]),
   ) => void;
   setRewindPreview: (preview: WsRewindPreview) => void;
-  clearRewindPreviews: () => void;
   setRewindRecovery: (recovery: RewindRecovery | null) => void;
   setPendingWsMessage: (message: Record<string, unknown> | undefined) => void;
   /**
@@ -326,8 +324,6 @@ interface SessionState {
   appendTurnUsage: (sessionId: string, turn: TurnUsage) => void;
   /** Replace the per-turn usage history for a session (e.g. on chat_history hydrate). */
   setTurnUsageForSession: (sessionId: string, turns: TurnUsage[]) => void;
-  /** Drop a session's per-turn usage (e.g. on archive). */
-  clearTurnUsageForSession: (sessionId: string) => void;
   reset: () => void;
 
   // All sessions dialog
@@ -430,9 +426,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       messages:
         typeof messages === "function" ? messages(state.messages) : messages,
     })),
-
-  appendMessage: (message) =>
-    set((state) => ({ messages: [...state.messages, message] })),
 
   updateLastMessage: (updater) =>
     set((state) => {
@@ -729,8 +722,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       },
     })),
 
-  clearRewindPreviews: () => set({ rewindPreviews: {} }),
-
   setRewindRecovery: (recovery) =>
     set((state) => {
       if (!recovery) {
@@ -768,16 +759,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => ({
       turnUsage: { ...state.turnUsage, [sessionId]: turns },
     })),
-
-  clearTurnUsageForSession: (sessionId) =>
-    set((state) => {
-      if (!(sessionId in state.turnUsage)) return state;
-      // Destructure-and-rest to drop the entry without mutating the original
-      // and without `delete` on a dynamic key (lint: no-dynamic-delete).
-      const { [sessionId]: _omit, ...rest } = state.turnUsage;
-      void _omit;
-      return { turnUsage: rest };
-    }),
 
   reset: () => set(initialResettableState),
 
