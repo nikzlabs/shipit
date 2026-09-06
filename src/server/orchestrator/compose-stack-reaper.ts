@@ -11,10 +11,16 @@
  * the docs/284 sweep for runner-less stacks right below it is `void mgr.stop()`.
  * Nothing awaits `composeStopPromises`; the hook closes the DB and returns,
  * `process.exit(0)` follows, and the `docker compose up -d` that performs the
- * update removes the orchestrator container, killing every in-flight
- * `compose down` child with it. Net effect: **every stack survives every
- * update.** Production carried 23 such stacks across seven orchestrator
- * recreations, four of them spinning a `vite` dev server at 100% CPU for days.
+ * update removes the orchestrator container, killing whatever `compose down`
+ * children are still running.
+ *
+ * So teardown **is not guaranteed to complete**, and stating it more strongly
+ * than that would be the same mistake in the other direction (review finding):
+ * a fast `down` can finish inside the window, and a request the daemon has
+ * already accepted runs on after the CLI dies. What the evidence shows is how
+ * often it does not: production carried **23 surviving stacks** across seven
+ * orchestrator recreations over five days, four of them spinning a `vite` dev
+ * server at 100% CPU.
  *
  * And nothing afterwards can see them. `serviceManagers` is process-local and is
  * never rebuilt from Docker, so the idle enforcer's tier 2, `reclaimToLight`'s
@@ -52,6 +58,7 @@ import type { SessionManager } from "./sessions.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import { holdsActiveReservation } from "./sessions.js";
 import { getMessage, sleep } from "./disk-utils.js";
+import { serializeStackOp } from "./stack-op-queue.js";
 
 /** Compose's own project label. Set by `docker compose`, never by us. */
 export const COMPOSE_PROJECT_LABEL = "com.docker.compose.project";
@@ -81,13 +88,28 @@ export function composeProjectName(sessionId: string): string {
  * on the project label reaches every container in the project, so there are no
  * "orphans" to distinguish. Returns how many containers it removed.
  *
- * **It THROWS when it cannot establish that the containers are gone**, and that
- * is the whole contract: `light → evicted` calls this immediately before wiping
- * the workspace, and a best-effort teardown that swallowed a failure would hand
- * that rung a "done" it has no evidence for — recreating the very defect
- * (a wipe under a live, mounted service) this exists to prevent. Only container
- * teardown is load-bearing that way; a network that will not go is logged and
- * ignored, since a network holds no mount.
+ * **It THROWS unless it has OBSERVED that the containers are gone**, and that is
+ * the whole contract: `light → evicted` calls this immediately before wiping the
+ * workspace, and a best-effort teardown that swallowed a failure would hand that
+ * rung a "done" it has no evidence for — recreating the very defect (a wipe
+ * under a live, mounted service) this exists to prevent.
+ *
+ * "Observed" is literal, and it has to be. Reasoning per error code cannot get
+ * there: a `304` from `stop` means "already stopped" and says nothing about
+ * removal, a `409` from a forced `remove` means removal is *in progress* and can
+ * still fail, and the two shared one `try` in the first draft — so a container
+ * stopped by someone else between the listing and the stop skipped its own
+ * removal and was counted as gone (review finding). So the codes only decide
+ * whether to keep going, and a final re-listing decides the outcome.
+ *
+ * Only container teardown is load-bearing that way; a network that will not go
+ * is logged and ignored, since a network holds no mount.
+ *
+ * **Not reentrant, and it belongs on the session's stack queue** — every compose
+ * invocation for a session does (`stack-op-queue.ts`). Both callers wrap it
+ * there rather than this function doing so itself, because each needs to
+ * re-check its own guards INSIDE the critical section, which a wrap in here
+ * could not do.
  */
 export async function downComposeStackByProject(
   docker: Docker,
@@ -95,35 +117,55 @@ export async function downComposeStackByProject(
 ): Promise<number> {
   const project = composeProjectName(sessionId);
   const label = `${COMPOSE_PROJECT_LABEL}=${project}`;
+  const list = (): Promise<{ Id: string; State?: string }[]> =>
+    docker.listContainers({ all: true, filters: { label: [label] } });
   let removed = 0;
 
   // Not wrapped: a listing we could not perform is "we don't know what is
   // running", which must reach the caller as a failure rather than as an empty
   // stack.
-  const containers = await docker.listContainers({
-    all: true,
-    filters: { label: [label] },
-  });
+  const containers = await list();
   for (const ci of containers) {
+    const container = docker.getContainer(ci.Id);
+    if (ci.State === "running") {
+      try {
+        await container.stop({ t: 5 });
+      } catch {
+        // Deliberately swallowed WITHOUT inspecting the code: the only question
+        // that matters is whether the container is gone at the end, and the
+        // removal below is what answers it. A `304` here used to skip that
+        // removal entirely.
+      }
+    }
     try {
-      const container = docker.getContainer(ci.Id);
-      if (ci.State === "running") await container.stop({ t: 5 });
       await container.remove({ force: true });
       removed += 1;
     } catch (err) {
       const code = err && typeof err === "object" && "statusCode" in err
         ? (err as { statusCode: number }).statusCode
         : 0;
-      // 304 already stopped, 409 removal in progress, 404 already gone — all
-      // the outcome we wanted, and all routine when a concurrent teardown is
-      // racing us for the same stack. Anything else means this container may
-      // still be running with the workspace mounted.
-      if (code !== 304 && code !== 409 && code !== 404) {
+      // 404 already gone, 409 removal already in progress — keep going and let
+      // the verification below decide. Anything else is reported with the
+      // container that produced it, because a bare "still present" would lose
+      // the reason.
+      if (code !== 404 && code !== 409) {
         throw new Error(
           `compose teardown of ${project} could not remove ${ci.Id.slice(0, 12)}: ${getMessage(err)}`,
           { cause: err },
         );
       }
+    }
+  }
+
+  // The evidence. A `409` removal may still be running, so give it the one
+  // re-check it needs rather than assuming it landed.
+  if (containers.length > 0) {
+    const left = await list();
+    if (left.length > 0) {
+      throw new Error(
+        `compose teardown of ${project} left ${left.length} container(s) in place `
+        + `(${left.map((c) => c.Id.slice(0, 12)).join(", ")})`,
+      );
     }
   }
 
@@ -164,6 +206,17 @@ export interface ComposeStackReapDeps {
    */
   unprobed?: ReadonlySet<string>;
   /**
+   * docs/240 — sessions the boot adoption sweep decided hold LIVE WORK but did
+   * not adopt (`liveWorkAfterRestart`). "Has a runner" is not the whole of that
+   * decision, and assuming it was is a review finding: a worker reporting
+   * `turnActive: false` with `selfWakeActive: true`, an outstanding background
+   * task, a running `agent.install` or a live terminal is deliberately KEPT by
+   * that sweep and gets no runner at all — and its agent container sits on the
+   * compose network, so it can be using those services by DNS right now even
+   * though no viewer can reach them.
+   */
+  liveWork?: ReadonlySet<string>;
+  /**
    * Pause between teardowns, for the same reason every other boot sweep paces:
    * a burst of stop/remove calls contends with the Docker daemon a concurrent
    * agent start needs. Defaults to `0` so unit tests pay no wall-clock.
@@ -188,6 +241,7 @@ function holdReason(sessionId: string, deps: ComposeStackReapDeps): string | nul
   // stack through the ordinary paths.
   if (deps.runnerRegistry.get(sessionId)) return "its session has a live runner";
   if (deps.unprobed?.has(sessionId)) return "its worker never answered the boot probe, so it may hold a live turn";
+  if (deps.liveWork?.has(sessionId)) return "the boot adoption sweep kept its worker for live work it did not adopt";
   // docs/241 — an always-on reservation promises the preview stays up "across
   // viewer disconnects, idle cleanup, memory-pressure eviction, and orchestrator
   // restarts". `restoreReservedPreviews` is what makes good on the last of
@@ -256,20 +310,28 @@ export async function reapSurvivingComposeStacks(
       continue;
     }
     await sleep(paceMs);
-    // Re-check immediately before the teardown: the sweep is paced and
-    // fire-and-forget, so a viewer can attach — creating a runner and a manager
-    // — while we are working through the list.
-    const late = holdReason(sessionId, deps);
-    if (late) {
-      console.log(`[compose-reap] Keeping the surviving stack for ${sessionId} — ${late}`);
-      continue;
-    }
     try {
-      const removed = await downComposeStackByProject(deps.docker, sessionId);
+      // On the session's stack queue, and the hold re-checked INSIDE it. Both
+      // halves answer the same review finding: this sweep is paced and
+      // fire-and-forget, so a session can be activated while it works through
+      // the list — and activation's `setupServiceManager` publishes its manager
+      // into `serviceManagers` synchronously and then does its `compose up`
+      // through this same queue. Re-checking outside the critical section left
+      // a window in which a brand-new stack was listed and removed; inside it,
+      // one of the two runs first and the other sees the result.
+      const outcome = await serializeStackOp(sessionId, async () => {
+        const late = holdReason(sessionId, deps);
+        if (late) return late;
+        return await downComposeStackByProject(deps.docker, sessionId);
+      });
+      if (typeof outcome === "string") {
+        console.log(`[compose-reap] Keeping the surviving stack for ${sessionId} — ${outcome}`);
+        continue;
+      }
       reaped += 1;
       console.log(
         `[compose-reap] Took down the surviving compose stack for ${sessionId}`
-        + ` (${removed} container(s); it outlived the orchestrator that started it and`
+        + ` (${outcome} container(s); it outlived the orchestrator that started it and`
         + ` nothing could route to it)`,
       );
     } catch (err) {

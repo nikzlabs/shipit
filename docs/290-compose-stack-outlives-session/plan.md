@@ -162,6 +162,57 @@ rewritten. Awaiting 20+ parallel `compose down`s does not fit Docker's stop grac
 period, and slowing every update to reclaim something nobody is waiting on is the
 wrong trade. Boot reconciliation is the guarantee; shutdown is the optimisation.
 
+## What the independent review changed
+
+Five findings, all acted on. They are recorded because three of them are the same
+class of mistake this feature exists to correct — treating an inference as
+evidence.
+
+1. **`304` skipped the removal.** `stop` and `remove` shared one `try`, so a
+   container someone else stopped between the listing and our stop answered
+   `304 Not Modified`, execution jumped past `remove()`, and the catch counted it
+   as gone. `light → evicted` then wiped the workspace on that basis. Split into
+   two `try`s, and — the general fix — the outcome is now **observed**: a
+   verifying re-listing after the loop, because no per-code reasoning gets there
+   (`409` from a forced remove means removal is *in progress*, not finished).
+2. **The keep-list read "has a runner" as "is idle".** It is not:
+   `reattachInFlightTurns` deliberately KEEPS a worker for a self-woken turn, an
+   outstanding background task, a running `agent.install` or a live terminal
+   without adopting it, and a **current-build** worker returns before those
+   fields are consulted at all. That agent container is on the session's compose
+   network and can be driving those services by DNS. The sweep now records those
+   decisions in `liveWorkAfterRestart` (populated for every freshness, since
+   freshness gates *reclaim*, not liveness) and the reaper honours it.
+3. **The teardown raced activation.** The hold was re-checked before the Docker
+   calls, so an activation landing in between published its manager, ran its own
+   `compose up`, and had the new containers listed and removed. Both teardown
+   call sites now go through `serializeStackOp` — where every other compose
+   invocation for a session already is — with the hold re-checked *inside* the
+   critical section. Either order is safe: activation first and the reaper sees
+   its manager; reaper first and activation's `killStaleContainers` + `up`
+   rebuilds behind it.
+4. **`light → evicted` re-checked activity before the teardown, not after.**
+   Everything in between takes real time — a 5s-grace container stop, a
+   stop-and-remove per service, the verifying re-list — so a session opened in
+   that window was wiped anyway. The `canAutoDescend` re-check moved to be the
+   last thing before the wipe.
+5. **The teardown failure bypassed `evictStuckLog`.** A Docker daemon that
+   refuses this teardown refuses it identically every hour, which is the shape
+   that once logged the same pair 117 times an hour for eight days. Now through
+   `warnStuck`.
+
+The reviewer also corrected an over-claim of ours: "every stack survives every
+update" is stronger than the evidence. A fast `down` can finish inside the
+window and a request the daemon already accepted runs on after the CLI dies.
+What the evidence shows is 23 survivors across seven recreations over five days.
+Every statement of it, in code and in docs, is now that.
+
+Two review points were assessed and deliberately not acted on. **Twelve-character
+project-name prefixes** are 44 random bits of a UUID; two colliding sessions
+would share a project, which is a pre-existing hazard of `ComposeCli`'s `-p` that
+centralising the name prevents from drifting but does not fix. And **a pinned
+session** stays reapable, per the note above.
+
 ## Key files
 
 - `src/server/orchestrator/compose-stack-reaper.ts` — project name, teardown
@@ -170,6 +221,9 @@ wrong trade. Boot reconciliation is the guarantee; shutdown is the optimisation.
   the abort-the-wipe branch.
 - `src/server/orchestrator/startup-monitors.ts` — wiring, and the call position.
 - `src/server/orchestrator/compose-cli.ts` — `-p` now uses the shared name.
+- `src/server/orchestrator/restart-turn-reattach.ts` — `liveWorkAfterRestart`.
+- `src/server/orchestrator/keep-preview-running.ts` — the reservation restore
+  keys on "no runner", so the reaper's docs/241 exemption is honest.
 - `src/server/orchestrator/shutdown-manager.ts`,
   `src/server/orchestrator/restart-turn-reattach.ts`,
   `deployment/vps/deploy.sh` — the three corrected claims.

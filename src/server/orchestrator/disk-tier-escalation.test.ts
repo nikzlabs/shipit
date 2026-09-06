@@ -507,6 +507,42 @@ describe("escalateDiskTiers", () => {
     expect(fs.existsSync(wsDir)).toBe(true);
   });
 
+  // Review finding: the activity re-check ran BEFORE the teardown, and the
+  // teardown takes real time (a 5s-grace container stop, a stop-and-remove per
+  // service, a verifying re-list). A session the user opened inside that window
+  // was wiped anyway.
+  it("docs/290: refuses to wipe a session that became active DURING the teardown", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-active-during-teardown");
+    await initRepo(wsDir);
+    insertSession({
+      id: "late-active",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    // Idle for every check until the teardown runs; a viewer has attached by
+    // the time it returns.
+    let attached = false;
+    const registry = {
+      get: () => (attached ? { running: false, viewerCount: 1, agentBusy: false, disposed: true } : undefined),
+      dispose: () => {},
+    } as unknown as SessionRunnerRegistry;
+
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+      stopComposeStack: () => { attached = true; return Promise.resolve(); },
+    });
+
+    expect(result.toEvicted).toBe(0);
+    expect(sm.get("late-active")?.diskTier).toBe("light");
+    expect(fs.existsSync(wsDir)).toBe(true);
+  });
+
   // The same blindness one rung up: `hot → light` looked for a manager in the
   // process-local map and stopped nothing when it found none.
   it("docs/290: hot → light tears down a stack with no manager and no runner", async () => {

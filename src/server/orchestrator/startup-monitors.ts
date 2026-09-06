@@ -15,7 +15,8 @@ import { DEFAULT_DISK_LADDER, assertDiskLadderOrdering, type DiskLadderThreshold
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import { createKeepPreviewRestartSupervisor, restoreReservedPreviews } from "./keep-preview-running.js";
 import { downComposeStackByProject, reapSurvivingComposeStacks } from "./compose-stack-reaper.js";
-import { unprobedAfterRestart } from "./restart-turn-reattach.js";
+import { liveWorkAfterRestart, unprobedAfterRestart } from "./restart-turn-reattach.js";
+import { serializeStackOp } from "./stack-op-queue.js";
 import { startWarmTierSweep } from "./warm-tier-sweep.js";
 import { stopWarmPreview } from "./warm-preview.js";
 
@@ -340,7 +341,13 @@ export async function startStartupMonitors(
             // process-local and `containerManager.destroy()` no-ops without a
             // container record, so before this the `light → evicted` rung wiped
             // workspaces out from under running services.
-            stopComposeStack: (sid) => downComposeStackByProject(containerManager.dockerClient, sid),
+            // On the session's stack queue, like every other compose invocation
+            // (`stack-op-queue.ts`): a session activated mid-pass runs its own
+            // `compose up` through that queue, and an unserialized teardown can
+            // land inside it.
+            stopComposeStack: (sid) => serializeStackOp(
+              sid, () => downComposeStackByProject(containerManager.dockerClient, sid),
+            ),
             createGitManager,
             ladder,
             // planning#296 — persisted warning when a dirty checkout can't be made
@@ -461,6 +468,7 @@ export async function startStartupMonitors(
           runnerRegistry,
           serviceManagers,
           unprobed: unprobedAfterRestart,
+          liveWork: liveWorkAfterRestart,
           paceMs: 500,
         });
         if (reaped > 0) {

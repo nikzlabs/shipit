@@ -222,9 +222,9 @@ serving". It does not, and the question that exposed it is worth recording:
 > in the direction that hurts: a clean update takes **no** stack down. Both paths
 > it names are fire-and-forget (`trackComposeStop`, `void mgr.stop()`), nothing
 > awaits them, and the update's `docker compose up -d` removes the orchestrator
-> container their `compose down` children run in. Every stack survived every
-> update — 23 across seven recreations on 2026-09-06, four spinning a dev server
-> at 100% CPU for days. The other three bullets stand, and so does the
+> container their `compose down` children run in. Completion is not guaranteed:
+> 23 stacks survived across seven recreations over five days to 2026-09-06, four
+> of them spinning a dev server at 100% CPU. The other three bullets stand, and so does the
 > conclusion for *this* sweep: taking the stack is someone else's job. That job
 > now exists — `reapSurvivingComposeStacks` (`compose-stack-reaper.ts`), a
 > separate boot pass keyed on `com.docker.compose.project`, running after this
@@ -271,9 +271,9 @@ considers stacks *tier 1* orphaned (`tier1At`). Taking it here would need a
 teardown primitive this module does not have, for what looked like the smaller
 share of the memory — the incident measured 25.3 GiB in agent containers against
 5.0 GiB in previews (see [Out of scope](#out-of-scope)). docs/290 built that
-primitive and found the residual is not narrow at all: because shutdown finishes
-nothing, it is *every* stack on *every* update, and its cost is CPU rather than
-memory. It is still not this sweep's, but it now has an owner.
+primitive and found the residual is not narrow at all: because shutdown does not
+wait for its teardowns, survivors accumulate across updates — 23 of them over
+five days — and their cost is CPU rather than memory. It is still not this sweep's, but it now has an owner.
 
 This sweep is **not** the steady-state reclaim path. `idle-enforcer.ts` owns
 that, driven by the docs/284 memory budget; this one fires once per boot and is
@@ -461,8 +461,8 @@ egress sidecars a surviving agent container still needs.
 
 The reason that did not: "on the clean-update path there is no stack left to
 reclaim (the shutdown already `compose down`ed it)". Shutdown starts those downs
-and never finishes them, so every stack survives every update — see the
-correction in [The Compose stack is not this sweep's
+without awaiting them and the process is then removed, so survivors are routine —
+see the correction in [The Compose stack is not this sweep's
 business](#the-compose-stack-is-not-this-sweeps-business). docs/290 reclaims them
 from a separate boot pass with a project-scoped primitive.
 

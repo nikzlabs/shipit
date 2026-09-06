@@ -78,9 +78,10 @@ fi
 # Compose stacks are NOT that sweep's business, but they ARE reclaimed — by a
 # separate boot pass, `reapSurvivingComposeStacks` (docs/290). This comment used
 # to say the outgoing orchestrator's clean shutdown already `compose down`s each
-# one; it does not. Those downs are un-awaited children of a process that then
-# exits, and the `docker compose up -d` below removes the container they run in,
-# so every stack survives every update. They are unroutable once they do (the
+# one. It does not guarantee that: those downs are un-awaited children of a
+# process that then exits, and the `docker compose up -d` below removes the
+# container they run in. Some finish; production carried 23 that did not, across
+# seven orchestrator recreations over five days. A survivor is unroutable (the
 # proxy resolves service ports through an in-memory map the restart emptied), so
 # the new orchestrator reconciles against Docker at boot and takes down every
 # stack no live session can reach — keeping the ones whose turn was adopted,

@@ -766,13 +766,35 @@ async function reclaimToEvicted(
       // this is the one teardown failure that must ABORT the wipe rather than
       // proceed best-effort. The session stays at `light` and the next pass
       // tries again.
-      console.warn(
+      //
+      // Through `warnStuck`, not a bare `console.warn` (review finding). A
+      // Docker daemon that refuses this teardown refuses it identically on every
+      // hourly and per-activation pass, which is exactly the shape that logged
+      // the same pair 117 times an hour for eight days before the throttle
+      // existed. The git block above cleared any previous signature, so this one
+      // is recorded fresh.
+      const message = getMessage(err);
+      warnStuck(
+        session, deps, `compose-teardown:${message}`,
         `[disk-janitor] evict skipped for ${session.id} — its compose stack could not be `
-        + "stopped, and wiping a workspace a service still has mounted is never correct:",
-        getMessage(err),
+        + "stopped, and wiping a workspace a service still has mounted is never correct "
+        + `(repeats of this same failure stay quiet): ${message}`,
       );
       return "skipped";
     }
+  }
+
+  // planning#296's re-check, once more — and this time it is the LAST thing
+  // before the wipe rather than the last thing before the teardown (review
+  // finding). Everything between the two takes real time: `containerManager
+  // .destroy()` stops a container with a 5s grace, and the compose teardown is
+  // a stop-and-remove per service plus a verifying re-list. A session the user
+  // opened inside that window has a runner, may already be installing, and its
+  // checkout must not be deleted underneath it.
+  const stillIdle = sessionManager.get(session.id);
+  if (!stillIdle || !canAutoDescend(stillIdle, deps.runnerRegistry)) {
+    console.warn(`[disk-janitor] evict skipped for ${session.id} — became active during teardown`);
+    return "skipped";
   }
 
   if (session.workspaceDir) {

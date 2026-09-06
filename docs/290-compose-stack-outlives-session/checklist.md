@@ -11,3 +11,11 @@
 - [x] Unit tests: `compose-stack-reaper.test.ts` (17), four new cases in `disk-tier-escalation.test.ts`, each proven red without the fix.
 - [x] Update docs/284 and docs/242 where they describe stack lifetime across restarts.
 - [x] Sync the tracker.
+- [x] Independent review, and its five findings:
+  - [x] Split `stop`/`remove` so a `304` cannot skip removal; verify the outcome by re-listing.
+  - [x] `liveWorkAfterRestart` — honour the boot sweep's live-work decisions, which produce no runner.
+  - [x] Both teardown call sites on `serializeStackOp`, with the hold re-checked inside the critical section.
+  - [x] Move the `light → evicted` activity re-check to be the last thing before the wipe.
+  - [x] Route the teardown failure through `warnStuck`.
+  - [x] Fix the docs/241 restore the reservation exemption rests on (`no runner`, not `no running container`).
+  - [x] Correct "every stack survives every update" to what the evidence shows, everywhere it is stated.

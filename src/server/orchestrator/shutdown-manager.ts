@@ -77,9 +77,10 @@ export function registerShutdownHook(
     // fire-and-forget and the sweep below is `void mgr.stop()`; nothing awaits
     // `composeStopPromises`, the hook returns, `process.exit(0)` follows, and
     // the `docker compose up -d` performing the update removes THIS container —
-    // killing every in-flight `compose down` child with it. Production carried
-    // 23 stacks across seven orchestrator recreations this way. Awaiting them
-    // here is not the fix either: 20+ parallel `compose down`s do not fit in
+    // killing whatever `compose down` children are still running. Some finish;
+    // production carried 23 that did not, across seven orchestrator recreations
+    // over five days. Awaiting them here is not the fix either: 20+ parallel
+    // `compose down`s do not fit in
     // Docker's stop grace period, and making every update that much slower to
     // reclaim something nobody is waiting on is the wrong trade. The guarantee
     // is `reapSurvivingComposeStacks` at the NEXT boot
