@@ -304,20 +304,25 @@ async function performMerge(
   // needs none: it is what stops RECONCILIATION resolving this row mid-call, and
   // it is what a runner created during the call is seeded from.
   deps.claims.markMergeInFlight(claim.sessionId);
-  if (runner) {
-    runner.mergeHold = true;
-    // CLAUDE.md invariant 5 — `mergeHold` gates turn ADMISSION and nothing else,
-    // so on its own it leaves the session reclaimable: the idle enforcer reads
-    // `agentBusy`, a non-forced `dispose()` reads the post-turn hold, and
-    // disposal CLEARS the queue. A message waiting behind the merge would be
-    // thrown away, and the `releaseQueuedTurn` below would have nothing to
-    // start. This lease is the existing mechanism for exactly that — counted,
-    // deadline-bounded, and paired in the `finally`.
-    runner.beginPostTurnWork();
-  }
+  if (runner) runner.mergeHold = true;
+  let leased = false;
   try {
     if (!isIdle(deps, claim.sessionId, { underHold: true })) {
       return { result: "waiting", reason: "a turn started while ShipIt was reading GitHub" };
+    }
+    // CLAUDE.md invariant 5 — `mergeHold` gates turn ADMISSION and nothing else,
+    // so on its own it leaves the session reclaimable: the idle enforcer reads
+    // `agentBusy`, a non-forced `dispose()` reads the post-turn hold, and
+    // disposal CLEARS the queue, discarding a message waiting behind the merge.
+    // This lease is the existing mechanism for exactly that.
+    //
+    // Taken AFTER the idle check, and that ordering is load-bearing: the lease
+    // is itself part of `agentBusy`, so taking it first makes the very next line
+    // read the session as busy and defer the merge — for ever, on every session
+    // that has a runner at all.
+    if (runner) {
+      runner.beginPostTurnWork();
+      leased = true;
     }
     // `pending → merging`, durably, BEFORE the call: it can reject after GitHub
     // accepted it, and a success with nowhere to land is a merge with no record.
@@ -389,8 +394,9 @@ async function performMerge(
     // no runner to hold, and activating it during the call creates one — seeded
     // held from the mark cleared just now, so it is this that unwedges it.
     // Released on the runner that TOOK it, which may differ from the one holding
-    // `mergeHold` below: the lease is a counter on one object.
-    runner?.endPostTurnWork();
+    // `mergeHold` below: the lease is a counter on one object. `leased` because
+    // the idle check above can return before it was ever taken.
+    if (leased) runner?.endPostTurnWork();
     const held = deps.runnerRegistry?.get(claim.sessionId) ?? runner;
     if (held) {
       held.mergeHold = false;

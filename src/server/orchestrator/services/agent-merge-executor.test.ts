@@ -145,9 +145,14 @@ function poller(opts: { grace?: boolean } = {}) {
  * same either way once the call has finished.
  */
 function fakeRunner(over: Partial<{ running: boolean; agentBusy: boolean; queueLength: number }> = {}) {
+  const busy = over.agentBusy ?? false;
   const runner = {
     running: false,
-    agentBusy: false,
+    // As production does: `SessionRunner.agentBusy` INCLUDES the post-turn
+    // lease. A fake with a plain `false` here cannot fail on the executor
+    // taking its own lease and then reading the session as busy — which is
+    // exactly the bug that made every merge a no-op while these tests passed.
+    get agentBusy(): boolean { return busy || runner.leaseDepth > 0; },
     systemTurnInProgress: false,
     queueLength: 0,
     mergeHold: false,
@@ -164,7 +169,9 @@ function fakeRunner(over: Partial<{ running: boolean; agentBusy: boolean; queueL
     dispatch: (o: unknown) => { runner.dispatched.push(o); },
     beginPostTurnWork: () => { runner.leaseDepth += 1; },
     endPostTurnWork: () => { runner.leaseDepth -= 1; },
-    ...over,
+    // `agentBusy` deliberately excluded: it is a getter above, and spreading a
+    // plain boolean over it would restore the very blindness this fixes.
+    ...(({ agentBusy: _drop, ...rest }) => rest)({ agentBusy: false, ...over }),
   };
   return runner;
 }
