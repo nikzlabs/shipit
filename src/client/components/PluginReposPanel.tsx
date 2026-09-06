@@ -9,6 +9,7 @@ import {
   ClockClockwiseIcon,
   ArrowsClockwiseIcon,
   XIcon,
+  HourglassMediumIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import {
@@ -438,6 +439,22 @@ function PluginRepoCard({
           <span className="min-w-0 break-words"><RichErrorText text={issue} links={false} /></span>
         </div>
       ))}
+
+      {/* planning#511 — a cost, beside the problems and never among them. The
+          version is live and whole; what this says is that every session
+          re-installs its dependencies because the plugin's install does not
+          qualify for ShipIt's shared store. Tertiary text and no warning
+          colour, so a card with this row and nothing else still reads as
+          healthy — the count chip and the tab's attention dot both key off
+          `issues`, which this is not part of. */}
+      {repo.depStoreNotice && (
+        <div className="flex items-start gap-2 border-t border-(--color-border-primary) px-3 py-2 text-xs text-(--color-text-tertiary)">
+          <HourglassMediumIcon size={ICON_SIZE.SM} className="mt-0.5 flex-none" />
+          <span className="min-w-0 break-words">
+            <RichErrorText text={repo.depStoreNotice} links={false} />
+          </span>
+        </div>
+      )}
 
       {!isSelf && repo.status === "active" && (
         <div className="border-t border-(--color-border-primary) px-3 py-2 text-xs text-(--color-text-tertiary)">

@@ -419,6 +419,8 @@ interface StatusRepo {
   status: string;
   issues: string[];
   installSummary: string;
+  /** planning#511 — a cost, not a problem, so it is not one of `issues`. */
+  depStoreNotice?: string;
   usable: boolean;
 }
 
@@ -432,6 +434,7 @@ function toStatusRepo(value: unknown): StatusRepo {
     status: asString(obj.status) || "unknown",
     issues: Array.isArray(obj.issues) ? obj.issues.filter((i): i is string => typeof i === "string") : [],
     installSummary: asString(obj.installSummary),
+    ...(typeof obj.depStoreNotice === "string" ? { depStoreNotice: obj.depStoreNotice } : {}),
     // Absent means "the orchestrator did not say", and the honest rendering of
     // that is the pessimistic one: a reader who cannot tell must not be told
     // everything is fine.
@@ -451,6 +454,10 @@ function describeStatus(repo: StatusRepo): string {
     `${repo.repo} (${repo.source}) — ${repo.status}, ${verdict}`,
     `  running: ${where}`,
     `  install: ${repo.installSummary}`,
+    // planning#511 — a `~` rather than the `!` an issue gets: this repository
+    // works, and re-installs its dependencies in every session. Above the
+    // issues, because it is about the install line it follows.
+    ...(repo.depStoreNotice ? [`  ~ ${repo.depStoreNotice}`] : []),
     ...repo.issues.map((issue) => `  ! ${issue}`),
   ].join("\n");
 }

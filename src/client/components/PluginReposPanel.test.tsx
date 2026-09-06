@@ -98,6 +98,26 @@ describe("PluginReposPanel", () => {
     expect(screen.queryByText(/`exports\.plugins`/)).toBeNull();
   });
 
+  it("shows a dependency-store notice without calling it a problem", () => {
+    // planning#511 — the version is live and whole; what the row says is that
+    // every session re-installs its dependencies. A card that counted it as a
+    // problem would put a warning chip (and the tab's attention dot) on a plugin
+    // with nothing wrong with it, permanently, until its AUTHOR fixed it.
+    setSnapshot({
+      ...FIXTURE,
+      repos: [
+        {
+          ...FIXTURE.repos[1],
+          depStoreNotice: "Dependencies are installed from scratch in every session and never "
+            + "shared: `probe`'s install command is not one ShipIt can identify the inputs of.",
+        },
+      ],
+    });
+    render(<PluginReposPanel />);
+    expect(screen.getByText(/installed from scratch in every session/)).toBeTruthy();
+    expect(screen.queryByText("1 problem")).toBeNull();
+  });
+
   // The `active` footer once said those things "land with the remaining plugin
   // mechanics (docs/262)" — tab v0's honest placeholder, still there after they
   // shipped, so an active card denied its own features (found in the dogfood).

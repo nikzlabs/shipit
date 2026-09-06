@@ -50,10 +50,13 @@ import type { PluginInstallJob, PluginInstallResult } from "./plugin-generations
 import { pluginsRoot } from "./plugin-generations.js";
 import {
   adoptPluginDepBases,
+  describePluginDepStoreReason,
   planPluginDepStore,
   pluginBasePinDir,
   pluginDepCacheDir,
   promotePluginDepDirs,
+  type PluginDepStoreDecision,
+  type PluginDepStoreReason,
 } from "./plugin-dep-store.js";
 import {
   buildPluginOverlaySpec,
@@ -220,13 +223,26 @@ export function createPluginInstallRunner(
     // can return without leaving the answer somewhere a session can read
     // (`plugin-install-record.ts` explains why the generation record cannot
     // carry it).
-    const record = (outcome: PluginInstallOutcome, detail?: string, output?: string): void =>
+    const record = (
+      outcome: PluginInstallOutcome,
+      detail?: string,
+      output?: string,
+      // planning#511 — positional, and only ever passed on the paths that
+      // COMPLETED an install: a failed attempt's store status is noise beside
+      // the failure, and the reader that acts on this is looking at a plugin
+      // that works and is slow.
+      depStoreReason?: string,
+    ): void =>
       writeInstallRecord(pluginsRoot(deps.stateDir), job.repoName, {
         commit: job.commit,
+        // planning#511 — WHICH build this was, so a reader can tell a rebuild's
+        // outcome from the live generation's (docs/273).
+        generationId: job.generationId,
         at: new Date().toISOString(),
         outcome,
         ...(detail ? { detail } : {}),
         ...(output ? { output } : {}),
+        ...(depStoreReason ? { depStoreReason } : {}),
       });
 
     const commands = installCommands(job.exports);
@@ -257,7 +273,12 @@ async function runInstallOnce(
   deps: PluginInstallDeps,
   job: PluginInstallJob,
   commands: readonly InstallCommand[],
-  record: (outcome: PluginInstallOutcome, detail?: string, output?: string) => void,
+  record: (
+    outcome: PluginInstallOutcome,
+    detail?: string,
+    output?: string,
+    depStoreReason?: string,
+  ) => void,
 ): Promise<PluginInstallResult> {
 
     // docs/273-plugin-generation-rebuild — the stamp belongs to the BUILD, not
@@ -303,6 +324,11 @@ async function runInstallOnce(
         "skipped-stamp",
         "this version's writable layer was already installed for these inputs",
         carried,
+        // planning#511 — carried under the same commit guard, and for the same
+        // reason: this path computes no plan, so without it the re-stage would
+        // erase the very row that says why this repository installs cold, at
+        // the moment the version goes live.
+        previous?.commit === job.commit ? previous.depStoreReason : undefined,
       );
       return { ok: true, ...(recorded.basePins.length > 0 ? { basePins: recorded.basePins } : {}) };
     }
@@ -314,9 +340,13 @@ async function runInstallOnce(
     // stops a plugin on a busy tracked branch from paying a cold cost per
     // commit, because `npm ci` deletes `node_modules` before it starts and would
     // ignore a warm base anyway.
-    const plan = deps.depStoreDir
+    // planning#511 — a decision, not a bare plan: every path that ends without a
+    // shared tree carries the reason it did, so a plugin paying a cold install
+    // in every session says so instead of recording a plain success.
+    const decision: PluginDepStoreDecision = deps.depStoreDir
       ? planPluginDepStore({ source: job.source, exports: job.exports, checkoutDir: job.stagingDir })
-      : null;
+      : { plan: null, reason: { kind: "no-store" } };
+    const plan = decision.plan;
     if (plan && deps.depStoreDir && !job.force) {
       const pins = adoptPluginDepBases(deps.depStoreDir, plan);
       if (pins) {
@@ -461,7 +491,7 @@ async function runInstallOnce(
     // where install left it and pins nothing — still a complete generation.
     if (!plan || !deps.depStoreDir) {
       await writeStamp(stampPath, stamp, []);
-      record("succeeded", undefined, installOutput);
+      record("succeeded", undefined, installOutput, noteDepStoreMiss(job.repoName, decision.reason));
       return { ok: true };
     }
 
@@ -492,8 +522,48 @@ async function runInstallOnce(
     }
 
     await writeStamp(stampPath, stamp, basePins);
-    record("succeeded", undefined, installOutput);
+    // planning#511 — a plan existed and promotion can still pin nothing: a dep
+    // dir the install did not populate, one that is a symlink, one the store
+    // would not take. `adoptPluginDepBases` is all-or-nothing, so a single
+    // unpinned directory keeps this repository cold for ever — which is the
+    // seventh way to share nothing and the one no plan can predict.
+    const unshared = promoted
+      .filter((p) => p.pin === null && p.reason !== undefined)
+      .map((p) => p.reason!);
+    record("succeeded", undefined, installOutput, noteDepStoreMiss(job.repoName, ...unshared));
     return { ok: true, ...(basePins.length > 0 ? { basePins } : {}) };
+}
+
+/**
+ * Log why this install's tree is not shared, and return the same sentences for
+ * the durable record (planning#511).
+ *
+ * String work and one `console.log`, deliberately: it runs after the outcome is
+ * decided, on a path whose thrown errors would be recorded as a FAILED install,
+ * so anything that could throw does not belong here.
+ *
+ * One line per reason rather than a summary, because each names its own dep dir
+ * or plugin — and `undefined` for "nothing to say", which is both the store hit
+ * and the ordinary case where everything was promoted.
+ *
+ * Bounded like every other repo-influenced text this file records: each sentence
+ * clips the values it interpolates, and the JOIN is clipped too, since there is
+ * one sentence per declared `dep-dirs` entry and that count is the plugin
+ * author's as well. Kept from the FRONT — the first reason is the one an author
+ * fixes first.
+ */
+function noteDepStoreMiss(
+  repoName: string,
+  ...reasons: (PluginDepStoreReason | undefined)[]
+): string | undefined {
+  const joined = reasons
+    .filter((r): r is PluginDepStoreReason => r !== undefined)
+    .map(describePluginDepStoreReason)
+    .join(" ");
+  const text = joined.length > REASON_MAX_CHARS ? `${joined.slice(0, REASON_MAX_CHARS)}…` : joined;
+  if (!text) return undefined;
+  console.log(`[plugins] ${repoName}: ${text}`);
+  return text;
 }
 
 /**

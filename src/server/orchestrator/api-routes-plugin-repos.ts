@@ -26,7 +26,13 @@ import {
 } from "../shared/plugin-repos.js";
 import { resolvePluginCredentials } from "../shared/plugin-credentials.js";
 import { resolvePluginHosts } from "../shared/plugin-hosts.js";
-import { resolveLiveGenerations, type LiveGenerations } from "./plugin-generations.js";
+import {
+  generationIdOf,
+  pluginsRoot,
+  resolveLiveGenerations,
+  type LiveGenerations,
+} from "./plugin-generations.js";
+import { readInstallRecord } from "./plugin-install-record.js";
 import {
   pluginCredentialDeclarationsFor,
   loadSatisfiedPluginCredentialNames,
@@ -45,7 +51,7 @@ import { collectPluginFragments } from "./plugin-compose.js";
 import { parseComposeFile } from "./compose-generator.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { getErrorMessage } from "./validation.js";
-import { buildPluginStatus } from "./services/plugin-status.js";
+import { buildPluginStatus, liveDepStoreNotice } from "./services/plugin-status.js";
 
 export async function registerPluginRepoRoutes(
   app: FastifyInstance,
@@ -159,6 +165,10 @@ export async function registerPluginRepoRoutes(
             commit: r.commit,
             status: r.status,
             issues: r.issues,
+            // planning#511 — carried as its own field, not folded into
+            // `issues`: the session gets the advisory without an agent reading
+            // a cost as a problem to fix before it can proceed.
+            ...(r.depStoreNotice ? { depStoreNotice: r.depStoreNotice } : {}),
           })),
         },
         request.query.repo?.trim() || undefined,
@@ -430,6 +440,18 @@ function readRuntimeState(
   // wrapper generator); what is knowable here — a name two plugins claim, or a
   // name ShipIt reserves — is knowable without running anything at all.
   const commandIssues = pluginCommandIssuesByRepo(config.plugins, config.pluginExports, live);
+  // planning#511 — the last install's own account of itself, which is the only
+  // place the dependency-store reason can come from: the staged checkout it was
+  // decided against is gone by now. Resolved once for this request, like every
+  // other reader above, and `null` when the session layout has no state dir
+  // (planning#288) — a card must still describe a declaration whose install
+  // history is unreadable.
+  let pluginsDir: string | null;
+  try {
+    pluginsDir = pluginsRoot(sessionStateDirForWorkspace(workspaceDir));
+  } catch {
+    pluginsDir = null;
+  }
 
   for (const repo of config.plugins.repos) {
     const entry: PluginRepoRuntime = {};
@@ -464,6 +486,17 @@ function readRuntimeState(
         entry.exports = generation.exports;
         if (generation.manifestWarnings?.length) entry.manifestWarnings = generation.manifestWarnings;
       }
+      // planning#511 — advisory, and read against the live GENERATION: a
+      // record for a build that never shipped must not describe what is
+      // running, and a rebuild of the live commit is a different build under
+      // the same commit (docs/273-plugin-generation-rebuild).
+      const notice = pluginsDir
+        ? liveDepStoreNotice(
+          readInstallRecord(pluginsDir, repo.name),
+          generation ? generationIdOf(generation) : null,
+        )
+        : null;
+      if (notice) entry.depStoreNotice = notice;
       if (attempt?.activating) entry.activating = true;
       if (attempt?.error) entry.error = attempt.error;
       if (attempt?.warning) entry.warning = attempt.warning;

@@ -331,6 +331,34 @@ describe("shipit plugin status", () => {
     expect(res.stdout).toContain("cannot run");
   });
 
+  it("prints a dependency-store notice as a cost, not as a problem", async () => {
+    // planning#511 — this repository works. The line says every session
+    // re-installs its dependencies, and it is marked `~` rather than the `!`
+    // an issue gets, so an agent reading the block does not go looking for
+    // something to fix before it can proceed.
+    const { run } = makeRunner();
+    const notice = "Dependencies are installed from scratch in every session and never shared: "
+      + "`web`'s install command is not one ShipIt can identify the inputs of.";
+    const res = await run(["plugin", "status"], {
+      [STATUS]: {
+        status: 200,
+        body: {
+          repos: [{
+            ...BROKEN_STATUS.body.repos[0],
+            issues: [],
+            usable: true,
+            depStoreNotice: notice,
+          }],
+          warnings: [],
+        },
+      },
+    });
+
+    expect(res.stdout).toContain(`~ ${notice}`);
+    expect(res.stdout).not.toContain(`! ${notice}`);
+    expect(res.stdout).toContain("usable");
+  });
+
   it("exits 0 for a broken plugin: asking succeeded, the answer is bad news", async () => {
     // An agent diagnosing a failure must be able to run this without its own
     // tooling treating the diagnosis as a second failure.

@@ -20,7 +20,8 @@ import {
 import { createStagedGenerationGate } from "./plugin-preflight.js";
 import { assemblePluginSnapshot } from "../api-routes-plugin-repos.js";
 import type { ApiDeps } from "../api-routes.js";
-import { readActiveGeneration } from "../plugin-generations.js";
+import { pluginsRoot, readActiveGeneration } from "../plugin-generations.js";
+import { writeInstallRecord } from "../plugin-install-record.js";
 import { expectInvalidShipitConfig } from "../../shared/shipit-config-test-guard.js";
 
 let tmp: string;
@@ -433,6 +434,76 @@ describe("lifetime and selectors", () => {
     expect(snapshot.repos[0]?.uses[0]?.hosts).toEqual([
       { host: "downloads.vendor.example", reach: "grantable", optional: false },
     ]);
+  });
+
+  /**
+   * planning#511, end to end: the reason an install shared nothing has to reach
+   * the repository's Plugins card, which is where a plugin's author looks.
+   *
+   * Asserted through the snapshot the browser receives rather than through the
+   * install record, because the record was already written before this change
+   * and the card was the half that could not see it: the card does not read
+   * install records at all without the projection this test covers.
+   */
+  it("puts the dependency-store reason on the card, beside the problems and not among them", async () => {
+    writeConfig(`${declareTools}  use:\n    - plugin: probe\n      from: tools\n`);
+    const cold = "Dependencies are installed from scratch in every session and never shared: "
+      + "`probe`'s install command is not one ShipIt can identify the inputs of.";
+    await activateDeclaredPlugins("sess", workspaceDir, {
+      ...deps(),
+      // What the real runner does on its success path: a complete install that
+      // shares nothing, recorded as the plain success it is.
+      runInstall: async (job) => {
+        writeInstallRecord(pluginsRoot(path.join(sessionDir, "state")), job.repoName, {
+          commit: job.commit,
+          generationId: job.generationId,
+          at: new Date().toISOString(),
+          outcome: "succeeded",
+          depStoreReason: cold,
+        });
+        return { ok: true };
+      },
+    });
+
+    const snapshot = assemblePluginSnapshot("sess", workspaceDir, null, {} as unknown as ApiDeps);
+    // Live and whole — the row is a cost, never a fault, so the status must not
+    // move and nothing may read it as a failed install.
+    expect(snapshot.repos[0]?.status).toBe("active");
+    expect(snapshot.repos[0]?.depStoreNotice).toBe(cold);
+    // And NOT an issue: the card's problem count and the tab's attention dot
+    // both read `issues`, and a dot that never clears is a dot the user stops
+    // reading (review finding).
+    expect(snapshot.repos[0]?.issues).toEqual([]);
+  });
+
+  it("does not put a rebuild's reason on the generation that is live", async () => {
+    // The record is the LAST attempt, and a rebuild of the commit that is
+    // already live is a DIFFERENT build under the same commit
+    // (docs/273-plugin-generation-rebuild): it can install differently, fail the
+    // pre-publish gate, and leave the previous generation serving. A reader
+    // gating on the commit would then put the rejected build's advisory on the
+    // card of a generation that shares its dependencies perfectly well.
+    writeConfig(`${declareTools}  use:\n    - plugin: probe\n      from: tools\n`);
+    let liveCommit = "";
+    await activateDeclaredPlugins("sess", workspaceDir, {
+      ...deps(),
+      runInstall: async (job) => {
+        liveCommit = job.commit;
+        return { ok: true };
+      },
+    });
+    writeInstallRecord(pluginsRoot(path.join(sessionDir, "state")), "tools", {
+      commit: liveCommit,
+      generationId: `${liveCommit}.a1b2c3d4`,
+      at: new Date().toISOString(),
+      outcome: "succeeded",
+      depStoreReason: "Dependencies are installed from scratch in every session and never shared: nope.",
+    });
+
+    const snapshot = assemblePluginSnapshot("sess", workspaceDir, null, {} as unknown as ApiDeps);
+    expect(snapshot.repos[0]?.status).toBe("active");
+    expect(snapshot.repos[0]?.depStoreNotice).toBeUndefined();
+    expect(snapshot.repos[0]?.issues).toEqual([]);
   });
 
   it("an activation that finishes after disposal cannot repopulate the state map", async () => {

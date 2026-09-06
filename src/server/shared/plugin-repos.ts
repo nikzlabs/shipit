@@ -254,6 +254,18 @@ export interface PluginRepoCardView {
   uses: PluginRepoUseView[];
   /** Problems attached to this repo (a failed activation, a missing selector). */
   issues: string[];
+  /**
+   * planning#511 — the live version's dependencies are not shared through
+   * ShipIt's dependency store, so every session pays the whole install.
+   *
+   * **Its own field, and NOT an `issues` row** (review finding). The version is
+   * live and whole: nothing is withheld and nothing failed, so the card's
+   * problem count and the tab's attention dot — both of which read `issues`
+   * (`pluginsAttention`) — must not move for it. A dot that never clears is a
+   * dot the user stops reading, which is the same reasoning that keeps an
+   * OPTIONAL credential out of them.
+   */
+  depStoreNotice?: string;
 }
 
 /**
@@ -307,6 +319,16 @@ export interface PluginRepoRuntime {
    * import.
    */
   serviceIssues?: string[];
+  /**
+   * planning#511 — why the live version's install is not shared through
+   * ShipIt's dependency store, so it is paid in full in every session, for
+   * ever. Remembered rather than recomputed, for the one reason `plugin-state.ts`
+   * gives for its own `failure` field: nothing here can recompute it. The staged
+   * checkout it was decided against is gone, and half the reasons (a dep dir the
+   * install did not populate, a publish the store declined) are facts about an
+   * install that has already run.
+   */
+  depStoreNotice?: string;
 }
 
 export interface PluginReposSnapshot {
@@ -1191,6 +1213,8 @@ export function buildPluginReposSnapshot(
       pinned: !isSelf && Boolean(repo.pin),
       uses,
       issues,
+      // planning#511 — beside the issue rows, never among them.
+      ...(live.depStoreNotice ? { depStoreNotice: live.depStoreNotice } : {}),
     };
   });
 
