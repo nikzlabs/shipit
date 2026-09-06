@@ -38,6 +38,21 @@ export type SettlementOutcome =
   /** No answer, or the session moved on. The claim stays. */
   | { result: "deferred"; reason: string };
 
+/**
+ * docs/288 — tell the agent how a REQUEST ended, on any path that deletes its
+ * row. A direct `gh pr merge` already got its answer as the command's reply; a
+ * request's agent got only "ShipIt is checking", so a silent delete strands that
+ * promise for good.
+ */
+function noticeForRequest(
+  deps: AgentMergeSettlementDeps,
+  claim: AgentMergeClaim,
+  message: string,
+): void {
+  if (claim.origin !== "auto") return;
+  persistNoticeUnattached(deps.chatHistoryManager, claim.sessionId, message, "warn");
+}
+
 /** Both halves: a number alone could name a different repository's #N. */
 function sessionStillOwns(deps: AgentMergeSettlementDeps, claim: AgentMergeClaim): boolean {
   const session = deps.sessionManager.get(claim.sessionId);
@@ -119,6 +134,19 @@ export async function settleAgentMerge(
   const facts = read.pr;
 
   if (facts.merged_at === null) {
+    // The row as it is NOW, not the snapshot this pass read before its GitHub
+    // await. Two reconciliations can overlap: the first resolves the row, a
+    // replacement request is armed and starts merging at the same commit, and
+    // the second returns "open" and would delete THAT — a live merge with its
+    // only record gone. Identity, not just the SHA, and never a row whose PUT
+    // is in flight.
+    const now = deps.claims.get(claim.sessionId);
+    if (
+      !now || now.expectedSha !== claim.expectedSha || now.prNumber !== claim.prNumber
+      || now.state !== live.state || deps.claims.isMergeInFlight(claim.sessionId)
+    ) {
+      return { result: "deferred", reason: "the claim changed while GitHub was answering" };
+    }
     // `settling` means a merge response CAME BACK, so an open answer here is a
     // stale read. Only a `merging` row may resolve as not-merged.
     if (live.state === "settling") {
@@ -128,14 +156,11 @@ export async function settleAgentMerge(
     // docs/288 — a request's agent asked for this and got no answer at the time,
     // so the row disappearing is the LAST chance to say what happened. A direct
     // merge already got its answer as the command's reply.
-    if (claim.origin === "auto") {
-      persistNoticeUnattached(
-        deps.chatHistoryManager, claim.sessionId,
-        `ShipIt checked, and pull request #${claim.prNumber} did not merge at `
-        + `${claim.expectedSha.slice(0, 8)}. Nothing was merged; ask again to retry.`,
-        "warn",
-      );
-    }
+    noticeForRequest(
+      deps, claim,
+      `ShipIt checked, and pull request #${claim.prNumber} did not merge at `
+      + `${claim.expectedSha.slice(0, 8)}. Nothing was merged; ask again to retry.`,
+    );
     deps.claims.release(claim.sessionId, claim.expectedSha);
     return { result: "not-merged" };
   }
@@ -146,6 +171,14 @@ export async function settleAgentMerge(
     console.warn(
       `[agent-merge] ${mergeRecordId(claim)} — PR #${claim.prNumber} merged at `
       + `${facts.head_sha ?? "an unknown commit"}, not the claimed commit. Recording nothing.`,
+    );
+    // docs/288 — terminal for a request, and its agent has had no answer since
+    // the "ShipIt is checking" notice. Silence here strands that promise.
+    noticeForRequest(
+      deps, claim,
+      `Pull request #${claim.prNumber} merged at a different commit than the `
+      + `${claim.expectedSha.slice(0, 8)} this session asked ShipIt to merge. Nothing this session `
+      + "asked for was merged.",
     );
     deps.claims.release(claim.sessionId, claim.expectedSha);
     return { result: "not-merged" };
@@ -194,6 +227,11 @@ async function settleWithoutSession(
     console.warn(
       `[agent-merge] ${recordId} — the session's pull request moved on, and the claimed commit is `
       + "not merged. Nothing to record.",
+    );
+    noticeForRequest(
+      deps, claim,
+      `ShipIt checked, and the commit this session asked to merge (${claim.expectedSha.slice(0, 8)}) `
+      + `is not merged in pull request #${claim.prNumber}. Nothing was merged.`,
     );
     deps.claims.release(claim.sessionId, claim.expectedSha);
     return { result: "not-merged" };

@@ -89,16 +89,34 @@ export class AgentMergeClaimStore {
     this.db = dbManager.db;
   }
 
+  /**
+   * docs/288 req 4 — an in-flight merge whose permission was withdrawn before
+   * its PUT went out. Same lifetime and same reasoning as {@link mergeInFlight}:
+   * the window it describes is one process's, and a restart means the PUT either
+   * never happened or already did, which reconciliation resolves either way.
+   *
+   * Needed because revocation cannot touch a `merging` row — that row may be the
+   * only evidence of a merge — while a merge that has NOT been sent yet is
+   * exactly what requirement 4 says to cancel. This is the difference between
+   * the two, and a column cannot hold it.
+   */
+  private readonly mergeCancelled = new Set<string>();
+
   markMergeInFlight(sessionId: string): void {
     this.mergeInFlight.add(sessionId);
   }
 
   clearMergeInFlight(sessionId: string): void {
     this.mergeInFlight.delete(sessionId);
+    this.mergeCancelled.delete(sessionId);
   }
 
   isMergeInFlight(sessionId: string): boolean {
     return this.mergeInFlight.has(sessionId);
+  }
+
+  isMergeCancelled(sessionId: string): boolean {
+    return this.mergeCancelled.has(sessionId);
   }
 
   /**
@@ -240,6 +258,19 @@ export class AgentMergeClaimStore {
         .run(repoId);
       cancelled = rows.map(fromRow);
       for (const claim of cancelled) record?.(claim);
+
+      // req 4 — and the merges that are ALREADY under way for this repository
+      // but have not sent their PUT. Their rows must survive (a `merging` row
+      // can be the only evidence of a merge), so the cancellation is recorded
+      // beside them and read by the executor immediately before it sends.
+      // Without this, revoking and re-granting during the merge call's own
+      // preparatory read leaves the original request free to merge.
+      const inFlight = this.db
+        .prepare("SELECT session_id FROM agent_merge_claims WHERE state = 'merging' AND repo_id = ?")
+        .all(repoId) as { session_id: string }[];
+      for (const row of inFlight) {
+        if (this.mergeInFlight.has(row.session_id)) this.mergeCancelled.add(row.session_id);
+      }
     })();
     return cancelled;
   }

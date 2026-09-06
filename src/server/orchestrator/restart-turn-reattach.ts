@@ -162,6 +162,15 @@ const RECLAIM_CONFIRM_DELAY_MS = 1000;
  * Docker API proxy), for the smaller share of the memory: the incident measured
  * 25.3 GiB in agent containers against 5.0 GiB in previews.
  */
+/**
+ * docs/288 — sessions whose `/agent/status` probe failed at startup. Their
+ * container is still RUNNING and may still hold a live agent turn, but no
+ * runner was created for them, so "is this session busy?" has nothing to ask.
+ * The agent-merge executor treats a session named here as busy until a runner
+ * exists for it.
+ */
+export const unprobedAfterRestart = new Set<string>();
+
 export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number> {
   const {
     containerManager, runnerRegistry, sessionManager, defaultAgentId,
@@ -189,6 +198,10 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
         console.warn(
           `[turn-reattach] /agent/status probe failed for ${c.sessionId}: ${getErrorMessage(err)}`,
         );
+        // docs/288 — the container is still running and may still be mid-turn.
+        // Adoption gave up; anything that would otherwise read "no runner" as
+        // "idle" has to know this session was never established either way.
+        unprobedAfterRestart.add(c.sessionId);
         return false;
       }
       const session = sessionManager.get(c.sessionId);

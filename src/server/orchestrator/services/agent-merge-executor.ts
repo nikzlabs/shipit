@@ -31,6 +31,7 @@ import { mergeDisposition } from "../pr-target.js";
 import { readMergeObservation } from "./merge-gate.js";
 import { settleAgentMerge, reconcileAgentMergeClaims } from "./agent-merge-settlement.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
+import { unprobedAfterRestart } from "../restart-turn-reattach.js";
 
 export interface AgentMergeExecutorDeps {
   claims: AgentMergeClaimStore;
@@ -103,6 +104,7 @@ export async function runAgentMergeRequests(deps: AgentMergeExecutorDeps): Promi
   // and an unattended session gets none of them. Reconciliation stands down on
   // its own for an active turn and for a merge in flight, so this is safe to
   // call unconditionally; it is a no-op when no attempt is outstanding.
+  const before = deps.claims.list();
   await reconcileAgentMergeClaims({
     claims: deps.claims,
     sessionManager: deps.sessionManager,
@@ -112,6 +114,7 @@ export async function runAgentMergeRequests(deps: AgentMergeExecutorDeps): Promi
   }).catch((err: unknown) => {
     console.error("[agent-merge] reconciling stranded attempts failed:", err);
   });
+  reportStuckAttempts(deps, before);
 
   for (const claim of deps.claims.listPending()) {
     try {
@@ -399,6 +402,10 @@ async function performMerge(
     if (leased) runner?.endPostTurnWork();
     const held = deps.runnerRegistry?.get(claim.sessionId) ?? runner;
     if (held) {
+      // A runner created DURING the call was seeded held AND leased by
+      // `runner-registry-factory.ts`; releasing only the one captured at the
+      // start would leave the new one pinned for the rest of the process.
+      if (held !== runner) held.endPostTurnWork();
       held.mergeHold = false;
       // Draining is event-driven, and a background merge has no owning turn
       // whose completion would drain the queue — so a message that arrived
@@ -475,11 +482,50 @@ function end(
  * the same repository answers the same.
  */
 function isStillGranted(deps: AgentMergeExecutorDeps, claim: AgentMergeClaim): boolean {
+  // req 4 — a withdrawal that landed while THIS merge was in flight. Asking only
+  // about the current permission answers "yes" after a revoke-and-re-grant, and
+  // the request the user cancelled would merge anyway.
+  if (deps.claims.isMergeCancelled(claim.sessionId)) return false;
   const session = deps.sessionManager.get(claim.sessionId);
   if (!session) return false;
   if (repoId(session.remoteUrl ?? "") !== claim.repoId) return false;
   return mergeDisposition(session, deps.repoStore.allowsAgentMerge(session.remoteUrl ?? "")) === "allowed";
 }
+
+/**
+ * An attempt reconciliation keeps failing to resolve — permanently lost access
+ * to the repository is the shape of it. The row must SURVIVE (it is the only
+ * evidence of a merge that may have happened), but the agent was told "ShipIt is
+ * checking, and will say so here once it knows", and that promise cannot be left
+ * open for ever. Said once, and the row goes on blocking further merges, which
+ * is the honest state.
+ */
+function reportStuckAttempts(deps: AgentMergeExecutorDeps, before: AgentMergeClaim[]): void {
+  for (const claim of before) {
+    if (claim.origin !== "auto") continue;
+    const key = unreadableKey(claim);
+    const still = deps.claims.get(claim.sessionId);
+    if (still?.expectedSha !== claim.expectedSha) {
+      // It resolved; the settlement said what happened.
+      stuckAttempts.delete(key);
+      continue;
+    }
+    const passes = (stuckAttempts.get(key) ?? 0) + 1;
+    stuckAttempts.set(key, passes);
+    if (passes !== UNREADABLE_LIMIT) continue;
+    persistNoticeUnattached(
+      deps.chatHistoryManager, claim.sessionId,
+      `ShipIt still cannot tell whether pull request #${claim.prNumber} merged at `
+      + `${claim.expectedSha.slice(0, 8)}, after ${passes} attempts. It keeps the record and will `
+      + "keep trying, but no further merge will start on this session until this resolves. Check "
+      + "the pull request on GitHub, and that ShipIt still has access to the repository.",
+      "warn",
+    );
+  }
+}
+
+/** Passes an attempt has survived unresolved. Reported once at the limit. */
+const stuckAttempts = new Map<string, number>();
 
 /** Consecutive unreadable reads, per request. Cleared by any answer at all. */
 const unreadableCounts = new Map<string, number>();
@@ -547,8 +593,20 @@ function isIdle(
   opts: { underHold?: boolean } = {},
 ): boolean {
   const runner = deps.runnerRegistry?.get(sessionId);
-  // No runner is genuinely idle: a session with no container is not mid-turn.
-  if (!runner) return true;
+  if (!runner) {
+    // No runner is USUALLY idle: a session with no container is not mid-turn,
+    // and requiring one would make the common case — the turn ended, the
+    // container went idle — the one case this never fires in.
+    //
+    // The exception is a session whose startup probe FAILED: adoption gave up
+    // and created no runner, but its container is still running and may still
+    // hold the turn that was live when the orchestrator went down. Merging there
+    // would ship a branch that agent is still pushing to. It clears as soon as a
+    // runner exists, which is the moment the ordinary checks can answer again.
+    return !unprobedAfterRestart.has(sessionId);
+  }
+  // A session that has a runner is established, whatever the startup probe did.
+  unprobedAfterRestart.delete(sessionId);
   // A turn, in either shape. Asked in BOTH modes: it is the whole question the
   // under-hold re-check exists to answer.
   if (runner.running || runner.systemTurnInProgress) return false;

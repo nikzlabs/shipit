@@ -370,7 +370,16 @@ export function createRunnerRegistry(
       // `mergeHold === false` and the first message begins a turn that pushes
       // behind a merge already in flight. The executor's `finally` re-resolves
       // the runner, so this one gets released rather than wedged.
-      if (isAgentMergeInFlight?.(runner.sessionId)) runner.mergeHold = true;
+      if (isAgentMergeInFlight?.(runner.sessionId)) {
+        runner.mergeHold = true;
+        // BOTH halves, for the same reason the executor takes both: `mergeHold`
+        // only stops a turn STARTING, while the idle enforcer reads `agentBusy`
+        // and disposal clears the queue. Without the lease this runner reports
+        // idle, and a viewer who queues a message and then disconnects can have
+        // it reclaimed — discarding the message the merge was holding it for.
+        // The executor's `finally` re-resolves the registry and releases both.
+        runner.beginPostTurnWork();
+      }
       // planning#246 — the ONE subscriber for the cross-session "busy outside a
       // turn" marker. The runner emits `background_work` from every place its
       // value can change (task list, streaming gate, consult set, dispose), so

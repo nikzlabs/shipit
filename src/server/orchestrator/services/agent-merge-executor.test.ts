@@ -12,6 +12,7 @@ import type { MergeObservation } from "./merge-gate.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import { SessionRunner, type SessionRunnerRegistry } from "../session-runner.js";
+import { unprobedAfterRestart } from "../restart-turn-reattach.js";
 import type { MergeAttempt } from "../github-auth-prs.js";
 import type { TerminalPrFacts } from "../github-auth-prs.js";
 
@@ -505,6 +506,27 @@ describe("runOneRequest — an unreadable pull request cannot wait for ever (req
 });
 
 describe("runOneRequest — the permission (req 4)", () => {
+  it("does not merge a request the user cancelled mid-flight, even if re-granted", async () => {
+    // Revocation cannot delete a `merging` row — that row can be the only
+    // evidence of a merge — but a merge whose PUT has NOT gone out is exactly
+    // what requirement 4 says to cancel. Asking only about the CURRENT
+    // permission answers "yes" after a revoke-and-re-grant, and the request the
+    // user cancelled merges anyway.
+    const gh = github({
+      onMerge: () => {
+        // The user turns it off and back on during the wrapper's own read.
+        claims.cancelPendingForRepo(REPO_ID);
+      },
+    });
+
+    const out = await runOneRequest(deps({ githubAuthManager: gh }), armed());
+
+    expect(out.result).toBe("ended");
+    expect(gh.merges).toEqual([]);
+    expect(notices().join(" ")).toContain("was withdrawn");
+  });
+
+
   it("re-reads the grant in the instant before the merge call", async () => {
     // The check before the GitHub read is taken a round trip too early. This is
     // the last one there can be: the residual window is the REST call itself,
@@ -836,6 +858,48 @@ describe("runOneRequest — a merge and a turn are mutually exclusive (req 6)", 
       expect(gh.merges).toEqual([]);
     } finally {
       real.running = false;
+      real.dispose({ force: true });
+    }
+  });
+
+  it("does not merge a session whose startup probe never established it", async () => {
+    // Adoption gave up on this session, so no runner exists — but its container
+    // is still running and may still hold the turn that was live when the
+    // orchestrator went down. "No runner" is only "idle" when nothing is known
+    // to be running.
+    unprobedAfterRestart.add(SESSION);
+    try {
+      const gh = github();
+      const out = await runOneRequest(
+        deps({ githubAuthManager: gh, runnerRegistry: registry(null) }),
+        armed(),
+      );
+
+      expect(out).toMatchObject({ result: "waiting" });
+      expect(gh.merges).toEqual([]);
+      expect(claims.get(SESSION)).toMatchObject({ state: "pending" });
+    } finally {
+      unprobedAfterRestart.delete(SESSION);
+    }
+  });
+
+  it("merges once a runner exists, whatever the startup probe did", async () => {
+    // The control, and the release valve: a session that has a runner is
+    // established, so the flag must not pin it for the process's lifetime.
+    unprobedAfterRestart.add(SESSION);
+    const real = new SessionRunner({
+      sessionId: SESSION, sessionDir: "/tmp/s1", defaultAgentId: "claude" as never,
+    });
+    try {
+      const gh = github();
+      const out = await runOneRequest(
+        deps({ githubAuthManager: gh, runnerRegistry: registry(real) }),
+        armed(),
+      );
+      expect(out).toEqual({ result: "merged" });
+      expect(unprobedAfterRestart.has(SESSION)).toBe(false);
+    } finally {
+      unprobedAfterRestart.delete(SESSION);
       real.dispose({ force: true });
     }
   });

@@ -28,7 +28,8 @@ import {
 import { canonicalRepoKey, hasUrlCredentials, repoId } from "./git-utils.js";
 import { getErrorMessage } from "./validation.js";
 import { stopWarmPreview } from "./warm-preview.js";
-import { persistNoticeUnattached } from "./chat-card-persistence.js";
+import { buildSystemNotice } from "./chat-card-persistence.js";
+import type { WsServerMessage } from "../shared/types.js";
 
 /**
  * docs/288 req 4 — cancel every merge request for a repository whose grant was
@@ -38,17 +39,28 @@ import { persistNoticeUnattached } from "./chat-card-persistence.js";
  */
 function cancelAgentMergeRequests(deps: ApiDeps, id: string): void {
   if (!id || !deps.agentMergeClaims) return;
-  // The notice rides the delete's transaction: a request the user cancelled
-  // must not vanish leaving no record of why (req 3's guarantee, req 4's case).
+  // Split around the transaction, like the executor's own cancellation. The
+  // notice is PERSISTED inside the delete — a request the user cancelled must
+  // not vanish leaving no record of why (req 3's guarantee, req 4's case) — and
+  // BROADCAST only once that has committed, since an emit cannot be rolled back.
+  // Both halves come from one `buildSystemNotice`, so the live card and the
+  // reloaded row are one notice rather than two.
+  const pending: { sessionId: string; ws: WsServerMessage }[] = [];
   deps.agentMergeClaims.cancelPendingForRepo(id, (claim) => {
-    persistNoticeUnattached(
-      deps.chatHistoryManager,
+    const { ws, persisted } = buildSystemNotice(
       claim.sessionId,
       `Cancelled the merge request for pull request #${claim.prNumber}: agent merging was turned off `
       + "for this repository. Nothing was merged.",
       "info",
     );
+    deps.chatHistoryManager.append(claim.sessionId, persisted);
+    pending.push({ sessionId: claim.sessionId, ws });
   });
+  // A user watching the session would otherwise see the request disappear with
+  // no explanation until they reloaded the transcript.
+  for (const { sessionId, ws } of pending) {
+    deps.runnerRegistry?.get(sessionId)?.emitMessage(ws);
+  }
 }
 
 export async function registerSessionReposRoutes(
