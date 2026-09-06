@@ -185,15 +185,24 @@ describe("Integration: issue-seeded session branch + started (planning#322)", ()
     // (planning#413) — the same value in the DB and on disk. The suffix is what
     // stops the NEXT session on this issue from landing on this branch and
     // adopting its PR; the stem is what keeps the branch readable.
-    const branch = sessionManager.get(sessionId)!.branch;
-    expect(branch).toMatch(/^octocat-hello-world-42-[a-z0-9_-]{1,6}$/);
+    const branch = sessionManager.get(sessionId)!.branch ?? "";
+    const named = /^(octocat-hello-world-42)-([a-z0-9_-]{1,6})$/.exec(branch);
+    expect(named, branch).not.toBeNull();
     expect(
       execSync("git branch --show-current", { cwd: sessionDir }).toString().trim(),
     ).toBe(branch);
 
-    // docs/248-declared-issue-trackers req 22 — no fragment of the issue title reaches the branch name.
+    // docs/248-declared-issue-trackers req 22 — no fragment of the issue title
+    // reaches the branch name.
+    //
+    // Checked against the STEM, not the whole branch. The suffix is 6 chars of
+    // `crypto.randomBytes` base64url (`generateBranchSlug`), so it can spell a
+    // short title word by pure chance and say nothing about what the naming
+    // path leaked: CI drew `octocat-hello-world-42-lonsxa`, whose suffix
+    // contains the title's "on". The regex above is what constrains the suffix
+    // — it carries no session-supplied text at all.
     for (const word of ISSUE_TITLE.toLowerCase().split(/\W+/).filter(Boolean)) {
-      expect(branch).not.toContain(word);
+      expect(named![1]).not.toContain(word);
     }
 
     // AI naming is off for this session: `branchRenamed` is set synchronously,
