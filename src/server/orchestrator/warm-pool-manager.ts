@@ -47,6 +47,21 @@ export interface WarmPoolDeps {
    * available, i.e. it creates the standby.
    */
   getMemoryStats?: () => DockerMemoryStats | null;
+  /**
+   * docs/288 — pre-start this warm session's Compose stack once the standby and
+   * the pre-install are done, so the claim adopts a running dev server instead
+   * of paying `compose up` + boot + first compile on the user's clock.
+   *
+   * A hook rather than the compose collaborators themselves: the warm pool has
+   * no business knowing about ServiceManagers, and `bootstrap-managers.ts` is
+   * where the registry is in scope. Absent in local mode and in test setups,
+   * which is the same opt-out `containerManager: null` already expresses.
+   */
+  preStartPreview?: (opts: {
+    sessionId: string;
+    workspaceDir: string;
+    repoUrl: string;
+  }) => Promise<void>;
 }
 
 /** A warm session that needs a standby container built for it. */
@@ -83,7 +98,7 @@ export function createWarmPool(
     repoStore, sessionManager, createRepoGit,
     githubAuthManager, containerManager,
     credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
-    oomBreaker, getMemoryStats,
+    oomBreaker, getMemoryStats, preStartPreview,
   } = poolDeps;
 
   const warmingInProgress = new Set<string>();
@@ -176,7 +191,32 @@ export function createWarmPool(
       // clone, so it persists for the future runner: on activation
       // `runner.runInstall()` sees it and short-circuits. A user activating
       // mid-install joins the in-flight run via the worker's /install endpoint.
-      await runPreInstall(workspaceDir, sc.workerUrl, sessionId);
+      const install = await runPreInstall(workspaceDir, sc.workerUrl, sessionId);
+      // docs/288 — and now the preview, which is the half the warm pool never
+      // pre-paid.
+      //
+      // Gated on the install having SETTLED, not merely on having awaited it.
+      // `runPreInstall` resolves on failure, on transport error, and on its own
+      // 15-minute ceiling — where it explicitly leaves the install running — so
+      // the await alone establishes nothing. A pre-started manager begins with
+      // an OPEN install gate (nothing has closed it), so starting one over a
+      // failed or still-changing dependency tree would launch every
+      // `dependsOnInstall` service into exactly the docs/137 race the gate
+      // exists to remove. Declining costs the session one cold preview, which
+      // is what it would have had anyway. Raised by review.
+      //
+      // Inside the trust branch above, with the pre-install, because it is the
+      // same kind of act: `command:`/`build:` is the repository's own code, and
+      // docs/178 defers all of it until the user has trusted the remote once.
+      // Its own recency gate lives in the hook (req 8).
+      if (!install.settled) {
+        console.log(
+          `[warm:${sessionId}] Skipping preview pre-start — the pre-install did not settle;`
+          + " the preview starts on activation, behind the runner's own install gate",
+        );
+        return;
+      }
+      await preStartPreview?.({ sessionId, workspaceDir, repoUrl });
     } catch (err) {
       console.error(`[warm] Standby container failed for ${sessionId}:`, getErrorMessage(err));
     }
@@ -372,6 +412,27 @@ export function createWarmPool(
 }
 
 /**
+ * What {@link runPreInstall} was able to establish about the dependency tree.
+ *
+ * `settled: true` means the tree is in a state a later step may RELY on: the
+ * install ran and succeeded, the content-keyed marker skipped it, or the
+ * repository declares no install at all.
+ *
+ * `settled: false` covers every other ending, and they are not exotic — an
+ * install that failed, one that is STILL RUNNING past the 15-minute ceiling
+ * (`runPreInstall` deliberately leaves the worker to finish), an unparseable
+ * `shipit.yaml`, a transport failure. The distinction exists because
+ * `runPreInstall` resolves in all of those cases, so "we awaited it" says
+ * nothing on its own — and docs/288's preview pre-start would then start
+ * `dependsOnInstall` services with an OPEN install gate over a half-written
+ * dependency tree, which is exactly the docs/137 race the gate exists to
+ * remove. Raised by review.
+ */
+export interface PreInstallOutcome {
+  settled: boolean;
+}
+
+/**
  * Pre-run `agent.install` on a freshly-booted standby worker so the user
  * doesn't pay install latency on activation. Reads shipit.yaml from the
  * warm workspace, fires the install on the standby's worker, and polls
@@ -384,15 +445,18 @@ export function createWarmPool(
  * which exercises the helper against a real Fastify worker stub instead of
  * standing up the full warm-pool + Docker path.
  */
-export async function runPreInstall(workspaceDir: string, workerUrl: string, sessionId: string): Promise<void> {
+export async function runPreInstall(
+  workspaceDir: string, workerUrl: string, sessionId: string,
+): Promise<PreInstallOutcome> {
   let commands: string[];
   try {
     commands = resolveShipitConfig(workspaceDir).agent.install;
   } catch (err) {
     console.warn(`[warm:install:${sessionId}] Skipping pre-install — could not parse shipit.yaml: ${getErrorMessage(err)}`);
-    return;
+    return { settled: false };
   }
-  if (commands.length === 0) return;
+  // Nothing to install is a SETTLED dependency tree, not an unknown one.
+  if (commands.length === 0) return { settled: true };
 
   try {
     // The worker returns `{ started: true }` / `{ skipped: true }` fast and
@@ -403,9 +467,11 @@ export async function runPreInstall(workspaceDir: string, workerUrl: string, ses
       { skipped?: boolean; started?: boolean; ok?: boolean };
     if (res.skipped) {
       console.log(`[warm:install:${sessionId}] Pre-install skipped (marker present)`);
-      return;
+      return { settled: true };
     }
-    if (!res.started) return;
+    // Neither started nor skipped — the worker answered something this build
+    // does not understand, so nothing is known about the tree.
+    if (!res.started) return { settled: false };
 
     // Worker returned 202-ish "started" — poll /install/status until done. The
     // worker writes the `.shipit/.install-done` marker on success itself; we
@@ -424,11 +490,13 @@ export async function runPreInstall(workspaceDir: string, workerUrl: string, ses
       if (!status.running) {
         const ok = status.lastResult?.ok !== false;
         console.log(`[warm:install:${sessionId}] Pre-install ${ok ? "complete" : "failed"}${status.lastResult?.message ? `: ${status.lastResult.message}` : ""}`);
-        return;
+        return { settled: ok };
       }
     }
     console.warn(`[warm:install:${sessionId}] Pre-install still running after ${MAX_WAIT_MS}ms — leaving worker to finish; on-activation runInstall will join it via /install`);
+    return { settled: false };
   } catch (err) {
     console.warn(`[warm:install:${sessionId}] Pre-install request failed: ${getErrorMessage(err)}`);
+    return { settled: false };
   }
 }

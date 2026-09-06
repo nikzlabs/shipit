@@ -1138,6 +1138,21 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     return this.composeConfig.file;
   }
 
+  /**
+   * docs/288 — was this stack started by the warm pool, before any session was
+   * claimed and before the claim brought the clone up to `origin/main`?
+   *
+   * Read once by the adopting activation, which then clears it. It is the
+   * difference between docs/127's adoption and this one: there the stack was
+   * built by the same session moments earlier from the same tree, so an
+   * unchanged reconcile condition was safe. Here the stack can be hours old
+   * across a `git reset --hard origin/main` that added a service, moved
+   * `compose.file`, or changed a port — none of which the dev server's own file
+   * watcher can reconcile, because none of them are source edits (req 5 relies
+   * on the watcher only for source). Raised by review.
+   */
+  preStartedWarm = false;
+
   /** Refresh the boot-effective egress policy when a preserved manager is adopted. */
   updateEgressContainment(
     containServicesFn: ((serviceNames: string[]) => Promise<void>) | undefined,

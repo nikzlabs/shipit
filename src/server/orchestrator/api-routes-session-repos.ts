@@ -27,6 +27,7 @@ import {
 } from "./services/index.js";
 import { canonicalRepoKey, hasUrlCredentials, repoId } from "./git-utils.js";
 import { getErrorMessage } from "./validation.js";
+import { stopWarmPreview } from "./warm-preview.js";
 
 export async function registerSessionReposRoutes(
   app: FastifyInstance,
@@ -369,6 +370,15 @@ export async function registerSessionReposRoutes(
           // in-flight create (it bumps the teardown counter before its own
           // "nothing to destroy" return), and this session is being deleted on
           // the next line either way, so there is nothing to preserve.
+          // docs/288 — the warm session may own a PRE-STARTED compose stack, and
+          // it is the one kind of stack with no runner to drop it: the normal
+          // owner is the runner's `disposed` handler, and nothing ever created a
+          // runner here. `destroy` below sweeps the CONTAINERS
+          // (`shipit-parent-session`), so leaving the manager registered would
+          // strand a poll loop chasing a deleted session for the rest of the
+          // process. Stop it first, so the stop is issued while its containers
+          // still exist.
+          stopWarmPreview(deps.serviceManagers, repo.warmSessionId, deps.composeStopPromises);
           await deps.containerManager?.destroy(repo.warmSessionId);
           const runner = deps.runnerRegistry.get(repo.warmSessionId);
           // Forced — user is removing the repo, so the warm session is

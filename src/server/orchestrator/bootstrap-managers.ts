@@ -41,6 +41,7 @@ import {
   depCacheRoot,
   createDepCacheDirHelper,
   createWarmPool,
+  createWarmPreviewStarter,
   runRepoMigration,
   runRemoteCredentialScrub,
   retireWarmSessions,
@@ -1467,6 +1468,26 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     sessionsRoot, sessionManager,
   });
 
+  // ---- Warm preview pre-start (docs/288) ----
+  // Pre-starts the Compose stack into the SAME registry activation adopts from,
+  // so a warm claim inherits a running dev server. Named here rather than
+  // inlined into the pool because the periodic warm-tier sweep calls the very
+  // same function as its preview REPAIR (req 10) — two entry points, one
+  // implementation, which is the rule the standby half already follows
+  // (`ensureStandbyForWarmSession`). Only where there is a container runtime to
+  // start it on; local mode has no Compose at all, which is what
+  // `containerManager: null` says.
+  const preStartWarmPreview = containerManager
+    ? createWarmPreviewStarter({
+        repoStore, sessionManager, serviceManagers, composeStopPromises,
+        containerManager, secretStore, credentialStore, serviceEnvDir, logStore,
+        ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
+        // Through the lazy holder: `runnerRegistry` is declared further down
+        // this function, and this only ever runs long after bootstrap.
+        isSessionActive: (sessionId: string) => !!registryHolder.ref?.get(sessionId),
+      })
+    : undefined;
+
   // ---- Warm session pool ----
   const { warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession } = createWarmPool({
     repoStore, sessionManager, createRepoGit,
@@ -1474,6 +1495,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
     oomBreaker,
     getMemoryStats: () => latestMemoryStats.value,
+    // docs/288 — the warm pool's last step.
+    ...(preStartWarmPreview ? { preStartPreview: preStartWarmPreview } : {}),
   });
 
   // ---- docs/262 req 19: drop remote credentials an earlier build stored ----
@@ -1632,7 +1655,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     recordAgentRateLimits,
     markSessionAccountExhausted,
     createSessionDir,
-    warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession,
+    warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession, preStartWarmPreview,
     migratedRepoUrls,
     startupTimer,
   };

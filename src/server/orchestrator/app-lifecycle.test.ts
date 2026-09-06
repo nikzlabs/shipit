@@ -745,6 +745,77 @@ describe("createIdleEnforcer", () => {
       expect(registry.get("mine")?.disposed).toBe(false);
     });
 
+    /**
+     * docs/288 req 4 — a standby now owns a pre-started Compose stack too, and
+     * it is the most speculative thing on the machine: nobody has opened the
+     * session at all. Both halves must go, and both must be credited.
+     *
+     * The two failures this catches are opposite. Not stopping the manager
+     * leaves it polling Docker for a session whose container is being destroyed
+     * underneath it. Not crediting `serviceBytes` under-counts what came back,
+     * so the same pass evicts a REAL session for memory the standby had already
+     * given up — which is the one thing req 4 says this feature may never cost.
+     */
+    it("takes the warm preview with the standby, and counts both", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const destroy = vi.fn().mockResolvedValue(undefined);
+      const destroyAgentContainer = vi.fn().mockResolvedValue(undefined);
+      const cm = makeContainerManager({
+        containers: [{ sessionId: "warm" }, { sessionId: "mine" }],
+        standby: new Set(["warm"]),
+        destroy,
+        destroyAgentContainer,
+      });
+      const services = makeServiceHooks(["warm"]);
+      idleRunner("mine");
+      vi.advanceTimersByTime(600_000);
+
+      // The standby's agent container alone (2) does NOT cover the shortfall;
+      // its preview (18) does. Crediting only `agentBytes` would carry a stale
+      // shortfall into tier 1 and cost "mine" its container.
+      createIdleEnforcer({
+        containerManager: cm,
+        runnerRegistry: registry,
+        getMemoryStats: () => overBudgetWith({
+          warm: { agentBytes: 2, serviceBytes: 18 },
+          mine: { agentBytes: 20 },
+        }),
+        services: services.hooks,
+      })();
+
+      expect(services.stop).toHaveBeenCalledWith("warm");
+      expect(destroy).toHaveBeenCalledWith("warm");
+      // The real session is untouched — its container and its preview both.
+      expect(destroyAgentContainer).not.toHaveBeenCalled();
+      expect(services.stop).not.toHaveBeenCalledWith("mine");
+      expect(registry.get("mine")?.disposed).toBe(false);
+    });
+
+    it("leaves a standby with no pre-started stack exactly as it was", () => {
+      // The negative half, so the test above cannot pass by always stopping:
+      // a standby that never got a preview must not have `stop` called for it.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const destroy = vi.fn().mockResolvedValue(undefined);
+      const cm = makeContainerManager({
+        containers: [{ sessionId: "warm" }],
+        standby: new Set(["warm"]),
+        destroy,
+      });
+      const services = makeServiceHooks([]);
+
+      createIdleEnforcer({
+        containerManager: cm,
+        runnerRegistry: registry,
+        getMemoryStats: () => overBudgetWith({ warm: { agentBytes: 20 } }),
+        services: services.hooks,
+      })();
+
+      expect(destroy).toHaveBeenCalledWith("warm");
+      expect(services.stop).not.toHaveBeenCalled();
+    });
+
     // Two triggers can fire between two 10s polls (the 30s timer and the
     // pressure-crossing edge). The second must not reclaim again for memory the
     // first pass already gave back.

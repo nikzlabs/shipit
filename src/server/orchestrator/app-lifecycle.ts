@@ -103,6 +103,14 @@ export { createWarmPool } from "./warm-pool-manager.js";
 export type { WarmPoolDeps } from "./warm-pool-manager.js";
 
 export {
+  createWarmPreviewStarter,
+  preStartWarmPreview,
+  isRecentlyUsedRepo,
+  WARM_PREVIEW_RECENCY_DAYS,
+} from "./warm-preview.js";
+export type { WarmPreviewDeps } from "./warm-preview.js";
+
+export {
   runRepoMigration,
   runRemoteCredentialScrub,
   runMcpOAuthStartupRefresh,
@@ -282,7 +290,24 @@ export async function setupContainerManager(
   // session is someone's now. Re-read here rather than reusing `activeIds`
   // above, which the injected-manager path never computes.
   if (containerManager) {
-    await containerManager.reapStandbyContainers(new Set(sessionManager.allIds()));
+    const liveIds = new Set(sessionManager.allIds());
+    await containerManager.reapStandbyContainers(liveIds);
+    // docs/288 req 6 — and its PRE-STARTED PREVIEW, which the line above cannot
+    // see. `reapStandbyContainers` filters on the agent container's own labels,
+    // and `shipit-standby` is on the agent container alone; the compose siblings
+    // carry `shipit-parent-session` instead. A pre-started preview would
+    // otherwise survive the deploy as a running container with no session,
+    // serving the old code out of the old image — the exact thing standby
+    // retirement exists to prevent, arriving by the one door it does not watch.
+    //
+    // The production path above has already swept these (the branch's own
+    // `cleanupOrphanComposeResources`, which by now sees every retired warm id
+    // as an orphan). This is here for the same reason the reap above is: an
+    // injected container manager skips that whole branch, and "a warm preview
+    // never outlives the process that made it" must not be a property only the
+    // production wiring has. Both sweeps are idempotent.
+    const docker = containerManager.getDockerClient?.();
+    if (docker) await cleanupOrphanComposeResources(docker, liveIds);
   }
 
   // ---- Docker API proxy (optional, for Docker-enabled sessions) ----

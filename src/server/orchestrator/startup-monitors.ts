@@ -15,6 +15,7 @@ import { DEFAULT_DISK_LADDER, assertDiskLadderOrdering, type DiskLadderThreshold
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import { createKeepPreviewRestartSupervisor, restoreReservedPreviews } from "./keep-preview-running.js";
 import { startWarmTierSweep } from "./warm-tier-sweep.js";
+import { stopWarmPreview } from "./warm-preview.js";
 
 /** Functions produced by {@link startStartupMonitors} that later steps need. */
 export interface StartupMonitors {
@@ -48,7 +49,7 @@ export async function startStartupMonitors(
     containerManager, runnerRegistry, broadcastLog, sessionManager,
     credentialStore,
     isTestMode, stateDir, repoStore, credentialsDir, githubAuthManager,
-    createRepoGit, getBareCacheDir, serviceManagers, createGitManager,
+    createRepoGit, getBareCacheDir, serviceManagers, composeStopPromises, createGitManager,
     loopDetector, oomBreaker, chatHistoryManager,
     repoPrefetcher, claudeOAuthRefresherRef, codexOAuthRefresherRef,
     startupTimer, authManagers, dockerProxyServer, databaseManager,
@@ -193,6 +194,13 @@ export async function startStartupMonitors(
         warmSessionForRepo: rt.warmSessionForRepo,
         ensureStandbyForWarmSession: rt.ensureStandbyForWarmSession,
         waitForWarmSession: rt.waitForWarmSession,
+        // docs/288 — a repair rebuilds the standby, so the pre-started stack's
+        // manager must go with the container it was built for.
+        stopPreview: (sessionId: string) => stopWarmPreview(serviceManagers, sessionId, composeStopPromises),
+        // docs/288 req 10 — a healthy standby with no preview is the same
+        // absorbing state one level down. The pre-start declines on its own when
+        // there is nothing to repair.
+        ...(rt.preStartWarmPreview ? { repairPreview: rt.preStartWarmPreview } : {}),
         getMemoryStats: () => latestMemoryStats.value,
       })
     : null;

@@ -77,7 +77,9 @@ describe("warm-pool runPreInstall", () => {
   });
 
   it("is a no-op when shipit.yaml is absent (no install commands)", async () => {
-    await runPreInstall(workspaceDir, workerUrl, "test");
+    // docs/288 — and it reports the tree as SETTLED. A repo that declares no
+    // install has nothing in flight, so the preview pre-start may rely on it.
+    await expect(runPreInstall(workspaceDir, workerUrl, "test")).resolves.toEqual({ settled: true });
     // No marker should have been written.
     expect(fs.existsSync(path.join(stateDir, ".install-done"))).toBe(false);
   });
@@ -88,7 +90,7 @@ describe("warm-pool runPreInstall", () => {
       "agent:\n  install:\n    - 'true'\n",
     );
 
-    await runPreInstall(workspaceDir, workerUrl, "test");
+    await expect(runPreInstall(workspaceDir, workerUrl, "test")).resolves.toEqual({ settled: true });
 
     // Marker means the worker ran the command(s) to completion. docs/246 moved
     // it out of the clone into the session state dir; the standby and the
@@ -105,6 +107,25 @@ describe("warm-pool runPreInstall", () => {
     // The helper must swallow the parse error — a broken shipit.yaml in the
     // warm path must NOT bring down the warming flow. The on-activation
     // path will surface it via the standard `compose_error` channel.
-    await expect(runPreInstall(workspaceDir, workerUrl, "test")).resolves.toBeUndefined();
+    //
+    // docs/288 — but it must NOT report the tree as settled. `settled` is what
+    // the preview pre-start reads to decide whether it may start
+    // `dependsOnInstall` services with an open install gate, and nothing is
+    // known about a tree whose install declaration could not even be parsed.
+    await expect(runPreInstall(workspaceDir, workerUrl, "test")).resolves.toEqual({ settled: false });
+  });
+
+  it("reports an install that FAILED as unsettled", async () => {
+    // The case the pre-start most needs told apart from success: the helper
+    // resolves either way, so awaiting it establishes nothing on its own.
+    // Starting a dev server over a half-written dependency tree is the docs/137
+    // race the install gate exists to remove.
+    fs.writeFileSync(
+      path.join(workspaceDir, "shipit.yaml"),
+      "agent:\n  install:\n    - 'exit 3'\n",
+    );
+
+    await expect(runPreInstall(workspaceDir, workerUrl, "test")).resolves.toEqual({ settled: false });
+    expect(fs.existsSync(path.join(stateDir, ".install-done"))).toBe(false);
   });
 });

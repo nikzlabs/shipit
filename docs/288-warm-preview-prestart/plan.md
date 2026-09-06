@@ -258,11 +258,110 @@ numbers rather than argument:
 hit it should stop being paid at all, because the first request arrives at a
 server that has been up since before the session was claimed.
 
+## What implementation changed about this design
+
+Four corrections, found while building it. Each is a place where the design
+above was wrong or incomplete about the code it leans on.
+
+**The overlay dep-dirs must be applied at WARM time, not only at adoption.**
+This design's "what activation does: nothing new" is one step too optimistic.
+`applyOverlayDepDirs` requires a runner, so a warm-built manager would hold `[]`
+— and adoption then resolves a CHANGED set, reconciles, and a service container
+freezes its mounts at CREATE time, so that reconcile *recreates every container
+we pre-started*. Overlay is on by default and a warm session is eligible
+(`isOverlayEligible`: has a remote, not `ops`), so this was not an edge case: it
+would have spent the whole feature on the default path, invisibly, while looking
+like it worked. The runner-free half is now
+`applyOverlayDepDirsForSession`, called from both paths.
+
+**`mgr.setInstallRunning(false)` after the pre-install is a no-op and was
+dropped.** A freshly-built manager has `_installRunning` and `_installFailed`
+both `false`, so the gate is already open (`service-manager.ts`, `start()`'s
+`gateOpen`). What actually makes the pre-started stack a *started* one is the
+ORDERING — after `runPreInstall` — which is what the code now says instead.
+
+**The gate re-hold was already half-solved, elsewhere.** planning#2503 built the
+"only bracket an install the worker says will really run" mechanism
+(`runInstall`'s `onWorkerDecision`, `ServiceManager.installGateFailed`) for the
+mid-session dep-change reinstall, and left the adoption path unconditional.
+Adoption now uses the same mechanism through an `onInstallDecision` relay, with
+the same two fail-closed cases (a failed install, and a gate already latched by
+an earlier failure — repaired only on positive evidence, never an `unverified`
+completion).
+
+**Req 6's gap was narrower than stated.** "Neither covers the compose
+containers" is true of `retireWarmSessions` and `reapStandbyContainers`, but
+boot's `cleanupOrphanComposeResources` (`app-lifecycle.ts`) already sweeps
+`shipit-parent-session` containers whose session is no longer tracked — and
+retirement has deleted the warm rows before it runs, so the production path was
+covered. The real hole was the INJECTED container manager, which skips that
+whole branch; the sweep is now also called beside `reapStandbyContainers`,
+outside it, for exactly the reason that call is outside it.
+
+**And the periodic repair had to learn about the manager.** `warm-tier-sweep`'s
+`containerManager.destroy()` sweeps the compose containers but leaves the
+manager in `serviceManagers`, where `preStartWarmPreview` reads it as "a claim
+already built one" and declines. Without the new `stopPreview` hook the repair
+would rebuild the standby and silently restore no preview.
+
+### What the independent review changed
+
+Four more, all found by review of the first implementation.
+
+**Awaiting `runPreInstall` does not establish the install prerequisite.** The
+helper resolves on failure, on transport error, and on its own 15-minute ceiling
+— where it explicitly leaves the install running — so this design's "the install
+must have finished first" was not what the code said. A pre-started manager
+begins with an OPEN gate, so the pre-start would have launched every
+`dependsOnInstall` service into the docs/137 race the gate exists to remove.
+`runPreInstall` now returns a `PreInstallOutcome`, and the pre-start declines
+unless it settled.
+
+**Registration must not straddle an await.** Checking the registry, awaiting the
+overlay resolution and then registering let an activation landing in that gap
+build a rival manager for the same compose project name, which the warm path then
+overwrote. Registration is now in the same synchronous run as the check.
+
+**The queued start needs an ownership re-check, and the stop needs recording.**
+`ServiceManager.start()` resets `_disposed` and re-arms the poll loop, so a
+start still queued after the repair (or a repo delete, or tier 0) took the
+manager away would resurrect one nobody owns. And `stopWarmPreview` now records
+its stop in `composeStopPromises`, which the pre-start awaits — the repair stops
+and rebuilds within seconds, on the same project name.
+
+**Req 10 was unmet one level down.** The sweep asked only whether the standby
+CONTAINER was running. A `compose up` that failed, or a preview tier 0 reclaimed,
+left a healthy worker with no preview and no way back — and the memory argument
+above depends on warm previews coming back on their own. The sweep now re-runs
+the pre-start for every healthy standby; the pre-start is self-declining, so it
+no-ops when there is nothing to do. **Residual:** a preview whose containers were
+removed out from under a still-registered manager is not yet detected. That needs
+a per-service liveness probe and is not in this change.
+
+**A warm-adopted stack reconciles once (req 5).** Everything req 5 leans on — the
+bind mount, the dev server's watcher — reconciles SOURCE. It reconciles nothing
+about the stack DEFINITION, and docs/288 stretches the gap between "stack built"
+and "claim" from docs/127's seconds to hours across a `git reset --hard
+origin/main`. Nothing else would notice: the worker's config watcher starts only
+at activation, so it never sees the refresh that preceded it. Adoption now reads
+`ServiceManager.preStartedWarm`, adopts the freshly-resolved `compose:` block,
+and reconciles once — a `compose up -d` that recreates only what moved.
+
+**Known and NOT fixed here:** req 7's `preview.first-connect` measures from
+compose completion to the first proxied request, so a preview warmed overnight
+reports hours in that phase however fast it booted. The metric needs
+warm-vs-claim attribution before the before/after comparison this design asks for
+can be made. The checklist item stays unchecked.
+
 ## Key files
 
-- `src/server/orchestrator/warm-pool-manager.ts` — where the pre-start is added.
-- `src/server/orchestrator/service-manager-setup.ts` — construction to extract;
-  `adoptExistingServiceManager` is the handoff.
+- `src/server/orchestrator/warm-preview.ts` — the pre-start itself: the recency
+  gate, the build, the registration, the start, and the failure cleanup.
+- `src/server/orchestrator/warm-pool-manager.ts` — where it is called from
+  (`preStartPreview`, last step of `ensureStandbyForWarmSession`).
+- `src/server/orchestrator/service-manager-setup.ts` — `buildServiceManager` is
+  the one construction site; `applyOverlayDepDirsForSession` its runner-free
+  overlay half; `adoptExistingServiceManager` is the handoff.
 - `src/server/orchestrator/idle-enforcer.ts` — tier 0.
 - `src/server/orchestrator/startup-tasks.ts` — warm-tier retirement.
 - `src/server/orchestrator/preview-timing.ts` — the measurement.

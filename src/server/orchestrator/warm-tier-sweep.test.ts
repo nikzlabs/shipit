@@ -46,6 +46,8 @@ function makeSweep(world: Partial<World> = {}) {
   const warmSessionForRepo = vi.fn(async () => undefined);
   const ensureStandbyForWarmSession = vi.fn(async (_opts: unknown) => undefined);
   const destroy = vi.fn(async () => undefined);
+  const stopPreview = vi.fn((_sessionId: string) => undefined);
+  const repairPreview = vi.fn(async (_opts: unknown) => undefined);
   const setWarmSessionId = vi.fn();
   let memory: DockerMemoryStats | null = null;
 
@@ -75,6 +77,8 @@ function makeSweep(world: Partial<World> = {}) {
     containerManager,
     warmSessionForRepo,
     ensureStandbyForWarmSession,
+    stopPreview,
+    repairPreview,
     getMemoryStats: () => memory,
   });
 
@@ -82,6 +86,8 @@ function makeSweep(world: Partial<World> = {}) {
     sweep,
     warmSessionForRepo,
     ensureStandbyForWarmSession,
+    stopPreview,
+    repairPreview,
     destroy,
     setWarmSessionId,
     setMemory: (m: DockerMemoryStats | null) => { memory = m; },
@@ -123,6 +129,85 @@ describe("warm tier sweep", () => {
     // The row and the clone are fine — only the container died.
     expect(world.warmSessionForRepo).not.toHaveBeenCalled();
     expect(world.setWarmSessionId).not.toHaveBeenCalled();
+  });
+
+  /**
+   * docs/288 — the repair must drop the pre-started stack's MANAGER, not only
+   * its containers. `destroy()` sweeps the compose siblings, but the manager
+   * stays in the registry — and `preStartWarmPreview` declines whenever it finds
+   * one there (a claim may have built it). So without this the rebuilt standby
+   * comes back with a manager that owns nothing and no preview at all: the
+   * repair would restore half the warm tier and report success.
+   *
+   * Ordering matters as much as the call: the manager must be out of the
+   * registry before the container it was built for is torn down underneath it.
+   */
+  it("drops the pre-started preview before rebuilding the standby", async () => {
+    world = makeSweep({ tracked: { status: "running" }, dockerRunning: false });
+
+    await world.sweep();
+
+    expect(world.stopPreview).toHaveBeenCalledWith(WARM_ID);
+    expect(world.stopPreview.mock.invocationCallOrder[0])
+      .toBeLessThan(world.destroy.mock.invocationCallOrder[0] ?? Infinity);
+  });
+
+  it("does not touch the preview of a healthy standby", async () => {
+    world = makeSweep({ tracked: { status: "running" }, dockerRunning: true });
+
+    await world.sweep();
+
+    expect(world.stopPreview).not.toHaveBeenCalled();
+  });
+
+  /**
+   * docs/288 req 10 — "is the standby container running?" stopped being the
+   * whole question once a warm session could also own a pre-started stack. A
+   * `compose up` that failed, or a preview tier 0 reclaimed under memory
+   * pressure, leaves a perfectly healthy worker with no preview — and every
+   * later claim then pays the full cold cost while still reporting a warm hit,
+   * which is the absorbing state this sweep exists to break, one level down.
+   *
+   * The design leans on this directly: tier 0 may drop warm previews first
+   * PRECISELY because they come back on their own. Nothing else brings them
+   * back.
+   */
+  it("re-runs the preview pre-start for a healthy standby", async () => {
+    world = makeSweep({ tracked: { status: "running" }, dockerRunning: true });
+
+    await world.sweep();
+
+    // Unconditional by design — the pre-start declines on its own when a
+    // manager is already registered, when the repo is outside the recency
+    // window, or when the project declares no stack.
+    expect(world.repairPreview).toHaveBeenCalledWith({
+      sessionId: WARM_ID,
+      workspaceDir: "/sessions/warm-1/workspace",
+      repoUrl: URL,
+    });
+    // The container is fine, so nothing is rebuilt.
+    expect(world.ensureStandbyForWarmSession).not.toHaveBeenCalled();
+    expect(world.destroy).not.toHaveBeenCalled();
+  });
+
+  it("does not repair the preview of a session a claim has just taken", async () => {
+    // The pointer is re-read after the Docker probe, like the rebuild path:
+    // once a claim owns the session, its own activation owns the stack.
+    world = makeSweep({ tracked: { status: "running" }, dockerRunning: true });
+    world.claim();
+
+    await world.sweep();
+
+    expect(world.repairPreview).not.toHaveBeenCalled();
+  });
+
+  it("does not repair a preview when Docker could not answer", async () => {
+    // `undefined` is not evidence of health any more than of death.
+    world = makeSweep({ tracked: { status: "running" }, dockerRunning: undefined });
+
+    await world.sweep();
+
+    expect(world.repairPreview).not.toHaveBeenCalled();
   });
 
   it("hands the rebuild a live ownership check, not a snapshot", async () => {

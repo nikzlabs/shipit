@@ -110,13 +110,25 @@ function createFakeDocker() {
       remove: async () => { containers.delete(id); },
     }),
 
-    listContainers: async () =>
-      [...containers.values()]
+    // Honours the `label` filter, which is not a nicety: the sweeps under test
+    // are told apart ONLY by which labels they ask for
+    // (`shipit-standby=true` for the agent standby, `shipit-parent-session` for
+    // its compose children). A fake that returned everything would let one
+    // sweep pass a test only the other could pass in production.
+    listContainers: async (opts?: { filters?: { label?: string[] } }) => {
+      const wanted = opts?.filters?.label ?? [];
+      return [...containers.values()]
+        .filter((c) => wanted.every((f) => {
+          const eq = f.indexOf("=");
+          if (eq === -1) return f in c.labels;
+          return c.labels[f.slice(0, eq)] === f.slice(eq + 1);
+        }))
         .map((c) => ({
           Id: c.id,
           Labels: c.labels,
           State: c.started ? "running" : "exited",
-        })),
+        }));
+    },
 
     getEvents: async () => eventEmitter,
   };
@@ -463,6 +475,19 @@ describe("standby container pre-warming", () => {
     const oldContainerId = containerManager.get(oldWarmId)!.id;
     expect(fakeDocker._containers.has(oldContainerId)).toBe(true);
 
+    // docs/288 — stand in for the warm session's pre-started compose service.
+    // Created straight on the daemon because that is all it is from boot's
+    // point of view: a running container labelled with its parent session,
+    // which no orchestrator-side record survives the restart to describe.
+    const oldPreviewId = "fake-preview-of-warm";
+    fakeDocker._containers.set(oldPreviewId, {
+      id: oldPreviewId,
+      started: true,
+      labels: { "shipit-parent-session": oldWarmId },
+      ip: "127.0.0.99",
+      hostConfig: {},
+    });
+
     // Restart: same Docker daemon and same DB, a fresh process — so a fresh
     // container manager with an empty tracking map, exactly like production.
     await app.close();
@@ -491,6 +516,15 @@ describe("standby container pre-warming", () => {
     // The old standby is gone from the daemon, not merely untracked.
     expect(fakeDocker._containers.has(oldContainerId)).toBe(false);
     expect(restartedManager.isStandby(oldWarmId)).toBe(false);
+    // docs/288 req 6 — and its PRE-STARTED PREVIEW with it. The standby reap
+    // filters on `shipit-standby`, which lives on the agent container alone;
+    // the compose siblings carry `shipit-parent-session`. Left behind, a warm
+    // preview outlives the deploy as a running container with no session,
+    // serving the old code from the old image — the exact thing standby
+    // retirement exists to prevent, arriving through the one door it does not
+    // watch. This app is built with an INJECTED container manager, which is the
+    // path that skips the boot branch's own compose sweep.
+    expect(fakeDocker._containers.has(oldPreviewId)).toBe(false);
     // And its session is retired, so nothing hands the stale clone to a user.
     expect(sessionManager.get(oldWarmId)).toBeUndefined();
 
