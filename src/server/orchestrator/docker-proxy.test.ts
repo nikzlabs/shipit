@@ -329,6 +329,8 @@ function makeRequest(
   path: string,
   body?: unknown,
   sourceIp?: string,
+  /** Headers set after the body's own, so a test can state its own content type. */
+  extraHeaders?: Record<string, string>,
 ): Promise<{ status: number; body: unknown }> {
   return new Promise((resolve, reject) => {
     const url = new URL(path, proxyUrl);
@@ -339,6 +341,7 @@ function makeRequest(
       headers["content-type"] = "application/json";
       headers["content-length"] = String(Buffer.byteLength(bodyStr));
     }
+    Object.assign(headers, extraHeaders);
 
     const req = http.request(
       {
@@ -1207,6 +1210,70 @@ describe("Docker API proxy", () => {
 
     it("allows POST /build", async () => {
       const res = await makeRequest(proxyUrl, "POST", "/v1.41/build");
+      expect(res.status).toBe(200);
+    });
+
+    it("allows a harmless POST /build networkmode", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/build?t=app&networkmode=none");
+      expect(res.status).toBe(200);
+    });
+
+    /**
+     * The build endpoint takes its network mode as a QUERY parameter, so the
+     * container-create sanitizer never sees it. Same daemon, same host
+     * namespace — one rule.
+     */
+    it("blocks POST /build?networkmode=host", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/build?t=app&networkmode=host");
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("NetworkMode host/container is not allowed");
+    });
+
+    it("blocks POST /build sharing another container's namespace", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/build?networkmode=container%3Aorchestrator");
+      expect(res.status).toBe(403);
+    });
+
+    /**
+     * `FormValue` reads the BODY first for a form content type, so a query
+     * string saying `none` and a form body saying `host` would leave the
+     * daemon acting on `host`. The content type that makes that possible is
+     * refused, whatever the query says.
+     */
+    it("blocks a form-encoded POST /build, which could override the query", async () => {
+      const res = await makeRequest(
+        proxyUrl, "POST", "/v1.41/build?remote=http://example.invalid/ctx&networkmode=none",
+        undefined, undefined, { "content-type": "application/x-www-form-urlencoded" },
+      );
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("is not allowed for a build");
+
+      const multipart = await makeRequest(
+        proxyUrl, "POST", "/v1.41/build", undefined, undefined,
+        { "content-type": "multipart/form-data; boundary=xyz" },
+      );
+      expect(multipart.status).toBe(403);
+    });
+
+    it("allows a build sending its context as a tar", async () => {
+      const res = await makeRequest(
+        proxyUrl, "POST", "/v1.41/build?t=app", undefined, undefined,
+        { "content-type": "application/x-tar" },
+      );
+      expect(res.status).toBe(200);
+    });
+
+    it("blocks POST /build on a network the session does not own", async () => {
+      daemon.networks.set("foreign-net", { labels: { [PARENT_SESSION_LABEL]: "other-session" } });
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/build?networkmode=foreign-net");
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("does not belong to this session");
+    });
+
+    it("allows POST /build on a network the session owns", async () => {
+      const created = await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", { Name: "owned-net" });
+      const netId = (created.body as any).Id as string;
+      const res = await makeRequest(proxyUrl, "POST", `/v1.41/build?networkmode=${netId}`);
       expect(res.status).toBe(200);
     });
 

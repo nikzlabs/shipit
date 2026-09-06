@@ -951,6 +951,25 @@ function meansNotExternal(value: unknown): boolean {
 }
 
 /**
+ * Is a present boolean-ish value a NO?
+ *
+ * Same enumerate-the-false-spellings reasoning as {@link meansNotExternal}, for
+ * a key where "not false" is the refusable state — so the enumeration has to be
+ * COMPLETE or a legitimate `no` is refused as a privilege request. It is taken
+ * from compose-go's `toBoolean` (`loader/interpolate.go`), which is the one
+ * function a quoted boolean passes through: `true`/`false` exactly, plus
+ * `y`/`yes`/`on` → true and `n`/`no`/`off` → false with a YAML-1.2
+ * compatibility warning, and an error on anything else. So `y`/`yes`/`on` are
+ * deliberately absent here (they mean YES), and an unrecognised spelling stays
+ * "not false" — Compose would refuse the file for it anyway (review finding).
+ */
+function meansFalse(value: unknown): boolean {
+  if (value === false) return true;
+  return typeof value === "string"
+    && ["false", "n", "no", "off"].includes(value.trim().toLowerCase());
+}
+
+/**
  * The top-level `volumes:` block (planning#386).
  *
  * The `volumes:` rule inside {@link validateServiceSecurity} refuses a host path
@@ -1179,6 +1198,125 @@ function validateServiceEnvFile(name: string, envFile: unknown): void {
 }
 
 /**
+ * A build step's own namespace and privilege, under containment.
+ *
+ * `validateServiceSecurity` reads a dozen keys of a service and, until this
+ * rule, read nothing inside `build:` but the `secrets:` names (covered
+ * transitively by {@link validateTopLevelFileRefs}). So a contained session's
+ * own compose file could say:
+ *
+ *     services:
+ *       app:
+ *         build:
+ *           context: .
+ *           network: host
+ *
+ * and the build's default network — what every `RUN` step gets unless the
+ * Dockerfile narrows it per instruction with `RUN --network=none` — would be
+ * the HOST's namespace: its loopback services, its network position, its
+ * link-local addresses. Traced end to end, at source:
+ *
+ *  - Compose passes `build.network` straight through on BOTH of its build
+ *    paths: `NetworkMode: build.Network` into the bake target
+ *    (`pkg/compose/build_bake.go`, bake being the default since `COMPOSE_BAKE`
+ *    defaults to `"true"` there) and into `build.Options` on its internal
+ *    non-bake path (`pkg/compose/build.go`).
+ *  - buildx turns it into the solve request AND grants itself the entitlement:
+ *    `case "host": FrontendAttrs["force-network-mode"] = …;
+ *    AllowedEntitlements = append(…, entitlements.EntitlementNetworkHost…)`
+ *    (`build/opt.go`). Compose's own `--allow` handling covers only
+ *    `security.insecure` and `fs.read`, and bake's entitlement prompt reads
+ *    `bo.Allow` — never `bo.NetworkMode` (`bake/entitlements.go`) — so nothing
+ *    on the client asks anybody about this.
+ *  - moby's built-in builder accepts it by default: `getEntitlements`
+ *    (`builder/builder-next/controller.go`) appends `network.host` when
+ *    `conf.Entitlements.NetworkHost == nil`, i.e. absent daemon configuration.
+ *    ShipIt does not configure otherwise.
+ *
+ * REFUSED, not rewritten, like every neighbouring rule: the message names the
+ * key so the user can delete it.
+ *
+ * **Scope.** This refuses a declaration; it does not contain builds. Build
+ * steps remain outside docs/263-compose-service-egress by that feature's own
+ * *Scope boundary* — a build step has unrestricted egress here as it always
+ * did. What it may no longer do is ask for the widest namespace available.
+ *
+ * Three keys, and the reason each is in this rule rather than the next one:
+ *
+ *  - `network:` — the hole above. Only the builder default and `none` survive:
+ *    those are the two states ShipIt can describe. Every other value names a
+ *    namespace ShipIt did not create (`host` is the host's; a named network is
+ *    resolved by the daemon outside ShipIt's model), and buildx itself rejects
+ *    everything but `host`/`none`/`default`/`""` — so in practice this refusal
+ *    removes `host` and turns a named network's opaque buildx error into a
+ *    ShipIt one.
+ *  - `privileged:` and `entitlements:` — the same statement in the other two
+ *    spellings. Compose maps `build.privileged` to the `security.insecure`
+ *    entitlement, and passes `build.entitlements` through verbatim
+ *    (`pkg/compose/build_bake.go`); an entitlement IS a request to widen the
+ *    build sandbox, so the whole key goes rather than a curated subset. A
+ *    default daemon already refuses `security.insecure` (`getEntitlements`
+ *    again — that one is opt-IN), but that is a daemon-config fact, and the
+ *    `network.host` half of the same function is exactly the argument for not
+ *    resting on one.
+ *
+ * **Deliberately not covered.** The rest of `build:` that touches the host is a
+ * FILESYSTEM surface, not a namespace: `context`/`additional_contexts` (an
+ * absolute path is tarred up client-side), `ssh:` (a key file read
+ * client-side), `cache_from` (read) and `cache_to` (a `type=local` WRITE —
+ * review finding). Those belong with the
+ * `validateReadablePath` family (planning#386) and its unfinished half
+ * (planning#373), which is where the client-side-vs-daemon-side analysis lives;
+ * closing them by halves here would put the same surface in two places.
+ * `extra_hosts:` was examined and is NOT refused — it maps a name to an address
+ * a build step can already dial directly, so it widens nothing.
+ */
+function validateBuildSecurity(name: string, build: unknown): void {
+  if (!build || typeof build !== "object" || Array.isArray(build)) return;
+  const cfg = build as Record<string, unknown>;
+
+  const network = cfg.network;
+  if (network !== undefined && network !== null) {
+    // A non-scalar `network:` is not a value Compose accepts and not one this
+    // rule can classify, so it normalizes to something the allow-list refuses
+    // rather than to `String(network)`.
+    const value = typeof network === "string" || typeof network === "number"
+      ? String(network).trim().toLowerCase()
+      : "unsupported";
+    // `${…}` never reaches this comparison as anything but itself, so an
+    // interpolated value is refused with the rest — the same conclusion the
+    // `interpolationSensitive` gate reaches for the runtime keys, arrived at by
+    // the allow-list instead of by a second check.
+    if (value !== "" && value !== "none" && value !== "default") {
+      throw new ComposeValidationError(
+        `Service \`${name}\`: \`build.network: ${showValue(network)}\` is not allowed for contained services. `
+        + "A build step is not covered by ShipIt's service-network policy, so it may only use the "
+        + "builder default or `none`.",
+      );
+    }
+  }
+
+  // Truthiness, not `=== true`, and the false spellings are enumerated instead:
+  // compose-go coerces a quoted boolean (see {@link meansNotExternal}), so
+  // `privileged: "true"` is a `true` this rule must not read as a string it has
+  // never heard of. Same reasoning the Docker proxy's sanitizer states for
+  // `HostConfig.Privileged`.
+  if (cfg.privileged !== undefined && !meansFalse(cfg.privileged)) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`build.privileged\` is not allowed for contained services. `
+      + "It asks BuildKit for the `security.insecure` entitlement.",
+    );
+  }
+
+  if (Array.isArray(cfg.entitlements) ? cfg.entitlements.length > 0 : cfg.entitlements !== undefined) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`build.entitlements\` is not allowed for contained services. `
+      + "An entitlement widens the sandbox a build step runs in.",
+    );
+  }
+}
+
+/**
  * Validate security constraints for a compose service definition.
  */
 function isTrustedOpsProxyService(
@@ -1299,6 +1437,7 @@ export function validateServiceSecurity(
       `Service \`${name}\`: \`volumes_from\` is not allowed for contained services.`,
     );
   }
+  if (containEgress) validateBuildSecurity(name, svc.build);
 
   const labels = svc.labels;
   const labelKeys = Array.isArray(labels)

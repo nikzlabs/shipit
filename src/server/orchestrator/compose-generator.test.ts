@@ -493,6 +493,155 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("include:");
   });
 
+  /**
+   * A build step is not covered by docs/263's service-network policy, and
+   * `build.network: host` puts every `RUN` in the daemon's own namespace — the
+   * host's — with moby granting the `network.host` entitlement by default. The
+   * declaration is refused rather than rewritten, like its neighbours.
+   */
+  it("rejects build.network: host in contained services", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  app:
+    user: "1001"
+    build:
+      context: .
+      network: host
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
+      .toThrow("`build.network: host` is not allowed for contained services");
+    // Open sessions are unchanged: containment is what this rule is for.
+    expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
+  });
+
+  it("rejects a build network ShipIt cannot describe, and allows the two it can", () => {
+    const dir = setup();
+    const named = writeCompose(dir, `
+services:
+  app:
+    user: "1001"
+    build:
+      context: .
+      network: backend
+`);
+    expect(() => parseComposeFile(named, { dockerSocket: false, containEgress: true }))
+      .toThrow("`build.network: backend` is not allowed");
+
+    // An interpolated value is refused as itself — it is not one of the two
+    // states this rule can reason about, whatever it resolves to later.
+    const interpolated = writeCompose(dir, `
+services:
+  app:
+    user: "1001"
+    build:
+      context: .
+      network: \${BUILD_NET}
+`);
+    expect(() => parseComposeFile(interpolated, { dockerSocket: false, containEgress: true }))
+      .toThrow("build.network");
+
+    for (const value of ["none", "default"]) {
+      const ok = writeCompose(dir, `
+services:
+  app:
+    user: "1001"
+    build:
+      context: .
+      network: ${value}
+`);
+      expect(() => parseComposeFile(ok, { dockerSocket: false, containEgress: true })).not.toThrow();
+    }
+
+    // An ordinary build, and the short `build: <context>` form, stay allowed.
+    const plain = writeCompose(dir, `
+services:
+  app:
+    user: "1001"
+    build: ./app
+`);
+    expect(() => parseComposeFile(plain, { dockerSocket: false, containEgress: true })).not.toThrow();
+  });
+
+  it("rejects build.privileged and build.entitlements in contained services", () => {
+    const dir = setup();
+    const privileged = writeCompose(dir, `
+services:
+  app:
+    user: "1001"
+    build:
+      context: .
+      privileged: true
+`);
+    expect(() => parseComposeFile(privileged, { dockerSocket: false, containEgress: true }))
+      .toThrow("build.privileged");
+    expect(() => parseComposeFile(privileged, { dockerSocket: false })).not.toThrow();
+
+    // Compose coerces a quoted boolean, so the string spelling is the same
+    // request and must not read as an unknown value.
+    const quoted = writeCompose(dir, `
+services:
+  app:
+    user: "1001"
+    build:
+      context: .
+      privileged: "true"
+`);
+    expect(() => parseComposeFile(quoted, { dockerSocket: false, containEgress: true }))
+      .toThrow("build.privileged");
+
+    const entitlements = writeCompose(dir, `
+services:
+  app:
+    user: "1001"
+    build:
+      context: .
+      entitlements:
+        - security.insecure
+`);
+    expect(() => parseComposeFile(entitlements, { dockerSocket: false, containEgress: true }))
+      .toThrow("build.entitlements");
+
+    // `privileged: false` and an empty list are not requests for anything.
+    const harmless = writeCompose(dir, `
+services:
+  app:
+    user: "1001"
+    build:
+      context: .
+      privileged: false
+      entitlements: []
+`);
+    expect(() => parseComposeFile(harmless, { dockerSocket: false, containEgress: true })).not.toThrow();
+  });
+
+  /**
+   * The false half of compose-go's `toBoolean` — `n`/`no`/`off` alongside
+   * `false` — must not read as a privilege request, or the refusal fires on a
+   * file that asked for nothing (review finding). Its true half must still be
+   * refused, and an unrecognised spelling stays refused: Compose rejects the
+   * file for it anyway.
+   */
+  it("reads every boolean spelling Compose reads for build.privileged", () => {
+    const dir = setup();
+    const write = (value: string) => writeCompose(dir, `
+services:
+  app:
+    user: "1001"
+    build:
+      context: .
+      privileged: ${value}
+`);
+    for (const no of ['"no"', '"off"', '"n"', '"FALSE"', "false"]) {
+      expect(() => parseComposeFile(write(no), { dockerSocket: false, containEgress: true }),
+        `expected \`privileged: ${no}\` to be read as false`).not.toThrow();
+    }
+    for (const yes of ['"yes"', '"on"', '"y"', '"TRUE"', "true", '"perhaps"']) {
+      expect(() => parseComposeFile(write(yes), { dockerSocket: false, containEgress: true }),
+        `expected \`privileged: ${yes}\` to be refused`).toThrow("build.privileged");
+    }
+  });
+
   it("rejects volumes_from in contained services", () => {
     const dir = setup();
     const p = writeCompose(dir, `services:\n  web:\n    image: attacker/example\n    user: "1001"\n    volumes_from: [docker-socket-proxy]\n`);
