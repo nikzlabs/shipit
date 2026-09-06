@@ -408,6 +408,41 @@ export class GrokAdapter
     const args = [
       "--output-format", "streaming-messages-json",
       "--no-auto-update",
+      // Grok gates a checkout's own project-local surfaces on FOLDER TRUST as a
+      // GROUP, and an untrusted folder skips them silently: the repo's
+      // `.grok/hooks`, its repo-local MCP/LSP servers, and its project
+      // permission rules from `.grok/config.toml` AND `.claude/settings.json`
+      // (the Claude-compat layer). Skills are NOT gated, so ShipIt's plugin
+      // skills always loaded — which is why this never showed up as a symptom.
+      // Same class of gap as Codex's project trust
+      // (`session/agents/codex/project-trust.ts`), found by probing the pinned
+      // CLI after that one.
+      //
+      // Measured against the pinned grok 1.0.12 in a session container:
+      // `grok inspect` (its own "what did I discover here" command) reports
+      // `Project trusted: no` in `/workspace`; `--trust` on a headless run
+      // flips it to yes and records `[folders."/workspace"] trusted = true` in
+      // `$GROK_HOME/trusted_folders.toml`; and in a checkout carrying a
+      // `.claude/settings.json`, `inspect` goes from `Permissions → Source:
+      // (none), 0 loaded` to naming that file with its rules loaded. Passed as
+      // a flag rather than written as a file so the CLI owns that format; the
+      // per-turn spawn home is thrown away each turn, so re-granting on every
+      // spawn is both necessary and self-healing.
+      //
+      // **The blast radius is wider than "the log goes quiet", deliberately.**
+      // `--always-approve` below does not make project policy inert: the
+      // repo's own DENY rules and its hooks still apply, and under
+      // `--permission-mode auto` (ShipIt's `guarded`) its allow rules change
+      // what needs classifying. Review also reports that upstream gates
+      // `.claude/settings*.json` ENVIRONMENT injection on the same flag, which
+      // would reach spawned commands — read from upstream source, not
+      // reproduced here, so treat it as one more reason the grant is a real
+      // decision rather than as a measured fact. We take it because Codex
+      // offers no partial trust either, because the session container IS the
+      // sandbox (CLAUDE.md §5), and because honoring the checkout's own
+      // configuration is the point: ShipIt already trusts the same workspace
+      // for Claude and Codex.
+      "--trust",
       "--cwd", params.cwd,
     ];
     args.push(params.sessionId ? "-r" : "-s", this.turnSessionId);

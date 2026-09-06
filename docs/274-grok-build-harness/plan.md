@@ -270,11 +270,33 @@ session-title side-call rides every run (OpenCode-class cost noise); on
 
 ## Adapter design (`session/agents/grok/`, Claude-shaped)
 
-- Spawn per turn: `grok -p <prompt> --output-format streaming-messages-json
-  --always-approve --no-auto-update -m <modelId> [-s <newUuid> | -r
-  <resumeId>] --cwd <workspace>` (prompt as argv, spawn array, no shell).
-  ShipIt **pre-assigns** the session UUID via `-s` on first turn, resumes
-  with `-r` after.
+- Spawn per turn: `grok --prompt-file <file> --output-format
+  streaming-messages-json --always-approve --no-auto-update --trust -m
+  <modelId> [-s <newUuid> | -r <resumeId>] --cwd <workspace>` (spawn array, no
+  shell). The prompt travels as a FILE, never on argv — a long one blows the
+  128 KiB argv ceiling. ShipIt **pre-assigns** the session UUID via `-s` on
+  first turn, resumes with `-r` after.
+- **Folder trust (`--trust`)**: Grok gates a checkout's own project-local
+  surfaces on per-folder trust, and an untrusted folder skips them *silently* —
+  the repo's `.grok/hooks`, its repo-local MCP/LSP servers, and its project
+  permission rules from `.grok/config.toml` and the `.claude/settings.json`
+  compat layer. Skills are NOT gated, which is why ShipIt's plugin skills always
+  worked and the gap never showed as a symptom. Measured on the pinned 1.0.12:
+  `grok inspect` (its own "what did I discover here" command) reports
+  `Project trusted: no` in an untrusted workspace; `--trust` on a headless run
+  flips it to yes and records `[folders."<cwd>"] trusted = true` in
+  `$GROK_HOME/trusted_folders.toml`; and in a checkout carrying a
+  `.claude/settings.json`, `inspect` goes from `Permissions → Source: (none), 0
+  loaded` to naming that file with its rules loaded. Passed as a flag, not
+  written as a file, so the CLI owns the format; the per-turn spawn home is
+  discarded each turn, so re-granting on every spawn is both necessary and
+  self-healing. Same decision ShipIt takes for Claude
+  (`hasTrustDialogAccepted`) and Codex (`session/agents/codex/project-trust.ts`).
+  **The grant is wider than a quieter log**: `--always-approve` does not make
+  project policy inert (the repo's deny rules and hooks still apply, and under
+  `guarded` its allow rules change what gets classified), and upstream also
+  gates `.claude/settings*.json` environment injection on the same flag —
+  reported in review from upstream source, not reproduced against 1.0.12.
 - Env: `resolveAgentHome()` (`grokHome()` helper on `GROK_HOME` —
   relocation verified) → `scrubEnvAuthForScopedHome` → `applyServiceRouting`
   (order per `claude/process.ts`), plus `GROK_DISABLE_AUTOUPDATER=1`,

@@ -130,6 +130,28 @@ describe("GrokAdapter — spawn shape", () => {
     h.child.close(0);
   });
 
+  it("trusts the workspace folder, so the repo's own project config is not skipped", () => {
+    // Grok's folder trust gates the checkout's `.grok/hooks`, its repo-local
+    // MCP/LSP servers, and its project permission rules (including the
+    // `.claude/settings.json` compat layer) — all skipped SILENTLY when the
+    // folder is untrusted. Verified against the pinned CLI: `grok inspect`
+    // reports `Project trusted: no` without this, and `--trust` records
+    // `[folders."<cwd>"] trusted = true` in `$GROK_HOME/trusted_folders.toml`.
+    // Every spawn, not just the default one: the per-turn spawn home is thrown
+    // away each turn, and a resumed or restricted turn reads the same repo.
+    for (const params of [
+      {},
+      { sessionId: "01a01473-26aa-7a21-ac7c-2ca7c9cb4944" },
+      { permissionMode: "plan" as const },
+      { permissionMode: "guarded" as const },
+    ]) {
+      const h = makeHarness(params);
+      homes.push(h.home);
+      expect(h.args, JSON.stringify(params)).toContain("--trust");
+      h.child.close(0);
+    }
+  });
+
   it("passes the prompt as a FILE, never on argv", () => {
     const h = makeHarness({ prompt: "x".repeat(300_000) });
     homes.push(h.home);
