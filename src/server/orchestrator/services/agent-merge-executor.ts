@@ -549,13 +549,31 @@ function isIdle(
   const runner = deps.runnerRegistry?.get(sessionId);
   // No runner is genuinely idle: a session with no container is not mid-turn.
   if (!runner) return true;
-  if (runner.running || runner.agentBusy || runner.systemTurnInProgress) return false;
-  // A queued message blocks STARTING a merge, because draining it starts a turn.
-  // Under the hold it must not: a message arriving there was queued BY the hold,
-  // and treating it as busy would abandon the merge halfway — leaving the row
-  // unsettled and the very message unstarted, since the release that would have
-  // started it comes after the settlement.
-  if (opts.underHold !== true && runner.queueLength > 0) return false;
-  // The hold this pass just took is its own, not somebody else's.
-  return opts.underHold === true || !runner.mergeHold;
+  // A turn, in either shape. Asked in BOTH modes: it is the whole question the
+  // under-hold re-check exists to answer.
+  if (runner.running || runner.systemTurnInProgress) return false;
+
+  // Under the hold, that is the whole test, and the rest would be asking about
+  // this pass's own effects:
+  //
+  //   - `agentBusy` INCLUDES the post-turn lease, and the lease is ours. Reading
+  //     it here says "busy" for every merge on a session that has a runner —
+  //     which deferred every merge for ever, silently, while the fake-based
+  //     tests passed.
+  //   - a queued message arrived BECAUSE of the hold; treating it as busy would
+  //     abandon the merge halfway, leaving the row unsettled and that very
+  //     message unstarted, since the release comes after the settlement.
+  //   - `mergeHold` is ours too.
+  //
+  // Nothing is lost: the full check below ran before the hold was taken, so no
+  // post-turn sequence or background work was in flight then, and a turn cannot
+  // have started since without setting `running` — which admission forbids under
+  // the hold. A turn is the only thing that can appear in the gap, and it is
+  // exactly what the two lines above catch.
+  if (opts.underHold === true) return true;
+
+  if (runner.agentBusy) return false;
+  // Draining a queued message starts a turn, so one blocks STARTING a merge.
+  if (runner.queueLength > 0) return false;
+  return !runner.mergeHold;
 }

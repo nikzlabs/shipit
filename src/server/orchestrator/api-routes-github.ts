@@ -1495,12 +1495,25 @@ export async function registerGitHubRoutes(
           // Dropped ONLY when a synchronous push replaced it; otherwise the
           // commit is stranded with no retry.
           if (verdict.pushed) deps.cancelAutoPush?.(request.params.id);
-          reply.code(409).send({
-            error: verdict.pushed
-              ? `${verdict.message} (Merge again once the checks on the new head report.)`
-              : verdict.message,
-          });
-          return;
+          // docs/288 req 1 — a SUCCESSFUL push is the exact situation `--auto`
+          // exists for: the branch is now on GitHub and the only thing standing
+          // in the way is the checks that push just restarted. Refusing here is
+          // right for the plain command, and would make `--auto` unreachable in
+          // its documented workflow — the agent edits, calls it, and the flush
+          // pushes, so this branch is the ordinary path rather than an edge.
+          //
+          // `pushed: false` (diverged, or the push itself failed) still refuses
+          // for BOTH: arming a commit GitHub does not have would either merge
+          // something else or never resolve.
+          const armPastPush = request.body?.auto === true && verdict.pushed === true;
+          if (!armPastPush) {
+            reply.code(409).send({
+              error: verdict.pushed
+                ? `${verdict.message} (Merge again once the checks on the new head report.)`
+                : verdict.message,
+            });
+            return;
+          }
         }
       }
         const { gitDir, remoteUrl } = resolvePrTarget(session, dir, request.body ?? {});

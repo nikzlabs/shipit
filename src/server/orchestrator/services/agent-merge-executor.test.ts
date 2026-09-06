@@ -11,7 +11,7 @@ import { reconcileAgentMergeClaims, settleAgentMerge } from "./agent-merge-settl
 import type { MergeObservation } from "./merge-gate.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
-import type { SessionRunnerRegistry } from "../session-runner.js";
+import { SessionRunner, type SessionRunnerRegistry } from "../session-runner.js";
 import type { MergeAttempt } from "../github-auth-prs.js";
 import type { TerminalPrFacts } from "../github-auth-prs.js";
 
@@ -788,6 +788,56 @@ describe("runOneRequest — a merge and a turn are mutually exclusive (req 6)", 
     );
     expect(out).toMatchObject({ result: "deferred" });
     expect(claims.get(SESSION)).not.toBeNull();
+  });
+
+  it("merges on a REAL runner, not only on the fake", async () => {
+    // The guard that would have caught the worst bug this feature shipped past
+    // three test suites: the executor takes the post-turn lease, and
+    // `SessionRunner.agentBusy` INCLUDES that lease. Taking it before the idle
+    // re-check made the executor read its own hold as "the session is busy" and
+    // defer for ever — on every session that has a runner at all, which is to
+    // say in production. Every fake-based test above passed throughout.
+    const real = new SessionRunner({
+      sessionId: SESSION, sessionDir: "/tmp/s1", defaultAgentId: "claude" as never,
+    });
+    try {
+      const gh = github();
+      const out = await runOneRequest(
+        deps({ githubAuthManager: gh, runnerRegistry: registry(real) }),
+        armed(),
+      );
+
+      expect(out).toEqual({ result: "merged" });
+      expect(gh.merges).toHaveLength(1);
+      // And the runner is left usable: no hold, no leaked lease.
+      expect(real.mergeHold).toBe(false);
+      expect(real.postTurnWorkInFlight).toBe(false);
+      expect(real.agentBusy).toBe(false);
+    } finally {
+      real.dispose({ force: true });
+    }
+  });
+
+  it("still refuses on a REAL runner that is genuinely busy", async () => {
+    // The control for the test above: if the idle check had simply been dropped
+    // to make the merge proceed, this would merge over a running turn.
+    const real = new SessionRunner({
+      sessionId: SESSION, sessionDir: "/tmp/s1", defaultAgentId: "claude" as never,
+    });
+    try {
+      real.running = true;
+      const gh = github();
+      const out = await runOneRequest(
+        deps({ githubAuthManager: gh, runnerRegistry: registry(real) }),
+        armed(),
+      );
+
+      expect(out).toMatchObject({ result: "waiting" });
+      expect(gh.merges).toEqual([]);
+    } finally {
+      real.running = false;
+      real.dispose({ force: true });
+    }
   });
 
   it("treats a session with no runner as idle", async () => {
