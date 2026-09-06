@@ -161,6 +161,14 @@ cleanup.
 onboarding sidecar). The `~/.codex/config.toml` is opt-in and we do not
 need to seed it.
 
+> **Superseded.** ShipIt now writes `~/.codex/config.toml` on two counts:
+> the ShipIt-managed `[mcp_servers.*]` block (`CodexAdapter.writeMcpConfig`,
+> docs/125) and a `[projects."<workspace>"] trust_level = "trusted"` entry
+> (`session/agents/codex/project-trust.ts`). Codex *does* have a trust sidecar
+> after all — it just lives in `config.toml` rather than a separate file, and
+> without the entry the app-server logs an ERROR on `initialize` and drops the
+> repo's own `.codex/` config, hooks and exec policies.
+
 ### 2. New file: `src/server/orchestrator/codex-auth.ts`
 
 A `CodexAuthManager` that mirrors `AuthManager` (Claude). Different shape

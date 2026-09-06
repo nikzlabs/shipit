@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { CodexAdapter } from "./adapter.js";
@@ -74,6 +74,22 @@ class FakeChildProcess extends EventEmitter {
 let fakeProc: FakeChildProcess;
 let lastSpawnEnv: NodeJS.ProcessEnv | undefined;
 let lastSpawnArgs: string[] | undefined;
+/**
+ * `$CODEX_HOME/config.toml` as it stood AT SPAWN TIME. Everything the adapter
+ * writes there has to be in place before the app-server reads it, and a check
+ * made after `run()` returns cannot tell "written before the spawn" from
+ * "written after" — the app-server would already have missed it.
+ */
+let configAtSpawn: string | undefined;
+
+function readConfigToml(codexHome: string | undefined): string | undefined {
+  if (!codexHome) return undefined;
+  try {
+    return readFileSync(path.join(codexHome, "config.toml"), "utf-8");
+  } catch {
+    return undefined;
+  }
+}
 
 vi.mock("node:child_process", () => ({
   execFile: (_cmd: string, _args: string[], cb: (error: Error | null, stdout: string, stderr: string) => void) => {
@@ -83,6 +99,7 @@ vi.mock("node:child_process", () => ({
     fakeProc = new FakeChildProcess();
     lastSpawnEnv = options.env;
     lastSpawnArgs = args;
+    configAtSpawn = readConfigToml(options.env?.CODEX_HOME);
     return fakeProc;
   },
   execFileSync: () => {
@@ -2272,5 +2289,32 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
 
     const platformLog = logs.find((l) => l.text.includes("OPENAI_API_KEY"));
     expect(platformLog).toBeDefined();
+  });
+
+  // Codex disables a project's own `.codex/` config, hooks and exec policies —
+  // and logs an ERROR on `initialize` — until the directory is trusted in
+  // `$CODEX_HOME/config.toml`, and every ShipIt workspace has a `.codex/`
+  // (plugin skills create one per harness). The entry has to exist BEFORE the
+  // app-server starts, which is why the adapter writes it on the spawn path.
+  // Shape and idempotency are covered in project-trust.test.ts; this guards the
+  // wiring, so deleting the call fails here.
+  it("trusts the spawn cwd in the config root the child will read", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "codex-spawn-home-"));
+    try {
+      process.env.OPENAI_API_KEY = "sk-platform-billing";
+      process.env.CODEX_HOME = home;
+
+      const adapter = new CodexAdapter(() => false);
+      adapter.on("event", () => { /* drain */ });
+      adapter.run({ prompt: "Hello", cwd: "/workspace" });
+
+      await vi.waitFor(() => expect(lastSpawnEnv).toBeDefined());
+      expect(lastSpawnEnv?.CODEX_HOME).toBe(home);
+      // Read as of the spawn call, so writing it afterwards cannot pass: the
+      // app-server reads the config on startup and would have missed it.
+      expect(configAtSpawn).toContain('[projects."/workspace"]\ntrust_level = "trusted"');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

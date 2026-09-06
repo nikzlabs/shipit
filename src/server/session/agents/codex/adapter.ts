@@ -47,6 +47,7 @@ import type { AgentHomeResolver } from "../../../shared/agent-home.js";
 import { codexHome, resolveAgentHome } from "../../../shared/agent-home.js";
 import { CodexRateLimits } from "./codex-rate-limits.js";
 import { CodexEventHandler } from "./codex-event-handler.js";
+import { ensureCodexProjectTrusted } from "./project-trust.js";
 
 // Re-exported for unit tests and external callers that historically imported
 // these pure helpers from the adapter module (they now live in the normalizer).
@@ -384,6 +385,15 @@ export class CodexAdapter
       ...providerArgs,
       "app-server",
     ];
+
+    // Trust the workspace before the app-server reads it. Every ShipIt
+    // workspace has a `.codex/` (plugin-skills creates one per harness), and an
+    // untrusted project makes `initialize` log an ERROR and drop the repo's own
+    // project-local config, hooks and exec policies. Written to the file rather
+    // than passed as a `-c` override because only the file entry takes — see
+    // `project-trust.ts` for the measurement. Idempotent, so this is a read on
+    // every spawn after the first.
+    ensureCodexProjectTrusted(env.CODEX_HOME, cwd);
 
     this.emit("log", "codex", `spawning: codex ${args.join(" ")} | cwd: ${cwd}`);
 
