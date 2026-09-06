@@ -406,7 +406,7 @@ describe("PATCH /api/repos/:url (agent-merge grant, docs/287)", () => {
     // no explanation at all.
     const emitted = broadcastsTo("s1");
     expect(emitted.some((m) => m.type === "system_notice"
-      && String((m as { message?: string }).message ?? "").includes("agent merging was turned off")))
+      && ((m as { message?: string }).message ?? "").includes("agent merging was turned off")))
       .toBe(true);
   });
 

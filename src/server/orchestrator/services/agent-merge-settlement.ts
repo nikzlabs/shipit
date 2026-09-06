@@ -142,7 +142,7 @@ export async function settleAgentMerge(
     // is in flight.
     const now = deps.claims.get(claim.sessionId);
     if (
-      !now || now.expectedSha !== claim.expectedSha || now.prNumber !== claim.prNumber
+      now?.expectedSha !== claim.expectedSha || now.prNumber !== claim.prNumber
       || now.state !== live.state || deps.claims.isMergeInFlight(claim.sessionId)
     ) {
       return { result: "deferred", reason: "the claim changed while GitHub was answering" };

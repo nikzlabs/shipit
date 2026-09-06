@@ -200,6 +200,21 @@ that check finds the pull request unmerged, the row disappearing is the last
 chance to say so — a request's agent never got an answer at the time, unlike a
 direct merge, which got one as the command's reply.
 
+**`--auto` arms past its own push.** The route flushes the turn's commit and
+pushes before it reads anything, so `guardMergeSync` reporting "just pushed" is
+the *ordinary* path for this command rather than an edge — the agent edits, calls
+`--auto`, and the push is what restarted CI. Refusing there is right for the
+plain command and made `--auto` unreachable in the workflow its own documentation
+describes. A hold with `pushed: false` (a diverged branch, or a push that failed)
+still refuses for both: arming a commit GitHub does not have could never merge.
+
+**A session whose startup probe failed is not idle.** Adoption gives up on a
+container it cannot reach and creates no runner, but that container is still
+running and may still hold the turn that was live at shutdown — so "no runner"
+answers "idle" for exactly the session most likely to be mid-push.
+`unprobedAfterRestart` names them until a runner exists, which is the moment the
+ordinary checks can answer again.
+
 ### Where the executor runs
 
 **Its own small loop in the orchestrator process** (`services/agent-merge-executor.ts`),
@@ -250,7 +265,20 @@ they already consult:
 post-turn lease** (`beginPostTurnWork`, CLAUDE.md invariant 5). Without it the
 idle enforcer — which reads `agentBusy` — can reclaim the session mid-merge, and
 disposal CLEARS the queue: the message waiting behind the hold is discarded, and
-the release that was going to start it has nothing left to start.
+the release that was going to start it has nothing left to start. A runner
+created *during* the merge is seeded with both halves, not just the flag.
+
+**The lease is taken AFTER the idle check, and that ordering is the feature.**
+`agentBusy` *includes* the post-turn lease, so taking it first makes the very
+next check read the session as busy — and the merge defers, for ever, on every
+session that has a runner at all. It shipped that way for one round and no test
+caught it, because the fake runner's `agentBusy` was a hard-coded `false`.
+
+**Under the hold, `isIdle` asks one question: did a turn start?** Everything else
+it could ask about — the lease, a queued message, the hold — is this pass's own
+effect. Nothing is lost: the full busy check ran *before* the hold was taken, and
+a turn cannot appear afterwards without setting `running`, which admission
+forbids under the hold.
 
 **A runner is not always there to hold.** A session with no container has no
 runner at all, and the user opening it *during* the merge creates one — with
@@ -283,7 +311,13 @@ queue released against a hold that still exists.
 ### Revocation (req 4)
 
 Turning `allow_agent_merge` off deletes every **pending** row whose `repo_id`
-matches, resolved by `repoId()` so every URL spelling of that repository is
+matches, **and marks any merge already in flight for that repository as
+cancelled**. The row itself must survive — it can be the only evidence of a merge
+— but a merge whose PUT has not gone out is exactly what requirement 4 says to
+cancel, and asking only about the *current* permission answers "yes" after a
+revoke-and-re-grant. That mark, like `isMergeInFlight`, is in memory: it
+describes one process's window, and a restart means the PUT either never happened
+or already did — which reconciliation resolves either way. It is matched, resolved by `repoId()` so every URL spelling of that repository is
 covered — the same identity the grant itself is matched on, never
 `canonicalRepoKey`.
 

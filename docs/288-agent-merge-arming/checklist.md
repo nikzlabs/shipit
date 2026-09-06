@@ -99,9 +99,40 @@ Built on `docs/287-agent-merge-per-repo`, shipped.
       there was no resident agent, so the branch under test never ran
 - [x] The WS admission tests assert resumption, not only queueing
 
+## From the third independent review
+
+- [x] **The lease is taken AFTER the idle check.** `agentBusy` includes the
+      post-turn lease, so taking it first made the executor read its own hold as
+      "busy" and defer every merge for ever, on every session with a runner
+- [x] Under the hold, `isIdle` asks only "did a turn start?" — the lease, the
+      queued message and the hold itself are this pass's own effects
+- [x] `--auto` arms past its OWN push: the route 409'd whenever `guardMergeSync`
+      pushed, which is the ordinary path, so the documented workflow never armed
+- [x] Revocation marks an in-flight merge cancelled, so revoke-and-re-grant
+      during the merge wrapper's preparatory read cannot revive it (req 4)
+- [x] Settlement re-reads the row past its await and never deletes one whose
+      merge is in flight — a stale pass could destroy a live merge's record
+- [x] A session whose startup probe failed is not treated as idle; its container
+      may still hold the turn that was live at shutdown (req 6)
+- [x] A runner created mid-merge takes the disposal lease too, so reclamation
+      cannot discard the message queued behind the hold (req 6)
+- [x] An attempt that can never resolve says so once, and keeps its row (req 1)
+- [x] The two terminal recovery paths tell the agent instead of deleting in
+      silence (req 3)
+- [x] Revocation notices are broadcast to connected viewers (req 3)
+
+### The test-fidelity finding, which mattered most
+
+- [x] The fake runner's `agentBusy` now includes the post-turn lease, as
+      `SessionRunner` does. Its hard-coded `false` is what let the defect above —
+      which made the whole feature a no-op — pass 35 green tests and two reviews
+- [x] Added tests that run against a **real `SessionRunner`**, with a control
+      that it still refuses when the session is genuinely busy
+
 ## Quality
 
 - [x] Tests as listed in plan.md
 - [x] Each new guard proved red on its own by deleting it singly
 - [x] `npm run lint:dev` and `npm run typecheck` green
-- [x] An independent review of the implementation — eight findings, all verified at source, all fixed (above)
+- [x] Three independent cold reviews — 26 findings in total, every one verified
+      at the source and fixed; each fix proved red on its own

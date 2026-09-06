@@ -1505,7 +1505,7 @@ export async function registerGitHubRoutes(
           // `pushed: false` (diverged, or the push itself failed) still refuses
           // for BOTH: arming a commit GitHub does not have would either merge
           // something else or never resolve.
-          const armPastPush = request.body?.auto === true && verdict.pushed === true;
+          const armPastPush = request.body?.auto === true && verdict.pushed;
           if (!armPastPush) {
             reply.code(409).send({
               error: verdict.pushed
