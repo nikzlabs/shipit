@@ -440,7 +440,10 @@ describe("wireAgentListeners", () => {
       isError: true,
     };
 
-    function wire(d = deps()) {
+    function wire(
+      d = deps(),
+      extraOpts: Partial<Parameters<typeof wireAgentListeners>[3]> = {},
+    ) {
       const agent = new FakeAgent();
       const runner = new SessionRunner({
         sessionId: "session-1",
@@ -452,6 +455,7 @@ describe("wireAgentListeners", () => {
         capturedSessionId: "session-1",
         isNewSession: false,
         persistUserMessage: vi.fn(),
+        ...extraOpts,
       });
       return { agent, runner, d };
     }
@@ -578,6 +582,34 @@ describe("wireAgentListeners", () => {
       const refusal =
         "Out of credits: Your team has either used all available credits or "
         + "reached its monthly spending limit.";
+      agent.emit("event", {
+        type: "agent_result",
+        status: "error",
+        sessionId: "cli-session",
+        error: refusal,
+      } as AgentEvent);
+
+      const calls = (d.chatHistoryManager.replaceInProgress as ReturnType<typeof vi.fn>).mock.calls;
+      const rows = calls.flatMap((c) => c[1] as { isError?: boolean; text?: string }[]);
+      expect(rows.some((m) => m.isError && m.text === `Error: ${refusal}`)).toBe(true);
+      runner.dispose({ force: true });
+    });
+
+    it("DOES add a row for a quota refusal on a CLI-started turn, which never re-dispatches", () => {
+      // docs/140 — the third shape of the same drift, and the one the docstring
+      // on `quotaRefusalCanFailOver` used to declare impossible ("it can only
+      // make the listener KEEP a row"). It does the opposite: the listener DROPS
+      // the row here, on the premise that the executor's req-14 failover will
+      // explain the turn instead — and the executor refuses to re-dispatch a
+      // turn the CLI started on its own, because `input.prompt` belongs to the
+      // previous turn. Production 2026-09-06 (session cdde30c2): no retry, no
+      // row, and an adopted turn that had streamed nothing visible left the user
+      // with no explanation at all.
+      const { agent, runner, d } = wire(undefined, {
+        isServingAdoptedTurn: () => true,
+      });
+
+      const refusal = "You've hit Claude's 5h usage limit. It resets at 2099-01-01T00:00:00.000Z.";
       agent.emit("event", {
         type: "agent_result",
         status: "error",

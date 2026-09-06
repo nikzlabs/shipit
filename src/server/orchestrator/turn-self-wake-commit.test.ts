@@ -579,6 +579,100 @@ describe("post-turn flow for a self-woken turn", () => {
   });
 
   /**
+   * The QUOTA half of the same no-re-dispatch rule, and the production incident
+   * that showed standing down silently is not enough (2026-09-06, session
+   * cdde30c2, deployed commit 4a68ad1).
+   *
+   * The Claude CLI reports a spent subscription mid-turn as an ordinary
+   * assistant message and then ends the turn `subtype: "success"`. On a turn the
+   * CLI started on its own, docs/150 req 14's same-turn failover correctly does
+   * NOT re-dispatch — `input.prompt` is the previous turn's. But the stand-down
+   * was a bare `return false`, so three things followed: the user was told
+   * nothing (the listener had suppressed the terminal error row expecting that
+   * retry), the provider's limit notice was still `turnSummary` and became the
+   * auto-commit subject — `7d15650 "You've hit your session limit · resets
+   * 6:40pm (UTC)"`, pushed — and the account hop happened only when the user
+   * noticed and resent.
+   *
+   * docs/140's checklist recorded this half as "not pinned by a test", on the
+   * grounds that reaching the gate needs a credential-selection harness no test
+   * builds. That was wrong about this file: the refused-heal case above already
+   * wires `prepareAgentEnv` + `routeProfile`, which is exactly the setup
+   * `capturedRoutePolicy()` reads. Delete the adopted-turn condition from
+   * `quotaRetryAllowed` and the first assertion below fails — the executor kills
+   * the agent and re-runs the user's prompt on a second account.
+   */
+  it("does not re-dispatch a CLI-started turn that hits the account's quota limit", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const markSessionAccountExhausted = vi.fn();
+    const h = await runFirstStreamingTurn({
+      onRun: () => fs.writeFileSync(filePath, "turn-1 work\n"),
+      extraDeps: {
+        prepareAgentEnv: async () => ({ turnRoute: { kind: "account" as const, id: "acct-a" } }),
+        routeProfile: () => ({ billingMode: "sub" as const, serviceId: undefined }),
+        routeLabel: () => "Work account",
+      },
+    });
+    (h.listenerDeps as { markSessionAccountExhausted?: unknown }).markSessionAccountExhausted =
+      markSessionAccountExhausted;
+
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => h.settledTurns() === 1, "turn 1 post-turn flow settled");
+    expect(commitSubjects()).toHaveLength(2);
+
+    // The CLI starts a turn of its own, does some work, then hits the limit and
+    // says so as ordinary assistant text — the shape production actually hit.
+    await selfWake(h.agent);
+    expect(h.runner.running).toBe(true);
+    fs.writeFileSync(filePath, "adopted work\n");
+    h.agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "You've hit your session limit · resets 6:40pm (UTC)" }],
+    });
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+
+    // Wait on either outcome — the notice (correct) or a second spawn (the
+    // regression) — so removing the guard fails on the assertion that names it
+    // rather than timing out on the post-turn wait below.
+    await waitFor(
+      () => h.agent.run.mock.calls.length > 1 || h.messages.some((m) => m.type === "system_notice"),
+      "the adopted turn's quota refusal was handled",
+    );
+
+    // 1. The rule itself: the user's prompt is never re-run. One `run`, turn 1's.
+    expect(h.agent.run).toHaveBeenCalledTimes(1);
+
+    await waitFor(() => h.postTurnPrFlow.mock.calls.length === 2, "adopted turn post-turn flow ran");
+
+    // 2. …but the turn does not retire in silence. A persisted, user-visible
+    //    notice names the account and says what to do next.
+    const notice = h.messages.find((m) => m.type === "system_notice");
+    expect(notice?.message).toContain("Work account is out of quota");
+    expect(notice?.message).toContain("send your next message");
+    const append = h.listenerDeps.chatHistoryManager.append as ReturnType<typeof vi.fn>;
+    expect(
+      append.mock.calls.some((c) =>
+        typeof (c[1] as { text?: string })?.text === "string"
+        && (c[1] as { text: string }).text.includes("Work account is out of quota"),
+      ),
+    ).toBe(true);
+
+    // 3. The limit notice is NOT the commit subject — but the work still commits.
+    const subjects = commitSubjects();
+    expect(subjects).toHaveLength(3);
+    expect(subjects[0]).toBe("Agent turn");
+    expect(gitOut("show", "HEAD:file.txt")).toBe("adopted work\n");
+    expect(gitOut("status", "--porcelain")).toBe("");
+
+    // 4. req 7 still benched the account, so the NEXT turn routes elsewhere
+    //    without the user having to do anything about it.
+    expect(markSessionAccountExhausted).toHaveBeenCalledWith("s1", expect.any(Number), "acct-a");
+
+    await waitFor(() => !h.runner.running, "adopted turn settled");
+    h.runner.dispose({ force: true });
+  });
+
+  /**
    * The same 401, one window earlier — and the window is the reason the check is
    * made where it is. `servingAdoptedTurn` is set at the END of
    * `rearmForCliStartedTurn`, which first awaits the finished turn's whole

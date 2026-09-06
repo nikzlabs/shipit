@@ -928,17 +928,16 @@ export async function executeAgentTurn(
     if (!profile) return undefined;
     return credentialFailurePolicyForRoute(agentId, profile.billingMode, profile.serviceId);
   };
-  const quotaRetryAllowed = (): boolean => {
-    // docs/140 — never re-dispatch an ADOPTED turn: the prompt this closure
-    // would re-run is the previous turn's. See `servingAdoptedTurn`.
-    if (servingAdoptedTurn) return false;
+  const quotaRetryAllowed = (): boolean =>
     // Shared with the listener's error-row suppression, which is valid only
-    // when this answers true — see `quotaRefusalCanFailOver`.
-    return quotaRefusalCanFailOver(
+    // when this answers true — see `quotaRefusalCanFailOver`. The adopted-turn
+    // condition is the third input rather than a local `return false` here,
+    // precisely so the listener asks the same question with the same inputs.
+    quotaRefusalCanFailOver(
       capturedRoutePolicy(),
       deps.listenerDeps.sessionManager.get(sessionId),
+      servingCliStartedTurn(),
     );
-  };
 
   const retryOnNextAccount = async (
     entry: RefusedAttempt,
@@ -999,6 +998,69 @@ export async function executeAgentTurn(
       resetAt: statedReset,
       failureKind: "quota",
     };
+  };
+
+  /**
+   * docs/150-multiple-provider-subscriptions reqs 11 + 14 — what a hard exhaustion owes the user when the
+   * same-turn failover is NOT going to run.
+   *
+   * Reached on one shape today: a turn the CLI started on its own (docs/140).
+   * Its prompt belongs to the previous turn, so re-dispatching it would repeat
+   * work the agent already did and still not retry what failed — the rule stands.
+   * But "no re-dispatch" was implemented as "return false and let the turn
+   * retire", and a turn that retires through the ordinary path says nothing at
+   * all: the bench (req 7) is silent, the retry that would have posted the req-11
+   * notice never happens, and the listener had suppressed the terminal error row
+   * expecting exactly that retry. Production 2026-09-06 (session cdde30c2): the
+   * account was benched correctly, the user was told nothing, and the provider's
+   * limit notice was pushed as the commit subject
+   * (`7d15650 "You've hit your session limit · resets 6:40pm (UTC)"`).
+   *
+   * So both halves are settled here, at the one place that knows the failover
+   * declined:
+   *
+   *  - **The commit subject.** When the exhaustion was read from the turn's own
+   *    final text (`summaryIsTheNotice`), that text IS the provider's notice, not
+   *    a description of work. `detectHardExhaustionInTurnText`'s docstring names
+   *    this as the symptom it was written for; the detector fixed it only for
+   *    turns that go on to retry, because the retry owns the commit. Clear both
+   *    the live value and the `agent_result` snapshot `runCommit` falls back to,
+   *    so the subject drops to the dispatch activity label / "Agent turn". The
+   *    turn's edits still commit — CLAUDE.md's "every terminal path runs the
+   *    commit" is untouched, only its label is.
+   *  - **The notice**, for the adopted turn only. A *metered key* also reaches
+   *    here (req 12: keys never fail over) and must not be told its next message
+   *    will move to another account — that turn's explanation is the terminal
+   *    error row the listener keeps for it (planning#453). Nothing promises an
+   *    account either: selection has not run, and the next turn's own env-prep
+   *    posts "Continuing on X" when routing actually moves it.
+   */
+  const retireOnSpentAccount = (opts: { summaryIsTheNotice: boolean }): void => {
+    if (opts.summaryIsTheNotice) {
+      if (runner) runner.turnSummary = "";
+      resultTurnSummary = "";
+    }
+    if (!servingCliStartedTurn()) return;
+    const routeId = capturedCredentialRoute?.providerRouteId;
+    const label = routeId ? (deps.routeLabel?.(routeId) ?? routeId) : "This account";
+    console.log(
+      `[turn] ${agentId} reported a quota refusal for ${sessionId}`
+      + `${routeId ? ` on ${routeId}` : ""} during a CLI-started turn; `
+      + "not re-dispatching (docs/140) — the account is benched and the next turn routes on",
+    );
+    emitNoticePostTurn(
+      // Broadcast through the runner, not the invoking connection's `emit`: this
+      // is transcript content on a turn the user never started, so every
+      // attached viewer needs it (CLAUDE.md, WS lifecycle). `emit` is the same
+      // function on the WS path and a per-connection send elsewhere.
+      (m) => { if (runner) runner.emitMessage(m); else emit(m); },
+      deps.listenerDeps.chatHistoryManager,
+      sessionId,
+      `${label} is out of quota, so the agent stopped partway through work it had started on `
+      + "its own. ShipIt has set that account aside — send your next message and it will "
+      + "continue on another account if you have one.",
+      "warn",
+    );
   };
 
   /**
@@ -1118,6 +1180,12 @@ export async function executeAgentTurn(
     // `capturedRoutePolicy`); the auth handler falls back to the session's
     // selection when this answers undefined.
     getCapturedRoutePolicy: capturedRoutePolicy,
+    // docs/140 — the third input to `quotaRefusalCanFailOver`. The listener
+    // suppresses a quota turn's terminal error row on the premise that this
+    // executor's req-14 failover will explain the failure instead; on a turn the
+    // CLI started on its own there is no re-dispatch, so the premise fails and
+    // the row must stay. (Defined below; the listener asks long after.)
+    isServingAdoptedTurn: () => servingCliStartedTurn(),
     // docs/179 — auto-recovery hooks: the listener calls `willRecoverAuth`
     // synchronously to decide whether to suppress the sign-in card, then
     // `recoverAuth` to heal + re-dispatch. Omitted when this turn can't recover
@@ -1389,6 +1457,15 @@ export async function executeAgentTurn(
    *    work the agent already did and still doesn't retry what failed. Both
    *    stand down and let the terminal teardown run instead.
    *
+   *    **"No re-dispatch" is not "say nothing", either.** Standing down was
+   *    implemented as a bare `return false`, so the turn retired through the
+   *    ordinary path: no req-11 notice (the retry is what posts it), no terminal
+   *    error row (the listener had suppressed it expecting that retry), and the
+   *    provider's limit notice left in `turnSummary` to become the auto-commit
+   *    subject — pushed as such in production on 2026-09-06. `retireOnSpentAccount`
+   *    is the quota half's stand-down: it explains the stop and clears the
+   *    poisoned summary, and it changes nothing about the re-dispatch rule.
+   *
    *    **"No re-dispatch" is the whole rule, and it is not "no recovery".**
    *    Reading it as the latter is what put a sign-in card in front of a
    *    signed-in user: `willRecoverAuth` used to return false here, the auth
@@ -1399,14 +1476,15 @@ export async function executeAgentTurn(
    *    to do with whose prompt is running, so it runs; only the re-run stands
    *    down. See `recoverAuth`.
    *
-   *    The QUOTA half remains reasoned from the code, not covered by a test.
-   *    Reaching the failover needs the credential selection harness
-   *    (`integration_tests/quota-exhaustion-retry.test.ts`'s `prepareAgentEnv`
-   *    routes) on a STREAMING dispatched turn, which no existing harness sets
-   *    up; a test written against the executor harness alone passes with the
-   *    guard removed, so it would pin nothing. Said out loud rather than left
-   *    implied. The AUTH half is now pinned — `turn-self-wake-commit.test.ts`,
-   *    "heals quietly on a self-woken turn".
+   *    The QUOTA half is pinned now too, and the note that said it could not be
+   *    was wrong about its own harness: `turn-self-wake-commit.test.ts` already
+   *    wires `prepareAgentEnv` + `routeProfile` for the auth case, which is
+   *    exactly the credential-selection setup the quota gate reads. With those,
+   *    an adopted turn whose final text is a limit notice reaches the gate on the
+   *    WS streaming path, and removing the condition makes the test re-dispatch
+   *    the user's prompt. See "does not re-dispatch a CLI-started turn that hits
+   *    the account's quota limit" there. The AUTH half is pinned by
+   *    "heals quietly on a self-woken turn" in the same file.
    *  - **The partial-turn finalize must still fire.** It is gated on
    *    `!receivedResult`, which stays true from the turn that owns this closure
    *    (deliberately — see `rearmForCliStartedTurn`), so an adopted turn that
@@ -1415,6 +1493,28 @@ export async function executeAgentTurn(
    *    loss this whole phase exists to stop, one path over.
    */
   let servingAdoptedTurn = false;
+
+  /**
+   * The question every "is this turn mine to re-dispatch?" gate must ask, and
+   * the reason it is not simply `servingAdoptedTurn`.
+   *
+   * `servingAdoptedTurn` is set at the END of `rearmForCliStartedTurn`, which
+   * first awaits the finished turn's whole post-turn sequence — a commit plus a
+   * PR round-trip, i.e. seconds. For that window the flag reads false while the
+   * turn actually running belongs to the CLI, so a gate that reads the flag
+   * alone judges the adopted turn by a flag describing its predecessor and
+   * re-dispatches the USER's prompt in full, side effects included.
+   *
+   * `recoverAuth` closes that window by AWAITING `rearmInFlight` before it asks,
+   * which it can do because it is async. The quota gates cannot: the listener's
+   * suppression decision and `willRetryOnQuotaError` are both synchronous by
+   * contract. So the same fact is read synchronously instead — a non-null
+   * `rearmInFlight` IS an adoption in progress, and it can only be non-null once
+   * the invoking turn has had its own `agent_result` (`beginRearm` requires
+   * `streamingPostTurnFired`). An ordinary turn therefore reads false here, as
+   * it did before.
+   */
+  const servingCliStartedTurn = (): boolean => servingAdoptedTurn || rearmInFlight !== null;
 
   let drainFired = false;
   const tryDrain = async (): Promise<void> => {
@@ -1951,17 +2051,21 @@ export async function executeAgentTurn(
     // structurally invisible. `turnSummary` is this turn's own (it is cleared
     // by `resetRunnerTurnState` at turn start) and is already populated:
     // `wireAgentListeners` runs first and assigns it from `agent_assistant`.
-    if (quotaRetryAllowed()) {
-      const exhausted = event.error
-        ? detectHardExhaustion(event.error)
-        : detectHardExhaustionInTurnText(runner?.turnSummary);
-      if (exhausted) {
+    const exhausted = event.error
+      ? detectHardExhaustion(event.error)
+      : detectHardExhaustionInTurnText(runner?.turnSummary);
+    if (exhausted) {
+      if (quotaRetryAllowed()) {
         quotaRetryInProgress = true;
         await retryOnNextAccount(
           ledgerEntryFor(event.error ?? runner?.turnSummary ?? "quota exhausted", exhausted),
         );
         return;
       }
+      // No failover will run for this turn, so nothing downstream is going to
+      // explain it or replace its commit subject. Say what happened and stop the
+      // provider's notice from labelling the commit.
+      retireOnSpentAccount({ summaryIsTheNotice: !event.error });
     }
     // Cleared HERE, not at the top of this handler: the re-dispatch guards above
     // are exactly what an adopted turn's result must still be judged by, and the
