@@ -12,6 +12,9 @@ import type {
 } from "./session-container.js";
 import { CONTAINER_SESSION_ID_LABEL } from "./session-container.js";
 import { reapSessionEgressSidecars } from "./egress-orphan-reaper.js";
+import { COMPOSE_EGRESS_SIDECAR_LABEL } from "./compose-service-egress.js";
+import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
+import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 
 /**
  * Label stamped on Compose-managed (user-service) containers by
@@ -25,7 +28,26 @@ import { reapSessionEgressSidecars } from "./egress-orphan-reaper.js";
  * docs/124-session-rescue-and-diagnostics §1.2.
  */
 const COMPOSE_PARENT_SESSION_LABEL = "shipit-parent-session";
+/**
+ * Stamped by `compose-generator.ts` on every service it generates, and on those
+ * only. It is what separates one of the PROJECT's services from the other
+ * containers ShipIt parents to a session — see Path 2 below, where that
+ * distinction is the difference between "the user's dev server crashed" and
+ * "ShipIt replaced a sidecar". Literal for the same reason as the label above.
+ *
+ * The egress labels this file also reads ARE imported: they live in the egress
+ * modules, which pull in nothing from this side of the orchestrator, so there is
+ * no cycle to avoid and a compile-time link is strictly better.
+ */
 const COMPOSE_SERVICE_NAME_LABEL = "shipit-service-name";
+/**
+ * Compose's OWN service label, written by `docker compose` itself and by nobody
+ * here — ShipIt sets no `com.docker.compose.*` label anywhere, and every sidecar
+ * is created through the Docker API with an explicit `Labels` map. It is the
+ * second half of Path 2's positive test, for a stack the session brought up
+ * through the Docker proxy rather than through `ServiceManager`.
+ */
+const DOCKER_COMPOSE_SERVICE_LABEL = "com.docker.compose.service";
 
 // ---------------------------------------------------------------------------
 // Internal types for dependency injection
@@ -379,12 +401,59 @@ export async function startHealthMonitor(
         if (parentSessionId) {
           const exitCode = Number(attrs.exitCode ?? 1);
           const oom = action === "oom";
-          const serviceName = attrs[COMPOSE_SERVICE_NAME_LABEL];
-          deps.emitter.emit("service_exited", parentSessionId, {
-            ...(serviceName ? { serviceName } : {}),
+          // `shipit-parent-session` does NOT mean "a project service". It is
+          // stamped on every container ShipIt parents to a session: the
+          // generated Compose services, yes, but ALSO the egress sidecars
+          // (`compose-service-egress.ts`, `container-lifecycle.ts`,
+          // `egress-reload.ts`) and anything the session creates through the
+          // Docker proxy.
+          //
+          // Keying on the parent label reported ShipIt's own plumbing as the
+          // user's dev server crashing: containment replaces a service's
+          // sidecars whenever that service starts or its policy changes, so a
+          // HEALTHY start emitted a burst of anonymous `[compose] service exited
+          // with code 137.` lines. See
+          // docs/124-session-rescue-and-diagnostics §1.2a for the field report.
+          //
+          // A ShipIt egress sidecar is NEVER a project service, whatever else it
+          // carries. That is a hard precondition rather than something the name
+          // lookup below merely happens to imply: it is the one guarantee this
+          // handler owes the incident, so it is stated where it cannot be
+          // weakened by a later widening of what counts as a service name.
+          const egressSidecar = Boolean(
+            attrs[COMPOSE_EGRESS_SIDECAR_LABEL]
+              || attrs[EGRESS_RESOLVER_LABEL]
+              || attrs[EGRESS_PROXY_LABEL],
+          );
+          // Otherwise a POSITIVE identification, in two forms, so a container
+          // ShipIt cannot name as a service stays silent by default rather than
+          // becoming the next false alarm nobody thought to exclude:
+          //
+          //  - `shipit-service-name` — `compose-generator.ts` stamps it on every
+          //    service it generates, the repository's own and a plugin's alike.
+          //  - `com.docker.compose.service` — Compose's own label, which a stack
+          //    the SESSION brought up through the Docker proxy carries and the
+          //    generated override does not reach. `docker-proxy-sanitize.ts`
+          //    stamps the parent label on those but adds no ShipIt service name,
+          //    so without this they would lose the exit line they had before.
+          //    Nothing ShipIt creates through the Docker API carries it.
+          const serviceName = egressSidecar
+            ? undefined
+            : attrs[COMPOSE_SERVICE_NAME_LABEL] || attrs[DOCKER_COMPOSE_SERVICE_LABEL];
+          if (serviceName) {
+            deps.emitter.emit("service_exited", parentSessionId, {
+              serviceName,
+              containerId,
+              exitCode,
+              oom,
+            });
+            return;
+          }
+          deps.emitter.emit("session_child_exited", parentSessionId, {
             containerId,
             exitCode,
             oom,
+            egressSidecar,
           });
         }
       } catch {

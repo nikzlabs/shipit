@@ -10,6 +10,7 @@
 ### 1.2 Compose-child OOM detection
 - [x] Widen Docker event label filter in `container-health.ts` to dispatch by label inside the handler (Path 1: `shipit-session`, Path 2: `shipit-parent-session`).
 - [x] On `die`/`oom` for a compose-child, look up session via `shipit-parent-session` label and emit `service_exited` with `oom`.
+- [x] Gate `service_exited` on a service NAME (`shipit-service-name`, or Compose's own `com.docker.compose.service` for a stack the session started itself), not on `shipit-parent-session` (§1.2a). The parent label is on every ShipIt-parented container, so egress-sidecar churn was reported as the project's services crashing; `serviceName` is now required and everything else emits `session_child_exited` (console only).
 - [x] Emit `service_oom` runner event with service name + container id (`app-lifecycle.ts` `service_exited` handler).
 - [x] Add `service_oom` to `ws-server-messages.ts`.
 - [x] Per-session log ring + `log_entry` runner message with OOM-vs-exit guidance text.

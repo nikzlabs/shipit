@@ -374,12 +374,51 @@ export interface SessionContainerManagerEvents {
    * filter this fires immediately and carries the OOM annotation when
    * available, which lets the UI distinguish a crash from an OOM kill.
    * See docs/124-session-rescue-and-diagnostics §1.2.
+   *
+   * `serviceName` is REQUIRED, and that is the whole contract: this event means
+   * "one of the PROJECT's services died", so a container ShipIt cannot name as a
+   * service is not one. The field used to be optional with a `"service"`
+   * fallback at the consumer, which is exactly how ShipIt's own egress sidecars
+   * — session-parented but nameless — were reported to the user as anonymous
+   * compose-service crashes. Anything session-parented that is NOT a project
+   * service goes to {@link SessionContainerManagerEvents.session_child_exited}.
    */
   service_exited: [sessionId: string, info: {
-    serviceName?: string;
+    serviceName: string;
     containerId: string;
     exitCode: number;
     oom: boolean;
+  }];
+  /**
+   * A container carrying `shipit-parent-session` that is NOT one of the
+   * project's Compose services exited — ShipIt's own egress sidecars (the
+   * one-shot Tier A firewall installer, the Tier B resolver, the Tier C proxy),
+   * and any other container stamped with the session's parent label.
+   *
+   * Split out from `service_exited` because these two are not the same event
+   * wearing different labels. A project service dying is the USER's problem and
+   * belongs in their Logs panel; a sidecar being replaced is ShipIt's own
+   * routine churn — the containment pass force-removes and relaunches a
+   * service's sidecars whenever that service starts or its policy changes, so a
+   * healthy two-minute startup produces a dozen of these. Reported as one event they were indistinguishable, and a normal
+   * session read as a crash-looping dev server.
+   *
+   * Consequently this is an OPERATOR signal only: `startup-tasks.ts` writes it
+   * to the orchestrator console and deliberately does NOT `broadcastLog` it or
+   * emit a runner message. Sidecars are not the user's containers, so telling
+   * them to edit `docker-compose.yml` about one would be advice they cannot act
+   * on.
+   *
+   * `egressSidecar` is true when the container carries one of the egress
+   * labels. It is a positive identification, not an exhaustive one: the
+   * agent-side one-shot firewall installer carries no egress label of its own,
+   * so it reports as `false` — honest, rather than guessed.
+   */
+  session_child_exited: [sessionId: string, info: {
+    containerId: string;
+    exitCode: number;
+    oom: boolean;
+    egressSidecar: boolean;
   }];
   /**
    * Emitted after the Docker event stream successfully reconnects from a

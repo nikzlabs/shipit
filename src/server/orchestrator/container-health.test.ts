@@ -573,3 +573,157 @@ describe("container-health: egress sidecar reap on die/oom (planning#224)", () =
     expect(removed).not.toContain("proxy-2");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Path 2 — telling a project service apart from ShipIt's own containers
+// ---------------------------------------------------------------------------
+
+/**
+ * `shipit-parent-session` is stamped on every container ShipIt parents to a
+ * session, not only on the project's Compose services: the egress sidecars carry
+ * it too (they must, so destroy-time cleanup reaps them). Path 2 keyed
+ * `service_exited` on that label alone, so a sidecar being replaced — which
+ * containment does whenever a service starts or its policy changes, force-removing
+ * the old one at exit 137 — was reported to the user as a compose service crashing.
+ *
+ * The field report this guards: a HEALTHY warm session, four services with
+ * `RestartCount=0` and no exit ever recorded, produced 19 `compose: service
+ * exited` lines during a normal two-minute startup. The dev server looked like it
+ * was crash-looping and it cost a real investigation.
+ *
+ * The label that means "one of the project's services" is `shipit-service-name`,
+ * which `compose-generator.ts` stamps on every service it generates. Path 2 now
+ * tests for it positively, so a NEW kind of ShipIt-parented container is silent
+ * by default rather than becoming the next false alarm nobody excluded.
+ */
+describe("container-health: compose service vs. ShipIt's own session children", () => {
+  const PARENT = "shipit-parent-session";
+  type ServiceExited = (...args: SessionContainerManagerEvents["service_exited"]) => void;
+  type ChildExited = (...args: SessionContainerManagerEvents["session_child_exited"]) => void;
+  let emitter: EventEmitter<SessionContainerManagerEvents>;
+  let eventStream: EventEmitter;
+  let serviceExited: ReturnType<typeof vi.fn<ServiceExited>>;
+  let childExited: ReturnType<typeof vi.fn<ChildExited>>;
+
+  beforeEach(async () => {
+    emitter = new EventEmitter<SessionContainerManagerEvents>();
+    eventStream = new EventEmitter();
+    serviceExited = vi.fn<ServiceExited>();
+    childExited = vi.fn<ChildExited>();
+    emitter.on("service_exited", serviceExited);
+    emitter.on("session_child_exited", childExited);
+    await startHealthMonitor(
+      {
+        docker: { getEvents: vi.fn(async () => eventStream) } as unknown as HealthDeps["docker"],
+        containers: new Map(),
+        standbySessionIds: new Set<string>(),
+        emitter,
+        labelFilters: () => [],
+      },
+      createHealthMonitorState(),
+    );
+  });
+
+  function die(attributes: Record<string, string>, action = "die") {
+    eventStream.emit("data", Buffer.from(JSON.stringify({
+      Action: action,
+      Actor: { ID: "c1", Attributes: { exitCode: "137", ...attributes } },
+    })));
+  }
+
+  it("reports a project compose service, by name", () => {
+    die({ [PARENT]: "sess-1", "shipit-service-name": "dev" });
+
+    expect(serviceExited).toHaveBeenCalledWith("sess-1", {
+      serviceName: "dev", containerId: "c1", exitCode: 137, oom: false,
+    });
+    expect(childExited).not.toHaveBeenCalled();
+  });
+
+  it("does NOT report a compose-service egress sidecar as a service exit", () => {
+    // The exact shape from the field report: parented to the session, labelled a
+    // sidecar, and — the part that made the line anonymous — carrying no service
+    // name of its own.
+    die({ [PARENT]: "sess-1", "shipit-egress-service-sidecar": "true", "shipit-egress-parent": "svc-1" });
+
+    expect(serviceExited).not.toHaveBeenCalled();
+    expect(childExited).toHaveBeenCalledWith("sess-1", {
+      containerId: "c1", exitCode: 137, oom: false, egressSidecar: true,
+    });
+  });
+
+  it("reports a service the SESSION brought up through the Docker proxy", () => {
+    // A Docker-enabled session can run `docker compose up` in its own terminal.
+    // `docker-proxy-sanitize.ts` stamps the parent label on what that creates but
+    // adds no ShipIt service name, and the generated override never reached it —
+    // so a `shipit-service-name`-only test would have taken this container's exit
+    // line away, which it had before. Compose's own label is the identification.
+    die({ [PARENT]: "sess-1", "com.docker.compose.service": "worker" });
+
+    expect(serviceExited).toHaveBeenCalledWith("sess-1", {
+      serviceName: "worker", containerId: "c1", exitCode: 137, oom: false,
+    });
+    expect(childExited).not.toHaveBeenCalled();
+  });
+
+  it("keeps a sidecar out of the service path even if it carries a compose label", () => {
+    // The incident report claimed an inspected sidecar carried
+    // `com.docker.compose.service`. No code path here writes one — ShipIt sets no
+    // `com.docker.compose.*` label anywhere and creates every sidecar through the
+    // Docker API with an explicit label map — so the claim is unsupported and
+    // could not be checked against a live daemon. The egress precondition is
+    // therefore a hard gate rather than an implication of the name lookup, and
+    // this is the test that says so: were the claim true after all, the fix still
+    // holds.
+    die({
+      [PARENT]: "sess-1",
+      "shipit-egress-service-sidecar": "true",
+      "com.docker.compose.service": "egress-sidecar",
+    });
+
+    expect(serviceExited).not.toHaveBeenCalled();
+    expect(childExited.mock.calls[0]?.[1]).toMatchObject({ egressSidecar: true });
+  });
+
+  it("does NOT report the agent's own Tier B/C sidecars as service exits", () => {
+    // These carry the parent label from `container-lifecycle.ts` /
+    // `egress-reload.ts`, not from compose containment — a sidecar-label-only
+    // denylist would have left this half of the churn still reported.
+    die({ [PARENT]: "sess-1", [EGRESS_RESOLVER_LABEL]: "sess-1" });
+    die({ [PARENT]: "sess-1", [EGRESS_PROXY_LABEL]: "sess-1" });
+
+    expect(serviceExited).not.toHaveBeenCalled();
+    expect(childExited).toHaveBeenCalledTimes(2);
+    expect(childExited.mock.calls.every(([, info]) => info.egressSidecar)).toBe(true);
+  });
+
+  it("does NOT report a session child it cannot name, and says it cannot name it", () => {
+    // The Tier A firewall installer: a one-shot that exits 0 on every session
+    // start, parented to the session and carrying no egress label of its own.
+    // Silent to the user either way; `egressSidecar: false` is the honest answer
+    // rather than a guess.
+    die({ [PARENT]: "sess-1", exitCode: "0" });
+
+    expect(serviceExited).not.toHaveBeenCalled();
+    expect(childExited).toHaveBeenCalledWith("sess-1", {
+      containerId: "c1", exitCode: 0, oom: false, egressSidecar: false,
+    });
+  });
+
+  it("does NOT route a sidecar OOM into the service path", () => {
+    // `service_exited` with `oom: true` tells the user to raise memory limits in
+    // docker-compose.yml. A sidecar has no entry there to raise, so reaching that
+    // advice at all is the bug — not the wording of it.
+    die({ [PARENT]: "sess-1", "shipit-egress-service-sidecar": "true" }, "oom");
+
+    expect(serviceExited).not.toHaveBeenCalled();
+    expect(childExited.mock.calls[0]?.[1]).toMatchObject({ oom: true, egressSidecar: true });
+  });
+
+  it("ignores a dying container with no session parent at all", () => {
+    die({ image: "postgres:16" });
+
+    expect(serviceExited).not.toHaveBeenCalled();
+    expect(childExited).not.toHaveBeenCalled();
+  });
+});
