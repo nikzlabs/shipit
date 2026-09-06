@@ -36,6 +36,7 @@ plugin-facing surface.
 - **M2 — a plugin-named published image: rejected.** It fails req 3, which the
   user decided on 2026-09-05. Reviving it means changing req 3 and its receipt
   first.
-- **M1 — making the dependency store's applicability observable: out of
-  scope.** The user ruled on 2026-09-05 that it is a separate bug, tracked as
-  planning#511. Do not sequence it against this feature.
+- **M1 — making the dependency store's applicability observable: out of scope,
+  and now shipped anyway.** The user ruled on 2026-09-05 that it is a separate
+  bug; it was tracked as planning#511 and merged on its own. Nothing here
+  depended on it.

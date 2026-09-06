@@ -52,12 +52,14 @@ docstring's summary reads:
 - **It converges to one stored copy, not to one cold install.** Two sessions can
   both miss and both run the install; serialisation begins at `publishBase`, and
   the loser adopts the winner's tree and deletes its own
-  (`plugin-dep-store.ts:391`). So concurrent first-time sessions each pay the
+  (`plugin-dep-store.ts:581`, post-planning#511 line numbering). So concurrent
+  first-time sessions each pay the
   install time, even though the disk cost converges.
 - **Promotion can fail after a perfectly valid plan.** A missing or
-  non-directory output, or a lost publish, yields a null pin
-  (`plugin-dep-store.ts:316`, `:386`); the tree stays in that generation's
-  private layer and is shared with nobody.
+  non-directory output, or a lost publish, pins nothing; the tree stays in that
+  generation's private layer and is shared with nobody. Still true after
+  planning#511 — that fix made the outcome *visible* (`nothing-installed`,
+  `not-a-directory`, `publish-failed`), it did not remove it.
 
 ## Where it falls short of the requirements
 
@@ -72,16 +74,15 @@ docstring's summary reads:
    and `build:` is refused (`plugin-compose.ts:662`, `:685`). The CLI has no
    image field at all — it always borrows the worker image
    (`plugin-cli-run.ts:151`, wired at `bootstrap-managers.ts:808`).
-3. **Whether req 2 is in effect is invisible.** `planPluginDepStore` returns
-   `null` at **six** distinct branches — the overlay kill switch (`:184`), no
-   selected installer (`:193`), an npm lifecycle script with no explicit inputs
-   (`:208`), inputs that cannot be content-hashed (`:217`), an empty `dep-dirs`
-   (`:227`), and a dep dir already present in the checkout (`:248`) — and the
-   caller then writes the stamp, records **`succeeded`**, and returns
-   (`plugin-install.ts:462`). Promotion failure above is a seventh way to end up
-   sharing nothing, on a path where a plan existed. This is a **separate bug**,
-   tracked as planning#511 — recorded here because it shaped the measurements
-   above, not because this feature fixes it.
+3. ~~Whether req 2 is in effect is invisible.~~ **Fixed, and no longer a gap.**
+   An install could decline the store at six branches, or plan successfully and
+   then pin nothing, and every one of those was recorded as a plain success.
+   That was filed as a separate bug — planning#511 — and is now **merged**:
+   `planPluginDepStore` returns a `PluginDepStoreDecision` carrying a typed
+   `PluginDepStoreReasonKind`, promotion attaches one per directory that pinned
+   nothing, and the reason reaches the Plugins card and `shipit plugin status`.
+   Recorded here because it shaped the measurements above, and because a design
+   that leaned on the store's silence would now be wrong.
 
 ## Candidate mechanisms
 
@@ -93,8 +94,10 @@ made the store's silence visible. The user ruled on 2026-09-05 that this is a
 already exists, and it addresses no numbered requirement here — in particular
 not req 1, whose `apt` class it cannot reach.
 
-Tracked as **planning#511**. Nothing in this design depends on it, and it should
-not be sequenced against this feature's work.
+Tracked as **planning#511**, and now **merged** — the store reports a typed
+reason at every decline branch and at a promotion that pins nothing. Nothing in
+this design depended on it, and the outcome confirms the scoping was right: it
+shipped on its own while this design was still settling its requirements.
 
 ### M2 — the plugin names a published image for its CLI
 
@@ -253,8 +256,8 @@ per-call isolation disappears, so one call can leave state that changes the next
 
 | File | Why it matters here |
 |---|---|
-| `src/server/orchestrator/plugin-dep-store.ts` | The store, its key, `planPluginDepStore`'s six `null` branches, and the promotion path that can pin nothing |
-| `src/server/orchestrator/plugin-install.ts` | Records `succeeded` with no plan (`:462`); install container limits; boot-time reap of CLI containers (`:849`) |
+| `src/server/orchestrator/plugin-dep-store.ts` | The store and its key; since planning#511, `planPluginDepStore` returns a `PluginDepStoreDecision` with a typed reason at each decline branch, and promotion reports a directory that pinned nothing |
+| `src/server/orchestrator/plugin-install.ts` | Install container limits; boot-time reap of CLI containers. Its silent `succeeded`-with-no-plan path was fixed by planning#511 |
 | `src/server/shared/deps-hash.ts` | Which install commands can be content-keyed; `install-inputs` overrides |
 | `src/server/orchestrator/plugin-cli-run.ts` | The invocation container: borrowed image, 2 GiB, 512 pids, 15 min |
 | `src/server/orchestrator/plugin-compose.ts` | Fragment allowlist, the `build:` refusal, allowed resource keys |
