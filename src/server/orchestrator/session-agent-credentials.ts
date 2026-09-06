@@ -339,9 +339,13 @@ export function ensureSessionAgentUserConfig(
  * the same reason {@link POST_PROVISION_CONFIG} is one. Only Claude has a row:
  * its CLI gates a workspace's own `.claude/settings.json` `permissions.allow`
  * entries on per-directory trust. Codex has a comparable
- * `projects.<path>.trust_level` in `config.toml`, but ShipIt spawns it with an
- * explicit `approvalPolicy: "never"`, so nothing is silently dropped there and
- * it needs no row.
+ * `projects."<path>".trust_level` in `config.toml` and DOES need it — an
+ * untrusted project drops the repo's own `.codex/` config, hooks and exec
+ * policies — but it is written by the adapter itself
+ * (`session/agents/codex/project-trust.ts`), keyed off the spawn cwd, which is
+ * the same code path in both runtimes. So Codex needs no row *here*: this table
+ * exists for a CLI whose trust lives in a config the orchestrator writes and
+ * the container path covers separately.
  */
 const LOCAL_WORKSPACE_TRUST: Partial<Record<AgentId, (home: string, workspaceDir: string) => void>> = {
   claude: (home, workspaceDir) => {
