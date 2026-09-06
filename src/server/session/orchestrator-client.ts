@@ -31,14 +31,6 @@ export interface OrchestratorResponse {
 }
 
 /**
- * Resolves the orchestrator base URL from env. Returns `null` if unconfigured.
- * `SHIPIT_HOST`/`SHIPIT_PORT` are set by `container-lifecycle.ts:createContainer`.
- */
-export function resolveOrchestratorBaseUrl(): string | null {
-  return resolveOrchestratorBaseUrls()[0] ?? null;
-}
-
-/**
  * Resolves all candidate orchestrator URLs from env, ordered by preference.
  *
  * `SHIPIT_HOST` historically contained the orchestrator container hostname.
@@ -59,14 +51,7 @@ export function resolveOrchestratorBaseUrls(): string[] {
       .map((h) => h.trim())
       .filter(Boolean)),
   ];
-  const seen = new Set<string>();
-  return hosts
-    .filter((h) => {
-      if (seen.has(h)) return false;
-      seen.add(h);
-      return true;
-    })
-    .map((h) => `http://${h}:${port}`);
+  return [...new Set(hosts)].map((h) => `http://${h}:${port}`);
 }
 
 /**

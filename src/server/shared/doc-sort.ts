@@ -25,20 +25,10 @@
  * (`plan.md`, `checklist.md`) fall into a deterministic tiebreak.
  */
 
-interface ParsedSegment {
-  /** Leading integer prefix (`168` from `168-feature`), or null if none. */
-  num: number | null;
-  /** The full segment text, used for lexical tiebreaks. */
-  text: string;
-}
-
-/** Split a path segment into its leading numeric prefix (if any) and text. */
-function parseSegment(segment: string): ParsedSegment {
+/** Leading integer prefix (`168` from `168-feature`), or null if none. */
+function numericPrefix(segment: string): number | null {
   const match = /^(\d+)/.exec(segment);
-  if (!match) return { num: null, text: segment };
-  // parseInt over the matched digits — Number.MAX_SAFE_INTEGER is 2^53, far
-  // beyond any plausible NNN, so precision loss isn't a concern here.
-  return { num: Number.parseInt(match[1], 10), text: segment };
+  return match ? Number.parseInt(match[1], 10) : null;
 }
 
 /**
@@ -46,20 +36,20 @@ function parseSegment(segment: string): ParsedSegment {
  * when `a` should sort before `b`, positive when after, zero when equal.
  */
 function compareSegment(a: string, b: string): number {
-  const pa = parseSegment(a);
-  const pb = parseSegment(b);
+  const pa = numericPrefix(a);
+  const pb = numericPrefix(b);
 
-  if (pa.num !== null && pb.num !== null) {
+  if (pa !== null && pb !== null) {
     // Both numbered: higher number is newer, so it sorts first (descending).
-    if (pa.num !== pb.num) return pb.num - pa.num;
+    if (pa !== pb) return pb - pa;
     // Same number (e.g. `168-foo` vs `168-bar`): stable ascending tiebreak.
     return a.localeCompare(b);
   }
 
   // Exactly one numbered: the numbered segment is a real feature and sorts
   // above the un-numbered prose, regardless of letters.
-  if (pa.num !== null) return -1;
-  if (pb.num !== null) return 1;
+  if (pa !== null) return -1;
+  if (pb !== null) return 1;
 
   // Neither numbered: plain ascending — A→Z reads better than Z→A for prose.
   return a.localeCompare(b);
@@ -83,12 +73,4 @@ export function compareDocsByRecency(a: string, b: string): number {
   // One path is a prefix of the other (e.g. `docs/x` vs `docs/x/plan.md`).
   // Shorter (shallower) path first — it's the parent.
   return aSegs.length - bSegs.length;
-}
-
-/**
- * Return a new array of `{ path }` entries ordered newest-first. Does not
- * mutate the input.
- */
-export function sortDocsByRecency<T extends { path: string }>(docs: readonly T[]): T[] {
-  return [...docs].sort((a, b) => compareDocsByRecency(a.path, b.path));
 }

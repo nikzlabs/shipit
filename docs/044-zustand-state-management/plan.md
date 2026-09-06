@@ -675,3 +675,11 @@ After all phases are complete:
 - Session-reset logic exists in exactly one place (`resetSessionState()`)
 - All existing tests pass, no new test failures
 - `npm test && npm run typecheck && npm run lint && npm run build` all green
+
+## Store API cleanup
+
+The source-wide review removed `appendMessage`, `clearRewindPreviews`,
+`clearTurnUsageForSession`, and `setAllUsageStats`: none had a caller in the app
+or tests. The active message updates, session reset, archive cleanup, and usage
+fetch still own these writes. Store actions are retained when a caller needs
+them, rather than providing a setter and clearer for every field by default.

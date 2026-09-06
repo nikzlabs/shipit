@@ -172,7 +172,6 @@ interface UiState {
   setActiveAgentId: (id: AgentId) => void;
   setShowUsageModal: (show: boolean) => void;
   setCurrentSessionUsage: (usage: SessionUsage | null) => void;
-  setAllUsageStats: (stats: UsageStats | null) => void;
   setModelInfo: (info: ModelInfo | null) => void;
   setContextTokens: (tokens: number) => void;
   setCumulativeTokens: (input: number, output: number) => void;
@@ -272,8 +271,6 @@ export const useUiStore = create<UiState>((set) => ({
 
   setCurrentSessionUsage: (currentSessionUsage) =>
     set({ currentSessionUsage }),
-
-  setAllUsageStats: (allUsageStats) => set({ allUsageStats }),
 
   setModelInfo: (modelInfo) => set({ modelInfo }),
 
