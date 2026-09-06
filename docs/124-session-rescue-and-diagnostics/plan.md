@@ -84,6 +84,50 @@ present, and emit a service-level `service_oom` runner event. Annotate
 `pollStatus`'s exit message with "OOMKilled" when the inspect data
 confirms it (already available — we just don't read it).
 
+#### 1.2a `shipit-parent-session` is not "a project service" (2026-09-06)
+
+Path 2 above shipped keyed on the parent label alone, and that label is
+stamped on **every** container ShipIt parents to a session — not only the
+generated Compose services. The egress sidecars carry it too (they must,
+so destroy-time cleanup reaps them), as does anything the session creates
+through the Docker proxy.
+
+So ShipIt's own plumbing was reported to the user as their services
+crashing. Compose egress containment force-removes and relaunches a
+service's sidecars on every `compose up`, so a **healthy** session start
+emitted a burst of anonymous `[compose] service exited with code 137.`
+lines — the `serviceName` field was optional and fell back to the literal
+word "service". A field report recorded 19 of them during a normal
+two-minute startup of a session whose four services had `RestartCount=0`
+and had never exited; the ops log surface counts that line's shape under
+`compose: service exited`, so infrastructure churn and a crash-looping dev
+server read identically in the session's Logs panel, in the orchestrator's
+stdout, and in the withheld-shape breakdown. It cost a real investigation.
+
+**Fix:** Path 2 tests **positively** for `shipit-service-name`, the label
+`compose-generator.ts` stamps on every service it generates (the
+repository's own and a plugin's alike). Only those reach `service_exited`,
+whose `serviceName` is now **required** — the type is the guarantee that
+this event always names a service the user owns. Everything else
+session-parented emits `session_child_exited`, which `startup-tasks.ts`
+writes to the orchestrator console and deliberately does **not**
+`broadcastLog`, does not turn into a runner message, and does not raise
+`service_oom` — that card's remediation is "increase memory limits in
+`docker-compose.yml`", and a sidecar has no entry there to raise. Because
+nothing is broadcast, the split needs no new `WITHHELD_SHAPES` entry.
+
+A positive test rather than a sidecar denylist: a new kind of
+ShipIt-parented container is then silent by default instead of becoming
+the next false alarm nobody remembered to exclude.
+
+The `start` half of the same handler is **correct as written** and was
+left alone. Its `attrs[shipit-parent-session]` predicate feeds the API
+trust boundary's IP index (`api-container-guard.ts` →
+`getSessionByAnyContainerIp`), which is built from that same label; a
+sidecar start does change that labelled set, and a missing entry there
+reads as "browser or host" — *more* trusted than a session container. The
+two predicates look identical and are answering different questions.
+
 ### 1.3 `workerPost` has no default timeout
 
 [worker-http.ts:21-74](../../src/server/orchestrator/worker-http.ts#L21)

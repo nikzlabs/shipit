@@ -793,9 +793,15 @@ export function setupContainerHealthMonitoring(
    * ServiceManager's own `pollStatus` handles the status flip and (where
    * applicable) retry-during-install backoff. Our job is just visibility.
    * See docs/124-session-rescue-and-diagnostics §1.2.
+   *
+   * Every container reaching this listener is one of the PROJECT's services —
+   * `container-health.ts` establishes that from the `shipit-service-name` label
+   * before emitting. ShipIt's own session-parented containers arrive on
+   * `session_child_exited` below instead, which is why the user-facing text here
+   * can speak plainly about "a compose service" and offer compose remediation.
    */
   containerManager.on("service_exited", (sessionId, info) => {
-    const svcName = info.serviceName ?? "service";
+    const svcName = info.serviceName;
     if (info.oom) {
       console.warn(
         `[container] Session ${sessionId} compose ${svcName} OOM-killed (container=${info.containerId}, exit=${info.exitCode})`,
@@ -811,7 +817,7 @@ export function setupContainerHealthMonitoring(
       runner.emitMessage({
         type: "service_oom",
         sessionId,
-        ...(info.serviceName ? { serviceName: info.serviceName } : {}),
+        serviceName: info.serviceName,
         containerId: info.containerId,
       });
     }
@@ -820,5 +826,32 @@ export function setupContainerHealthMonitoring(
       : `[compose] ${svcName} exited with code ${info.exitCode}.`;
     if (broadcastLog) broadcastLog(sessionId, "server", logText);
     runner.emitMessage(agentLogAppend("server", logText));
+  });
+
+  /**
+   * The other half of the same Docker event: a session-parented container that
+   * is NOT one of the project's services — an egress sidecar, or anything else
+   * ShipIt stamped with the session's parent label.
+   *
+   * Console ONLY, and that is the point of the split. These are ShipIt's own
+   * containers on ShipIt's own schedule: the containment pass force-removes and
+   * relaunches a service's sidecars on every `compose up`, so a healthy startup
+   * emits a burst of them. Broadcasting that burst to the session put ShipIt's
+   * routine churn in the user's Logs panel wearing the words "a compose service
+   * exited", which is what made a fine session look like a crash loop.
+   *
+   * Deliberately NOT `broadcastLog`, NOT a runner message, and in particular NOT
+   * `service_oom`: that card's remediation is "increase memory limits in
+   * docker-compose.yml", and a sidecar has no entry in the user's compose file
+   * to increase. The signal is kept where the person who can act on it looks —
+   * an operator reading orchestrator stdout, for whom a genuine sidecar crash
+   * loop is now legible as one instead of hiding among service exits.
+   */
+  containerManager.on("session_child_exited", (sessionId, info) => {
+    const what = info.egressSidecar ? "egress sidecar" : "non-service child container";
+    const how = info.oom ? "OOM-killed" : "exited";
+    console.log(
+      `[container] Session ${sessionId} ${what} ${how} (container=${info.containerId}, exit=${info.exitCode})`,
+    );
   });
 }

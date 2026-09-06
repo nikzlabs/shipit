@@ -14,13 +14,14 @@
  *      the health-monitor reconnect window, external `docker rm`).
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import {
   handleContainerExited,
   createMissingContainerReconciler,
   setupContainerHealthMonitoring,
 } from "../app-lifecycle.js";
+import { startHealthMonitor, createHealthMonitorState, type HealthDeps } from "../container-health.js";
 import { createOomCircuitBreaker } from "../oom-circuit-breaker.js";
 import { createSessionLoopDetector } from "../loop-detector.js";
 import type { SessionContainerManager, SessionContainer } from "../session-container.js";
@@ -963,6 +964,113 @@ describe("setupContainerHealthMonitoring → oomBreaker integration", () => {
     for (let i = 0; i < 5; i++) {
       manager.emit("service_exited", sessionId, {
         serviceName: "dev", containerId: `c${i}`, exitCode: 137, oom: false,
+      });
+    }
+    expect(breaker.getState(sessionId).countInWindow).toBe(0);
+    expect(breaker.isTripped(sessionId)).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // ShipIt's own session children (`session_child_exited`) — console only.
+  //
+  // Containment force-removes and relaunches a service's egress sidecars on
+  // every `compose up`, so a healthy startup produces a burst of these deaths.
+  // While they shared `service_exited` with the project's services, that burst
+  // reached the session's Logs panel as compose-service crashes: a field report
+  // recorded 19 of them during a normal two-minute startup of a session whose
+  // four services had `RestartCount=0` and had never exited.
+  // -------------------------------------------------------------------------
+
+  /**
+   * The whole chain, from a Docker event on the wire to what the user reads:
+   * `startHealthMonitor` → the manager's emitter → `setupContainerHealthMonitoring`
+   * → `broadcastLog`. The consumer-level tests below pin the listener's contract,
+   * but only this one can fail on the original defect — where the discrimination
+   * had to happen is inside the handler, and a test that emits `service_exited`
+   * by hand has already made the decision the bug got wrong.
+   */
+  async function wireDockerEvents(manager: SessionContainerManager) {
+    const eventStream = new EventEmitter();
+    await startHealthMonitor(
+      {
+        docker: { getEvents: vi.fn(async () => eventStream) } as unknown as HealthDeps["docker"],
+        containers: new Map(),
+        standbySessionIds: new Set<string>(),
+        emitter: manager as unknown as HealthDeps["emitter"],
+        labelFilters: () => [],
+      },
+      createHealthMonitorState(),
+    );
+    return (attributes: Record<string, string>) => eventStream.emit(
+      "data",
+      Buffer.from(JSON.stringify({
+        Action: "die",
+        Actor: { ID: "c1", Attributes: { exitCode: "137", ...attributes } },
+      })),
+    );
+  }
+
+  it("a dying egress sidecar produces no compose-service line, end to end", async () => {
+    const { manager, fake, logs, sessionId } = setup();
+    const die = await wireDockerEvents(manager);
+
+    die({
+      "shipit-parent-session": sessionId,
+      "shipit-egress-service-sidecar": "true",
+      "shipit-egress-parent": "svc-1",
+    });
+
+    expect(logs.some((l) => /^\[compose\] \S+ exited with code/.test(l.text))).toBe(false);
+    expect(logs).toHaveLength(0);
+    expect(fake.emitted).toHaveLength(0);
+  });
+
+  it("…while the project's own service still produces exactly that line", async () => {
+    // The no-lost-signal half, on the same wire. A fix that silenced Path 2
+    // wholesale would pass the test above and fail this one.
+    const { manager, logs, sessionId } = setup();
+    const die = await wireDockerEvents(manager);
+
+    die({ "shipit-parent-session": sessionId, "shipit-service-name": "dev" });
+
+    expect(logs.map((l) => l.text)).toEqual(["[compose] dev exited with code 137."]);
+  });
+
+  it("writes no session log line for a dying egress sidecar", () => {
+    const { manager, logs, sessionId } = setup();
+    manager.emit("session_child_exited", sessionId, {
+      containerId: "sidecar-1", exitCode: 137, oom: false, egressSidecar: true,
+    });
+
+    // Nothing at all reaches the user's Logs panel — and in particular nothing
+    // shaped like the compose-service exit these used to be indistinguishable
+    // from, which is the line the ops surface counts under
+    // `compose: service exited`.
+    expect(logs).toHaveLength(0);
+    expect(logs.some((l) => /^\[compose\] \S+ exited with code/.test(l.text))).toBe(false);
+  });
+
+  it("sends no runner message for a dying egress sidecar, OOM included", () => {
+    // `service_oom`'s remediation is "increase memory limits in
+    // docker-compose.yml". A sidecar is ShipIt's container and has no entry in
+    // the user's compose file, so reaching that advice is the defect — not its
+    // wording. Asserted on the OOM path because that is the one that used to
+    // produce a card as well as a line.
+    const { manager, fake, logs, sessionId } = setup();
+    manager.emit("session_child_exited", sessionId, {
+      containerId: "sidecar-1", exitCode: 137, oom: true, egressSidecar: true,
+    });
+
+    expect(fake.emitted.some((m) => m.type === "service_oom")).toBe(false);
+    expect(fake.emitted).toHaveLength(0);
+    expect(logs).toHaveLength(0);
+  });
+
+  it("a dying session child never touches the agent-container OOM breaker", () => {
+    const { manager, breaker, sessionId } = setup();
+    for (let i = 0; i < 5; i++) {
+      manager.emit("session_child_exited", sessionId, {
+        containerId: `sidecar-${i}`, exitCode: 137, oom: true, egressSidecar: true,
       });
     }
     expect(breaker.getState(sessionId).countInWindow).toBe(0);
