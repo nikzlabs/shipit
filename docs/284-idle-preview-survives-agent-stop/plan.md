@@ -175,6 +175,19 @@ session nobody reopens"). Re-adopting preserved stacks across a restart — so a
 idle preview survives a ShipIt update too — is a worthwhile follow-up, not part
 of this.
 
+> **Correction (docs/290).** "So the shutdown hook stops every runner-less
+> manager" describes what the hook *starts*, not what it finishes. That sweep is
+> `void mgr.stop()` and the `disposed` handlers go through the fire-and-forget
+> `trackComposeStop`; nothing awaits them, the process exits, and the update's
+> `docker compose up -d` removes the container those `compose down` children run
+> in. **Every stack survived every update** — 23 of them across seven
+> orchestrator recreations on 2026-09-06, four spinning a dev server at 100% CPU
+> for days. The paragraph's *reasoning* holds and its *guarantee* did not; the
+> guarantee now lives in `reapSurvivingComposeStacks`
+> (`compose-stack-reaper.ts`), a boot pass that reconciles against Docker rather
+> than against a map that died with the process. A reserved always-on preview is
+> exempt from it, per docs/241.
+
 ## What the user is told (req 8)
 
 Tier 1 and tier 2 are different events and must not share one message. Tier 1

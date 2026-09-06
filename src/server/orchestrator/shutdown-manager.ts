@@ -62,24 +62,37 @@ export function registerShutdownHook(
     // its post-turn commit never runs — the second half of the 2026-08-10
     // incident. Full reset deliberately does NOT pass it.
     //
-    // `disposeAll()` also fires each runner's `disposed` handler, which runs
+    // `disposeAll()` also fires each runner's `disposed` handler, which STARTS a
     // `docker compose down` for the session's stack (service-manager-setup.ts).
-    // That is deliberately LEFT ALONE: unlike the agent container, a Compose
-    // stack is not adopted across the swap — `ServiceManager.start()` opens with
+    // That is deliberate: unlike the agent container, a Compose stack is not
+    // adopted across the swap — `ServiceManager.start()` opens with
     // `killStaleContainers()`, which force-removes every
     // `shipit-parent-session=<sid>` container before `compose up`, so the next
-    // orchestrator rebuilds the stack whether or not it survived. Preserving it
-    // here would only leave a dev server running for a session nobody reopens.
-    // The agent container is the opposite case, which is why `dispose()` below
-    // must not touch it — see `session-container.ts`.
+    // orchestrator rebuilds the stack whether or not it survived. The agent
+    // container is the opposite case, which is why `dispose()` below must not
+    // touch it — see `session-container.ts`.
+    //
+    // **This hook is a HEAD START, not a guarantee, and three places in this
+    // repository used to claim otherwise** (docs/290). `trackComposeStop` is
+    // fire-and-forget and the sweep below is `void mgr.stop()`; nothing awaits
+    // `composeStopPromises`, the hook returns, `process.exit(0)` follows, and
+    // the `docker compose up -d` performing the update removes THIS container —
+    // killing every in-flight `compose down` child with it. Production carried
+    // 23 stacks across seven orchestrator recreations this way. Awaiting them
+    // here is not the fix either: 20+ parallel `compose down`s do not fit in
+    // Docker's stop grace period, and making every update that much slower to
+    // reclaim something nobody is waiting on is the wrong trade. The guarantee
+    // is `reapSurvivingComposeStacks` at the NEXT boot
+    // (`compose-stack-reaper.ts`), which reconciles against Docker rather than
+    // against a map that died with the process.
     shutdownDeps.runnerRegistry.disposeAll({ preserveAgent: true });
-    // docs/284 — the same reasoning, for the stacks that have no runner left to
-    // fire a `disposed` handler. Tier-1 reclaim keeps a session's Compose stack
-    // running after disposing its runner, and `serviceManagers` is process-local:
-    // the next orchestrator cannot route to such a stack (`preview-proxy.ts`
+    // docs/284 — the same, for the stacks that have no runner left to fire a
+    // `disposed` handler. Tier-1 reclaim keeps a session's Compose stack running
+    // after disposing its runner, and `serviceManagers` is process-local: the
+    // next orchestrator cannot route to such a stack (`preview-proxy.ts`
     // resolves through that map) or reclaim it, so leaving it up is exactly the
-    // "dev server running for a session nobody reopens" this hook already
-    // refuses. The user reopening the session rebuilds it, as it always did.
+    // "dev server running for a session nobody reopens" this hook tries to
+    // refuse. Same caveat as above — started, not finished.
     for (const [sessionId, mgr] of shutdownDeps.serviceManagers) {
       if (shutdownDeps.runnerRegistry.get(sessionId)) continue;
       shutdownDeps.serviceManagers.delete(sessionId);

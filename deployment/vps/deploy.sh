@@ -75,11 +75,17 @@ fi
 # stays additive-only, guarded by
 # src/server/shared/types/worker-wire-contract.test.ts.
 #
-# Compose stacks are NOT the sweep's business: the outgoing orchestrator's clean
-# shutdown already `compose down`s each one, and one that survives a crash is
-# unroutable (the proxy resolves service ports through an in-memory map the
-# restart emptied) and is force-removed by the next attach's
-# `killStaleContainers()` anyway.
+# Compose stacks are NOT that sweep's business, but they ARE reclaimed — by a
+# separate boot pass, `reapSurvivingComposeStacks` (docs/290). This comment used
+# to say the outgoing orchestrator's clean shutdown already `compose down`s each
+# one; it does not. Those downs are un-awaited children of a process that then
+# exits, and the `docker compose up -d` below removes the container they run in,
+# so every stack survives every update. They are unroutable once they do (the
+# proxy resolves service ports through an in-memory map the restart emptied), so
+# the new orchestrator reconciles against Docker at boot and takes down every
+# stack no live session can reach — keeping the ones whose turn was adopted,
+# whose session holds an always-on preview reservation, or that this process
+# already owns.
 
 # NO `docker network prune -f` here. It used to sit at this line to reclaim
 # per-session address space, arguing it was safe because prune only removes
