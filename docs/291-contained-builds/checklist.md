@@ -24,3 +24,5 @@ blocked on the open questions in [requirements.md](requirements.md).
       the offline option no longer doubles as the fail-closed path; and the
       decisions that had leaked into settled prose moved back to open
       questions.
+- [x] Record what a later VM-backed builder tier would require (`docs/292`
+      finding), and why this design does not pre-emptively accommodate it.
