@@ -46,6 +46,7 @@ function makeSweep(world: Partial<World> = {}) {
   const warmSessionForRepo = vi.fn(async () => undefined);
   const ensureStandbyForWarmSession = vi.fn(async (_opts: unknown) => undefined);
   const destroy = vi.fn(async () => undefined);
+  const stopPreview = vi.fn((_sessionId: string) => undefined);
   const setWarmSessionId = vi.fn();
   let memory: DockerMemoryStats | null = null;
 
@@ -75,6 +76,7 @@ function makeSweep(world: Partial<World> = {}) {
     containerManager,
     warmSessionForRepo,
     ensureStandbyForWarmSession,
+    stopPreview,
     getMemoryStats: () => memory,
   });
 
@@ -82,6 +84,7 @@ function makeSweep(world: Partial<World> = {}) {
     sweep,
     warmSessionForRepo,
     ensureStandbyForWarmSession,
+    stopPreview,
     destroy,
     setWarmSessionId,
     setMemory: (m: DockerMemoryStats | null) => { memory = m; },
@@ -123,6 +126,35 @@ describe("warm tier sweep", () => {
     // The row and the clone are fine — only the container died.
     expect(world.warmSessionForRepo).not.toHaveBeenCalled();
     expect(world.setWarmSessionId).not.toHaveBeenCalled();
+  });
+
+  /**
+   * docs/288 — the repair must drop the pre-started stack's MANAGER, not only
+   * its containers. `destroy()` sweeps the compose siblings, but the manager
+   * stays in the registry — and `preStartWarmPreview` declines whenever it finds
+   * one there (a claim may have built it). So without this the rebuilt standby
+   * comes back with a manager that owns nothing and no preview at all: the
+   * repair would restore half the warm tier and report success.
+   *
+   * Ordering matters as much as the call: the manager must be out of the
+   * registry before the container it was built for is torn down underneath it.
+   */
+  it("drops the pre-started preview before rebuilding the standby", async () => {
+    world = makeSweep({ tracked: { status: "running" }, dockerRunning: false });
+
+    await world.sweep();
+
+    expect(world.stopPreview).toHaveBeenCalledWith(WARM_ID);
+    expect(world.stopPreview.mock.invocationCallOrder[0])
+      .toBeLessThan(world.destroy.mock.invocationCallOrder[0] ?? Infinity);
+  });
+
+  it("does not touch the preview of a healthy standby", async () => {
+    world = makeSweep({ tracked: { status: "running" }, dockerRunning: true });
+
+    await world.sweep();
+
+    expect(world.stopPreview).not.toHaveBeenCalled();
   });
 
   it("hands the rebuild a live ownership check, not a snapshot", async () => {

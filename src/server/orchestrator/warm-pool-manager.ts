@@ -47,6 +47,21 @@ export interface WarmPoolDeps {
    * available, i.e. it creates the standby.
    */
   getMemoryStats?: () => DockerMemoryStats | null;
+  /**
+   * docs/288 — pre-start this warm session's Compose stack once the standby and
+   * the pre-install are done, so the claim adopts a running dev server instead
+   * of paying `compose up` + boot + first compile on the user's clock.
+   *
+   * A hook rather than the compose collaborators themselves: the warm pool has
+   * no business knowing about ServiceManagers, and `bootstrap-managers.ts` is
+   * where the registry is in scope. Absent in local mode and in test setups,
+   * which is the same opt-out `containerManager: null` already expresses.
+   */
+  preStartPreview?: (opts: {
+    sessionId: string;
+    workspaceDir: string;
+    repoUrl: string;
+  }) => Promise<void>;
 }
 
 /** A warm session that needs a standby container built for it. */
@@ -83,7 +98,7 @@ export function createWarmPool(
     repoStore, sessionManager, createRepoGit,
     githubAuthManager, containerManager,
     credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
-    oomBreaker, getMemoryStats,
+    oomBreaker, getMemoryStats, preStartPreview,
   } = poolDeps;
 
   const warmingInProgress = new Set<string>();
@@ -177,6 +192,17 @@ export function createWarmPool(
       // `runner.runInstall()` sees it and short-circuits. A user activating
       // mid-install joins the in-flight run via the worker's /install endpoint.
       await runPreInstall(workspaceDir, sc.workerUrl, sessionId);
+      // docs/288 — and now the preview, which is the half the warm pool never
+      // pre-paid. STRICTLY after the pre-install: `ServiceManager.start()`
+      // partitions the auto services on the install gate, so a stack started
+      // while install is in flight comes up HELD rather than running, and the
+      // claim would adopt a stopped preview that looks pre-started.
+      //
+      // Inside the trust branch above, with the pre-install, because it is the
+      // same kind of act: `command:`/`build:` is the repository's own code, and
+      // docs/178 defers all of it until the user has trusted the remote once.
+      // Its own recency gate lives in the hook (req 8).
+      await preStartPreview?.({ sessionId, workspaceDir, repoUrl });
     } catch (err) {
       console.error(`[warm] Standby container failed for ${sessionId}:`, getErrorMessage(err));
     }

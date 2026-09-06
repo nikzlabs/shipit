@@ -34,7 +34,9 @@ interface StubServiceManager extends EventEmitter {
   _setInstallRunningCalls: boolean[];
   _setInstallRunningOpts: ({ failed?: boolean } | undefined)[];
   _setSecretsLoaderCalls: (() => Promise<Record<string, string>>)[];
-  setInstallRunning(running: boolean, opts?: { failed?: boolean }): void;
+  /** planning#2503 — the gate's failure latch, which a skipping caller must consult. */
+  installGateFailed: boolean;
+  setInstallRunning(running: boolean, opts?: { failed?: boolean }): boolean;
   setSecretsLoader(loader: () => Promise<Record<string, string>>): void;
   stop(): Promise<void>;
   /** Real runner's setServiceManager calls this — return an empty snapshot. */
@@ -62,9 +64,20 @@ function makeStubServiceManager(): StubServiceManager {
     _setInstallRunningCalls: [] as boolean[],
     _setInstallRunningOpts: [] as ({ failed?: boolean } | undefined)[],
     _setSecretsLoaderCalls: [] as (() => Promise<Record<string, string>>)[],
-    setInstallRunning(running: boolean, opts?: { failed?: boolean }) {
+    _gateOpen: false,
+    installGateFailed: false,
+    // Models the real transition contract (planning#2503): a same-value call is
+    // ignored and reports `false`, which is how a caller knows whether it owns
+    // the open bracket. A fake that always reported `true` could not fail on
+    // closing a gate somebody else opened.
+    setInstallRunning(running: boolean, opts?: { failed?: boolean }): boolean {
+      if (this._gateOpen === running) return false;
+      this._gateOpen = running;
+      if (running) this.installGateFailed = false;
+      else if (opts?.failed) this.installGateFailed = true;
       this._setInstallRunningCalls.push(running);
       this._setInstallRunningOpts.push(opts);
+      return true;
     },
     setSecretsLoader(loader: () => Promise<Record<string, string>>) {
       this._setSecretsLoaderCalls.push(loader);
@@ -309,6 +322,127 @@ describe("adoptExistingServiceManager (docs/127)", () => {
     expect(mgr._setSecretsLoaderCalls).toHaveLength(0);
 
     runner.dispose({ force: true });
+  });
+
+  /**
+   * planning#501 / docs/288 — the one place this feature can silently undo
+   * itself.
+   *
+   * The stack this path adopts is ALREADY RUNNING: a warm session's preview,
+   * pre-started before anyone claimed it. Closing the install gate is
+   * `holdGatedServicesForReinstall` → `docker compose stop` on exactly those
+   * services — SIGTERM, 10s grace, SIGKILL. And on a warm claim the install
+   * marker is present, so `runner.runInstall` short-circuits in milliseconds:
+   * the bracket buys nothing and costs the whole feature. The claim would adopt
+   * a running preview and immediately stop it.
+   *
+   * These tests fail if the unconditional re-hold comes back.
+   */
+  describe("install gate on adoption (docs/288)", () => {
+    /** Adopt with a decision relay, returning the levers to drive it. */
+    function adoptWithRelay(mgr: StubServiceManager, opts: { latchedFailed?: boolean } = {}): {
+      runner: ContainerSessionRunner;
+      decide: (d: "skipped" | "started") => void;
+      finish: (res: { ok: boolean; unverified?: boolean }) => void;
+      settle: () => Promise<void>;
+    } {
+      const runner = makeRunner("s1");
+      if (opts.latchedFailed) mgr.installGateFailed = true;
+      let resolveInstall!: (r: { ok: boolean; unverified?: boolean }) => void;
+      const installPromise = new Promise<{ ok: boolean; unverified?: boolean }>((r) => {
+        resolveInstall = r;
+      });
+      let listener: ((d: "skipped" | "started") => void) | undefined;
+      adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
+        serviceManagers: new Map(),
+        composeStopPromises: new Map(),
+        containerManager: buildContainerManager(),
+        installPromise,
+        onInstallDecision: (fn) => { listener = fn; },
+      });
+      return {
+        runner,
+        decide: (d) => listener?.(d),
+        finish: (res) => resolveInstall(res),
+        settle: async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); },
+      };
+    }
+
+    it("does NOT touch the gate when the worker skips the install (marker present)", async () => {
+      const mgr = makeStubServiceManager();
+      const h = adoptWithRelay(mgr);
+
+      // Nothing yet — the decision has not arrived, so nothing has been decided.
+      expect(mgr._setInstallRunningCalls).toEqual([]);
+
+      h.decide("skipped");
+      h.finish({ ok: true });
+      await h.settle();
+
+      // The pre-started services are never held, never `compose stop`ped, and
+      // the gate is never closed on a bracket nobody opened.
+      expect(mgr._setInstallRunningCalls).toEqual([]);
+      h.runner.dispose({ force: true });
+    });
+
+    it("brackets the gate when the worker says the install really runs", async () => {
+      const mgr = makeStubServiceManager();
+      const h = adoptWithRelay(mgr);
+
+      h.decide("started");
+      expect(mgr._setInstallRunningCalls).toEqual([true]);
+
+      h.finish({ ok: true });
+      await h.settle();
+      expect(mgr._setInstallRunningCalls).toEqual([true, false]);
+      expect(mgr._setInstallRunningOpts[1]).toEqual({ failed: false });
+      h.runner.dispose({ force: true });
+    });
+
+    it("fails closed when the install fails without the worker ever deciding", async () => {
+      // The transport-failure / dispose shapes: `onWorkerDecision` never fires,
+      // so a skip-by-default would leave a broken dependency tree looking
+      // healthy. The bracket must still latch the gated services to `error`.
+      const mgr = makeStubServiceManager();
+      const h = adoptWithRelay(mgr);
+
+      h.finish({ ok: false });
+      await h.settle();
+      expect(mgr._setInstallRunningCalls).toEqual([true, false]);
+      expect(mgr._setInstallRunningOpts[1]).toEqual({ failed: true });
+      h.runner.dispose({ force: true });
+    });
+
+    it("repairs a gate already latched by an earlier failure, even on a skip", async () => {
+      // `_installFailed` is cleared only by a false→true transition, and the
+      // docs/286 watchdog refuses to recover a gate it can see failed — so a
+      // skip that made no transition would strand those services in `error` for
+      // the rest of the session.
+      const mgr = makeStubServiceManager();
+      const h = adoptWithRelay(mgr, { latchedFailed: true });
+
+      h.decide("skipped");
+      expect(mgr._setInstallRunningCalls).toEqual([]);
+
+      h.finish({ ok: true });
+      await h.settle();
+      expect(mgr._setInstallRunningCalls).toEqual([true, false]);
+      expect(mgr._setInstallRunningOpts[1]).toEqual({ failed: false });
+      h.runner.dispose({ force: true });
+    });
+
+    it("does NOT repair a latched gate on an UNVERIFIED completion", async () => {
+      // `unverified` is synthesized from having observed nothing — it means "we
+      // cannot tell", which is not the positive evidence a repair needs.
+      const mgr = makeStubServiceManager();
+      const h = adoptWithRelay(mgr, { latchedFailed: true });
+
+      h.decide("skipped");
+      h.finish({ ok: true, unverified: true });
+      await h.settle();
+      expect(mgr._setInstallRunningCalls).toEqual([]);
+      h.runner.dispose({ force: true });
+    });
   });
 
   it("re-arms install-running gate around the new container's install", async () => {

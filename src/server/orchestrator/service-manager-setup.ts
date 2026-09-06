@@ -10,7 +10,7 @@ import type { SecretStore } from "./secret-store.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { LogSource, SessionInfo } from "../shared/types.js";
 import type { LogStore } from "./log-store.js";
-import { resolveShipitConfig } from "../shared/shipit-config.js";
+import { resolveShipitConfig, type ShipitConfig } from "../shared/shipit-config.js";
 import { resolveDepsHashInputs } from "../shared/deps-hash.js";
 import { evaluateContentKeyReport, type ContentKeyConfig } from "./install-content-key.js";
 import { agentLogAppend, appendAgentLog } from "./log-emit.js";
@@ -97,20 +97,52 @@ export async function applyOverlayDepDirs(
   // override and the compose start timing byte-for-byte unchanged.
   if (!containerManager || !session || !isContainerRunner(runner) || !isOverlayEligible(session)) return false;
 
+  // Orders us after container creation — the volumes are created just before
+  // the container. `dispose()` also resolves it, hence the `disposed` re-check.
+  await runner.whenWorkerReady();
+  if (runner.disposed) return false;
+
+  return applyOverlayDepDirsForSession(runner.sessionId, mgr, {
+    containerManager, session, workspaceDir,
+    ...(broadcastLog ? { broadcastLog } : {}),
+  });
+}
+
+/**
+ * The runner-free half of {@link applyOverlayDepDirs}: given a session whose
+ * agent container already exists, point `mgr` at that container's overlay
+ * dep-dir volumes.
+ *
+ * Split out for docs/288's warm pre-start, which builds a manager for a STANDBY
+ * container and has no runner to gate on. Doing it there is not an optimization:
+ * a manager started without the overlay set holds `[]`, so the adopting claim
+ * resolves a CHANGED set and reconciles — and a service container freezes its
+ * mounts at create time, so that reconcile RECREATES every pre-started
+ * container. The warm stack would come up and then be thrown away at exactly the
+ * moment it was supposed to pay off.
+ */
+export async function applyOverlayDepDirsForSession(
+  sessionId: string,
+  mgr: ServiceManager,
+  deps: {
+    containerManager: SessionContainerManager;
+    session: SessionInfo;
+    workspaceDir: string;
+    broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
+  },
+): Promise<boolean> {
+  const { containerManager, session, workspaceDir, broadcastLog } = deps;
+  if (!isOverlayEligible(session)) return false;
+
   const warn = (text: string): void => {
-    console.warn(`[overlay:${runner.sessionId}] ${text}`);
-    if (broadcastLog) broadcastLog(runner.sessionId, "server", `[compose] ${text}`);
+    console.warn(`[overlay:${sessionId}] ${text}`);
+    if (broadcastLog) broadcastLog(sessionId, "server", `[compose] ${text}`);
   };
 
   try {
-    // Orders us after container creation — the volumes are created just before
-    // the container. `dispose()` also resolves it, hence the `disposed` re-check.
-    await runner.whenWorkerReady();
-    if (runner.disposed) return false;
-
-    const provisioned = containerManager.provisionedOverlayDepDirs(runner.sessionId);
+    const provisioned = containerManager.provisionedOverlayDepDirs(sessionId);
     const pairs = provisioned ?? (await containerManager.prepareOverlaySpecs({
-      sessionId: runner.sessionId,
+      sessionId,
       workspaceDir,
       session,
       requireProvisioned: true,
@@ -133,7 +165,7 @@ export async function applyOverlayDepDirs(
         // skips those by design) or a container built before the feature, and
         // those sessions must not get a scary Logs entry on every activation.
         console.log(
-          `[overlay:${runner.sessionId}] agent container has no dependency overlay — ` +
+          `[overlay:${sessionId}] agent container has no dependency overlay — ` +
           `compose services use the plain workspace directories`,
         );
       } else {
@@ -167,7 +199,7 @@ export async function applyOverlayDepDirs(
     // `changed` says no reconcile is needed — but the service containers are gone,
     // and a container freezes its mounts at create time, so only a reconcile can
     // bring them back over the generation the agent is now on.
-    const recreated = containerManager.consumeOverlayVolumesRecreated(runner.sessionId);
+    const recreated = containerManager.consumeOverlayVolumesRecreated(sessionId);
     if (recreated) {
       // Said in the session's own Logs panel, not just orchestrator stdout: the
       // reconcile below brings back auto and install-gated services, but a
@@ -198,10 +230,14 @@ function isContainerRunner(
   return runner instanceof ContainerSessionRunner;
 }
 
+/** The worker's answer to "will this install actually run?" — see `runInstall`. */
+export type WorkerInstallDecision = "skipped" | "started";
+
 /**
  * Re-wire a freshly-created runner onto an orphaned ServiceManager that
- * survived the previous runner's `preserveComposeOnDispose` dispose. The
- * compose stack is still running — we only need to attach listeners,
+ * survived the previous runner's `preserveComposeOnDispose` dispose, or onto
+ * one the warm pool pre-started before the session was ever claimed (docs/288).
+ * The compose stack is still running — we only need to attach listeners,
  * reconnect the new agent container to the existing network, and re-arm
  * the install-running gate around the new container's install.
  *
@@ -219,6 +255,16 @@ export function adoptExistingServiceManager(
     containerManager: SessionContainerManager | null;
     broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
     installPromise: Promise<InstallCompletion> | null;
+    /**
+     * planning#501 — subscribe to the worker's "will this install actually run?"
+     * answer for `installPromise`. When wired, the install gate is closed only
+     * for an install that will really run; see the bracket below for why.
+     *
+     * Absent means "no answer is obtainable" — the older test doubles, and any
+     * caller that built the promise without the relay — and the bracket then
+     * closes unconditionally, exactly as it did before this existed.
+     */
+    onInstallDecision?: (fn: (decision: WorkerInstallDecision) => void) => void;
     /**
      * Fresh closure that reads the session's latest secrets (the OLD
      * closure baked into `mgr` references the disposed runner; safe today
@@ -383,12 +429,46 @@ export function adoptExistingServiceManager(
   //    Same race story as initial setup: a compose service that reads
   //    workspace `node_modules` while install is extracting can fail —
   //    the gate retries it instead of latching to `error`.
+  //
+  //    But ONLY for an install that will really run (planning#501, applying
+  //    planning#2503's rule to this path). Closing the gate is
+  //    `holdGatedServicesForReinstall` → `docker compose stop`: SIGTERM, 10s
+  //    grace, SIGKILL. The stack this path adopts is ALREADY RUNNING, so paying
+  //    that for an install the marker then skips in milliseconds tears down a
+  //    healthy preview for nothing. On a warm claim that is the normal case —
+  //    the pre-install wrote the marker — so an unconditional bracket here
+  //    silently spends the whole of docs/288: the warm stack comes up, the
+  //    claim adopts it, and the first thing the adoption does is stop it.
   if (installPromise) {
-    mgr.setInstallRunning(true);
     const p = installPromise;
+    // OWNERSHIP, not "we asked": `setInstallRunning` ignores a same-value call,
+    // so a request landing while another caller holds the gate changes nothing
+    // and must not make us close theirs.
+    let opened = false;
+    const openGate = (): void => {
+      if (!opened) opened = mgr.setInstallRunning(true);
+    };
+    // Read BEFORE anything can open the gate, which clears the latch it reports.
+    const wasLatchedFailed = mgr.installGateFailed ?? false;
+    if (deps.onInstallDecision) {
+      deps.onInstallDecision((decision) => { if (decision === "started") openGate(); });
+    } else {
+      openGate();
+    }
     void (async () => {
       const res = await p;
-      mgr.setInstallRunning(false, { failed: !res.ok });
+      // Fail closed, on the same two states `reinstallForDepChange` names. ONE —
+      // the install failed or never reached the worker: the bracket is what
+      // latches `dependsOnInstall` services to `error`, and dropping it leaves a
+      // broken tree looking healthy. TWO — the gate was already latched from an
+      // earlier failure, which only a false→true transition clears, so a skip
+      // that made no transition would strand those services for the session's
+      // life. Repairing that takes positive evidence: never an `unverified`
+      // completion, which means "we observed nothing".
+      const provenGood = res.ok && !res.unverified;
+      if (!res.ok || (wasLatchedFailed && provenGood)) openGate();
+      // Never close a gate this call does not own.
+      if (opened) mgr.setInstallRunning(false, { failed: !res.ok });
     })();
   }
 
@@ -430,6 +510,165 @@ export const COMPOSE_STOP_WAIT_TIMEOUT_MS = 15_000;
  * services either (review finding).
  */
 const DEFAULT_COMPOSE_CONFIG = { file: "docker-compose.yml", dockerSocket: false } as const;
+
+/**
+ * The collaborators a {@link ServiceManager} is constructed with, none of which
+ * need a runner. A subset of {@link ServiceSetupDeps}, so the runner path passes
+ * its own deps straight through.
+ */
+export type ServiceManagerBuildDeps = Pick<
+  ServiceSetupDeps,
+  | "sessionManager"
+  | "containerManager"
+  | "secretStore"
+  | "credentialStore"
+  | "dockerSecretsConfig"
+  | "serviceEnvDir"
+  | "logStore"
+>;
+
+/**
+ * Resolve the session's user-saved secrets. Keyed by the session's CURRENT
+ * `remoteUrl` on every call, so secrets edited while the session was idle are
+ * picked up on the next compose start/reconcile, and a session with no remote
+ * (a brand-new local-only one) gets an empty record.
+ *
+ * Shared by construction and by {@link adoptExistingServiceManager}, which
+ * replaces the closure baked into a manager that outlived its runner.
+ */
+export function createSecretsLoader(
+  sessionId: string,
+  deps: Pick<ServiceManagerBuildDeps, "sessionManager" | "secretStore">,
+): (() => Promise<Record<string, string>>) | undefined {
+  const { sessionManager, secretStore } = deps;
+  if (!secretStore) return undefined;
+  return async () => {
+    const remoteUrl = sessionManager.get(sessionId)?.remoteUrl;
+    if (!remoteUrl) return {};
+    return secretStore.loadSecrets(remoteUrl);
+  };
+}
+
+/**
+ * Construct a session's {@link ServiceManager} — and nothing else. No listeners,
+ * no install gate, no `start()`: those are the caller's, because they are the
+ * half that differs.
+ *
+ * **This is deliberately the ONLY construction site** (docs/288). Two paths need
+ * a manager for the same session: `setupServiceManager` at activation, and the
+ * warm pool's preview pre-start, which has no runner at all. A dozen
+ * collaborators are threaded in here — the secrets loaders, the containment
+ * hooks, the network join/heal functions, the docker-secrets config, the log
+ * store — and a second, copied construction site that drifts from this one is
+ * exactly how docs/148 regressed silently for months (a `withStandby` opt-in
+ * that one caller forgot). A warm stack built from a different object is worse
+ * than no warm stack: it runs, gets adopted, and is wrong.
+ *
+ * Nothing here touches a runner, which is what makes the warm path possible.
+ * The runner-dependent collaborators — the `stack_error` listener and the
+ * runner's `setServiceManager` — are wired by whoever adopts the manager.
+ */
+export function buildServiceManager(args: {
+  sessionId: string;
+  workspaceDir: string;
+  /** The session row, when there is one. Only `kind` is read. */
+  session: SessionInfo | undefined;
+  /** Already-resolved `shipit.yaml` — the caller has usually branched on it. */
+  shipitConfig: ShipitConfig;
+  deps: ServiceManagerBuildDeps;
+}): ServiceManager {
+  const { sessionId, workspaceDir, session, shipitConfig, deps } = args;
+  const { containerManager, credentialStore, dockerSecretsConfig, serviceEnvDir, logStore } = deps;
+
+  // Workspace volume info for compose volume rewriting: user `.:/workspace`
+  // bind mounts must map to the same storage as the agent container.
+  const wsVolume = process.env.WORKSPACE_VOLUME;
+  const wsSubpath = wsVolume ? workspaceDir.replace(/^\/workspace\//, "") : undefined;
+
+  // docs/088 — account-level MCP secrets (`mcp__*` keys), and docs/252 phase 2
+  // — the user's stored service credentials under their catalogue `storageEnv`
+  // names. Read fresh from CredentialStore on every compose start/reconcile so
+  // anything added while the session was idle is picked up on the next sync.
+  //
+  // The service credentials are the half that was MISSING: this loader used to
+  // be `mcp__*`-only, which is precisely why a key saved in Settings reached a
+  // compose-less session and not a compose-backed one.
+  const accountAgentEnvLoader = credentialStore
+    ? () => collectAccountAgentEnv(credentialStore)
+    : undefined;
+
+  return new ServiceManager({
+    sessionId,
+    workspaceDir,
+    composeConfig: shipitConfig.compose ?? DEFAULT_COMPOSE_CONFIG,
+    ...(shipitConfig.compose ? {} : { noProjectCompose: true }),
+    workspaceVolume: wsVolume,
+    workspaceSubpath: wsSubpath,
+    stackName: process.env.DOCKER_STACK,
+    opsSession: session?.kind === "ops",
+    secretsLoader: createSecretsLoader(sessionId, deps),
+    accountAgentEnvLoader,
+    // docs/262 req 23 — the credential NAMES this session's activated plugins
+    // declare. Read fresh on every secrets pass, from each repository's LIVE
+    // manifest, so a `shipit plugin refresh` that adds a credential shows up
+    // without recreating the session. Names only: satisfaction is decided
+    // against `secretsLoader`'s map — the consuming project's own store — and
+    // never against `accountAgentEnvLoader`, which holds ShipIt's platform
+    // credentials (req 23's boundary).
+    pluginCredentialsLoader: () => collectPluginCredentialDeclarations(workspaceDir),
+    ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
+    serviceEnvDir,
+    ...(logStore ? { logStore } : {}),
+    networkJoinFn: containerManager
+      ? async (networkName: string) => {
+          // Connect agent container to compose network
+          await containerManager.connectToNetwork(sessionId, networkName);
+          // Connect orchestrator container so the preview proxy can reach services
+          try {
+            const orchestratorId = (await import("node:os")).hostname();
+            const docker = containerManager.getDockerClient();
+            const network = docker.getNetwork(networkName);
+            await network.connect({ Container: orchestratorId });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (!msg.includes("already exists")) {
+              console.warn(`[compose] Failed to connect orchestrator to ${networkName}:`, msg);
+            }
+          }
+        }
+      : undefined,
+    // docs/128 — periodic self-heal of the agent's compose-network attachment.
+    // The agent (unlike the orchestrator, re-attached via networkJoinFn on every
+    // compose op) can be stranded on a dead bridge when the ops docker-socket-proxy
+    // is recreated by its own restart policy without the orchestrator running
+    // `compose up`. This re-attaches it on the poll heartbeat; membership-gated so
+    // it's a cheap no-op while the agent is correctly attached.
+    networkHealFn: containerManager
+      ? async (networkName: string) => {
+          await containerManager.ensureConnectedToSessionNetwork(sessionId, networkName);
+        }
+      : undefined,
+    containServicesFn: containerManager?.isEgressContained(sessionId)
+      ? async (serviceNames: string[]) => {
+          await containerManager.containComposeServices(sessionId, serviceNames);
+        }
+      : undefined,
+    containServiceDns: containerManager?.isEgressDnsContained(sessionId) ?? false,
+    containServiceProxy: containerManager?.isEgressProxyContained(sessionId) ?? false,
+    ensureSessionNetworkModeFn: containerManager
+      ? async (internal: boolean) => containerManager.ensureSessionNetworkMode(sessionId, internal)
+      : undefined,
+    prepareContainedStartFn: containerManager?.isEgressContained(sessionId)
+      ? async (serviceNames: string[]) => containerManager.prepareComposeServiceStart(sessionId, serviceNames)
+      : undefined,
+    // Unconditional, unlike the containment hooks above: a compose command
+    // starts containers the API trust boundary must recognise whether or not
+    // this session's egress is contained (docs/201).
+    ...(containerManager
+      ? { onTopologyChange: () => containerManager.beginContainerTopologyChange() }
+      : {}),
+  });
+}
 
 /**
  * Register an in-flight `mgr.stop()` so the next `mgr.start()` for the
@@ -596,10 +835,6 @@ export function setupServiceManager(
     composeWarnings,
     composeNotConfigured,
     containerManager,
-    secretStore,
-    dockerSecretsConfig,
-    serviceEnvDir,
-    logStore,
     broadcastLog,
     credentialStore,
     publishOverlayBases,
@@ -693,8 +928,30 @@ export function setupServiceManager(
     // input set is resolved.
     reportContentKeyState(runner.sessionId, workspaceDir, shipitConfig.agent);
   }
+  // planning#501 — relay the worker's "will this install actually RUN?" answer to
+  // the adoption path below, which uses it to decide whether the install gate is
+  // worth closing. Only the adoption path cares: on the create path the manager
+  // has no services yet, so closing the gate stops nothing and is what holds the
+  // auto-preview services until install finishes.
+  //
+  // A relay rather than a plain field because the answer arrives asynchronously,
+  // after `runInstall`'s POST returns, while the adoption call below is
+  // synchronous. Late subscribers get the answer immediately; a decision that
+  // never arrives (join, dispose, transport failure) fires nothing, and the
+  // adopting side fails closed on the install's outcome instead.
+  const decisionListeners: ((d: WorkerInstallDecision) => void)[] = [];
+  let observedDecision: WorkerInstallDecision | undefined;
+  const onInstallDecision = (fn: (d: WorkerInstallDecision) => void): void => {
+    if (observedDecision) fn(observedDecision);
+    else decisionListeners.push(fn);
+  };
   if (installCommands.length > 0 && runner instanceof ContainerSessionRunner) {
-    installPromise = runner.runInstall(installCommands).catch((err: unknown) => {
+    installPromise = runner.runInstall(installCommands, {
+      onWorkerDecision: (decision) => {
+        observedDecision = decision;
+        for (const fn of decisionListeners) fn(decision);
+      },
+    }).catch((err: unknown) => {
       console.error(`[install:${runner.sessionId}] Install failed:`, getErrorMessage(err));
       return { ok: false };
     });
@@ -799,48 +1056,6 @@ export function setupServiceManager(
   }
   // Compose is now configured — clear stale not-configured flag
   composeNotConfigured.delete(runner.sessionId);
-  const composeConfig = shipitConfig.compose ?? DEFAULT_COMPOSE_CONFIG;
-
-  // Workspace volume info for compose volume rewriting: user `.:/workspace`
-  // bind mounts must map to the same storage as the agent container.
-  const wsVolume = process.env.WORKSPACE_VOLUME;
-  const wsSubpath = wsVolume ? workspaceDir.replace(/^\/workspace\//, "") : undefined;
-
-  // Secrets loader — resolves to the user-saved secrets for this session's
-  // repo. Each session activation reads the latest values from the database,
-  // so secrets edited while the session was idle are picked up on next start.
-  // Sessions without a remoteUrl (e.g. brand-new local-only ones) get an
-  // empty record — services that declare `x-shipit-secrets` will start with
-  // those env vars unset until the user configures them.
-  const secretsLoader = secretStore
-    ? async () => {
-        const s = sessionManager.get(runner.sessionId);
-        const remoteUrl = s?.remoteUrl;
-        if (!remoteUrl) return {};
-        return secretStore.loadSecrets(remoteUrl);
-      }
-    : undefined;
-
-  // docs/088 — account-level MCP secrets (`mcp__*` keys), and docs/252 phase 2
-  // — the user's stored service credentials under their catalogue `storageEnv`
-  // names. Read fresh from CredentialStore on every compose start/reconcile so
-  // anything added while the session was idle is picked up on the next sync.
-  //
-  // The service credentials are the half that was MISSING: this loader used to
-  // be `mcp__*`-only, which is precisely why a key saved in Settings reached a
-  // compose-less session and not a compose-backed one (Appendix A).
-  const accountAgentEnvLoader = credentialStore
-    ? () => collectAccountAgentEnv(credentialStore)
-    : undefined;
-
-  // docs/262 req 23 — the credential NAMES this session's activated plugins
-  // declare. Read fresh on every secrets pass, from each repository's LIVE
-  // manifest, so a `shipit plugin refresh` that adds a credential shows up
-  // without recreating the session. Names only: satisfaction is decided
-  // against `secretsLoader`'s map — the consuming project's own store — and
-  // never against `accountAgentEnvLoader`, which holds ShipIt's platform
-  // credentials (req 23's boundary).
-  const pluginCredentialsLoader = () => collectPluginCredentialDeclarations(workspaceDir);
 
   // ---- Adoption path: orphaned ServiceManager from a previous runner ----
   //
@@ -871,7 +1086,8 @@ export function setupServiceManager(
       containerManager,
       broadcastLog,
       installPromise,
-      secretsLoader,
+      onInstallDecision,
+      secretsLoader: createSecretsLoader(runner.sessionId, deps),
       containServicesFn,
       containServiceDns: containerManager?.isEgressDnsContained(runner.sessionId) ?? false,
       containServiceProxy: containerManager?.isEgressProxyContained(runner.sessionId) ?? false,
@@ -890,69 +1106,14 @@ export function setupServiceManager(
     return;
   }
 
-  const mgr = new ServiceManager({
+  // docs/288 — the ONE construction site, shared with the warm pool's preview
+  // pre-start. See `buildServiceManager` for why a second copy is forbidden.
+  const mgr = buildServiceManager({
     sessionId: runner.sessionId,
     workspaceDir,
-    composeConfig,
-    ...(shipitConfig.compose ? {} : { noProjectCompose: true }),
-    workspaceVolume: wsVolume,
-    workspaceSubpath: wsSubpath,
-    stackName: process.env.DOCKER_STACK,
-    opsSession: session?.kind === "ops",
-    secretsLoader,
-    accountAgentEnvLoader,
-    pluginCredentialsLoader,
-    ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
-    serviceEnvDir,
-    ...(logStore ? { logStore } : {}),
-    networkJoinFn: containerManager
-      ? async (networkName: string) => {
-          // Connect agent container to compose network
-          await containerManager.connectToNetwork(runner.sessionId, networkName);
-          // Connect orchestrator container so the preview proxy can reach services
-          try {
-            const orchestratorId = (await import("node:os")).hostname();
-            const docker = containerManager.getDockerClient();
-            const network = docker.getNetwork(networkName);
-            await network.connect({ Container: orchestratorId });
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            if (!msg.includes("already exists")) {
-              console.warn(`[compose] Failed to connect orchestrator to ${networkName}:`, msg);
-            }
-          }
-        }
-      : undefined,
-    // docs/128 — periodic self-heal of the agent's compose-network attachment.
-    // The agent (unlike the orchestrator, re-attached via networkJoinFn on every
-    // compose op) can be stranded on a dead bridge when the ops docker-socket-proxy
-    // is recreated by its own restart policy without the orchestrator running
-    // `compose up`. This re-attaches it on the poll heartbeat; membership-gated so
-    // it's a cheap no-op while the agent is correctly attached.
-    networkHealFn: containerManager
-      ? async (networkName: string) => {
-          await containerManager.ensureConnectedToSessionNetwork(runner.sessionId, networkName);
-        }
-      : undefined,
-    containServicesFn: containerManager?.isEgressContained(runner.sessionId)
-      ? async (serviceNames: string[]) => {
-          await containerManager.containComposeServices(runner.sessionId, serviceNames);
-      }
-      : undefined,
-    containServiceDns: containerManager?.isEgressDnsContained(runner.sessionId) ?? false,
-    containServiceProxy: containerManager?.isEgressProxyContained(runner.sessionId) ?? false,
-    ensureSessionNetworkModeFn: containerManager
-      ? async (internal: boolean) => containerManager.ensureSessionNetworkMode(runner.sessionId, internal)
-      : undefined,
-    prepareContainedStartFn: containerManager?.isEgressContained(runner.sessionId)
-      ? async (serviceNames: string[]) => containerManager.prepareComposeServiceStart(runner.sessionId, serviceNames)
-      : undefined,
-    // Unconditional, unlike the containment hooks above: a compose command
-    // starts containers the API trust boundary must recognise whether or not
-    // this session's egress is contained (docs/201).
-    ...(containerManager
-      ? { onTopologyChange: () => containerManager.beginContainerTopologyChange() }
-      : {}),
+    session,
+    shipitConfig,
+    deps,
   });
 
   serviceManagers.set(runner.sessionId, mgr);

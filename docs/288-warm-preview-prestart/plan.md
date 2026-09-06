@@ -258,11 +258,61 @@ numbers rather than argument:
 hit it should stop being paid at all, because the first request arrives at a
 server that has been up since before the session was claimed.
 
+## What implementation changed about this design
+
+Four corrections, found while building it. Each is a place where the design
+above was wrong or incomplete about the code it leans on.
+
+**The overlay dep-dirs must be applied at WARM time, not only at adoption.**
+This design's "what activation does: nothing new" is one step too optimistic.
+`applyOverlayDepDirs` requires a runner, so a warm-built manager would hold `[]`
+— and adoption then resolves a CHANGED set, reconciles, and a service container
+freezes its mounts at CREATE time, so that reconcile *recreates every container
+we pre-started*. Overlay is on by default and a warm session is eligible
+(`isOverlayEligible`: has a remote, not `ops`), so this was not an edge case: it
+would have spent the whole feature on the default path, invisibly, while looking
+like it worked. The runner-free half is now
+`applyOverlayDepDirsForSession`, called from both paths.
+
+**`mgr.setInstallRunning(false)` after the pre-install is a no-op and was
+dropped.** A freshly-built manager has `_installRunning` and `_installFailed`
+both `false`, so the gate is already open (`service-manager.ts`, `start()`'s
+`gateOpen`). What actually makes the pre-started stack a *started* one is the
+ORDERING — after `runPreInstall` — which is what the code now says instead.
+
+**The gate re-hold was already half-solved, elsewhere.** planning#2503 built the
+"only bracket an install the worker says will really run" mechanism
+(`runInstall`'s `onWorkerDecision`, `ServiceManager.installGateFailed`) for the
+mid-session dep-change reinstall, and left the adoption path unconditional.
+Adoption now uses the same mechanism through an `onInstallDecision` relay, with
+the same two fail-closed cases (a failed install, and a gate already latched by
+an earlier failure — repaired only on positive evidence, never an `unverified`
+completion).
+
+**Req 6's gap was narrower than stated.** "Neither covers the compose
+containers" is true of `retireWarmSessions` and `reapStandbyContainers`, but
+boot's `cleanupOrphanComposeResources` (`app-lifecycle.ts`) already sweeps
+`shipit-parent-session` containers whose session is no longer tracked — and
+retirement has deleted the warm rows before it runs, so the production path was
+covered. The real hole was the INJECTED container manager, which skips that
+whole branch; the sweep is now also called beside `reapStandbyContainers`,
+outside it, for exactly the reason that call is outside it.
+
+**And the periodic repair had to learn about the manager.** `warm-tier-sweep`'s
+`containerManager.destroy()` sweeps the compose containers but leaves the
+manager in `serviceManagers`, where `preStartWarmPreview` reads it as "a claim
+already built one" and declines. Without the new `stopPreview` hook the repair
+would rebuild the standby and silently restore no preview.
+
 ## Key files
 
-- `src/server/orchestrator/warm-pool-manager.ts` — where the pre-start is added.
-- `src/server/orchestrator/service-manager-setup.ts` — construction to extract;
-  `adoptExistingServiceManager` is the handoff.
+- `src/server/orchestrator/warm-preview.ts` — the pre-start itself: the recency
+  gate, the build, the registration, the start, and the failure cleanup.
+- `src/server/orchestrator/warm-pool-manager.ts` — where it is called from
+  (`preStartPreview`, last step of `ensureStandbyForWarmSession`).
+- `src/server/orchestrator/service-manager-setup.ts` — `buildServiceManager` is
+  the one construction site; `applyOverlayDepDirsForSession` its runner-free
+  overlay half; `adoptExistingServiceManager` is the handoff.
 - `src/server/orchestrator/idle-enforcer.ts` — tier 0.
 - `src/server/orchestrator/startup-tasks.ts` — warm-tier retirement.
 - `src/server/orchestrator/preview-timing.ts` — the measurement.

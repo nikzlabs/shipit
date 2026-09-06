@@ -73,6 +73,18 @@ export interface WarmTierSweepDeps {
   ensureStandbyForWarmSession: (opts: EnsureStandbyOptions) => Promise<void>;
   /** In-flight warm for this repo, if any: never judge a session mid-build. */
   waitForWarmSession?: (repoUrl: string) => Promise<void> | undefined;
+  /**
+   * docs/288 — drop the warm session's pre-started ServiceManager before the
+   * standby is rebuilt.
+   *
+   * Load-bearing, not tidiness. The repair below destroys the dead container,
+   * and `destroy()` sweeps its compose siblings with it — but the MANAGER stays
+   * in the registry. `preStartWarmPreview` declines when it finds one there (a
+   * claim may have built it), so without this the rebuilt standby would come
+   * back with a manager that owns nothing and no preview, and the repair would
+   * quietly restore only half the warm tier.
+   */
+  stopPreview?: (sessionId: string) => void;
   getMemoryStats?: () => DockerMemoryStats | null;
 }
 
@@ -83,7 +95,7 @@ export interface WarmTierSweepDeps {
 export function createWarmTierSweep(deps: WarmTierSweepDeps): () => Promise<void> {
   const {
     repoStore, sessionManager, containerManager,
-    warmSessionForRepo, ensureStandbyForWarmSession, waitForWarmSession, getMemoryStats,
+    warmSessionForRepo, ensureStandbyForWarmSession, waitForWarmSession, stopPreview, getMemoryStats,
   } = deps;
 
   /**
@@ -156,7 +168,9 @@ export function createWarmTierSweep(deps: WarmTierSweepDeps): () => Promise<void
         );
         // Drop the dead tracking entry (and whatever the missed `die` would
         // have reaped) before building its replacement, or `createStandby`
-        // collides with the old container's name.
+        // collides with the old container's name. docs/288 — the pre-started
+        // stack goes with it, MANAGER included: see `stopPreview`.
+        stopPreview?.(warmId);
         await containerManager.destroy(warmId).catch(() => undefined);
         await ensureStandbyForWarmSession({
           sessionId: warmId,

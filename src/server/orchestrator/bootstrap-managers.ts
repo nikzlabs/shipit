@@ -41,6 +41,7 @@ import {
   depCacheRoot,
   createDepCacheDirHelper,
   createWarmPool,
+  createWarmPreviewStarter,
   runRepoMigration,
   runRemoteCredentialScrub,
   retireWarmSessions,
@@ -1474,6 +1475,17 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
     oomBreaker,
     getMemoryStats: () => latestMemoryStats.value,
+    // docs/288 — the warm pool's last step: pre-start the Compose stack into the
+    // SAME registry activation adopts from, so a warm claim inherits a running
+    // dev server. Only where there is a container runtime to start it on; local
+    // mode has no Compose at all, which is what `containerManager: null` says.
+    ...(containerManager ? {
+      preStartPreview: createWarmPreviewStarter({
+        repoStore, sessionManager, serviceManagers,
+        containerManager, secretStore, credentialStore, serviceEnvDir, logStore,
+        ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
+      }),
+    } : {}),
   });
 
   // ---- docs/262 req 19: drop remote credentials an earlier build stored ----

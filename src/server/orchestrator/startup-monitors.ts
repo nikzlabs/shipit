@@ -15,6 +15,7 @@ import { DEFAULT_DISK_LADDER, assertDiskLadderOrdering, type DiskLadderThreshold
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import { createKeepPreviewRestartSupervisor, restoreReservedPreviews } from "./keep-preview-running.js";
 import { startWarmTierSweep } from "./warm-tier-sweep.js";
+import { stopWarmPreview } from "./warm-preview.js";
 
 /** Functions produced by {@link startStartupMonitors} that later steps need. */
 export interface StartupMonitors {
@@ -193,6 +194,9 @@ export async function startStartupMonitors(
         warmSessionForRepo: rt.warmSessionForRepo,
         ensureStandbyForWarmSession: rt.ensureStandbyForWarmSession,
         waitForWarmSession: rt.waitForWarmSession,
+        // docs/288 — a repair rebuilds the standby, so the pre-started stack's
+        // manager must go with the container it was built for.
+        stopPreview: (sessionId: string) => stopWarmPreview(serviceManagers, sessionId),
         getMemoryStats: () => latestMemoryStats.value,
       })
     : null;

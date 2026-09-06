@@ -208,9 +208,25 @@ export function createIdleEnforcer(
       if (need <= 0) break;
       if (!containerManager.isStandby(sc.sessionId)) continue;
       const measured = usage[sc.sessionId];
-      need -= measured?.agentBytes ?? 0;
+      // docs/288 req 4 — a warm standby can now own a PRE-STARTED Compose stack,
+      // and it is the most speculative thing on the machine: nobody has opened
+      // the session at all. So tier 0 takes both halves and credits both. Two
+      // bugs live in getting this wrong. Crediting only `agentBytes` under-counts
+      // the reclaim and evicts a second victim for bytes already coming back;
+      // and destroying the container without stopping the manager leaves the
+      // manager polling Docker for a session that no longer has one.
+      const hasPreview = !!services?.has(sc.sessionId);
+      need -= (measured?.agentBytes ?? 0) + (hasPreview ? measured?.serviceBytes ?? 0 : 0);
       reclaimedSomething = true;
-      console.log(`[idle-cleanup] Dropping standby container for ${sc.sessionId} (over memory budget)`);
+      console.log(
+        `[idle-cleanup] Dropping standby container for ${sc.sessionId} (over memory budget`
+        + `${hasPreview ? ", including its pre-started preview" : ""})`,
+      );
+      // Before the destroy, so the manager is out of the registry and its poll
+      // loop stopped rather than left chasing a container being torn down.
+      // `destroy()` sweeps the `shipit-parent-session` containers itself, so
+      // this is about the MANAGER; the containers go either way.
+      if (hasPreview) services?.stop(sc.sessionId);
       // No runner, no viewer, no session row — a standby has nothing to
       // announce and nothing to preserve, so this is the full teardown.
       trackTeardown(containerManager.destroy(sc.sessionId), sc.sessionId);
