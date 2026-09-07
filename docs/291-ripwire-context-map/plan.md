@@ -22,8 +22,9 @@ It also exposes an MCP server.
 - **LemonCrow — better tool, not yet adoptable.** Its retrieval advantage survives
   end-to-end where ripwire's did not (72.8% of baseline context, beating ripwire on
   4 of 6 tasks), but it is the most expensive arm measured — 7% dearer than using no
-  tool at all — and two integration blockers remain live. Detail in
-  `docs/294-lemoncrow-mcp-spike/` and on planning#521.
+  tool at all — and two integration blockers remain live. Evidence in
+  `docs/294-lemoncrow-mcp-spike/`; the questions that gate it are questions 2 and 3 in
+  [requirements.md](requirements.md).
 
 This reverses an earlier draft of this doc, which recommended baking in a pinned
 ripwire binary and one skill. That recommendation rested on a token saving that
@@ -422,9 +423,10 @@ treatment.
 
 **This is live today with no LemonCrow involved.** It is not a reason to reject either
 tool; it is a pre-existing gap that adopting *any* MCP retrieval server would walk
-into. Tracked as an open question on planning#521, which is the right place because
-the fix is a product and security judgement — whether ShipIt gains real per-server
-tool authorization — rather than anything tool-specific.
+into. It is open question 2 in [requirements.md](requirements.md), which is where all
+three adoption-gating questions are held. The fix is a product and security judgement —
+whether ShipIt gains a real per-server tool authorization boundary — rather than
+anything tool-specific, which is why it outlives the verdict on either tool.
 
 ## Reproducing this
 
@@ -482,7 +484,9 @@ Environment notes, all of which cost time to discover:
 
 - `docs/294-lemoncrow-mcp-spike/` (PR #2685) — the MCP-only spike planning#332 asked
   for: what the installer really does in global mode, LemonCrow's retrieval measured
-  against ripwire's, and the two open questions that gate adoption.
+  against ripwire's, and what its installer really does in global mode. The two
+  adoption-gating questions it raised now live in [requirements.md](requirements.md)
+  rather than in that doc, so there is one copy of each.
 - planning#332 — the original LemonCrow evaluation. Its `docs/255-lemoncrow-runtime-evaluation/`
   pointer resolves on no ref; the issue body is the only surviving record.
 - planning#520 (this doc), planning#521 (the spike).

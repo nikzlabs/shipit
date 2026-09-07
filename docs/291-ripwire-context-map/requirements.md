@@ -37,16 +37,40 @@ for ShipIt, not how ripwire does it. The design and the measurements are in
 
 ## Open questions
 
-- **Contingent, and unanswered.** If the not-adopt verdict is overridden, which
-  ripwire version do we pin — v0.3.8 (published 2026-08-13, satisfies requirement 6)
-  or v0.4.0 (published 2026-09-07, needs a waiver)? Measurement made this moot rather
-  than answering it, so it stays open rather than being closed by inference.
-- **Does ShipIt need per-server MCP tool authorization?** Enabling any MCP server
-  grants its whole `mcp__<name>__*` namespace, and the branch guard only matches the
-  literal `Bash`, so a server exposing a shell tool is unguarded. This is live today
-  and independent of either tool — see [plan.md](plan.md) § "A ShipIt gap this
-  evaluation surfaced". It gates adopting *any* MCP retrieval server, and it is a
-  product and security judgement. Tracked alongside planning#521.
+These are the questions gating adoption of *either* tool. Questions 2 and 3 were
+raised by `docs/294-lemoncrow-mcp-spike/` and are held here so all three sit in one
+place; that doc points here rather than restating them, because two copies of a
+question drift.
+
+Both citations below were re-verified at source before being adopted, rather than
+inherited.
+
+1. **Which ripwire version do we pin, if the not-adopt verdict is overridden?**
+   v0.3.8 (published 2026-08-13, satisfies requirement 6) or v0.4.0 (published
+   2026-09-07, needs a waiver)? Measurement made this moot rather than answering it,
+   so it stays open rather than being closed by inference.
+
+2. **Is advertisement filtering enough, or does ShipIt need real per-server tool
+   authorization?** LemonCrow can be reduced to a retrieval-only *advertised* surface
+   today with no ShipIt change. But a hidden tool still executes when called by name,
+   and ShipIt grants an enabled server its whole `mcp__<name>__*` namespace
+   (`session/agents/claude/process.ts:448`, and again at `:887`), while the branch
+   guard only matches the literal `Bash` — twice over, at
+   `agent-hooks/managed-settings.json:50` and `block-branch-ops.mjs:70`. So the guard
+   stays bypassable by a model that knows the tool name.
+
+   This is **not LemonCrow-specific and not hypothetical**: it governs every user MCP
+   server and is live today with nothing adopted. Whether ShipIt accepts that or gains
+   a real authorization boundary is a product and security judgement. See
+   [plan.md](plan.md) § "A ShipIt gap this evaluation surfaced".
+
+3. **What does "must not change an existing session" require?** Enabled MCP servers
+   are read from the account-wide credential store when a turn's run parameters are
+   built (`orchestrator/session-agent-run-params.ts:111`), not snapshotted at session
+   creation — so an existing session picks up a newly enabled server on its next turn.
+   An "off by default" requirement therefore cannot be met by the existing settings
+   surface alone. Whether it means per-session opt-in, or only "off until someone
+   turns it on", is the human's call.
 
 ## Resolved questions
 

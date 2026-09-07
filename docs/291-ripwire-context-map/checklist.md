@@ -13,6 +13,7 @@
 - [x] Explain why context tokens and cost disagree (cache reads bill per turn)
 - [x] Verify and document the MCP whole-namespace guard gap at source
 - [x] Document the reproduction steps and environment gotchas
+- [x] Hold all three adoption-gating open questions in one place (`requirements.md`)
 - [ ] Decide the pinned version — **moot unless the verdict is overridden**; the recommendation is now not to adopt
 
 Only if the not-adopt verdict is overridden:
