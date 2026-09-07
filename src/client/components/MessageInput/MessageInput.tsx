@@ -5,7 +5,7 @@ import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useIsMobile } from "../../hooks/useMediaQuery.js";
 import { useNarrowContainer } from "../../hooks/useNarrowContainer.js";
-import { PlusIcon, StopIcon, ArrowUpIcon, GitBranchIcon, CheckIcon } from "@phosphor-icons/react";
+import { PlusIcon, StopIcon, ArrowUpIcon, GitBranchIcon, CheckIcon, BroomIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { usePrStore } from "../../stores/pr-store.js";
 import {
@@ -88,6 +88,13 @@ export interface SendPayload {
    * setting. Non-sticky.
    */
   resetMergedBranch?: boolean;
+  /**
+   * docs/295 — per-send intent for the "compact the context" control beside it.
+   * Same rules as its sibling: only set when the control was visible, non-sticky,
+   * and undefined means "follow the global setting". Read independently of
+   * `resetMergedBranch` (req 6).
+   */
+  compactContext?: boolean;
   /**
    * docs/144 — some or all of `text` was dictated by voice rather than typed.
    * Forwarded to the server, which adds a `<dictated_input>` note to the prompt
@@ -419,6 +426,26 @@ export function MessageInput({
     // Non-sticky: default back to checked whenever the control (re)appears.
     if (showResetControl) setResetChecked(true);
   }, [showResetControl]);
+
+  // ── docs/295 — "compact the context" control ──────────────────────────────
+  // Offered every time the reset control is offered (req 1, req 3) — so it
+  // derives from `showResetControl`, which is what makes req 11's single
+  // setting govern both with no second gate to keep in sync. The one extra
+  // condition is the backend's own capability (req 10).
+  //
+  // Requirement 3 forbids any occupancy threshold, and this is where that
+  // shows: nothing here reads token counts or context usage. A percentage gate
+  // is model-dependent — on a 1M-token window even a low percentage is a very
+  // large absolute context — so it would be strictest exactly where compacting
+  // helps most.
+  const agentSupportsCompaction =
+    agents.find((a) => a.id === activeAgentId)?.supportsCompaction ?? false;
+  const showCompactControl = showResetControl && agentSupportsCompaction;
+  const [compactChecked, setCompactChecked] = useState(true);
+  // eslint-disable-next-line no-restricted-syntax -- same non-sticky sync as the reset control above: re-check whenever the control reappears
+  useEffect(() => {
+    if (showCompactControl) setCompactChecked(true);
+  }, [showCompactControl]);
 
   // ── Upload backend ───────────────────────────────────────────────────────
   // Two modes share the same surface (chip rendering, +/drop-zone, submit
@@ -763,6 +790,9 @@ export function MessageInput({
       deferredFiles: isCompact || !isOverlay ? [] : localFiles,
       // docs/218 — only carry the intent when the control was actually shown.
       ...(showResetControl ? { resetMergedBranch: resetChecked } : {}),
+      // docs/295 — same rule, read independently (req 6): unticking either
+      // control changes only its own action.
+      ...(showCompactControl ? { compactContext: compactChecked } : {}),
       // docs/144 — omitted entirely when the draft was typed.
       ...(draftDictated ? { dictated: true } : {}),
     };
@@ -1058,31 +1088,60 @@ export function MessageInput({
               when the session is reset-eligible AND the setting is on; the
               per-send untick is non-sticky. */}
           {showResetControl && (
-            <button
-              type="button"
-              data-testid="reset-merged-branch-control"
-              aria-pressed={resetChecked}
-              onClick={() => setResetChecked((v) => !v)}
-              className="flex items-start gap-2.5 px-3 py-2.5 text-left rounded-t-xl border-b border-(--color-border-secondary) bg-(--color-accent-subtle)"
-            >
-              <span
-                className={`shrink-0 mt-0.5 grid place-items-center w-4 h-4 rounded ${
-                  resetChecked
-                    ? "bg-(--color-accent) text-white"
-                    : "border border-(--color-border-secondary) bg-(--color-bg-tertiary)"
-                }`}
+            <div className="rounded-t-xl border-b border-(--color-border-secondary) bg-(--color-accent-subtle)">
+              <button
+                type="button"
+                data-testid="reset-merged-branch-control"
+                aria-pressed={resetChecked}
+                onClick={() => setResetChecked((v) => !v)}
+                className="w-full flex items-start gap-2.5 px-3 py-2.5 text-left"
               >
-                {resetChecked && <CheckIcon size={12} weight="bold" />}
-              </span>
-              <span className="min-w-0">
-                <span className="flex items-center gap-1.5 text-xs font-medium text-(--color-text-primary)">
-                  <GitBranchIcon size={ICON_SIZE.XS} /> Start from the latest base
+                <span
+                  className={`shrink-0 mt-0.5 grid place-items-center w-4 h-4 rounded ${
+                    resetChecked
+                      ? "bg-(--color-accent) text-white"
+                      : "border border-(--color-border-secondary) bg-(--color-bg-tertiary)"
+                  }`}
+                >
+                  {resetChecked && <CheckIcon size={12} weight="bold" />}
                 </span>
-                <span className="block text-[11px] text-(--color-text-tertiary) mt-0.5">
-                  Your PR merged — this branch will reset to the latest base before your message runs, so the agent builds on current code.
+                <span className="min-w-0">
+                  <span className="flex items-center gap-1.5 text-xs font-medium text-(--color-text-primary)">
+                    <GitBranchIcon size={ICON_SIZE.XS} /> Start from the latest base
+                  </span>
+                  <span className="block text-[11px] text-(--color-text-tertiary) mt-0.5">
+                    Your PR merged — this branch will reset to the latest base before your message runs, so the agent builds on current code.
+                  </span>
                 </span>
-              </span>
-            </button>
+              </button>
+              {/* docs/295 — the compaction control is SUBORDINATE to the one
+                  above, not an equal-weight second row: this block appears at
+                  the exact moment the user wants to type, and two full-size
+                  rows would double the weight of an interruption. Indented to
+                  the first control's text column, one line, no description. */}
+              {showCompactControl && (
+                <button
+                  type="button"
+                  data-testid="compact-context-control"
+                  aria-pressed={compactChecked}
+                  onClick={() => setCompactChecked((v) => !v)}
+                  className="w-full flex items-center gap-2.5 pl-3 pr-3 pb-2.5 text-left"
+                >
+                  <span
+                    className={`shrink-0 grid place-items-center w-4 h-4 rounded ${
+                      compactChecked
+                        ? "bg-(--color-accent) text-white"
+                        : "border border-(--color-border-secondary) bg-(--color-bg-tertiary)"
+                    }`}
+                  >
+                    {compactChecked && <CheckIcon size={12} weight="bold" />}
+                  </span>
+                  <span className="flex items-center gap-1.5 text-[11px] text-(--color-text-tertiary)">
+                    <BroomIcon size={ICON_SIZE.XS} /> Compact the context first, so the shipped work stops filling it
+                  </span>
+                </button>
+              )}
+            </div>
           )}
           {/* Attachment chips — rendered inside the input box, above the
               textarea, so they're visually contained within the input dialog

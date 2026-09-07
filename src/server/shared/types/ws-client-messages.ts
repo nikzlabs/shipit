@@ -28,6 +28,14 @@ export interface WsSendMessage {
    */
   resetMergedBranch?: boolean;
   /**
+   * docs/295 — per-send intent for the compact-context control beside it.
+   * `false` = the user unticked "compact the context" for THIS message (skip
+   * the compaction). `true`/absent = follow the same global setting.
+   * Non-sticky, exactly like its sibling — and read independently of it, so
+   * unticking either one does not change what the other does (req 6).
+   */
+  compactContext?: boolean;
+  /**
    * planning#322 — the tracker issue this session was started from, carried on the
    * FIRST message only (the Issues tab's "Start session" prefills the composer
    * rather than dispatching, so creation and the first message are two separate

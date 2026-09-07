@@ -238,9 +238,44 @@ export async function runDispatchedTurn(
   // would report is `dirty-tree`, NOT `rebase-in-progress`: `computeResetBlocker`
   // checks `isClean()` first, and a conflicted rebase has an unclean tree. So
   // the exclusion is load-bearing, not belt-and-braces.
+  // docs/295 req 13 — and compact the context first, for the same sessions and
+  // under the same setting. A continuation the user did not type carries no tick
+  // box, so no intent is passed and the global setting alone decides — exactly
+  // as for the reset below.
+  //
+  // Before the reset, and both before the prompt is assembled. Running it here
+  // is what keeps the eligibility predicate answerable: the reset moves HEAD to
+  // the base, after which the session is eligible for nothing, so a compaction
+  // sequenced after it could only ever be gated on the reset's own outcome —
+  // and requirement 6 forbids that (the two controls are independent, so
+  // unticking one must not disable the other).
+  //
+  // Same `postTurn: "none"` exclusion, for the same reason, and it is not
+  // belt-and-braces here either: a rebase-resolution turn is a step inside a git
+  // operation the driver owns, and compacting there would summarize away the
+  // conflict context the agent is holding precisely to finish the rebase.
+  //
+  // Outside `runOnce` like the reset, so a no-result retry re-runs the agent but
+  // not the compaction. A retried turn must not compact twice.
+  const compaction = sessionDir && opts.postTurn !== "none"
+    ? await deps.preTurnCompact?.(runner, agentId, runner.sessionId, sessionDir, createAgent)
+    : undefined;
+
   const reset = sessionDir && opts.postTurn !== "none"
     ? await deps.preTurnReset?.(runner, runner.sessionId, sessionDir)
     : undefined;
+
+  // docs/218 + docs/295 — both hooks anchor their transcript record right after
+  // the user row, and the executor has one slot for that. Compose them in the
+  // order the actions ran, so a turn that both compacted and moved its branch
+  // reads back the way it happened.
+  const afterUserMessagePersisted =
+    compaction?.afterUserMessagePersisted ?? reset?.afterUserMessagePersisted
+      ? (sid: string): void => {
+          compaction?.afterUserMessagePersisted?.(sid);
+          reset?.afterUserMessagePersisted?.(sid);
+        }
+      : undefined;
 
   // docs/221 / nikzlabs/shipit#2349 — drain the out-of-band sync notice on this
   // transport too. A manual "Sync with <base>" parks it because it runs with no
@@ -529,8 +564,8 @@ export async function runDispatchedTurn(
       // right after the user row, inside the fresh turn. Attempt 0 only: a
       // no-result retry re-enters the executor with the user row already
       // written, and firing the hook again would duplicate the card.
-      ...(attempt === 0 && reset?.afterUserMessagePersisted
-        ? { afterUserMessagePersisted: reset.afterUserMessagePersisted }
+      ...(attempt === 0 && afterUserMessagePersisted
+        ? { afterUserMessagePersisted }
         : {}),
       persistUserMessage:
         attempt === 0
@@ -636,6 +671,7 @@ export async function runDispatchedTurn(
   try {
     await runOnce(0);
   } finally {
+    compaction?.ensureRecorded?.(runner.sessionId);
     reset?.ensureRecorded?.(runner.sessionId);
     reparkNoticeIfUndelivered();
   }

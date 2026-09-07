@@ -293,6 +293,20 @@ export interface TurnInput {
    * commit / push / PR flow fires off the replayed `agent_result`.
    */
   adopt?: boolean;
+  /**
+   * docs/178 / docs/295 — this turn IS a context-compaction request, so the
+   * adapter must map it to its own compaction trigger instead of running the
+   * prompt as ordinary work (Codex issues `thread/compact/start`; OpenCode
+   * spawns a transient `summarize` server; Claude and Grok honour the in-band
+   * `/compact` the prompt already carries).
+   *
+   * Threaded through `TurnInput` rather than baked into a caller's
+   * `buildRunParams` closure because both transports now start compaction turns:
+   * the WS path for a typed `/compact` (which sets it on its own closure) and
+   * `pre-turn-compact-hook.ts` for the docs/295 pre-turn compaction, which runs
+   * on the dispatch-shaped deps and has no closure of its own to set it on.
+   */
+  compact?: boolean;
 }
 
 /**
@@ -2602,7 +2616,13 @@ export async function executeAgentTurn(
       // started AFTER this turn what delivery the surviving turn belongs to.
       if (input.deliveryId !== undefined) agent.setDeliveryId?.(input.deliveryId);
       const paramsBegan = Date.now();
-      const runParams = await deps.buildRunParams(sessionId, agentId, prompt, turnRoute);
+      const runParams = await deps.buildRunParams(
+        sessionId,
+        agentId,
+        prompt,
+        turnRoute,
+        input.compact ? { compact: true } : undefined,
+      );
       console.log(`[turn] build-run-params for ${sessionId} took ${Date.now() - paramsBegan}ms; spawning agent`);
       // WS always carries `useStreaming` (true or false); dispatch leaves it
       // undefined so the run params are unchanged from the system-turn shape.

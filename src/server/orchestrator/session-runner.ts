@@ -22,6 +22,7 @@ import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from 
 import { runAgentToCompletion, buildSubAgentRunParams } from "../shared/sub-agent-run.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import type { PreTurnResetHookResult, PreTurnResetRunner } from "./pre-turn-reset-hook.js";
+import type { PreTurnCompactHookResult } from "./pre-turn-compact-hook.js";
 
 // `runDispatchedTurn` lives in a separate module because it depends on
 // `wireAgentListeners` at runtime, which would otherwise create an import
@@ -717,6 +718,14 @@ export interface SystemTurnDeps {
     prompt: string,
     /** docs/260 §1b — the turn's selected credential route, threaded as a value. */
     turnRoute?: { kind: ProviderRouteKind; id: string },
+    /**
+     * docs/295 — per-turn run-param overrides the CALLER of `executeAgentTurn`
+     * cannot express through its own closure. `compact` marks the spawn as a
+     * compaction request (docs/178): the WS path used to set it on its closure
+     * from the send handler's `isCompactRequest`, which the shared pre-turn
+     * compaction hook has no equivalent of — it runs on dispatch-shaped deps.
+     */
+    opts?: { compact?: boolean },
   ) => Promise<AgentRunParams>;
   /**
    * planning#266 — re-acquire the completion settlement for a DELIVERY whose turn
@@ -793,6 +802,30 @@ export interface SystemTurnDeps {
     sessionId: string,
     sessionDir: string,
   ) => Promise<PreTurnResetHookResult>;
+  /**
+   * docs/295 — compact the agent's context before this turn's prompt is built,
+   * for a session whose pull request merged.
+   *
+   * Sits immediately in front of {@link preTurnReset} and is wired on both
+   * transports for the same reason that one is (planning#333): requirement 13 puts a
+   * continuation the user did not type — a merge wake, a `shipit session
+   * message`, a click inside an agent-built page — under the same setting as a
+   * typed one, so scoping it to the interactive path would rebuild the hole
+   * docs/218 had to be retrofitted to close.
+   *
+   * `createAgent` is threaded in rather than taken from `agentFactory` on the
+   * deps because the compaction runs as a real turn and the two transports
+   * construct their agents differently (the WS path may hold a resident
+   * streaming process). Optional so minimal test setups can omit it.
+   */
+  preTurnCompact?: (
+    runner: SessionRunnerInterface,
+    agentId: AgentId,
+    sessionId: string,
+    sessionDir: string,
+    createAgent: (agentId: AgentId) => AgentProcess,
+    intent?: boolean,
+  ) => Promise<PreTurnCompactHookResult>;
   /**
    * docs/221 — read-and-clear the out-of-band "your working tree was rewritten"
    * notice a manual sync parked on the session, so a DISPATCHED turn delivers it

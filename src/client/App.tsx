@@ -581,6 +581,7 @@ export default function App() {
         uploadRefs,
         uploads: payloadUploads,
         resetMergedBranch,
+        compactContext,
         dictated,
       } = payload;
       // docs/203, docs/220 — `/review [@path]` is a chat-native entry point to AI
@@ -694,6 +695,9 @@ export default function App() {
           })(),
           // docs/218 — per-send opt-out for the auto-reset-merged-branch control.
           ...(resetMergedBranch !== undefined ? { resetMergedBranch } : {}),
+          // docs/295 — and for the compact-context control beside it. Carried
+          // separately so unticking one never changes the other (req 6).
+          ...(compactContext !== undefined ? { compactContext } : {}),
           // docs/144 — tell the agent this message was spoken, not typed, so it
           // reads STT artifacts as artifacts. The bubble above stays verbatim.
           ...(dictated ? { dictated: true } : {}),

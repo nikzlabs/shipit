@@ -39,6 +39,7 @@ import {
 import { emitPrLifecycleAfterCommit } from "./services/pr-lifecycle.js";
 import { detectAndReArmMergedSession, detectAndReArmResetSession } from "./services/pr-rearm.js";
 import { applyPreTurnReset } from "./pre-turn-reset-hook.js";
+import { applyPreTurnCompaction } from "./pre-turn-compact-hook.js";
 import { emitResetEligible } from "./services/pre-turn-reset.js";
 import { wireResetEligibleOnFileChange } from "./reset-eligible-watch.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
@@ -509,7 +510,7 @@ export function createRunnerRegistry(
         // model, no MCP, no autoCreatePr). When `credentialStore` is absent
         // (extreme-minimal test setup) we fall back to the minimal shape
         // so we don't regress those callers.
-        buildRunParams: async (sessionId, agentId, prompt, turnRoute) => {
+        buildRunParams: async (sessionId, agentId, prompt, turnRoute, runParamOpts) => {
           const session = sessionManager.get(sessionId);
           if (!credentialStore) {
             return {
@@ -534,6 +535,9 @@ export function createRunnerRegistry(
             ...(turnRoute ? { turnRoute } : {}),
             sessionDir: runner.sessionDir,
             ...(session?.agentSessionId !== undefined ? { agentSessionId: session.agentSessionId } : {}),
+            // docs/295 — the pre-turn compaction turn runs on these deps, so
+            // this is the only place its `compact: true` can reach the adapter.
+            ...(runParamOpts?.compact ? { compact: true } : {}),
           });
         },
         // docs/149 — write back any CLI-rotated OAuth token after a system
@@ -671,6 +675,33 @@ export function createRunnerRegistry(
             runner,
             sessionId,
             sessionDir,
+          });
+        },
+        // docs/295 — compact the context of a merged session before the turn's
+        // prompt is built, immediately ahead of the reset above. Wired on this
+        // transport for the same planning#333 reason the reset is: requirement 13
+        // puts a programmatic continuation under the same setting as a typed one.
+        //
+        // `credentialStore` is the same guard the reset uses — it owns the one
+        // setting that governs both actions (requirement 11), so without it
+        // there is nothing to consult and the answer is "do not compact".
+        preTurnCompact: async (runner, agentId, sessionId, sessionDir, createAgent, intent) => {
+          if (!credentialStore) return { outcome: { kind: "not-applicable" } };
+          return await applyPreTurnCompaction({
+            deps: {
+              getSession: (id) => sessionManager.get(id),
+              getPrStatus: (id) => sessionManager.getPrStatus(id),
+              createGitManager,
+              chatHistoryManager,
+              getAutoResetMergedBranch: () => credentialStore.getAutoResetMergedBranch(),
+            },
+            turnDeps: systemTurnDeps,
+            runner,
+            agentId,
+            sessionId,
+            sessionDir,
+            createAgent,
+            ...(intent !== undefined ? { intent } : {}),
           });
         },
         // docs/221 / nikzlabs/shipit#2349 — deliver the parked "your tree was

@@ -164,7 +164,7 @@ function PrAutomationsSettings() {
         <div className="flex items-center justify-between py-1 gap-4">
           <div>
             <span className="text-sm text-(--color-text-primary)">Start from the latest base after a merge</span>
-            <p className="text-xs text-(--color-text-tertiary)">When you continue a session whose PR already merged and the branch hasn&rsquo;t moved since, resets it to the latest base before the next turn so the agent builds on current code. A per-message checkbox lets you skip it for any one send.</p>
+            <p className="text-xs text-(--color-text-tertiary)">When you continue a session whose PR already merged and the branch hasn&rsquo;t moved since, this does two things before the next turn: resets the branch to the latest base, so the agent builds on current code, and compacts the agent&rsquo;s context, so the shipped work stops filling it. A per-message checkbox lets you skip either one for any one send.</p>
           </div>
           <ToggleSwitch enabled={autoResetMergedBranch} onToggle={(v) => void handleResetMergedToggle(v)} testId="settings-auto-reset-merged-branch" />
         </div>

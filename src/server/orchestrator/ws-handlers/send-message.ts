@@ -640,6 +640,7 @@ export async function handleSendMessage(
     uploadPaths,
     ...(msg.userReview ? { userReview: msg.userReview } : {}),
     ...(msg.resetMergedBranch !== undefined ? { resetMergedBranch: msg.resetMergedBranch } : {}),
+    ...(msg.compactContext !== undefined ? { compactContext: msg.compactContext } : {}),
     ...(msg.dictated ? { dictated: true } : {}),
     compact: isCompactRequest,
     // Echo the message to every attached viewer. The sending tab dedupes on its
