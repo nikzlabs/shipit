@@ -54,15 +54,14 @@ later turn, and the agent reads them as live work in progress.
 10. Where the session's agent backend cannot compact its context, the control is
     not offered.
 
+11. One setting in Settings → Advanced governs both this compaction and the
+    branch reset of docs/218. When that setting is off, neither control is
+    offered. No second setting is added, and the setting says in its own
+    description that it governs both actions.
+
 ## Open questions
 
-- **Which global setting governs this?** The sibling behaviour has a global
-  toggle, `autoResetMergedBranch`, in Settings → Advanced. Options: (a) the
-  compaction shares that toggle, so one switch governs "start the next slice
-  clean"; (b) the compaction gets its own toggle beside it; (c) there is no
-  global toggle and the per-send checkbox is the only control. Recommendation:
-  (a) — a rarely-changed switch does not need its own row, and the two actions
-  are one intent.
+None.
 
 ## Resolved questions
 
@@ -73,3 +72,11 @@ later turn, and the agent reads them as live work in progress.
   percentage gate becomes strictest exactly where the cost is highest. Compaction
   between pull requests is always a win. This is why requirement 3 forbids any
   occupancy or context-size threshold.
+
+- **2026-09-07 — Which global setting governs the compaction: the existing
+  "Start from the latest base after a merge" toggle, a new toggle beside it, or
+  none at all?** The existing toggle governs both. One switch means "start the
+  next slice clean", and a rarely-changed switch does not earn a second row in
+  Advanced that reads as a near-duplicate of the first. This carries a
+  constraint into the design: turning that one setting off must hide both
+  controls, which requirement 11 states.
