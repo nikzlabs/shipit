@@ -38,6 +38,8 @@ Tracks the four-axis rollout from `plan.md`. Order follows the plan's
       `npm ci --ignore-scripts` command in dry-run mode. This catches missing
       optional platform records before a deployment while avoiding large binary
       extraction in the merge gate.
+- [x] Explain the optional-package cooldown race and show recovery steps at the
+      failing CI check, while preserving npm's failure status.
 - [ ] (Higher effort, optional) provenance / SBOM verification + image scan.
 
 > Note: with `npm ci` driving freshness deterministically, the per-package
