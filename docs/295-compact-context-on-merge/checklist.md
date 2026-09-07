@@ -85,11 +85,13 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
       `showCompactControl` reads no usage state, and the composer tests render
       with none wired.
 - [x] Delete each guard singly and watch it fail, so no test passes with the
-      defect present. 11 server mutations + 5 client mutations run; one client
-      mutation had to be rewritten because req 11 is enforced *structurally*
-      (the compaction control is nested inside the reset control's block), so
-      the realistic regression is giving the compaction its own setting-blind
-      gate — that one does go red.
+      defect present. 17 server mutations + 5 client mutations run, each failing
+      the one test that covers it. Two had to be rewritten because the first
+      attempt was unreachable: req 11 turns out to be enforced *structurally*
+      (the compaction control is nested inside the reset control's block, so the
+      realistic regression is giving the compaction its own setting-blind gate),
+      and the first timeout mutation hung the suite rather than isolating the
+      defect. Both rewrites do go red.
 
 ## Close-out
 
@@ -144,4 +146,4 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 - [ ] **The composer keeps an untick across a session switch** — the non-sticky
       effect keys on the visibility boolean, which stays true between two
       already-eligible sessions.
-- [ ] Comment the outcome on `planning#522`.
+- [x] Comment the outcome on `planning#522`.
