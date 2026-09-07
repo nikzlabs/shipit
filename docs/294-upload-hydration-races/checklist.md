@@ -49,7 +49,7 @@
 - [x] Drop the foreign-session draft assertion, which stopped discriminating once absence-pruning went
 - [x] Fix the existing hydration fixtures the session guard correctly broke
 - [x] `npm run typecheck` and `npm run lint:dev` clean
-- [ ] Full `npm test` after the App refactor
+- [x] Full `npm test` — 990 files, 17,365 tests, clean on a quiet box
 - [x] Independent review of the branch against the requirements
 - [x] Second review over the changes the first one prompted
 - [ ] Third review over the changes the second one prompted
