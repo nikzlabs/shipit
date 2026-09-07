@@ -63,6 +63,37 @@ the real definition sites rather than trusted:
 signatures, not bodies, so an agent still reads the bodies of the files it edits. The
 measurement covers the search phase that the map replaces, and nothing else.
 
+#### The observed baseline contradicts the floor (partial, 2 of 6 tasks)
+
+The number above prices an *artificial* baseline. To see what agents actually spend,
+the same tasks were given to real sub-agents twice — once with ripwire on PATH and
+one paragraph saying so, once with the normal tools only — with an identical
+read-only prompt otherwise. `shipit agent run --json` reports `contextTokens` and
+`costUsd` per run, so this is observed, not estimated. A no-op control run fixes the
+per-run overhead at 47,858 context tokens, which is subtracted.
+
+| Task | baseline net | ripwire net | ratio | baseline $ | ripwire $ |
+|---|---:|---:|---:|---:|---:|
+| post-turn auto-push scheduler lease | 23,590 | 26,261 | **111.3%** | 0.261 | 0.274 |
+| preview subdomain proxy routing | 25,027 | 7,553 | 30.2% | 0.282 | 0.196 |
+| **Total (2 of 6)** | **48,617** | **33,814** | **69.6%** | 0.543 | 0.471 |
+
+**This is the finding that matters, and it corrects the floor number above.** The
+16.8% figure does *not* survive contact with a real agent. On the first task the
+ripwire arm cost **more** than the baseline — it paid ~3.3K tokens for the map and
+then read the file bodies anyway, because a map of signatures did not answer the
+question. On the second it saved about 70%. Two tasks is not enough to state an
+average, and the variance between them is larger than the effect the floor
+measurement implied.
+
+Note also that the baseline agent on task 1 located `post-turn-hold.ts` — the file
+ripwire's own map missed, and the reason that task scores 50% recall above.
+
+**Status: incomplete.** Four of the six pairs are unrun. Sub-agent spawns are capped
+at 3 per turn, so the 13-run experiment cannot execute in one turn; it needs roughly
+three more. The floor measurement is retained above because it is the conservative
+bound, but where the two disagree, **the observed number is the one to believe**.
+
 Three things bound how far the number can be pushed:
 
 - **The baseline is a floor.** It allows one grep with a well-chosen keyword, then
