@@ -6,6 +6,7 @@
 - [x] Probe the MCP server and record the tool surface
 - [x] Record release, contributor and version-age risk
 - [x] Re-check the planning#332 LemonCrow blockers against today's code on both sides
+- [x] Measure the token saving with a real tokenizer, without integrating anything (`measure.py`)
 - [ ] Decide the pinned version (v0.3.8, or v0.4.0 with a waiver) — open question in `requirements.md`
 - [ ] Add the pinned binary and checksum verification to the session-worker Dockerfiles
 - [ ] Write one skill for the `--for` lens

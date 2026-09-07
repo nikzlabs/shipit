@@ -39,6 +39,54 @@ number and signature was checked against the source and was exact, including
 `orchestrator/services/auto-push-scheduler.ts:322` and
 `orchestrator/session-runner.ts:1337`. This satisfies req 2.
 
+### Token saving, measured without integrating anything (req 1)
+
+The saving can be measured with no change to ShipIt at all. The binary runs against
+a checkout from outside the repository, so the whole measurement is a
+read-only exercise. `measure.py` in this folder is the harness; it needs `tiktoken`
+and the extracted release binary, and it writes nothing.
+
+Six tasks, each with a gold answer set taken from `CLAUDE.md` and verified against
+the real definition sites rather than trusted:
+
+| Task | ripwire | grep + read | ripwire as % | gold recall |
+|---|---:|---:|---:|---:|
+| post-turn auto-push scheduler lease | 3,319 | 22,687 | 14.6% | 50% |
+| preview subdomain proxy routing | 3,116 | 14,142 | 22.0% | 100% |
+| persist chat transcript card to history | 3,172 | 12,398 | 25.6% | 100% |
+| shared git tree ownership uid drop | 3,175 | 17,846 | 17.8% | 100% |
+| message group boundaries at tool result | 2,662 | 7,807 | 34.1% | 100% |
+| turn executor commit and pr terminal paths | 3,223 | 36,445 | 8.8% | 100% |
+| **Total** | **18,667** | **111,325** | **16.8%** | **91.7%** |
+
+**Read this as an orientation-phase number, not a task-cost number.** ripwire returns
+signatures, not bodies, so an agent still reads the bodies of the files it edits. The
+measurement covers the search phase that the map replaces, and nothing else.
+
+Three things bound how far the number can be pushed:
+
+- **The baseline is a floor.** It allows one grep with a well-chosen keyword, then
+  reads only the gold files. A real agent greps several times and reads files that
+  turn out to be irrelevant, so the true baseline is higher and the true saving
+  larger. That was not measured.
+- **Token counts use tiktoken `o200k_base`** as a proxy. Claude's tokenizer is not
+  public, so the absolute figures carry that error; the ratio is less sensitive to it.
+- **Recall is 91.7%, not 100%.** The one partial is the auto-push task, where ripwire
+  surfaced the `beginPostTurnWork` declaration in `session-runner.ts` but not the
+  implementation in `post-turn-hold.ts`. A cheap answer that misses is not a saving,
+  so cost and recall must be read together.
+
+The tool's self-reported `est_tokens` over-states its own cost by about 24%
+consistently (4109 reported against 3318 measured, and the same pattern on two more
+tasks). It errs against its own headline claim, which is the honest direction.
+
+One fixture correction is worth recording, because it nearly produced a wrong result.
+The first run scored this repository's message-group task at 0% recall. The fixture
+was wrong, not the tool: `CLAUDE.md` names `agent-listeners.ts` as the key file, and
+that is where the flag is *set* (`agent-listeners.ts:1444`), but the boundary logic
+ripwire returned lives in `ws-handlers/agent-message-builder.ts`. The tool was right
+and cheap; the gold set was incomplete.
+
 ### Three features are not reliable here (req 8)
 
 **Blast radius saturates.** `--test-gate` on the single leaf file
