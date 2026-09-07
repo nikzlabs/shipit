@@ -13,6 +13,6 @@
 - [x] Hook tests for retry, including a second retry and a `ready` upload
 - [x] Every clause proved red on its own against a targeted mutation
 - [x] `npm run typecheck` and `npm run lint:dev` clean
-- [ ] Full `npm test` run, since `retryUpload`'s semantics and the send bar are shared surfaces
+- [x] Full `npm test` run, since `retryUpload`'s semantics and the send bar are shared surfaces
 - [ ] Independent review of the branch against the requirements
-- [ ] Verified in a real browser on the dogfood instance
+- [x] Verified in a real browser on the dogfood instance

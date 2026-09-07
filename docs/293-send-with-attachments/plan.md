@@ -93,3 +93,23 @@ in-flight bar, the failed bar, attachments-count-as-content, the
 nothing-at-all bound, `handleSubmit` reading the shared value, the `ready`
 early return, and `retryUpload`'s re-POST. The Enter case is the one that
 catches a guard applied to the buttons but not to `handleSubmit`.
+
+The full suite was run rather than the affected subset, because `retryUpload`'s
+semantics and the send bar are surfaces every composer shares: 989 files, 17,322
+tests, no regressions.
+
+Verified end-to-end in the dogfood inner instance, not only in jsdom. A localhost
+upload lands too fast to observe the in-flight bar, so the check forces a real
+one with a 55 MB paste — over the per-file limit, so the POST is slow *and* ends
+in a 413:
+
+| Moment | Send | Tooltip |
+|---|---|---|
+| In flight | disabled | *Waiting for attachments to finish uploading* |
+| After the 413 | disabled | *An attachment failed to upload — retry or remove it* |
+| Failed chip removed, one ready chip, no typed text | **enabled** | none |
+| Empty composer | disabled | none |
+
+Clicking **Retry** on the failed chip kept it (two chips before and after),
+returned it to `0%`, re-POSTed the 55 MB and settled back to error — a real
+re-upload. Before this change the chip count would have dropped to one.
