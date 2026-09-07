@@ -201,8 +201,10 @@ on that daemon's warm state. Re-running the identical six queries against a
 **warm** daemon returns 1,815 tokens at 41.7% positioned instead of 3,056 at
 58.3% — it suppresses results it believes the caller already has (`"saved":
 {"tokens": …, "calls": …}` rides along in the response). Every number above is
-from a **fresh** daemon, which is what a new session gets; three fresh runs agree
-exactly. Anyone re-running this must kill the daemon between runs.
+from a **fresh** daemon, which is what a new session gets. Six fresh runs gave an
+identical recall split every time and a LemonCrow total of 3,056 tokens in five
+of the six (3,020 in the other — a 1.2% spread). Anyone re-running this must kill
+the daemon between runs.
 
 ## What a session container pays to run it (req 7)
 
