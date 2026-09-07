@@ -141,6 +141,8 @@ export interface ContextWindow {
 }
 
 export interface ModelDef {
+  /** Optional CLI-specific entitlement/compatibility restriction. */
+  harnesses?: HarnessId[];
   /** The id the harness forwards to the service, verbatim. */
   id: string;
   /** Human-facing label. Absorbs the client's old `MODEL_DISPLAY_NAMES` record. */
@@ -397,9 +399,9 @@ export interface ServiceDef {
  */
 export interface CredentialTargets {
   /** Absent ⇒ an OAuth-only CLI. */
-  string?: CredentialTarget;
+  string?: CredentialTarget & { styles?: ApiStyle[] };
   /** Absent ⇒ a key-only CLI. */
-  account?: { kind: "scoped-home" } | CredentialTarget;
+  account?: ({ kind: "scoped-home" } | CredentialTarget) & { styles?: ApiStyle[] };
 }
 
 /** How a harness is driven: where the credential, the model and the endpoint go. */

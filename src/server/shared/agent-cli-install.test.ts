@@ -280,6 +280,15 @@ ${opts?.breakBin ? `printf '#!/bin/sh\\nexit 1\\n' > "node_modules/.bin/${opts.b
     expect(exists(path.join(binDir, "playwright-mcp"))).toBe(true);
   });
 
+  it("keeps the Codex auth dependency for an OpenCode-only install without offering its harness", () => {
+    run("opencode");
+    expect(declared()).toEqual(["opencode"]);
+    expect(exists(path.join(binDir, "opencode"))).toBe(true);
+    expect(exists(path.join(binDir, "codex"))).toBe(true);
+    expect(exists(path.join(agentCliDir, "node_modules/@openai/codex"))).toBe(true);
+    expect(exists(path.join(binDir, "claude"))).toBe(false);
+  });
+
   it("prunes a deselected harness, its platform packages and its bins", () => {
     run("codex");
     expect(declared()).toEqual(["codex"]);

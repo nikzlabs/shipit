@@ -41,6 +41,8 @@ import {
   type ConfiguredCredential,
   eligibleEntriesForHarness,
   getMode,
+  getModel,
+  resolveStyle,
   getService,
   harnessCanCarry,
   modeCredentialFor,
@@ -607,7 +609,21 @@ export function serviceRoutingForSelection(
   credentialStore: Pick<CredentialStore, "getCredentialRoute">,
 ): ServiceRouting | undefined {
   if (!selection) return undefined;
-  if (route?.kind === "account") return undefined;
+  if (route?.kind === "account") {
+    if (harnessId === "opencode" && selection.serviceId === "openai" && selection.billingMode === "sub") {
+      const model = getModel(selection);
+      const mode = getMode(selection.serviceId, selection.billingMode);
+      const style = model && resolveStyle(harnessId, model, "account");
+      const baseUrl = style && mode?.endpoints[style];
+      if (style !== "openai-responses" || !baseUrl) return undefined;
+      return {
+        serviceId: "openai", serviceName: "OpenAI", billingMode: "sub",
+        style, baseUrl,
+        credentialTarget: { kind: "openai-chatgpt", accountId: route.id },
+      };
+    }
+    return undefined;
+  }
   // A mode that can be account-delivered, with no route resolved yet, is not
   // something to shape on a guess. The pinned route is the evidence, and env
   // prep pins it before the run params are built — so an absent one here means

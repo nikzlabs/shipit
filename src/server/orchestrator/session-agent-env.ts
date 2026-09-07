@@ -1,3 +1,5 @@
+import { ensureManagedOpenCodeData } from "../shared/opencode-account.js";
+import { perSessionCredentialsDir } from "./session-credentials-scaffold.js";
 /**
  * Session agent environment preparation (docs/149).
  *
@@ -18,6 +20,7 @@
  * is about to run.
  */
 
+import { revokeOpenCodeAccount } from "./openai-account-delivery.js";
 import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 import path from "node:path";
 import type { SessionRunnerInterface } from "./session-runner.js";
@@ -683,6 +686,18 @@ export async function prepareSessionAgentEnvironment(
       })
     : undefined;
 
+  // Cross-harness account delivery must refresh BEFORE it creates the projection.
+  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  if (isTurn && agentId === "opencode") {
+    if (isLocalRuntime()) ensureManagedOpenCodeData(perSessionCredentialsDir(deps.credentialsDir, sessionId), agentHome());
+    if (selectedRoute?.kind === "account") {
+      if (deps.ensureAgentTokenFresh && !await deps.ensureAgentTokenFresh("codex", selectedRoute.id)) throw new Error("ChatGPT account renewal failed. Reconnect the OpenAI account.");
+      ensureSessionAccountCredentials(deps.credentialsDir, sessionId, agentId, selectedRoute.id);
+    } else {
+      revokeOpenCodeAccount(perSessionCredentialsDir(deps.credentialsDir, sessionId));
+    }
+  }
+
   // docs/260 §5 — stamp the selection onto the runner BEFORE the spawn: the
   // local-mode HOME resolver and the pre-capture release check read this, and
   // the spawn that follows may resolve synchronously, before the executor's
@@ -811,7 +826,8 @@ export async function prepareSessionAgentEnvironment(
   // meant the home held one route's subscription credentials while the turn ran
   // on another; the CLI's env-beats-disk preference picked the right one by
   // luck, not by design (docs/150-multiple-provider-subscriptions req 12).
-  if (isLocalRuntime() && isTurn) {
+  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  if (isLocalRuntime() && isTurn && agentId !== "opencode") {
     const accountId = selectedRoute?.kind === "account" ? selectedRoute.id : undefined;
     try {
       const outcomes = selectedRoute?.kind === "reserved"

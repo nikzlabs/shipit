@@ -139,6 +139,13 @@ if [ -z "$selected" ]; then
   echo "       Valid harnesses: $(echo $KNOWN_HARNESSES | tr ' ' ',')" >&2
   exit 1
 fi
+# OpenCode consumes ChatGPT access tokens; the existing Codex login/renewal
+# implementation remains their owner. Keep that binary as a dependency without
+# offering Codex as a session harness unless the operator selected it.
+required_clis="$selected"
+if contains opencode $selected && ! contains codex $selected; then
+  required_clis="$required_clis codex"
+fi
 echo "[install-agent-clis] installing harnesses:$selected"
 
 cd "$AGENT_CLI_DIR"
@@ -214,7 +221,7 @@ fi
 # Prune the deselected harnesses, bins first so a failed rm can't leave a dangling
 # link that `which` would still answer.
 for harness in $KNOWN_HARNESSES; do
-  contains "$harness" $selected && continue
+  contains "$harness" $required_clis && continue
   bin="$(harness_bin "$harness")"
   rm -f "$AGENT_CLI_DIR/node_modules/.bin/$bin" "$BIN_DIR/$bin"
   rm -rf "$AGENT_CLI_DIR"/node_modules/"$(harness_pkg_prefix "$harness")"*
@@ -224,7 +231,7 @@ done
 # Link the selected harnesses onto PATH, verifying each one survived the install.
 # The verification is what makes the report below a fact rather than a restatement
 # of the request.
-for harness in $selected; do
+for harness in $required_clis; do
   bin="$(harness_bin "$harness")"
   target="$(harness_link_target "$harness")"
   if [ ! -x "$target" ]; then
@@ -241,7 +248,7 @@ done
 # image layer — the build runs as root, and root's dotfiles are invisible to
 # the runtime uid anyway.
 verify_home="$(mktemp -d)"
-for harness in $selected; do
+for harness in $required_clis; do
   bin="$(harness_bin "$harness")"
   if ! out="$(HOME="$verify_home" GROK_HOME="$verify_home/.grok" timeout 120 "$BIN_DIR/$bin" --version 2>&1)"; then
     echo "ERROR: $harness installed but '$bin --version' does not execute:" >&2

@@ -3,11 +3,11 @@
  * model's service.
  *
  * OpenCode has no endpoint env var or flag: routing lives in a `provider`
- * block of its JSON config. ShipIt never routes through OpenCode's built-in
- * provider registry (models.dev) — every spawn writes ONE custom provider
+ * block of its JSON config. String-credential spawns write a custom provider
  * named {@link SHIPIT_PROVIDER_ID} built from the resolved `ServiceRouting`,
  * and the turn runs `-m shipit/<modelId>`. That keeps the namespace fully
- * explicit and independent of models.dev churn.
+ * explicit and independent of models.dev churn. ChatGPT accounts instead use
+ * the native OpenAI auth path described in docs/295.
  *
  * Wire facts this module encodes (verified at a local HTTP recorder against
  * CLI 1.18.15 — docs/268-opencode-harness/plan.md):
@@ -26,8 +26,8 @@
  *    CLI, so the catalogue's declared option list is the validation.
  */
 
-import type { ServiceRouting } from "./types/agent-types.js";
-import { SHIPIT_PROVIDER_ID } from "./spawn-routing.js";
+import type { ServiceRouting, OpenAIAccountRouting } from "./types/agent-types.js";
+import { SHIPIT_PROVIDER_ID, scrubHarnessEnvCredentials } from "./spawn-routing.js";
 import { HARNESSES } from "./catalogue/harnesses.js";
 import { visionSupportFor } from "./catalogue/index.js";
 
@@ -187,4 +187,47 @@ export function opencodeProviderConfig(
 /** The `-m` value for a shaped spawn: always ShipIt's own provider namespace. */
 export function opencodeModelArg(modelId: string): string {
   return `${SHIPIT_PROVIDER_ID}/${modelId}`;
+}
+
+/** Native OAuth is selected by an explicit captured account route only. */
+export function isOpenCodeAccountRouting(routing: ServiceRouting | undefined): routing is OpenAIAccountRouting {
+  return routing?.credentialTarget.kind === "openai-chatgpt";
+}
+
+/** Native auth rewrites Responses to the ChatGPT backend and rereads file auth. */
+export function opencodeAccountConfig(modelId: string): Record<string, unknown> {
+  return {
+    enabled_providers: ["openai"],
+    disabled_providers: [],
+    model: `openai/${modelId}`,
+    small_model: `openai/${modelId}`,
+    provider: {
+      openai: {
+        npm: "@ai-sdk/openai",
+        options: { baseURL: "https://api.openai.com/v1" },
+        whitelist: [modelId],
+        models: {
+          [modelId]: {
+            id: modelId,
+            name: modelId,
+            modalities: IMAGE_MODALITIES,
+            limit: { context: 400_000, input: 272_000, output: 128_000 },
+            variants: Object.fromEntries(OPENCODE_REASONING_LEVELS.map((level) => [level, { reasoningEffort: level }])),
+          },
+        },
+      },
+    },
+  };
+}
+
+/** Native auth must not discover an unrelated provider's ambient credentials. */
+export function prepareOpenCodeAccountEnv(env: Record<string, string>): void {
+  scrubHarnessEnvCredentials(env, "opencode");
+  // Keep the tool environment (git credential helper, browsers, SDKs, MCP).
+  // These OpenCode overrides can bypass file auth or change provider discovery.
+  for (const name of [...Object.keys(env).filter(name => name.startsWith("SHIPIT_CREDENTIAL_")), "OPENCODE_AUTH_CONTENT", "OPENCODE_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID"]) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- fixed provider-auth denylist.
+    delete env[name];
+  }
+  env.OPENCODE_DISABLE_DEFAULT_PLUGINS = "0";
 }

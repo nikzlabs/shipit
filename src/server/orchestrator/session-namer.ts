@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { provisionOpenCodeAccount, revokeOpenCodeAccount } from "./openai-account-delivery.js";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -11,7 +13,7 @@ import {
 } from "../shared/spawn-routing.js";
 import { disjointCodexTokens } from "../shared/codex-token-usage.js";
 import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
-import { opencodeModelArg, opencodeProviderConfig } from "../shared/opencode-spawn-shaping.js";
+import { opencodeModelArg, opencodeProviderConfig, isOpenCodeAccountRouting, opencodeAccountConfig, prepareOpenCodeAccountEnv } from "../shared/opencode-spawn-shaping.js";
 import { parseOpencodeLine, OpencodeTurnAccumulator } from "../shared/opencode-stream.js";
 
 export interface SessionName {
@@ -64,9 +66,8 @@ export interface SessionNamingTarget {
   /** Forwarded verbatim to the CLI. Omitted keeps the CLI's own default. */
   model?: string | undefined;
   /**
-   * Endpoint + credential shaping for a string-delivered credential. Absent for
-   * an account-delivered one, which is the CLI's own login and must be left
-   * exactly as it is — shaping it would break the token exchange.
+   * Endpoint and credential shaping, including the explicit OpenCode ChatGPT
+   * account route. Native Codex/Claude account login needs no descriptor.
    */
   serviceRouting?: ServiceRouting | undefined;
   /** The secret for `serviceRouting.credentialSourceEnv`, when there is one. */
@@ -269,7 +270,16 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
         OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
       };
       let cleanupConfig: (() => void) | undefined;
-      if (serviceRouting && model) {
+      if (isOpenCodeAccountRouting(serviceRouting) && model) {
+        if (!target.credentialRoot) return { text: null, failure: "ChatGPT account credentials are unavailable." };
+        extraEnv.OPENCODE_DISABLE_DEFAULT_PLUGINS = "0";
+        extraEnv.OPENCODE_CONFIG_CONTENT = JSON.stringify(opencodeAccountConfig(model));
+        const configPath = path.join(os.tmpdir(), `opencode-naming-${randomUUID()}.json`);
+        fs.writeFileSync(configPath, JSON.stringify(opencodeAccountConfig(model)));
+        extraEnv.OPENCODE_CONFIG = configPath;
+        cleanupConfig = () => fs.rmSync(configPath, { force: true });
+        args.push("--model", `openai/${model}`);
+      } else if (serviceRouting && model) {
         const provider = opencodeProviderConfig(serviceRouting, model);
         if (!provider) {
           return {
@@ -277,7 +287,7 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
             failure: `OpenCode cannot run ${serviceRouting.serviceId} over style ${serviceRouting.style}.`,
           };
         }
-        const configPath = path.join(os.tmpdir(), `opencode-naming-${Date.now()}.json`);
+        const configPath = path.join(os.tmpdir(), `opencode-naming-${randomUUID()}.json`);
         fs.writeFileSync(configPath, JSON.stringify({ $schema: "https://opencode.ai/config.json", provider }));
         extraEnv.OPENCODE_CONFIG = configPath;
         cleanupConfig = () => {
@@ -294,7 +304,13 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
       const dataHome = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-naming-data-"));
       extraEnv.XDG_DATA_HOME = dataHome;
       try {
-        const raw = await callCli("opencode", args, target, extraEnv);
+        if (isOpenCodeAccountRouting(serviceRouting)) provisionOpenCodeAccount(target.credentialRoot!, target.credentialRoot!, serviceRouting.credentialTarget.accountId, dataHome);
+        const isolatedTarget = isOpenCodeAccountRouting(serviceRouting) ? { ...target, credentialRoot: dataHome } : target;
+        if (isOpenCodeAccountRouting(serviceRouting)) {
+          extraEnv.XDG_CONFIG_HOME = path.join(dataHome, "config");
+          extraEnv.XDG_CACHE_HOME = path.join(dataHome, "cache");
+        }
+        const raw = await callCli("opencode", args, isolatedTarget, extraEnv);
         if (raw.text === null) return raw;
         const parsed = parseOpencodeJsonl(raw.text);
         if (!parsed.usage) return { ...raw, text: parsed.text };
@@ -304,6 +320,7 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
           usage: { ...parsed.usage, durationMs: raw.usage?.durationMs ?? 0 },
         };
       } finally {
+        revokeOpenCodeAccount(target.credentialRoot ?? "", dataHome);
         cleanupConfig?.();
         try { fs.rmSync(dataHome, { recursive: true, force: true }); } catch { /* ignore */ }
       }
@@ -651,13 +668,13 @@ function callCli(
     // at their spawn sites; this is the same rule where the orchestrator builds
     // the environment itself. Found by cross-backend review.
     if (credentialRoot) scrubHarnessEnvCredentials(env, harnessId);
-    if (serviceRouting) {
+    if (serviceRouting && !isOpenCodeAccountRouting(serviceRouting)) {
       // The secret has to be in the environment under its STORAGE name before
       // shaping runs — that is the variable `applyServiceRouting` reads from and
       // the harness's own variable is where it lands. The orchestrator's own
       // ambient credentials are cleared by the same call, so a naming run cannot
       // silently authenticate with the dogfood instance's key.
-      if (credentialSecret) env[serviceRouting.credentialSourceEnv] = credentialSecret;
+      if (credentialSecret && serviceRouting.credentialSourceEnv) env[serviceRouting.credentialSourceEnv] = credentialSecret;
       const shaped = applyServiceRouting(env, serviceRouting);
       if (!shaped.credentialDelivered) {
         console.warn(
@@ -669,6 +686,7 @@ function callCli(
       }
     }
 
+    if (isOpenCodeAccountRouting(serviceRouting)) prepareOpenCodeAccountEnv(env);
     try {
       const child = execFile(
         binary,

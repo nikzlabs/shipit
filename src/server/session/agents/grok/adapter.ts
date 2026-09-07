@@ -553,7 +553,7 @@ export class GrokAdapter
     if (params.serviceRouting) {
       scrubHarnessEnvCredentials(spawnEnv, "grok");
       const routing = params.serviceRouting;
-      const secret = process.env[routing.credentialSourceEnv];
+      const secret = routing.credentialSourceEnv ? process.env[routing.credentialSourceEnv] : undefined;
       if (!secret || routing.credentialTarget.kind !== "env") {
         console.warn(
           `[grok] no credential in the environment for ${routing.serviceId}` +

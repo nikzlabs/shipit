@@ -192,8 +192,13 @@ function requireHarness(serviceId: string): AgentId {
  * account rows at all, so the empty string — which matches no service — makes
  * every lookup answer "none" instead of throwing or, worse, matching.
  */
+/** OpenCode consumes the existing OpenAI login; Zen remains its native service. */
+export function accountOwnerHarness(provider: AgentId): AgentId {
+  return provider === "opencode" ? "codex" : provider;
+}
+
 export function accountServiceForHarness(provider: AgentId): string {
-  return nativeServiceForHarness(provider) ?? "";
+  return nativeServiceForHarness(accountOwnerHarness(provider)) ?? "";
 }
 
 export interface ProviderAccountManagerOptions {
@@ -985,7 +990,7 @@ export class ProviderAccountManager {
   }
 
   resolveCredentialRoot(provider: AgentId, accountId: string): string {
-    return path.join(this.credentialsDir, PROVIDER_ACCOUNTS_SUBDIR, provider, accountId);
+    return providerAccountCredentialRoot(this.credentialsDir, provider, accountId);
   }
 
   /**
@@ -1338,7 +1343,7 @@ export function providerAccountCredentialRoot(
   provider: AgentId,
   accountId: string,
 ): string {
-  return path.join(credentialsDir, PROVIDER_ACCOUNTS_SUBDIR, provider, accountId);
+  return path.join(credentialsDir, PROVIDER_ACCOUNTS_SUBDIR, accountOwnerHarness(provider), accountId);
 }
 
 /**

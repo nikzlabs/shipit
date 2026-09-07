@@ -45,6 +45,7 @@
  *     user-visible half); the container path preserves the CLI file too.
  */
 
+import { perSessionCredentialsDir } from "./session-credentials-scaffold.js";
 import type { AgentId } from "../shared/types/agent-types.js";
 import type { AgentProcess, SessionInfo } from "../shared/types.js";
 import type { AgentHomeResolver } from "../shared/agent-home.js";
@@ -104,6 +105,8 @@ export function resolveLocalAgentHome(
   deps: LocalAgentHomeDeps,
 ): string | undefined {
   const session = deps.sessionManager.get(sessionId);
+  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  if (agentId === "opencode" && session?.agentId === "opencode") return perSessionCredentialsDir(deps.credentialsDir, sessionId);
 
   // docs/260 — the turn's own selection, stamped onto the runner by env-prep
   // immediately before this spawn resolves. Read it rather than re-selecting,

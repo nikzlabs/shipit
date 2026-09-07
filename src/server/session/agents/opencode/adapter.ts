@@ -80,10 +80,12 @@ import { ensureOpencodeDataDir } from "../../../shared/opencode-data-dir.js";
 import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
 import { PLAYWRIGHT_MCP_ARGS, PLAYWRIGHT_MCP_COMMAND } from "../playwright-mcp.js";
-import { opencodeModelArg, opencodeProviderConfig } from "../../../shared/opencode-spawn-shaping.js";
+import { opencodeModelArg, opencodeProviderConfig, isOpenCodeAccountRouting, opencodeAccountConfig, prepareOpenCodeAccountEnv } from "../../../shared/opencode-spawn-shaping.js";
 import { parseOpencodeLine, OpencodeTurnAccumulator, type OpencodeEvent, type OpencodeToolPart } from "../../../shared/opencode-stream.js";
 import { normalizeOpencodeToolCall, normalizeOpencodeToolResult } from "./opencode-tool-normalizer.js";
 import { compactOpencodeSession } from "./compaction.js";
+
+import { ensureManagedOpenCodeData, readOpenCodeAccount, removeOpenCodeAccount } from "../../../shared/opencode-account.js";
 
 const OPENCODE_REASONING = HARNESSES.find((h) => h.id === "opencode")?.capabilities.reasoning;
 
@@ -195,6 +197,7 @@ export class OpencodeAdapter
   /** Resolved user MCP servers, captured by writeMcpConfig for run() to merge. */
   private pendingMcpServers: Record<string, unknown> = {};
   private _isStreaming = false;
+  private usingChatGPT = false;
 
   constructor(opts?: {
     resolveHome?: AgentHomeResolver;
@@ -215,6 +218,7 @@ export class OpencodeAdapter
       return;
     }
     this.accumulator = new OpencodeTurnAccumulator();
+    this.usingChatGPT = isOpenCodeAccountRouting(params.serviceRouting);
     this.emittedInit = false;
     this.stallReason = null;
     this.resumeSessionId = params.sessionId;
@@ -226,11 +230,14 @@ export class OpencodeAdapter
 
     // Per-spawn config: ShipIt's provider block (+ variants), the MCP servers
     // writeMcpConfig captured, and the system-prompt file as an instruction.
-    // Delivered via OPENCODE_CONFIG, which merges AFTER global/project config
+    // Delivered via OPENCODE_CONFIG; account routing also uses the final content layer
     // (verified), so a user repo's own opencode.json stays honored underneath.
     const config: Record<string, unknown> = { $schema: "https://opencode.ai/config.json" };
 
-    if (params.serviceRouting && params.model) {
+    if (isOpenCodeAccountRouting(params.serviceRouting) && params.model) {
+      Object.assign(config, opencodeAccountConfig(params.model));
+      args.push("--model", `openai/${params.model}`);
+    } else if (params.serviceRouting && params.model) {
       const provider = opencodeProviderConfig(params.serviceRouting, params.model);
       if (!provider) {
         // A style this harness cannot speak, or a non-env credential target —
@@ -296,11 +303,24 @@ export class OpencodeAdapter
     // made it at boot and this is a directory read; local/dogfood mode has no
     // entrypoint, and the sub-agent and PR-description spawns there do not go
     // through the link-clearing that the pinned agent's own turn does.
-    const dataDir = ensureOpencodeDataDir(home);
+    ensureOpencodeDataDir(home);
+    let dataHome: string;
+    try {
+      dataHome = ensureManagedOpenCodeData(home);
+      if (isOpenCodeAccountRouting(params.serviceRouting)) readOpenCodeAccount(dataHome, params.serviceRouting.credentialTarget.accountId);
+      else removeOpenCodeAccount(dataHome);
+    } catch (error) {
+      this.cleanupTurnFiles();
+      if (this.usingChatGPT) this.emit("auth_required");
+      else this.emit("error", error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    const dataDir = path.join(dataHome, "opencode");
     this.logDir = dataDir ? path.join(dataDir, OPENCODE_LOG_SUBDIR) : null;
     const spawnEnv: Record<string, string> = {
       ...(process.env as Record<string, string>),
       HOME: home,
+      XDG_DATA_HOME: dataHome,
       // The CLI resolves its project directory from $PWD when the variable is
       // present (Bun honors it over the real cwd), and a worker's own PWD
       // points at the worker, not the workspace — verified live: the turn's
@@ -321,7 +341,10 @@ export class OpencodeAdapter
     // which would out-prefer the provider block's explicit credential and
     // silently re-route billing. Scrub them all, then deliver exactly one.
     scrubHarnessEnvCredentials(spawnEnv, "opencode");
-    if (params.serviceRouting) {
+    if (isOpenCodeAccountRouting(params.serviceRouting)) {
+      spawnEnv.OPENCODE_CONFIG_CONTENT = JSON.stringify(opencodeAccountConfig(params.model!));
+      prepareOpenCodeAccountEnv(spawnEnv);
+    } else if (params.serviceRouting) {
       const routing = params.serviceRouting;
       const secret = process.env[routing.credentialSourceEnv];
       if (!secret || routing.credentialTarget.kind !== "env") {
@@ -696,6 +719,7 @@ export class OpencodeAdapter
         await compactOpencodeSession({
           sessionId,
           modelId: params.model!,
+          providerId: isOpenCodeAccountRouting(params.serviceRouting) ? "openai" : "shipit",
           cwd: params.cwd,
           env: spawnEnv,
           spawnFn: this.spawnFn,
@@ -774,6 +798,9 @@ export class OpencodeAdapter
     for (const e of mapped) this.emit("event", e);
 
     if (event.type === "error") {
+      if (this.usingChatGPT && (event.error?.data?.statusCode === 401 || /^Token refresh failed: (400|401|403)$/.test(event.error?.data?.message ?? ""))) {
+        this.emit("auth_required");
+      }
       // The CLI does not exit after a fatal error (verified — it hangs), so
       // the adapter owns termination: give a straggling flush a moment, then
       // kill. The close handler synthesizes the failed result.

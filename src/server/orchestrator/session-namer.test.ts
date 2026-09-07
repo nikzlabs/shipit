@@ -38,6 +38,32 @@ describe("generateSessionName", () => {
     expect(result.name).toEqual({ slug: "add-login", title: "Add Login Page" });
   });
 
+  it("gives ChatGPT naming an access-only home instead of the canonical Codex home", async () => {
+    const fs = await import("node:fs"); const os = await import("node:os"); const path = await import("node:path");
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), "oc-naming-source-"));
+    fs.mkdirSync(path.join(source, ".codex"));
+    const access_token = `e30.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, "https://api.openai.com/auth": { chatgpt_account_id: "external-a" } })).toString("base64url")}.test`;
+    fs.writeFileSync(path.join(source, ".codex/auth.json"), JSON.stringify({ tokens: { access_token, refresh_token: "source-refresh-only" } }));
+    let home: string | undefined;
+    vi.doMock("node:child_process", () => ({
+      execFile: (_file: string, args: string[], opts: { env: Record<string, string> }, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
+        home = opts.env.HOME;
+        expect(home).not.toBe(source);
+        expect(fs.existsSync(path.join(home, ".codex/auth.json"))).toBe(false);
+        expect(fs.readFileSync(path.join(opts.env.XDG_DATA_HOME, "opencode/auth.json"), "utf8")).not.toContain("source-refresh-only");
+        expect(args).toContain("openai/gpt-5.5");
+        setImmediate(() => cb(null, JSON.stringify({ type: "text", part: { type: "text", text: '{"slug":"account-test","title":"Account Test"}' } }), ""));
+        return { on: () => {}, stdin: { end: () => {} } };
+      },
+    }));
+    try {
+      const mod = await import("./session-namer.js");
+      const result = await mod.generateSessionName("test", { harnessId: "opencode", model: "gpt-5.5", credentialRoot: source, serviceRouting: { serviceId: "openai", serviceName: "OpenAI", billingMode: "sub", style: "openai-responses", baseUrl: "https://api.openai.com/v1", credentialTarget: { kind: "openai-chatgpt", accountId: "account-a" } } });
+      expect(result.name).toEqual({ slug: "account-test", title: "Account Test" });
+      expect(home && fs.existsSync(home)).toBe(false);
+    } finally { fs.rmSync(source, { recursive: true, force: true }); }
+  });
+
   // docs/150 — naming is a real provider call and must be billed to a real
   // account. Forcing HOME=/root sent it through the legacy alias symlink to the
   // *migrated default* account regardless of which account was primary, and

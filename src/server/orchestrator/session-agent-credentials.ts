@@ -11,6 +11,7 @@
  * Pure filesystem in/out — no Docker, no DB.
  */
 
+import { provisionOpenCodeAccount, revokeOpenCodeAccount } from "./openai-account-delivery.js";
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
@@ -66,13 +67,19 @@ export function provisionProviderAccountCredentials(
   agentId: AgentId,
   accountId: string,
 ): void {
-  provisionAgentCredentialsFromRoot(
-    credentialsRoot,
-    sessionId,
-    agentId,
-    providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
-    true,
-  );
+  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  if (agentId === "opencode") {
+    provisionOpenCodeAccount(providerAccountCredentialRoot(credentialsRoot, agentId, accountId), perSessionCredentialsDir(credentialsRoot, sessionId), accountId);
+    chownSessionCredentialsTree(credentialsRoot, sessionId);
+  } else {
+    provisionAgentCredentialsFromRoot(
+      credentialsRoot,
+      sessionId,
+      agentId,
+      providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
+      true,
+    );
+  }
   writeSessionAccountMarker(credentialsRoot, sessionId, agentId, accountId);
 }
 
@@ -169,7 +176,11 @@ export function ensureSessionAccountCredentials(
   accountId: string,
 ): "match" | "provisioned" | "adopted" | "replaced" {
   const recorded = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
-  if (recorded === accountId) return "match";
+  if (recorded === accountId) {
+    // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
+    if (agentId === "opencode") provisionOpenCodeAccount(providerAccountCredentialRoot(credentialsRoot, agentId, accountId), perSessionCredentialsDir(credentialsRoot, sessionId), accountId);
+    return "match";
+  }
   const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
   const sessionToken = readFirstTokenFile(sessionDir, agentId);
   if (recorded === undefined && sessionToken === null) {
@@ -225,6 +236,12 @@ export function revokeSessionProviderCredentials(
   sessionId: string,
   agentId: AgentId,
 ): void {
+  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  if (agentId === "opencode") {
+    revokeOpenCodeAccount(perSessionCredentialsDir(credentialsRoot, sessionId));
+    writeSessionAccountMarker(credentialsRoot, sessionId, agentId, null);
+    return;
+  }
   const dir = perSessionCredentialsDir(credentialsRoot, sessionId);
   if (!fs.existsSync(dir)) return;
   for (const rel of AGENT_CREDENTIAL_PATHS[agentId]) {
@@ -696,9 +713,12 @@ export function provisionSubAgentSpawnHome(
   // same spawn (account failover re-provisions under the same spawnId).
   fs.rmSync(home, { recursive: true, force: true });
   fs.mkdirSync(home, { recursive: true });
-  for (const rel of AGENT_CREDENTIAL_PATHS[subAgentId]) {
+  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  for (const rel of subAgentId === "opencode" && accountId ? [] : AGENT_CREDENTIAL_PATHS[subAgentId]) {
     copyCredentialPath(sourceRoot, home, rel);
   }
+  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  if (subAgentId === "opencode" && accountId) provisionOpenCodeAccount(sourceRoot, home, accountId);
   // AFTER the copy, deliberately: the provenance file is the release's licence
   // to publish, so a copy that threw halfway leaves a home with no file — and
   // partial content that is never synced anywhere. See SPAWN_HOME_PROVENANCE.
@@ -752,6 +772,7 @@ export function releaseSubAgentSpawnHome(
 }
 
 function releaseSpawnHomeAt(credentialsRoot: string, sessionId: string, home: string): void {
+  revokeOpenCodeAccount(home);
   const provenance = readSpawnHomeProvenance(home);
   // A home with no provenance holds unproven (possibly partial) content that is
   // never published — and so has nothing to preserve either.

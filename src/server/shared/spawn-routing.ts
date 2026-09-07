@@ -109,7 +109,7 @@ export function applyServiceRouting(
   routing: ServiceRouting | undefined,
 ): { credentialDelivered: boolean } {
   if (!routing) return { credentialDelivered: true };
-  const secret = env[routing.credentialSourceEnv];
+  const secret = routing.credentialSourceEnv ? env[routing.credentialSourceEnv] : undefined;
   for (const name of ANTHROPIC_CREDENTIAL_VARS) {
     // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- the key set is the module-level literal above, not caller input.
     delete env[name];

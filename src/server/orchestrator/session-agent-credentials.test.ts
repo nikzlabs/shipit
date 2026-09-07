@@ -134,6 +134,21 @@ describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing r
     expect(sessionToken()).toContain("tok-a");
   });
 
+  it("disconnecting managed ChatGPT preserves a terminal OpenCode login and conversation", () => {
+    const terminal = path.join(sessionDir(), ".local/share/opencode");
+    const managed = path.join(terminal, "shipit-data/opencode");
+    fs.mkdirSync(managed, { recursive: true });
+    fs.writeFileSync(path.join(terminal, "auth.json"), "terminal-owned");
+    fs.writeFileSync(path.join(managed, "auth.json"), "managed-access");
+    fs.writeFileSync(path.join(managed, "opencode.db"), "conversation");
+    writeSessionAccountMarker(root, SESSION, "opencode", "account-a");
+    revokeSessionProviderCredentials(root, SESSION, "opencode");
+    expect(fs.readFileSync(path.join(terminal, "auth.json"), "utf8")).toBe("terminal-owned");
+    expect(fs.readFileSync(path.join(managed, "opencode.db"), "utf8")).toBe("conversation");
+    expect(fs.existsSync(path.join(managed, "auth.json"))).toBe(false);
+    expect(readSessionAccountMarker(root, SESSION).opencode).toBeUndefined();
+  });
+
   it("revocation clears the marker so the next turn reprovisions", () => {
     seedAccount("acct_a", "tok-a");
     ensureSessionAccountCredentials(root, SESSION, "claude", "acct_a");
@@ -218,7 +233,13 @@ describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing r
     it("materializes every declared credential DIR for every agent", () => {
       const allAgentIds = Object.keys(AGENT_CREDENTIAL_PATHS) as AgentId[];
       for (const agentId of allAgentIds) {
-        // No source subtree anywhere — the key-billed shape.
+        // OpenCode account provisioning deliberately refuses absent source auth.
+        if (agentId === "opencode") {
+          const source = path.join(root, "provider-accounts", "codex", `acct_${agentId}`, ".codex");
+          fs.mkdirSync(source, { recursive: true });
+          const access_token = `e30.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, "https://api.openai.com/auth": { chatgpt_account_id: "test-account" } })).toString("base64url")}.test`;
+          fs.writeFileSync(path.join(source, "auth.json"), JSON.stringify({ tokens: { access_token } }));
+        }
         provisionProviderAccountCredentials(root, SESSION, agentId, `acct_${agentId}`);
         for (const rel of agentCredentialDirs(agentId)) {
           const dir = path.join(sessionDir(), rel);
