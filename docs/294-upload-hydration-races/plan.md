@@ -233,3 +233,22 @@ notes on how the tests were arrived at, since both were wrong first:
   the worker instead of a red assertion. The stub now stops after ten, and the
   mutation fails cleanly at `expected 11 to be 4`. A crash is a worse guard than
   a failing test.
+
+## Verified in a real browser
+
+On the dogfood inner instance, driven with Playwright. A localhost upload lands in
+milliseconds, so the two switch journeys were made observable by delaying the
+upload POST in the page — the app's own code, its own request, issued late.
+
+| What was done | Result |
+|---|---|
+| A large paste, then `/compact` in the chat composer | Frame carried **no** `uploads` and **no** `files`; the chip stayed (reqs 5, 6) |
+| `/compact` in the quick-capture overlay | Send disabled, tooltip *There is nothing to compact in a new session* |
+| Attach in A, switch A→B→A mid-upload | **No DELETE.** The file is on disk, and the chip is back in the composer on return (req 7) |
+| Remove the chip mid-upload, then switch away | Exactly one `DELETE …/pasted-text-2.txt`; the file is gone from disk |
+| Reload the page | Both unsent attachments still in the composer (req 4) |
+
+Two things fell out that no test states. While the upload was in flight, Send was
+disabled with *Waiting for attachments to finish uploading* — docs/293 req 1,
+observed rather than asserted. And the refetch of req 1 was visible as alternating
+listings for the two sessions, settling within the bound rather than churning.

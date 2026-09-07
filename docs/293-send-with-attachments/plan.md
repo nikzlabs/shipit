@@ -108,17 +108,22 @@ write itself fails, and the rollback logs rather than swallows a cleanup error �
 
 **`/review` carries the attachments (req 4).** It composes its own prompt and
 dispatched it alone while `handleSubmit` cleared the chips regardless. It carries
-**both** kinds — uploads and `@`-mentioned workspace files.
+**both** kinds — uploads and `@`-mentioned workspace files. The frame's
+attachment fields are built outside `App.tsx`, because `App.tsx` has no test
+harness. That bought a test of the payload shape and not of the wiring — a limit
+this doc stated honestly three times before closing it; see *And then the wiring
+itself moved* below.
+
+> **Correction.** This paragraph named `buildReviewSendFrame` in
+> `compose-review-body.ts`. That helper was superseded by `buildAttachmentPlan`
+> (`utils/attachment-plan.ts`) in docs/294 and no longer exists, so the name is
+> corrected here rather than left pointing at nothing.
 
 > **Correction (docs/294).** This section originally also said `/review`
 > *consumes* the `@`-mentioned files. It did not: the clearing call never made it
 > into the shipped branch, so those chips stayed attached to a later message. A
-> review of docs/294 caught the discrepancy between this doc and the code.
-> `docs/294` makes the claim true. The frame is
-built by `buildReviewSendFrame` in `compose-review-body.ts` rather than inline in
-`App.tsx`, because `App.tsx` has no test harness. Note the limit of that honestly:
-the helper is tested, App's *call* to it is not, so the extraction buys a test of
-the payload shape and not of the wiring.
+> review of docs/294 caught the discrepancy between this doc and the code, and
+> makes the claim true.
 
 **`markUploadsSent` is deliberately left alone.** Clearing every pending chip
 regardless of status is what made the original loss silent. Reqs 1 and 2 make it
@@ -142,7 +147,9 @@ as a guard for a state the gate prevents.
 | `src/client/stores/file-store.ts` | The retained bytes and the in-flight set — both at the chips' lifetime, not a hook's. |
 | `src/client/hooks/useFileUpload.ts` | `retryUpload`, the resume pass, and the removed-mid-flight cleanup. |
 | `src/client/components/FileUploadChips.tsx` | Remove in every state; error face + Retry on images. |
-| `src/client/utils/compose-review-body.ts` | `buildReviewSendFrame` — `/review` carries the uploads. |
+| `src/client/utils/compose-review-body.ts` | `composeReviewMessage` — the `/review` prompt itself. |
+| `src/client/utils/review-command.ts` | `resolveReviewRequest` — the three `/review` refusals, out of `App` so they can be tested. |
+| `src/client/utils/send-handler.ts` | `runSend` — the whole send decision, out of `App` so its WIRING can be tested. |
 | `src/server/orchestrator/api-routes-files.ts` | Batch rollback on failure, logged rather than swallowed. |
 | `src/server/orchestrator/services/files.ts` | Exclusive filename claim, so the rollback owns what it deletes. |
 | `src/server/orchestrator/services/headless-sessions.ts` | Empty prompt allowed when files are attached. |
@@ -166,6 +173,16 @@ as a guard for a state the gate prevents.
   Remove on an in-flight file and an in-flight image.
 - `compose-review-body.test.ts` — `/review` carries the uploads, the
   `@`-mentioned files, and both at once; each key is omitted when empty.
+- `review-command.test.ts` — each of the three refusals with its message, the
+  order they are checked in, and the target taken from the argument (with or
+  without the `@`) in preference to the preview.
+- `MessageInputSendGate.test.tsx` — a refused send keeps the text, the chips and
+  the reset-to-base control; an accepted one still clears all three.
+- `send-handler.test.ts` — the wiring: each refusal dispatching nothing and
+  returning `false`, `plan.frame` reaching the wire on both the `/review` and the
+  ordinary branch, the undeliverable `/review` leaving its preview target and its
+  route alone so the retry can work, and the ordinary send still being accepted
+  when the socket refuses it (because that dispatch stashes the frame).
 - `file-upload.test.ts` (integration) — a batch that fails part-way leaves nothing
   on disk.
 - `files-upload.test.ts` — eight concurrent uploads of one name get eight distinct
@@ -211,10 +228,104 @@ succeeded) was dismissed at 0%. The chip went and did not come back when the
 request landed, and the session's `uploads/` directory on disk contains no 40 MB
 file — the completion deleted what the server had saved.
 
-## Known limits, not fixed here
+## Known limits, since closed
 
 Recorded as non-requirements and tracked as **planning#519**: `hydrateUploads`
 applies a stale listing (pruning a newer upload's draft path) and applies it with
 no session check, and `/compact` drops attachments the way `/review` did. All
-three predate this work and belong to other subsystems; the hydration pair needs a
-decision about what an out-of-date answer should do, which is its own doc.
+three predate this work and belong to other subsystems; the hydration pair needed
+a decision about what an out-of-date answer should do, so it got its own doc —
+[docs/294-upload-hydration-races](../294-upload-hydration-races/plan.md), where
+all three are fixed.
+
+One more, found by the review of that work and fixed here (see below): a
+**refused** `/review` cleared the composer anyway.
+
+## A refused send keeps what it would have sent
+
+Req 4 says no attachment is dropped without the user being told. `/review` has
+three ways to turn a send away — there is no session, a turn is already running,
+or it has no target file — and each one returned early from `App.handleSend`
+after a toast that explained the refusal. `MessageInput.handleSubmit` cleared the
+text and the chips *after* calling `onSend`, unconditionally, because nothing
+told it the send had not happened. So a refused `/review` cost the user their
+message and their attachment, for a send that never went out.
+
+**`onSend` now answers.** It returns a **required** `boolean`, and `false` means
+refused: `handleSubmit` returns without clearing anything, and without the
+docs/218 optimistic reset-eligible clear, which would otherwise hide a control
+the user still needs (no turn ran, so nothing would recompute it).
+
+Required, not optional, and that decision has a cost worth naming. A first pass
+made the check `=== false` so that the composer's ~130 `vi.fn()` doubles — which
+return `undefined`, and are `any`-typed, so TypeScript cannot see them — kept
+meaning "accepted". CI's `no-unnecessary-boolean-literal-compare` refused it, and
+was right: against a required `boolean` the comparison is redundant, and the
+leniency was there to protect the *fixtures*, not the code. With the strict check
+in, four tests went red — a saved draft cleared, the reset control hidden, the
+dictation flag reset, the chips cleared — every one of them a test that only
+means anything with an accepting parent. So the doubles were fixed rather than
+the check: nine files' doubles now say `vi.fn().mockReturnValue(true)`. A double
+that cannot express the contract is a fixture that quietly tests something else.
+(`mockReturnValue`, not `vi.fn(() => true)` — the arrow narrows the mock's
+argument tuple to `[]`, so every `onSend.mock.calls[0][0]` in those files stops
+type-checking.)
+
+The alternative was to decide the refusal inside `buildAttachmentPlan`, which
+already decides `clearAttachments`. It does not work: that function is called in
+`App`, while the chips are cleared in `MessageInput`, so the answer still has to
+travel back across the prop. A return value is the whole mechanism.
+
+**Four reachable paths, not three.** Looking for the rest of the shape found one
+more: **a `/review` whose frame never left the browser.** `sendUserMessage`
+returns `false` when the socket would not take the frame; it rolls its optimistic
+bubble back and toasts *"your message wasn't sent … try again in a moment"* —
+which the user cannot do from a composer that emptied itself behind the toast.
+The ordinary send is safe here only because its dispatch **stashes** an
+undeliverable frame for reconnect and reports success; `/review`'s dispatch calls
+`send` directly, so this one is genuinely reachable.
+
+**And a refused send has to be retryable, which is more than keeping the text.**
+Found by review, on the fix itself: `/review` closed the preview and graduated
+the URL *before* dispatching. `closePreview` clears `previewFile`, which is the
+target a bare `/review` resolves from — so the retry the toast asks for failed
+with *"needs a file"*. The `navigate` was worse: it changes the composer's draft
+key, and draft restoration then replaced the text the refusal had just preserved
+with the new key's empty draft. Both are effects of an accepted `/review`, so
+both moved below the delivery check.
+
+**The quick-capture overlay's refusal is honoured too, defensively.** It turns a
+capture away when no repo is selected, and now returns `false` for it. This one is
+not a demonstrated loss: that surface disables its whole composer while no repo is
+ready (`disabled` at `QuickCaptureOverlay.tsx`), so `sendBlocked` bars the send
+before the refusal is reached. It is the contract being answered honestly rather
+than a bug being fixed — which is why `onSend` returns a **required** `boolean`.
+A handler that must answer cannot forget to, and forgetting is exactly how the
+original loss happened.
+
+**Why the refusal moved out of `App` anyway.** `App` has no test harness, so the
+three branches had no coverage and could not get any. `resolveReviewRequest`
+(`src/client/utils/review-command.ts`) is the same shape as `buildAttachmentPlan`
+— pure, every input passed in — so each refusal, the order they are checked in,
+and the target resolution are testable without rendering `App`.
+
+**And then the wiring itself moved, because extracting pure helpers was not
+working.** Three PRs in a row pulled a pure function out of `App.handleSend` and
+each one had to close by admitting the same hole: the helper is tested, App's
+*call* to it is not. That hole is not incidental — it is exactly where this bug
+class lives. `buildAttachmentPlan` cannot fail on App forgetting to spread
+`plan.frame`; `resolveReviewRequest` cannot fail on App computing a refusal and
+dispatching anyway. A fourth extraction would have bought a fourth admission.
+
+So the **body** moved instead, into `runSend` (`src/client/utils/send-handler.ts`).
+It is not pure — it reads stores and dispatches — but every React-shaped
+dependency (`send`, `navigate`, `requestPermission`, `disableAutoFix`,
+`isNewSessionRoute`) is a parameter, so a test seeds the real stores, calls it
+with a fake `send`, and reads back what reached the wire and what the return
+value told the composer. `App` keeps only the `useCallback` that binds the
+dependencies. No behaviour changed: the body was moved verbatim.
+
+That is what finally covers the two branches this section used to list as
+untested — App returning `false` for a refusal, and the undeliverable-`/review`
+path — and the ordering bug the review found now has a regression test of its
+own, rather than only a comment explaining it.

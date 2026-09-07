@@ -26,7 +26,7 @@ function pasteText(text: string) {
 
 describe("MessageInput — large paste becomes a file", () => {
   it("attaches a paste at the threshold as pasted-text.txt", () => {
-    render(<MessageInput surface="overlay" onSend={vi.fn()} disabled={false} />);
+    render(<MessageInput surface="overlay" onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
     pasteText("x".repeat(LARGE_PASTE_THRESHOLD_CHARS));
     expect(screen.getByTestId("file-upload-chips")).toBeInTheDocument();
     expect(screen.getByTestId("upload-chip-name")).toHaveTextContent(PASTED_TEXT_FILENAME);
@@ -36,14 +36,14 @@ describe("MessageInput — large paste becomes a file", () => {
     // jsdom never inserts pasted text, so an "input is empty" assertion would
     // pass with the feature removed. preventDefault is the observable that
     // actually distinguishes the two.
-    render(<MessageInput surface="overlay" onSend={vi.fn()} disabled={false} />);
+    render(<MessageInput surface="overlay" onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
     const event = pasteText("x".repeat(LARGE_PASTE_THRESHOLD_CHARS));
     expect(event.defaultPrevented).toBe(true);
   });
 
   it("leaves a paste below the threshold to the input", () => {
     // docs/292 req 3.
-    render(<MessageInput surface="overlay" onSend={vi.fn()} disabled={false} />);
+    render(<MessageInput surface="overlay" onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
     const event = pasteText("x".repeat(LARGE_PASTE_THRESHOLD_CHARS - 1));
     expect(event.defaultPrevented).toBe(false);
     expect(screen.queryByTestId("file-upload-chips")).toBeNull();
@@ -54,7 +54,7 @@ describe("MessageInput — large paste becomes a file", () => {
     render(
       <MessageInput
         surface="overlay"
-        onSend={vi.fn()}
+        onSend={vi.fn().mockReturnValue(true)}
         disabled={false}
         disabledReason="Session is starting"
       />,
@@ -66,7 +66,7 @@ describe("MessageInput — large paste becomes a file", () => {
   it("attaches a pasted image rather than the text that came with it", () => {
     // A copy from a web page carries both text/html+text/plain and an image.
     // The image branch runs first and the text must not produce a second chip.
-    render(<MessageInput surface="overlay" onSend={vi.fn()} disabled={false} />);
+    render(<MessageInput surface="overlay" onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
     const textarea = screen.getByRole("textbox");
     const png = new File(["x"], "shot.png", { type: "image/png" });
     const event = new Event("paste", { bubbles: true, cancelable: true });

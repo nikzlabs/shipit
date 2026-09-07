@@ -33,18 +33,18 @@ beforeEach(() => {
 describe("MessageInput", () => {
   describe("basic functionality", () => {
     it("renders the input textarea and send button", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
       expect(screen.getByPlaceholderText("Describe what to build... (type @ to attach files)")).toBeInTheDocument();
       expect(screen.getByLabelText("Send message")).toBeInTheDocument();
     });
 
     it("renders the add files button", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
       expect(screen.getByLabelText("Add files")).toBeInTheDocument();
     });
 
     it("sends text message on submit", () => {
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       render(<MessageInput onSend={onSend} disabled={false} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "Hello Claude" } });
@@ -53,7 +53,7 @@ describe("MessageInput", () => {
     });
 
     it("sends text on Enter (without Shift)", () => {
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       render(<MessageInput onSend={onSend} disabled={false} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "test" } });
@@ -66,7 +66,7 @@ describe("MessageInput", () => {
       // rather than fire-and-forget the message — matches native chat-app
       // behavior. The user sends via the explicit send button instead.
       mockMatchMedia(true);
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       render(<MessageInput onSend={onSend} disabled={false} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "test" } });
@@ -76,7 +76,7 @@ describe("MessageInput", () => {
 
     it("still sends via the send button on a mobile viewport", () => {
       mockMatchMedia(true);
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       render(<MessageInput onSend={onSend} disabled={false} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "hello mobile" } });
@@ -85,14 +85,14 @@ describe("MessageInput", () => {
     });
 
     it("does not send empty messages", () => {
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       render(<MessageInput onSend={onSend} disabled={false} />);
       fireEvent.click(screen.getByLabelText("Send message"));
       expect(onSend).not.toHaveBeenCalled();
     });
 
     it("disables send button when disabled prop is true", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={true} />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={true} />);
       expect(screen.getByLabelText("Send message")).toBeDisabled();
     });
   });
@@ -107,7 +107,7 @@ describe("MessageInput", () => {
     it("renders both Stop and Send while running when steering is active", () => {
       render(
         <MessageInput
-          onSend={vi.fn()}
+          onSend={vi.fn().mockReturnValue(true)}
           disabled={false}
           isLoading={true}
           onInterrupt={vi.fn()}
@@ -121,7 +121,7 @@ describe("MessageInput", () => {
     it("enables the send button while running once text is typed (steer mid-turn)", () => {
       render(
         <MessageInput
-          onSend={vi.fn()}
+          onSend={vi.fn().mockReturnValue(true)}
           disabled={false}
           isLoading={true}
           onInterrupt={vi.fn()}
@@ -140,7 +140,7 @@ describe("MessageInput", () => {
     });
 
     it("sends the steered message while running without stopping the agent", () => {
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       const onInterrupt = vi.fn();
       render(
         <MessageInput
@@ -164,7 +164,7 @@ describe("MessageInput", () => {
       // Default: liveSteeringActive is false (capability false or setting off).
       render(
         <MessageInput
-          onSend={vi.fn()}
+          onSend={vi.fn().mockReturnValue(true)}
           disabled={false}
           isLoading={true}
           onInterrupt={vi.fn()}
@@ -177,7 +177,7 @@ describe("MessageInput", () => {
     it("does not render Send mid-turn when steering is explicitly disabled", () => {
       render(
         <MessageInput
-          onSend={vi.fn()}
+          onSend={vi.fn().mockReturnValue(true)}
           disabled={false}
           isLoading={true}
           onInterrupt={vi.fn()}
@@ -198,7 +198,7 @@ describe("MessageInput", () => {
     it("renders permission mode selector when onPermissionModeChange is provided and the agent supports modes", () => {
       render(
         <MessageInput
-          onSend={vi.fn()}
+          onSend={vi.fn().mockReturnValue(true)}
           disabled={false}
           onPermissionModeChange={vi.fn()}
           agents={claudeWithModes}
@@ -209,14 +209,14 @@ describe("MessageInput", () => {
     });
 
     it("does not render permission mode selector when onPermissionModeChange is not provided", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} agents={claudeWithModes} activeAgentId="claude" />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} agents={claudeWithModes} activeAgentId="claude" />);
       expect(screen.queryByTestId("permission-mode-selector")).not.toBeInTheDocument();
     });
 
     it("hides the selector for an agent that advertises no permission modes", () => {
       render(
         <MessageInput
-          onSend={vi.fn()}
+          onSend={vi.fn().mockReturnValue(true)}
           disabled={false}
           onPermissionModeChange={vi.fn()}
           agents={[{ id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5"], supportsReview: false, supportedPermissionModes: [] }]}
@@ -232,7 +232,7 @@ describe("MessageInput", () => {
     it("renders both when onAgentChange is provided", () => {
       render(
         <MessageInput
-          onSend={vi.fn()}
+          onSend={vi.fn().mockReturnValue(true)}
           disabled={false}
           onAgentChange={vi.fn()}
           agents={[{ id: "claude", name: "Claude Code", installed: true, hasRunnableModels: true, models: ["claude-opus-4-8"], supportsReview: true }]}
@@ -247,14 +247,14 @@ describe("MessageInput", () => {
 
   describe("drag and drop", () => {
     it("shows drop zone overlay when dragging over", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
       const container = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)").closest("div.px-4")!;
       fireEvent.dragEnter(container, { dataTransfer: { files: [] } });
       expect(screen.getByText("Drop files here")).toBeInTheDocument();
     });
 
     it("hides drop zone overlay when dragging out", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
       const container = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)").closest("div.px-4")!;
       fireEvent.dragEnter(container, { dataTransfer: { files: [] } });
       expect(screen.getByText("Drop files here")).toBeInTheDocument();
@@ -273,7 +273,7 @@ describe("MessageInput", () => {
     // cross-origin iframe focus theft, so we now only reclaim when
     // activeElement is an IFRAME.
     it("does NOT reclaim focus when blur leaves activeElement=body", async () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
       textarea.focus();
       expect(document.activeElement).toBe(textarea);
@@ -293,7 +293,7 @@ describe("MessageInput", () => {
     });
 
     it("DOES reclaim focus when an iframe load steals focus mid-typing", async () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
       const focusSpy = vi.spyOn(textarea, "focus");
       textarea.focus();
@@ -332,7 +332,7 @@ describe("MessageInput", () => {
       // cursor while they worked on the right side. The fix gates the reclaim on a
       // recent iframe LOAD event; with no load, the move is intentional and we leave
       // focus alone.
-      render(<MessageInput onSend={vi.fn()} disabled={false} />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
       const focusSpy = vi.spyOn(textarea, "focus");
       textarea.focus();
@@ -365,13 +365,13 @@ describe("MessageInput", () => {
     };
 
     it("focuses the textarea when focusKey changes on desktop", async () => {
-      const { rerender } = render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
+      const { rerender } = render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-A" />);
       // Move focus elsewhere so we can observe whether the textarea reclaims it.
       (document.activeElement as HTMLElement | null)?.blur();
       document.body.focus();
       expect(document.activeElement).toBe(document.body);
 
-      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-B" />);
+      rerender(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-B" />);
       await waitForFocusRaf();
 
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
@@ -383,23 +383,23 @@ describe("MessageInput", () => {
       // sessions shouldn't summon the keyboard — the user can tap to type when
       // they actually want to.
       mockMatchMedia(true);
-      const { rerender } = render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
+      const { rerender } = render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-A" />);
       (document.activeElement as HTMLElement | null)?.blur();
       document.body.focus();
       expect(document.activeElement).toBe(document.body);
 
-      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-B" />);
+      rerender(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-B" />);
       await waitForFocusRaf();
 
       expect(document.activeElement).toBe(document.body);
     });
 
     it("does not run the chat focusKey path for overlay surface changes", async () => {
-      const { rerender } = render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="overlay-A" surface="overlay" />);
+      const { rerender } = render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="overlay-A" surface="overlay" />);
       (document.activeElement as HTMLElement | null)?.blur();
       document.body.focus();
 
-      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="overlay-B" surface="overlay" />);
+      rerender(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="overlay-B" surface="overlay" />);
       await waitForFocusRaf();
 
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
@@ -414,7 +414,7 @@ describe("MessageInput", () => {
 
     it("does not consume chat prefill text", async () => {
       useSessionStore.getState().setPrefillText("send this to chat");
-      render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="overlay" surface="overlay" />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="overlay" surface="overlay" />);
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
 
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
@@ -423,7 +423,7 @@ describe("MessageInput", () => {
     });
 
     it("auto-focuses the textarea on mount on desktop", async () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} surface="overlay" />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} surface="overlay" />);
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
 
@@ -436,7 +436,7 @@ describe("MessageInput", () => {
       // mobile keyboard on open is wanted — unlike the chat focusKey path,
       // which skips mobile to avoid summoning the keyboard on session switch.
       mockMatchMedia(true);
-      render(<MessageInput onSend={vi.fn()} disabled={false} surface="overlay" />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} surface="overlay" />);
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
 
@@ -447,7 +447,7 @@ describe("MessageInput", () => {
     it("hides the context dial even when model info is present", () => {
       render(
         <MessageInput
-          onSend={vi.fn()}
+          onSend={vi.fn().mockReturnValue(true)}
           disabled={false}
           surface="overlay"
           modelInfo={{ model: "Opus", contextWindowTokens: 200000 }}
@@ -468,13 +468,13 @@ describe("MessageInput", () => {
 
     it("loads a saved draft for the active session on mount", () => {
       localStorage.setItem("shipit-draft-message:session-A", "draft for A");
-      render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-A" />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
       expect(textarea.value).toBe("draft for A");
     });
 
     it("saves typed text under the active session's focusKey", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-A" />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "in progress" } });
       expect(localStorage.getItem("shipit-draft-message:session-A")).toBe("in progress");
@@ -482,7 +482,7 @@ describe("MessageInput", () => {
 
     it("swaps drafts when focusKey changes", () => {
       localStorage.setItem("shipit-draft-message:session-B", "B's draft");
-      const { rerender } = render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
+      const { rerender } = render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-A" />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
 
       // Type into A.
@@ -490,21 +490,21 @@ describe("MessageInput", () => {
       expect(textarea.value).toBe("A's draft");
 
       // Switch to B — A's draft persists, B's draft loads.
-      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-B" />);
+      rerender(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-B" />);
       expect(textarea.value).toBe("B's draft");
       expect(localStorage.getItem("shipit-draft-message:session-A")).toBe("A's draft");
 
       // Switch back to A — A's draft is recovered.
-      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
+      rerender(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-A" />);
       expect(textarea.value).toBe("A's draft");
     });
 
     it("shows empty input when switching to a session with no saved draft", () => {
-      const { rerender } = render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
+      const { rerender } = render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-A" />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
       fireEvent.change(textarea, { target: { value: "A's draft" } });
 
-      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-fresh" />);
+      rerender(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-fresh" />);
       expect(textarea.value).toBe("");
     });
 
@@ -517,7 +517,7 @@ describe("MessageInput", () => {
       // wiping the user's text. This test pins the contract: a stable focusKey
       // must NOT clear the textarea on re-render, even when other props change.
       const { rerender } = render(
-        <MessageInput onSend={vi.fn()} disabled={true} focusKey="new" />,
+        <MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={true} focusKey="new" />,
       );
       const textarea = screen.getByPlaceholderText(
         "Describe what to build... (type @ to attach files)",
@@ -527,7 +527,7 @@ describe("MessageInput", () => {
 
       // Simulate App.tsx re-rendering after claimSession resolves: other props
       // change (e.g. `disabled` flips as the WS opens) but focusKey stays "new".
-      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="new" />);
+      rerender(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="new" />);
       expect(textarea.value).toBe("hello world");
     });
 
@@ -536,7 +536,7 @@ describe("MessageInput", () => {
       // "new", so switching repos from the new-session repo bar swaps the
       // composer text instead of carrying one repo's draft into another.
       const { rerender } = render(
-        <MessageInput onSend={vi.fn()} disabled={false} focusKey="new:owner/alpha" />,
+        <MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="new:owner/alpha" />,
       );
       const textarea = screen.getByPlaceholderText(
         "Describe what to build... (type @ to attach files)",
@@ -544,12 +544,12 @@ describe("MessageInput", () => {
       fireEvent.change(textarea, { target: { value: "fix the alpha crash" } });
 
       // Switch to another repo's new-session view: alpha's text must not follow.
-      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="new:owner/beta" />);
+      rerender(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="new:owner/beta" />);
       expect(textarea.value).toBe("");
       fireEvent.change(textarea, { target: { value: "beta readme" } });
 
       // Switch back: alpha's own draft is restored, not beta's.
-      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="new:owner/alpha" />);
+      rerender(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="new:owner/alpha" />);
       expect(textarea.value).toBe("fix the alpha crash");
       expect(localStorage.getItem("shipit-draft-message:new:owner/beta")).toBe("beta readme");
     });
@@ -562,7 +562,7 @@ describe("MessageInput", () => {
 
       render(
         <MessageInput
-          onSend={vi.fn()}
+          onSend={vi.fn().mockReturnValue(true)}
           disabled={false}
           surface="overlay"
           focusKey="__quick_capture__"
@@ -580,7 +580,7 @@ describe("MessageInput", () => {
     });
 
     it("clears the saved draft after sending", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-A" />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "ship it" } });
       expect(localStorage.getItem("shipit-draft-message:session-A")).toBe("ship it");
@@ -591,7 +591,7 @@ describe("MessageInput", () => {
 
   describe("file picker", () => {
     it("has a hidden file input that accepts all file types", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
       const fileInput = screen.getByTestId("file-input") as HTMLInputElement;
       expect(fileInput.type).toBe("file");
       expect(fileInput.accept).toBe(""); // accepts all file types
@@ -599,7 +599,7 @@ describe("MessageInput", () => {
     });
 
     it("buffers attached files in overlay surface and surfaces them as deferredFiles on send", () => {
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       // surface="overlay" → MessageInput buffers raw files locally (quick-capture path).
       render(<MessageInput onSend={onSend} disabled={false} surface="overlay" />);
       const fileInput = screen.getByTestId("file-input");
@@ -630,7 +630,7 @@ describe("MessageInput", () => {
     ];
 
     it("opens on a leading slash and lists skills", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} skills={skills} />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} skills={skills} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "/", selectionStart: 1 } });
       expect(screen.getByTestId("skill-autocomplete")).toBeInTheDocument();
@@ -638,7 +638,7 @@ describe("MessageInput", () => {
     });
 
     it("filters skills by the query after the slash", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} skills={skills} />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} skills={skills} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "/dep", selectionStart: 4 } });
       const items = screen.getAllByTestId("skill-autocomplete-item");
@@ -647,7 +647,7 @@ describe("MessageInput", () => {
     });
 
     it("inserts the selected skill name with a trailing space", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} skills={skills} />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} skills={skills} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
       fireEvent.change(textarea, { target: { value: "/rev", selectionStart: 4 } });
       fireEvent.click(screen.getByText("/review"));
@@ -655,14 +655,14 @@ describe("MessageInput", () => {
     });
 
     it("does not open when the slash is not at the start", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} skills={skills} />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} skills={skills} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "hello /deploy", selectionStart: 13 } });
       expect(screen.queryByTestId("skill-autocomplete")).not.toBeInTheDocument();
     });
 
     it("does not open when no skills are available", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} skills={[]} />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} skills={[]} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "/", selectionStart: 1 } });
       expect(screen.queryByTestId("skill-autocomplete")).not.toBeInTheDocument();
@@ -671,7 +671,7 @@ describe("MessageInput", () => {
     it("opens on a leading slash for Codex but displays the $ token", () => {
       render(
         <MessageInput
-          onSend={vi.fn()} disabled={false} skills={skills} activeAgentId="codex"
+          onSend={vi.fn().mockReturnValue(true)} disabled={false} skills={skills} activeAgentId="codex"
           agents={[{ id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5"], supportsReview: false, skillInvocationPrefix: "$" }]}
         />,
       );
@@ -685,7 +685,7 @@ describe("MessageInput", () => {
     it("inserts $name for Codex instead of /name", () => {
       render(
         <MessageInput
-          onSend={vi.fn()} disabled={false} skills={skills} activeAgentId="codex"
+          onSend={vi.fn().mockReturnValue(true)} disabled={false} skills={skills} activeAgentId="codex"
           agents={[{ id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5"], supportsReview: false, skillInvocationPrefix: "$" }]}
         />,
       );
@@ -711,21 +711,21 @@ describe("MessageInput", () => {
     it("is hidden when the session is not reset-eligible", () => {
       usePrStore.setState({ resetEligibleBySession: {} });
       useSettingsStore.setState({ autoResetMergedBranch: true });
-      render(<MessageInput onSend={vi.fn()} disabled={false} sessionId="s1" />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} sessionId="s1" />);
       expect(screen.queryByTestId("reset-merged-branch-control")).not.toBeInTheDocument();
     });
 
     it("is hidden when eligible but the global setting is off", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: false });
-      render(<MessageInput onSend={vi.fn()} disabled={false} sessionId="s1" />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} sessionId="s1" />);
       expect(screen.queryByTestId("reset-merged-branch-control")).not.toBeInTheDocument();
     });
 
     it("shows when eligible + setting on, and sends resetMergedBranch:true checked by default", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       render(<MessageInput onSend={onSend} disabled={false} sessionId="s1" />);
       expect(screen.getByTestId("reset-merged-branch-control")).toBeInTheDocument();
       typeAndSend();
@@ -735,7 +735,7 @@ describe("MessageInput", () => {
     it("sends resetMergedBranch:false after the user unticks it (per-send opt-out)", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       render(<MessageInput onSend={onSend} disabled={false} sessionId="s1" />);
       fireEvent.click(screen.getByTestId("reset-merged-branch-control"));
       typeAndSend();
@@ -745,7 +745,7 @@ describe("MessageInput", () => {
     it("optimistically clears eligibility (hides the control) on a checked send", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });
-      render(<MessageInput onSend={vi.fn()} disabled={false} sessionId="s1" />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} sessionId="s1" />);
       typeAndSend();
       // The branch is about to be reset → control vanishes without waiting for
       // the post-turn `reset_eligible: false`.
@@ -756,7 +756,7 @@ describe("MessageInput", () => {
     it("keeps eligibility (control stays armed) on an unticked send", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });
-      render(<MessageInput onSend={vi.fn()} disabled={false} sessionId="s1" />);
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} sessionId="s1" />);
       fireEvent.click(screen.getByTestId("reset-merged-branch-control")); // untick
       typeAndSend();
       // No reset will run, so the signal must not be optimistically cleared —
@@ -946,7 +946,7 @@ describe("MessageInput", () => {
       stubComposerWidth(width);
       return render(
         <MessageInput
-          onSend={vi.fn()}
+          onSend={vi.fn().mockReturnValue(true)}
           disabled={false}
           agents={agents}
           activeAgentId="claude"

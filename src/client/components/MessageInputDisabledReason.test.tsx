@@ -72,27 +72,27 @@ beforeEach(() => {
 
 describe("MessageInput disabledReason (docs/257 req 3)", () => {
   it("is not typeable and shows the reason as its placeholder", () => {
-    render(<MessageInput onSend={vi.fn()} disabled={false} disabledReason={REASON} />);
+    render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} disabledReason={REASON} />);
     const textarea = screen.getByPlaceholderText(REASON);
     expect(textarea).toBeDisabled();
     expect(screen.queryByPlaceholderText(LIVE_PLACEHOLDER)).toBeNull();
   });
 
   it("cannot attach files", () => {
-    render(<MessageInput onSend={vi.fn()} disabled={false} disabledReason={REASON} />);
+    render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} disabledReason={REASON} />);
     expect(screen.getByLabelText("Add files")).toBeDisabled();
   });
 
   it("cannot dictate — the mic is not offered", () => {
     useSettingsStore.setState({ voiceInputEnabled: true });
     const { rerender } = render(
-      <MessageInput onSend={vi.fn()} disabled={false} disabledReason={REASON} />,
+      <MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} disabledReason={REASON} />,
     );
     // A rendered-but-inert mic would still be a live-looking control, so the
     // assertion is absence.
     expect(screen.queryByTestId("mic-button")).toBeNull();
     // Non-vacuous: the same render with no reason offers it.
-    rerender(<MessageInput onSend={vi.fn()} disabled={false} />);
+    rerender(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
     expect(screen.getByTestId("mic-button")).toBeInTheDocument();
   });
 
@@ -147,7 +147,7 @@ describe("MessageInput disabledReason (docs/257 req 3)", () => {
     render(
       <MessageInput
         surface="overlay"
-        onSend={vi.fn()}
+        onSend={vi.fn().mockReturnValue(true)}
         disabled={false}
         disabledReason={REASON}
       />,
@@ -160,7 +160,7 @@ describe("MessageInput disabledReason (docs/257 req 3)", () => {
   it("still arms the mic when the chat is runnable", () => {
     useSettingsStore.setState({ voiceInputEnabled: true });
     useUiStore.setState({ quickCaptureAutoMic: true });
-    render(<MessageInput surface="overlay" onSend={vi.fn()} disabled={false} />);
+    render(<MessageInput surface="overlay" onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
     expect(startRecording).toHaveBeenCalled();
   });
 
@@ -175,7 +175,7 @@ describe("MessageInput disabledReason (docs/257 req 3)", () => {
       });
     };
     render(
-      <MessageInput surface="overlay" onSend={vi.fn()} disabled={false} disabledReason={REASON} />,
+      <MessageInput surface="overlay" onSend={vi.fn().mockReturnValue(true)} disabled={false} disabledReason={REASON} />,
     );
     paste(REASON);
     // An ingested image renders an upload chip next to the input.
@@ -183,7 +183,7 @@ describe("MessageInput disabledReason (docs/257 req 3)", () => {
 
     // Non-vacuous: the same paste on a live composer does produce the chip.
     cleanup();
-    render(<MessageInput surface="overlay" onSend={vi.fn()} disabled={false} />);
+    render(<MessageInput surface="overlay" onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
     paste(LIVE_PLACEHOLDER);
     expect(screen.getByTestId("file-upload-chips")).toBeInTheDocument();
   });
@@ -194,7 +194,7 @@ describe("MessageInput disabledReason (docs/257 req 3)", () => {
     localStorage.setItem(`${DRAFT_KEY_PREFIX}session-1`, "half-written thought");
     render(
       <MessageInput
-        onSend={vi.fn()}
+        onSend={vi.fn().mockReturnValue(true)}
         disabled={false}
         disabledReason={REASON}
         focusKey="session-1"
@@ -207,7 +207,7 @@ describe("MessageInput disabledReason (docs/257 req 3)", () => {
   });
 
   it("refuses to send that retained draft", () => {
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     localStorage.setItem(`${DRAFT_KEY_PREFIX}session-1`, "half-written thought");
     render(
       <MessageInput
@@ -229,12 +229,12 @@ describe("MessageInput disabledReason (docs/257 req 3)", () => {
     // cannot be sent. This asserts the mechanism, since the listeners are
     // outside the rendered tree.
     useSettingsStore.setState({ voiceInputEnabled: true });
-    render(<MessageInput onSend={vi.fn()} disabled={false} disabledReason={REASON} />);
+    render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} disabledReason={REASON} />);
     expect(voiceOptions.at(-1)?.enabled).toBe(false);
 
     cleanup();
     voiceOptions.length = 0;
-    render(<MessageInput onSend={vi.fn()} disabled={false} />);
+    render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
     expect(voiceOptions.at(-1)?.enabled).toBe(true);
   });
 
@@ -243,9 +243,9 @@ describe("MessageInput disabledReason (docs/257 req 3)", () => {
     // stop a capture already in flight, and its transcript would land in the
     // hidden draft.
     useSettingsStore.setState({ voiceInputEnabled: true });
-    const { rerender } = render(<MessageInput onSend={vi.fn()} disabled={false} />);
+    const { rerender } = render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
     expect(cancelRecording).not.toHaveBeenCalled();
-    rerender(<MessageInput onSend={vi.fn()} disabled={false} disabledReason={REASON} />);
+    rerender(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} disabledReason={REASON} />);
     expect(cancelRecording).toHaveBeenCalled();
   });
 
@@ -255,7 +255,7 @@ describe("MessageInput disabledReason (docs/257 req 3)", () => {
     // send, and clear the source — a silent loss with no feedback.
     localStorage.setItem(`${DRAFT_KEY_PREFIX}session-1`, "half-written thought");
     const { rerender } = render(
-      <MessageInput onSend={vi.fn()} disabled={false} disabledReason={REASON} focusKey="session-1" />,
+      <MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} disabledReason={REASON} focusKey="session-1" />,
     );
     useSessionStore.getState().setPrefillText("seeded prompt");
 
@@ -263,7 +263,7 @@ describe("MessageInput disabledReason (docs/257 req 3)", () => {
     expect(useSessionStore.getState().prefillText).toBe("seeded prompt");
 
     // Deferred, not dropped: it lands the moment the composer comes back.
-    rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-1" />);
+    rerender(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-1" />);
     expect((screen.getByPlaceholderText(LIVE_PLACEHOLDER) as HTMLTextAreaElement).value)
       .toBe("seeded prompt");
     expect(useSessionStore.getState().prefillText).toBeUndefined();
@@ -271,14 +271,14 @@ describe("MessageInput disabledReason (docs/257 req 3)", () => {
 
   it("defers a quote-reply for the same reason", () => {
     const { rerender } = render(
-      <MessageInput onSend={vi.fn()} disabled={false} disabledReason={REASON} focusKey="session-1" />,
+      <MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} disabledReason={REASON} focusKey="session-1" />,
     );
     useSessionStore.getState().setQuoteReplyText("> quoted line");
 
     expect((screen.getByPlaceholderText(REASON) as HTMLTextAreaElement).value).toBe("");
     expect(useSessionStore.getState().quoteReplyText).toBe("> quoted line");
 
-    rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-1" />);
+    rerender(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-1" />);
     expect((screen.getByPlaceholderText(LIVE_PLACEHOLDER) as HTMLTextAreaElement).value)
       .toContain("> quoted line");
   });
@@ -286,7 +286,7 @@ describe("MessageInput disabledReason (docs/257 req 3)", () => {
   it("leaves every affordance live when no reason is set", () => {
     // The complement: this prop must not change today's behaviour when unset.
     useSettingsStore.setState({ voiceInputEnabled: true });
-    render(<MessageInput onSend={vi.fn()} disabled={false} />);
+    render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
     const textarea = screen.getByPlaceholderText(LIVE_PLACEHOLDER);
     expect(textarea).not.toBeDisabled();
     expect(screen.getByLabelText("Add files")).not.toBeDisabled();
