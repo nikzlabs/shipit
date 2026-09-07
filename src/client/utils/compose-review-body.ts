@@ -34,6 +34,8 @@
  * fully decoupled from AI review.
  */
 
+import type { UploadRef, FileContextRef } from "../../server/shared/types.js";
+
 export type ReviewerMode = "role" | "subagent";
 
 export interface ReviewComposition {
@@ -141,4 +143,34 @@ export function composeReviewMessage(filePath: string, opts: ReviewComposition):
 
   lines.push(...parentFollowUp());
   return lines.join("\n");
+}
+
+/**
+ * docs/293 req 4 — the `/review` send frame, including whatever the composer had
+ * attached.
+ *
+ * This path composes its own prompt and used to dispatch it alone, while the
+ * composer cleared its chips regardless: an upload attached alongside `/review`
+ * vanished with no message and no error. Built here rather than inline in
+ * `App.tsx` so the attachments actually have a test.
+ */
+export function buildReviewSendFrame(opts: {
+  prompt: string;
+  sessionId: string;
+  uploadRefs: UploadRef[];
+  pendingFiles: FileContextRef[];
+}): {
+  text: string;
+  sessionId: string;
+  uploads?: UploadRef[];
+  files?: FileContextRef[];
+} {
+  return {
+    text: opts.prompt,
+    sessionId: opts.sessionId,
+    ...(opts.uploadRefs.length > 0 ? { uploads: opts.uploadRefs } : {}),
+    // Both kinds, not just uploads: an `@`-mentioned workspace file is an
+    // attachment too, and the composer clears those on send as well.
+    ...(opts.pendingFiles.length > 0 ? { files: opts.pendingFiles } : {}),
+  };
 }

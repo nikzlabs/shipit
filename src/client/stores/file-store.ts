@@ -142,6 +142,78 @@ const initialState = {
   editError: null as string | null,
 };
 
+/**
+ * docs/293 req 3 — the bytes behind each upload chip that has not landed on the
+ * server yet, so "Retry" can re-POST them and a remounted composer can resume an
+ * upload it did not start.
+ *
+ * This lives beside the store, NOT inside `useFileUpload`, because the two have
+ * different lifetimes and that difference was a defect: the chips are store
+ * state, while a hook is remounted whenever the layout crosses the mobile
+ * breakpoint (`AppLayout` swaps component trees) — leaving a chip on screen whose
+ * bytes had gone, so Retry deleted the attachment and a deferred upload sat at
+ * "uploading" forever. Keyed by upload-item id, cleared by exactly the store
+ * actions that drop the chips, so it can neither go stale nor outlive what is on
+ * screen.
+ */
+const uploadBytes = new Map<string, File>();
+
+/** Hold the bytes behind an upload chip until it lands or goes away. */
+export function retainUploadBytes(id: string, file: File): void {
+  uploadBytes.set(id, file);
+}
+
+/** The bytes behind a chip, if it still needs them. */
+export function getUploadBytes(id: string): File | undefined {
+  return uploadBytes.get(id);
+}
+
+/** Every chip that still has bytes waiting to be POSTed, in insertion order. */
+export function pendingUploadBytes(): { id: string; file: File }[] {
+  return [...uploadBytes].map(([id, file]) => ({ id, file }));
+}
+
+export function releaseUploadBytes(id: string): void {
+  uploadBytes.delete(id);
+}
+
+/**
+ * Upload items with a POST in flight *anywhere*, not just in one hook.
+ *
+ * Module-level for the same reason the bytes are: unmounting a hook does not
+ * cancel its `fetch`, which goes on running and goes on writing to this store.
+ * A replacement hook with its own private set therefore saw an "uploading" chip
+ * with bytes and no owner, and POSTed it a second time — two copies on the
+ * server, and a chip whose bytes were released by whichever request landed
+ * first, leaving Retry with nothing. Ownership belongs to the request, so the
+ * record of it has to outlive the component that started it.
+ */
+const activeUploads = new Set<string>();
+
+export function markUploadActive(id: string): void {
+  activeUploads.add(id);
+}
+
+export function markUploadSettled(id: string): void {
+  activeUploads.delete(id);
+}
+
+export function isUploadActive(id: string): boolean {
+  return activeUploads.has(id);
+}
+
+/**
+ * Forget every pending upload: its bytes, and the record that a request is
+ * running for it. Called when the chips themselves are dropped (a session
+ * switch), where an in-flight request has nothing left to update and an id with
+ * no chip can never be resumed — so keeping either would only leak.
+ */
+export function forgetPendingUploads(): void {
+  uploadBytes.clear();
+  activeUploads.clear();
+}
+
+
 function errorMessageFromResponse(status: number, fallback: string, body: unknown): string {
   if (body && typeof body === "object" && "error" in body && typeof body.error === "string") {
     return body.error;
@@ -169,30 +241,46 @@ export const useFileStore = create<FileState>((set, get) => ({
 
   setViewingFileBinary: (binary) => set({ viewingFileBinary: binary }),
 
-  reset: () => set(initialState),
+  // Drops `sessionUploads`, so the bytes held for those chips go with them —
+  // a session switch calls this while the composer stays mounted.
+  reset: () => {
+    forgetPendingUploads();
+    set(initialState);
+  },
 
   addSessionUploads: (items) =>
     set((state) => ({ sessionUploads: [...state.sessionUploads, ...items] })),
 
   removeSessionUpload: (path) =>
-    set((state) => ({ sessionUploads: state.sessionUploads.filter((u) => u.path !== path) })),
+    set((state) => {
+      for (const u of state.sessionUploads) {
+        if (u.path === path) releaseUploadBytes(u.id);
+      }
+      return { sessionUploads: state.sessionUploads.filter((u) => u.path !== path) };
+    }),
 
-  removeSessionUploadById: (id) =>
-    set((state) => ({ sessionUploads: state.sessionUploads.filter((u) => u.id !== id) })),
+  removeSessionUploadById: (id) => {
+    releaseUploadBytes(id);
+    set((state) => ({ sessionUploads: state.sessionUploads.filter((u) => u.id !== id) }));
+  },
 
   updateSessionUpload: (id, patch) =>
     set((state) => ({
       sessionUploads: state.sessionUploads.map((u) => (u.id === id ? { ...u, ...patch } : u)),
     })),
 
-  markUploadsSent: () =>
+  markUploadsSent: () => {
+    // No bytes to release here: docs/293 reqs 1-2 mean every pending upload is
+    // `ready` by the time a send happens, and a successful upload released its
+    // bytes when it landed.
     set((state) => ({
       sessionUploads: state.sessionUploads.map((u) => {
         if (!u.pending) return u;
         if (u.previewUrl) URL.revokeObjectURL(u.previewUrl);
         return { ...u, pending: false, previewUrl: undefined };
       }),
-    })),
+    }));
+  },
 
   hydrateUploads: async (sessionId) => {
     try {

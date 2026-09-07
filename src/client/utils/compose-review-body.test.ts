@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   composeReviewMessage,
+  buildReviewSendFrame,
   resolveReviewer,
   displayAgentName,
   type ReviewComposition,
@@ -115,5 +116,65 @@ describe("composeReviewMessage — role mode (consult card, docs/220 + docs/261)
     expect(msg).toContain("do NOT abort");
     expect(msg).toContain("Task subagent");
     expect(msg).toContain("prose");
+  });
+});
+
+describe("buildReviewSendFrame — /review carries the composer's attachments (docs/293 req 4)", () => {
+  it("includes the uploads that were attached alongside the command", () => {
+    // `handleSubmit` clears the chips on every send, so a `/review` frame that
+    // omits them loses the attachment with no message and no error.
+    const frame = buildReviewSendFrame({
+      prompt: "review it",
+      sessionId: "s1",
+      uploadRefs: [{ path: "/uploads/pasted-text.txt", type: "upload" }],
+      pendingFiles: [],
+    });
+    expect(frame).toEqual({
+      text: "review it",
+      sessionId: "s1",
+      uploads: [{ path: "/uploads/pasted-text.txt", type: "upload" }],
+    });
+  });
+
+  it("omits the key entirely when nothing is attached", () => {
+    // The server reads `uploads` as absent-or-non-empty; an empty array would
+    // send it down the attachment-resolution path for no reason.
+    const frame = buildReviewSendFrame({
+      prompt: "review it",
+      sessionId: "s1",
+      uploadRefs: [],
+      pendingFiles: [],
+    });
+    expect(frame).toEqual({ text: "review it", sessionId: "s1" });
+    expect("uploads" in frame).toBe(false);
+  });
+});
+
+describe("buildReviewSendFrame — @-mentioned files travel too (docs/293 req 4)", () => {
+  it("carries workspace file references, not only uploads", () => {
+    // An `@`-mentioned file is an attachment as much as an upload is, and the
+    // composer clears those chips on send regardless of which path ran.
+    const frame = buildReviewSendFrame({
+      prompt: "review it",
+      sessionId: "s1",
+      uploadRefs: [],
+      pendingFiles: [{ path: "src/index.ts" }],
+    });
+    expect(frame).toEqual({
+      text: "review it",
+      sessionId: "s1",
+      files: [{ path: "src/index.ts" }],
+    });
+  });
+
+  it("carries both kinds at once", () => {
+    const frame = buildReviewSendFrame({
+      prompt: "review it",
+      sessionId: "s1",
+      uploadRefs: [{ path: "/uploads/a.txt", type: "upload" }],
+      pendingFiles: [{ path: "src/index.ts" }],
+    });
+    expect(frame.uploads).toEqual([{ path: "/uploads/a.txt", type: "upload" }]);
+    expect(frame.files).toEqual([{ path: "src/index.ts" }]);
   });
 });

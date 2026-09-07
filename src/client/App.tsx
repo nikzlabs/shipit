@@ -139,6 +139,7 @@ import { useUiStore, type RightTab } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
 import {
   composeReviewMessage,
+  buildReviewSendFrame,
   resolveReviewer,
 } from "./utils/compose-review-body.js";
 import { handleSessionResume } from "./stores/actions/session-actions.js";
@@ -588,6 +589,7 @@ export default function App() {
       // a same-model review is narrated as prose. No review tool is involved.
       const trimmed = text.trim();
       if (/^\/review(?:\s|$)/.test(trimmed)) {
+        const reviewSettings = useSettingsStore.getState();
         const argMatch = /^\/review\s+@?(\S+)/.exec(trimmed);
         const targetFile =
           argMatch?.[1] ?? useFileStore.getState().previewFile ?? undefined;
@@ -625,11 +627,31 @@ export default function App() {
           void navigate(`/session/${sid}`, { replace: true });
         }
         useFileStore.getState().closePreview();
+        // docs/293 req 4 — carry the composer's attachments too. This path
+        // composes its own prompt and used to dispatch it alone, while
+        // `handleSubmit` cleared the chips regardless: an upload attached
+        // alongside `/review` vanished with no message and no error.
         sendUserMessage({
-          bubble: { role: "user", text: prompt },
+          bubble: {
+            role: "user",
+            text: prompt,
+            ...(uploadRefs.length > 0 ? { uploadPaths: uploadRefs.map((u) => u.path) } : {}),
+            ...(reviewSettings.pendingFiles.length > 0
+              ? { files: reviewSettings.pendingFiles.map((f) => ({ path: f.path, contentPreview: "" })) }
+              : {}),
+          },
           activity: "Reviewing...",
           dispatch: (requestId) =>
-            send({ type: "send_message", requestId, text: prompt, sessionId: sid }),
+            send({
+              type: "send_message",
+              requestId,
+              ...buildReviewSendFrame({
+              prompt,
+              sessionId: sid,
+              uploadRefs,
+              pendingFiles: reviewSettings.pendingFiles,
+            }),
+            }),
         });
         return;
       }

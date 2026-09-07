@@ -47,11 +47,23 @@ describe("large-paste", () => {
     });
 
     it("stops counting at the threshold rather than walking the whole paste", () => {
-      // A megabyte-sized paste must not cost a megabyte-sized scan.
-      const huge = "x".repeat(5_000_000);
-      const start = performance.now();
-      expect(isLargePaste(huge)).toBe(true);
-      expect(performance.now() - start).toBeLessThan(50);
+      // Counted, not timed: a wall-clock assertion would pass for a full scan
+      // that simply happened to be fast enough.
+      const original = String.prototype.charCodeAt;
+      let reads = 0;
+      // eslint-disable-next-line no-extend-native -- restored in the finally below
+      String.prototype.charCodeAt = function (this: string, i: number) {
+        reads++;
+        return original.call(this, i);
+      };
+      try {
+        expect(isLargePaste("x".repeat(5_000_000))).toBe(true);
+      } finally {
+        // eslint-disable-next-line no-extend-native -- restoring the original
+        String.prototype.charCodeAt = original;
+      }
+      // One read per character up to the threshold, and then it stops.
+      expect(reads).toBe(LARGE_PASTE_THRESHOLD_CHARS);
     });
   });
 

@@ -704,16 +704,37 @@ export function MessageInput({
     [handleAddFiles],
   );
 
+  // docs/293 — everything that bars a send, in one place. It was four copies of
+  // the same expression on the send buttons plus a fifth, differently-worded one
+  // in `handleSubmit`; the Enter key reaches only the latter, so any bar added to
+  // the buttons alone would be walked straight past.
+  //
+  // `inert` as well as `disabled`: a retained draft still lives in `text` while
+  // the input is dead (it is simply not rendered), so submission has to be
+  // refused rather than just hidden behind an empty-looking textarea. docs/285 —
+  // `networkSaving` too, since pressing Contained then Enter in one breath is
+  // precisely the sequence that barrier exists for.
+  const uploadsInFlight = displayUploads.some((u) => u.status === "uploading");
+  const uploadsFailed = displayUploads.some((u) => u.status === "error");
+  // req 5 — attachments alone are a message; req 6 — nothing at all is not.
+  const hasAttachment = pendingFiles.length > 0 || displayUploads.length > 0;
+  const sendBlocked =
+    disabled || inert || networkSaving
+    || (!text.trim() && !hasAttachment)
+    || uploadsInFlight   // req 1
+    || uploadsFailed;    // req 2
+  /** Why Send is unavailable, when the reason is one the user can act on. */
+  const sendBlockedReason = uploadsInFlight
+    ? "Waiting for attachments to finish uploading"
+    : uploadsFailed
+      ? "An attachment failed to upload — retry or remove it"
+      : undefined;
+
   const handleSubmit = () => {
     const trimmed = text.trim();
-    // `inert` as well as `disabled`: a retained draft still lives in `text`
-    // while the input is dead (it is simply not rendered), so submission has to
-    // be refused here and not just hidden behind an empty-looking textarea.
-    //
-    // docs/285 — `networkSaving` too, and it must be refused HERE and not only
-    // on the button: Enter reaches this directly, and pressing Contained then
-    // Enter in one breath is precisely the sequence the barrier exists for.
-    if (!trimmed || disabled || inert || networkSaving) return;
+    // `sendBlocked` covers every bar, and it must be re-read HERE and not only
+    // on the button: Enter reaches this directly.
+    if (sendBlocked) return;
     const uploadRefs = getUploadRefs();
     const payload: SendPayload = {
       text: trimmed,
@@ -1225,7 +1246,8 @@ export function MessageInput({
                   {liveSteeringActive && (
                     <button
                       onClick={handleSubmit}
-                      disabled={disabled || inert || networkSaving || !text.trim()}
+                      disabled={sendBlocked}
+                      {...(sendBlockedReason ? { title: sendBlockedReason } : {})}
                       className={`ml-1 flex shrink-0 items-center justify-center rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-30`}
                       aria-label="Send message"
                       data-testid="send-button"
@@ -1237,7 +1259,8 @@ export function MessageInput({
               ) : (
                 <button
                   onClick={handleSubmit}
-                  disabled={disabled || inert || networkSaving || !text.trim()}
+                  disabled={sendBlocked}
+                  {...(sendBlockedReason ? { title: sendBlockedReason } : {})}
                   className={`ml-1 flex shrink-0 items-center justify-center rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-30`}
                   aria-label="Send message"
                   data-testid="send-button"
@@ -1480,7 +1503,8 @@ export function MessageInput({
                 {liveSteeringActive && (
                   <button
                     onClick={handleSubmit}
-                    disabled={disabled || inert || networkSaving || !text.trim()}
+                    disabled={sendBlocked}
+                    {...(sendBlockedReason ? { title: sendBlockedReason } : {})}
                     className={`flex items-center justify-center shrink-0 rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white hover:bg-(--color-accent-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed`}
                     aria-label="Send message"
                     data-testid="send-button"
@@ -1492,7 +1516,8 @@ export function MessageInput({
             ) : (
               <button
                 onClick={handleSubmit}
-                disabled={disabled || inert || networkSaving || !text.trim()}
+                disabled={sendBlocked}
+                {...(sendBlockedReason ? { title: sendBlockedReason } : {})}
                 className={`flex items-center justify-center shrink-0 rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white hover:bg-(--color-accent-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed`}
                 aria-label="Send message"
                 data-testid="send-button"
