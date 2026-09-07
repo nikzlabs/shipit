@@ -71,21 +71,24 @@ export function resetSessionState() {
 }
 
 /**
- * docs/291-composer-before-claim req 5 — **give back a first message whose session
- * never arrived.**
+ * docs/291-composer-before-claim — **give back a message the browser is still
+ * holding, when the session it was typed for stops being the one we are on.**
  *
- * A message sent on `/{repo}/new` before the claim lands is stashed with no
- * `sessionId` and flushed by `useConnectionSync` into whatever session the store
- * holds when a socket next opens. That is right while the claim it was typed for is
- * still running, and wrong the moment that claim stops being the one we are waiting
- * for: a failed claim leaves the bubble and the spinner up forever, and a switch to
- * another repository's `/new` would deliver the message into a session in a
- * different repository.
+ * `sendUserMessage`'s callers stash a frame rather than dropping it when the socket
+ * is not open yet — a message typed on `/{repo}/new` moments after the claim lands,
+ * or one caught by a reconnect. `useConnectionSync` then flushes it *addressed from
+ * the store*:
  *
- * So both cases call this instead of leaving the stash to be found later. It undoes
- * exactly what `sendUserMessage` did — the bubble (matched on the `requestId` the
- * stash carries), the spinner, the stash itself — and says so, because a message
- * that silently evaporates is the failure this is here to prevent.
+ * ```ts
+ * if (send({ ...pending, sessionId } as WsClientMessage)) …
+ * ```
+ *
+ * So a stash the user has moved away from is not merely stranded — it is **sent
+ * into whatever session the store holds by then**. That is why this exists and why
+ * it is not simply `setPendingWsMessage(undefined)`: it undoes exactly what
+ * `sendUserMessage` did — the bubble (matched on the `requestId` the stash carries),
+ * the spinner, the stash itself — and says so, because a message that silently
+ * evaporates is half of the failure it is here to prevent.
  *
  * A no-op when nothing is held, so callers do not have to check first.
  */

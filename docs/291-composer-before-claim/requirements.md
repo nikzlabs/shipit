@@ -1,7 +1,7 @@
 ---
 title: The composer works before the session is warmed up
 issue: planning#516
-description: On a repository's new-session view the role and the other composer settings are live, and a first message can be sent, before the claim lands.
+description: On a repository's new-session view the role and the other composer settings are live before the claim lands, and the session starts on what they showed.
 ---
 
 # The composer works before the session is warmed up
@@ -15,14 +15,11 @@ so tens of seconds. "It doesn't make sense to me as a user."
 2. The composer settings a role is made of — **harness, model, reasoning level** — are
    live in that same window. They are the controls the role's "Adjust parameters…" opens,
    so they cannot be dead while the role control is live.
-3. The user can **type and send** a first message in that window. The message is
-   delivered as soon as the session is ready; the user does not have to notice that it
-   was ready and press Send again.
+3. *(withdrawn — see Open questions)*
 4. Whatever was chosen before the session existed is what the session actually
-   **starts on** — the role, and the harness/model/level it sets.
-5. A message held for a session that never arrives is not lost in silence. If the claim
-   fails, or the user leaves for another repository's new-session view, the held message
-   is rolled back and the user is told — it is never delivered into a different session.
+   **starts on** — the role, and the harness/model/level it sets. Including the case where
+   the user left a role by adjusting one of its parameters.
+5. *(withdrawn with req 3)*
 
 ## Non-requirements
 
@@ -33,20 +30,31 @@ so tens of seconds. "It doesn't make sense to me as a user."
 
 ## Requirement provenance
 
-Reqs 1 and 3 are the report's own words ("choose a different role and start typing before
-anything is warmed up"). Reqs 2, 4 and 5 are not: they are what reqs 1 and 3 need in order
-to be true rather than separate asks, and they are recorded here so review can see the
-difference.
+Req 1 is the report's own words. Reqs 2 and 4 are not: they are what req 1 needs in order
+to be true rather than separate asks — the three parameters are what a role *is*, and a
+control the user can operate that does not decide anything is not "working".
 
-One reading was supplied rather than stated. **"Start typing" is read as *compose and
-send*, not merely type into the box.** Typing into the composer was already possible
-before this change — only Send was barred — so the complaint is only coherent if it
-covers the send. If that reading is wrong, req 3 and req 5 are the ones to drop; reqs 1,
-2 and 4 stand on their own.
+**Reqs 3 and 5 were withdrawn during implementation, and the withdrawal is the open
+question below.** They read: *"the user can type and send a first message in that window,
+delivered as soon as the session is ready"* and *"a message held for a session that never
+arrives is rolled back and the user is told"*. Both came from reading the report's "start
+typing" as *compose and send* rather than *type into the box* — typing already worked
+before this change; only Send was barred. That reading was mine, not the report's.
 
 ## Open questions
 
-- None.
+- **Should Send also work before the claim lands, holding the message until the session
+  is ready?** Built and then withdrawn. It works for the ordinary case, but an
+  independent review found six defects inherent to holding a message across an unbounded
+  wait, none of which the feature as reported implies: a second send silently replaces the
+  first; leaving via Home or the repo picker can deliver the message into a different
+  repository's session; a claim failure followed by another send waits forever; Stop does
+  not cancel a held message; and a network-mode pick made *after* the send bypasses the
+  container-rebuild barrier docs/285 put in front of the first turn. Closing those means
+  ownership, capacity, cancellation and claim-scoping rules — a queue — which is a large
+  mechanism to infer from two words. **The question for the human: is waiting for the
+  workspace before you can press Send actually a problem, or was the role control the
+  whole of it?**
 
 ## Resolved questions
 

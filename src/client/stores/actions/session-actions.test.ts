@@ -282,12 +282,9 @@ describe("handleSessionResume", () => {
 });
 
 /**
- * docs/291-composer-before-claim req 5 — a first message typed before the claim
- * landed is held with no session id, and the flush fills that id in from the store
- * at the moment a socket opens. That is right while the claim it was typed for is
- * still running, and wrong once it is not: a failed claim would leave the bubble
- * and the spinner up forever, and a switch to another repository's `/new` would
- * flush the message into a session in a repository the user never sent it to.
+ * docs/291-composer-before-claim — a message stashed because the socket was not open
+ * yet is flushed *addressed from the store*, so one the user has moved away from is
+ * not merely stranded: it is sent into whatever session the store holds by then.
  */
 describe("discardHeldFirstMessage", () => {
   beforeEach(() => {
@@ -323,9 +320,9 @@ describe("discardHeldFirstMessage", () => {
   });
 
   it("leaves everything alone when nothing is held", () => {
-    // Callers fire this on every claim failure and every new-session route change,
-    // so the common case is that there is nothing to give back. It must not clear
-    // a spinner belonging to a turn that is genuinely running.
+    // It runs on every session switch, so the common case is that there is nothing
+    // to give back. It must not clear a spinner belonging to a turn that is
+    // genuinely running.
     useSessionStore.setState({ pendingWsMessage: undefined } as never);
     discardHeldFirstMessage("Your message wasn't sent.");
     const state = useSessionStore.getState();
@@ -336,9 +333,10 @@ describe("discardHeldFirstMessage", () => {
 });
 
 /**
- * docs/291-composer-before-claim req 5 — switching sessions with a message still
- * held. The flush addresses a stashed frame from the STORE, so a stash left behind
- * here is not merely stranded: it is delivered into the session being resumed.
+ * docs/291-composer-before-claim — switching sessions with a message still stashed.
+ * `resumeSessionInternal` cleared the transcript, the spinner and the queue but not
+ * `pendingWsMessage`, so the next socket to open sent the old prompt into the
+ * session the user had switched to.
  */
 describe("resumeSessionInternal — a first message still held for delivery", () => {
   beforeEach(() => {

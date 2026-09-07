@@ -5,11 +5,7 @@ import type { SessionInfo } from "../../server/shared/types.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
-import {
-  resumeSessionInternal,
-  resetSessionState,
-  discardHeldFirstMessage,
-} from "../stores/actions/session-actions.js";
+import { resumeSessionInternal, resetSessionState } from "../stores/actions/session-actions.js";
 import { repoLabelToNewPath, shouldAdoptClaimedSession } from "../utils/repo-label.js";
 
 /**
@@ -73,21 +69,11 @@ export function useSessionActivation(params: {
   useEffect(() => {
     const newSessionRouteKey = isNewSessionRoute ? newSessionRepoSlug : undefined;
     if (newSessionRouteKey && previousNewSessionRouteRef.current !== newSessionRouteKey) {
-      const leavingAnotherNewRoute = previousNewSessionRouteRef.current !== undefined;
       previousNewSessionRouteRef.current = newSessionRouteKey;
       if (sessionId) {
         useSessionStore.getState().setSessionId(undefined);
         resetSessionState();
         disableAutoFix();
-      } else if (leavingAnotherNewRoute) {
-        // docs/291-composer-before-claim req 5 — a first message held for the
-        // claim we are abandoning. `resetSessionState` above clears the stash for
-        // the branch that HAS a session; this branch has none, so nothing else
-        // would, and the next repo's claim would flush the message into a session
-        // in a repository the user never sent it to.
-        discardHeldFirstMessage(
-          "Your message wasn't sent — you left before that session was ready.",
-        );
       }
       return;
     }
@@ -114,19 +100,7 @@ export function useSessionActivation(params: {
     const ac = new AbortController();
     void (async () => {
       const result = await useRepoStore.getState().claimSession(newSessionRepoUrl, ac.signal);
-      if (result && !ac.signal.aborted) {
-        useSessionStore.getState().setSessionId(result.sessionId);
-        return;
-      }
-      // docs/291-composer-before-claim req 5 — the claim failed, so the session the
-      // held first message is waiting for is never coming. An abort is not a
-      // failure: the route change that caused it discards the message itself, with
-      // wording that says what actually happened.
-      if (!ac.signal.aborted) {
-        discardHeldFirstMessage(
-          "Your message wasn't sent — the session couldn't be started. Try again.",
-        );
-      }
+      if (result && !ac.signal.aborted) useSessionStore.getState().setSessionId(result.sessionId);
     })();
     return () => ac.abort();
   }, [isNewSessionRoute, newSessionRepoUrl, sessionId]);
@@ -184,15 +158,6 @@ export function useSessionActivation(params: {
         })
       ) {
         useSessionStore.getState().setSessionId(result!.sessionId);
-      } else if (!result && !ac.signal.aborted) {
-        // docs/291-composer-before-claim req 5 — same as the auto-claim effect: a
-        // failed claim strands a held first message, so give it back rather than
-        // leaving the spinner up. Only on a genuine failure; the other ways this
-        // branch is reached (aborted, or the user navigated elsewhere) are handled
-        // where they happen.
-        discardHeldFirstMessage(
-          "Your message wasn't sent — the session couldn't be started. Try again.",
-        );
       }
     },
     [navigate],

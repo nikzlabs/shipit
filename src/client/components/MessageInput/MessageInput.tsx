@@ -29,7 +29,7 @@ import { useKeybinding } from "../../keybindings/use-keybinding.js";
 import { ContextDialMount } from "./ContextDialMount.js";
 import { ComposerSettingsMenu } from "./ComposerSettingsMenu.js";
 import { RoleSelector, useRolePickerState } from "./RoleSelector.js";
-import { getSavedRoleName } from "../../utils/local-storage.js";
+import { getSavedRoleName, saveRoleName } from "../../utils/local-storage.js";
 import { applyRoleSeeds } from "../../utils/role-seed.js";
 import { useTextareaSizing } from "./hooks/useTextareaSizing.js";
 import { useMessageDraft } from "./hooks/useMessageDraft.js";
@@ -322,8 +322,27 @@ export function MessageInput({
    * pending role. It errs toward *not* naming a role, which is the safe
    * direction: the alternative is a composer claiming a role the session it
    * creates will not be started on.
+   *
+   * docs/291-composer-before-claim req 4 — **and it has to clear the SEED, not
+   * only the display.**
+   *
+   * Dropping the React state alone made the composer say one thing and the next
+   * session do another. `saveRoleName`'s slot is what `useSessionWebSocket` puts
+   * in the connect URL, and the server applies `role=` LAST, over the harness,
+   * model and reasoning seeds — so choosing a role, adjusting its model, then
+   * starting the session ran the ROLE's model, silently discarding the pick the
+   * user had just made and was still looking at. Nothing came to correct it: the
+   * seed is normally cleared by the server's answer (`model-selection-changed`),
+   * and with no session there is no server to answer.
+   *
+   * Only in the session-less case. A bound session keeps the existing rule —
+   * there the server decides whether a parameter actually moved, and re-selecting
+   * the value a role already set is not a change (docs/272 req 15).
    */
-  const leavePendingRole = () => setPendingRole(undefined);
+  const leavePendingRole = () => {
+    setPendingRole(undefined);
+    if (!hasActiveSession) saveRoleName(undefined);
+  };
   const roleView = roles.find((r) => r.name === roleInForce);
   // The seed slots the three pickers DISPLAY have to hold the role's own
   // parameters, or the composer names a role beside a model that role will not

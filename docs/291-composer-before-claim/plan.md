@@ -1,7 +1,7 @@
 ---
 title: The composer works before the session is warmed up — design
 issue: planning#516
-description: How the role and the other composer settings, and a first message, survive the window before /{repo}/new has a session.
+description: How the role and the other composer settings survive the window before /{repo}/new has a session.
 ---
 
 # The composer works before the session is warmed up
@@ -31,9 +31,7 @@ this for one control: a pick made before the claim is held as a draft and writte
 the claim lands. So the row was already inconsistent — one setting live, four dead, with
 nothing to tell the user which was which.
 
-## Two independent halves
-
-### 1. A settings pick does not need a socket (reqs 1, 2)
+## A settings pick does not need a socket (reqs 1, 2)
 
 `disabled` means two different things depending on whether a session is bound, and the
 composer already holds the fact that distinguishes them: `sessionId` is `undefined` on
@@ -43,8 +41,8 @@ composer already holds the fact that distinguishes them: `sessionId` is `undefin
   `set_agent`, …). `disabled` carries `status !== "open"`, so barring the pick is right;
   nothing would receive it.
 - **No session bound** — the pick is written to the seed slots (`saveRoleName`,
-  `applyRoleSeeds`, the model/reasoning slots) and applied by the server from the WS
-  **connect URL** (`useSessionWebSocket`, `role=` / `model=` / `reasoning=`). It is
+  `applyRoleSeeds`, `persistHarnessPick`, `saveReasoning`) and applied by the server from
+  the WS **connect URL** (`useSessionWebSocket`, `role=` / `model=` / `reasoning=`). It is
   delivered *by being made*. There is no socket to miss.
 
 So the composer computes one value:
@@ -58,96 +56,78 @@ socket is involved. Quick Capture reaches the same state for the same reason (no
 `disabled` while its repo clones) and gains the same behaviour, which is what its own
 docstring already says it wants.
 
-Nothing new is needed to make req 4 hold: the seed path is the one docs/272 req 12 built,
-and `pendingRole` already makes the seed *the display* before a session exists.
+**`App.tsx` is untouched.** The composer's `disabled` still carries the claim clause,
+because Send genuinely cannot work without a session — see the open question in
+[requirements.md](./requirements.md). This change is entirely about what *else* was
+reading that flag.
 
-### 2. A first message can be held (reqs 3, 5)
+## The seed has to agree with the row (req 4)
 
-`useConnectionSync`'s flush has always filled the session id in from the store at the
-moment it writes the frame:
+Making the controls live is only half of req 4, and the other half was already broken —
+it just could not be reached from `/new`, because the controls were dead there.
+
+`leavePendingRole` (the docs/272 req 15 rule: moving one of the three parameters leaves
+the role) cleared only React state. `saveRoleName`'s slot survived, `useSessionWebSocket`
+put it in the connect URL, and the server applies `role=` **last**, over the harness,
+model and reasoning seeds. So: choose a role, adjust its model, start the session — and
+the session ran the *role's* model, silently discarding the pick the user was looking at.
+Nothing came to correct it, because the seed is normally cleared by the server's answer
+(`model-selection-changed`) and there is no server to answer before a session exists.
+
+`leavePendingRole` now clears the seed too, **only when no session is bound**. A bound
+session keeps the existing rule: there the server decides whether a parameter actually
+moved, and re-selecting the value a role already set is not a change.
+
+## A stashed message is misdelivered, not merely stranded
+
+Found while tracing the send path, and confirmed independently by review. It predates
+this feature and is fixed here because it is small and the same code was under the lens.
+
+`useConnectionSync`'s flush addresses a stashed frame from the **store**:
 
 ```ts
 if (send({ ...pending, sessionId } as WsClientMessage)) …
 ```
 
-So a frame stashed with **no** `sessionId` was already deliverable; the only reason
-nothing produced one is that Send was barred until an id existed. `holdFirstUserMessage`
-produces one. It is `sendUserMessage` with the stash as its dispatch — same optimistic
-bubble, same request id, a different activity label ("Starting session…", because nothing
-is thinking yet).
-
-`App` then drops the claim clause from `disabled`, and graduates the URL to
-`/session/{id}` when the id arrives with a message still held — the same transition
-`handleSend` makes for itself when a session is already bound.
-
-**Giving it back (req 5).** A held frame carries no session identity, so it belongs to
-whichever claim is currently being waited for, and there are two ways to stop waiting:
-
-| Event | Where | What happens |
-|---|---|---|
-| The claim fails | both `claimSession` call sites in `useSessionActivation` | `discardHeldFirstMessage` — bubble, spinner and stash undone, toast |
-| The user moves to another repo's `/new` | the route-key branch of the URL-sync effect | same, with wording that names the navigation |
-| The user switches to an existing session | `resumeSessionInternal` | same |
-| The claim succeeds | — | nothing; the flush sends it |
-
-The last two are not "stranded message" cases but **misdelivery** cases, and that is what
-makes them load-bearing: the flush addresses a stashed frame from the STORE, so a stash
-left in place is sent into whatever session the store then holds. `resumeSessionInternal`
-did not clear it — already a latent hole for the stash the
-already-claimed-but-still-connecting path writes, in a window a few hundred milliseconds
-wide, which this feature widens to a whole cold clone. The discard sits *after* that
-function's "a session resuming itself is not a switch" early return, because the URL
-graduation above lands on exactly that case and would otherwise drop the message a moment
-before the flush sends it.
-
-### The bubble had to survive the history install
-
-`loadSessionHistory` installs the persisted transcript with a **wholesale replace**, and
-both it and the flush fire on the same `open`. The history request therefore goes out
-before the message has been sent, comes back without it, and would take the user's own
-bubble off the screen a second after they sent it. The server's `system_user_message`
-echo cannot repair that: it reconciles against the very bubble the install is about to
-delete, so it no-ops first and then there is nothing left.
-
-`carryHeldMessage` closes it, keyed on the **stash** rather than on "has a
-`clientRequestId`". Every optimistic bubble has one of those, including delivered ones the
-server is merely slow to persist, and carrying those would resurrect rows a rewind had
-removed. Exactly one message can be held at a time; this carries exactly that one, and
-only while the payload does not already contain it.
+`resumeSessionInternal` clears the transcript, the spinner and the queue on a session
+switch — but not `pendingWsMessage`. So a message stashed because the socket was still
+connecting, followed by a switch, is not lost: it is **sent into the session the user
+switched to**. `discardHeldFirstMessage` now runs there, *after* that function's "a
+session resuming itself is not a switch" early return.
 
 ## What was deliberately not changed
 
 - **A bound session still bars picks on a closed socket.** The fix is a distinction, not
   a removal.
-- **`networkSaving` still bars Send**, before the claim as much as after. docs/285 test
-  2e is explicit that a pre-claim network pick holds Send until its write lands, because
-  the container's topology is decided by that write and a first turn dispatched early
-  runs under the mode the user is replacing. Nothing here weakens it.
+- **Send still waits for the claim on `/{repo}/new`** — see the open question.
 - **The first turn still locks the role** (docs/272 req 4). This is about the window
   *before* the first turn, not after it.
+
+## Known limit of req 4
+
+An interactive claim may **reuse an ungraduated warm session from the same repository**
+(`claim-session.ts` ~340), and the connect handler prefers such a session's *persisted*
+harness/model/reasoning over the URL seeds, and refuses to seed a role onto a session that
+already holds one (`route-registry.ts`). So a pre-claim pick can be ignored when the claim
+returns a reused draft. That is a property of the seed model docs/272 built rather than
+something this change introduces — but it is the one case where req 4 is not guaranteed,
+and it is recorded here rather than assumed away.
 
 ## Key files
 
 | File | Role |
 |---|---|
-| `src/client/components/MessageInput/MessageInput.tsx` | `settingsLocked` — the one place both layouts read |
-| `src/client/App.tsx` | the composer's `disabled`, the held-message send, the URL graduation |
-| `src/client/utils/send-user-message.ts` | `holdFirstUserMessage` |
-| `src/client/stores/actions/session-actions.ts` | `discardHeldFirstMessage` |
-| `src/client/hooks/useSessionActivation.ts` | the two claim call sites and the route-key branch that discard |
-| `src/client/utils/session-data.ts` | `carryHeldMessage` — the held bubble survives the transcript install |
-| `src/client/hooks/useConnectionSync.ts` | unchanged; its flush already addressed an id-less frame |
+| `src/client/components/MessageInput/MessageInput.tsx` | `settingsLocked` — the one place both layouts read; `leavePendingRole` clears the seed |
+| `src/client/stores/actions/session-actions.ts` | `discardHeldFirstMessage`, called from `resumeSessionInternal` |
+| `src/client/hooks/useSessionWebSocket.ts` | unchanged; the connect URL is what applies a pre-claim pick |
 
 ## Where the tests go
 
-1. **The four selectors are live with no session bound and dead with one** —
-   `MessageInputBeforeClaim.test.tsx`. Both directions, or the fix reads as "ungate
-   everything".
-2. **`holdFirstUserMessage` stashes without a `sessionId`** and tags the frame with the
-   bubble's request id — `send-user-message.test.ts`. A `sessionId` here would be the id
-   of a session the message was not typed for.
-3. **Discard on claim failure and on a repo switch, and NOT on success** —
-   `useSessionActivation.test.tsx`. The success case is the one a careless fix breaks.
-   The repo-switch test's claim never settles, so the failure path cannot be what passes it.
-4. **The held bubble survives the transcript install**, an unheld one does not, and a
-   payload that already contains it does not duplicate — `session-data.test.ts`.
+1. **The four selectors are live with no session bound and dead with one**, and dead
+   mid-turn either way — `MessageInputBeforeClaim.test.tsx`. Both directions, or the fix
+   reads as "ungate everything".
+2. **Leaving a role clears the saved role, not just the displayed one**, with no session
+   bound — and does *not* touch it for a bound session, where the server owns that call.
+3. **A stashed message does not follow the user into the session they switch to**, and IS
+   kept when a session resumes itself — `session-actions.test.ts`. The second is the one a
+   careless fix breaks.
