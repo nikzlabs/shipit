@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { sendUserMessage } from "./send-user-message.js";
+import { holdFirstUserMessage, sendUserMessage } from "./send-user-message.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import type { ChatMessage } from "../components/MessageList.js";
@@ -207,5 +207,42 @@ describe("sendUserMessage — insecure context (no crypto.randomUUID)", () => {
     expect(ok).toBe(false);
     expect(useSessionStore.getState().messages).toHaveLength(0);
     expect(useUiStore.getState().toast?.message).toMatch(/wasn't sent/i);
+  });
+});
+
+/**
+ * docs/291-composer-before-claim req 3 — the first message of a session that does
+ * not exist yet. `/{repo}/new` used to bar Send until the claim landed, which on a
+ * repository with no warm session waiting is a cold clone.
+ */
+describe("holdFirstUserMessage", () => {
+  const bubble: ChatMessage = { role: "user", text: "build me a thing" };
+
+  beforeEach(() => {
+    useSessionStore.getState().reset();
+    useSessionStore.setState({ activeRunnerSessions: new Set<string>() });
+  });
+
+  it("stashes the frame with NO session id, tagged with the bubble's request id", () => {
+    // The id is what makes the two halves one message: the flush addresses the
+    // frame from the store, and `discardHeldFirstMessage` finds the bubble by it.
+    holdFirstUserMessage({ bubble, frame: { type: "send_message", text: "build me a thing" } });
+
+    const held = useSessionStore.getState().pendingWsMessage;
+    const appended = useSessionStore.getState().messages[0];
+    expect(held).toBeDefined();
+    expect(held).not.toHaveProperty("sessionId");
+    expect(held?.text).toBe("build me a thing");
+    expect(held?.requestId).toBe(appended?.clientRequestId);
+  });
+
+  it("shows the message and says what is actually being waited on", () => {
+    holdFirstUserMessage({ bubble, frame: { type: "send_message", text: "build me a thing" } });
+
+    const state = useSessionStore.getState();
+    expect(state.messages.map((m) => m.text)).toEqual(["build me a thing"]);
+    expect(state.isLoading).toBe(true);
+    // Not "Thinking..." — nothing is thinking yet; the workspace is being made.
+    expect(state.activity?.label).toBe("Starting session...");
   });
 });

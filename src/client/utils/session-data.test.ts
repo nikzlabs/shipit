@@ -935,3 +935,71 @@ describe("loadSessionHistory — the file tree is session-scoped", () => {
     expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["STILL HERE"]);
   });
 });
+
+/**
+ * docs/291-composer-before-claim req 3 — **the transcript install must not erase a
+ * message that has not been sent yet.**
+ *
+ * `/{repo}/new` now takes a first message before the session is claimed, and the
+ * stash it goes into is flushed on the same `open` that starts this load. So the
+ * history that comes back was fetched before the message existed, and a plain
+ * wholesale install would take the user's own bubble off the screen a second after
+ * they sent it — with nothing to put it back, because the server's echo has
+ * already reconciled against the bubble this load is about to delete.
+ */
+describe("loadSessionHistory — a first message still held for delivery", () => {
+  const ok = (json: unknown) => ({ ok: true, status: 200, headers: new Headers(), json: () => Promise.resolve(json) });
+
+  beforeEach(() => {
+    useSessionStore.getState().reset();
+    useUiStore.getState().reset();
+    globalThis.fetch = vi.fn((url: string) => {
+      if (url.endsWith("/files")) return Promise.resolve(ok({ tree: [] }));
+      // The persisted transcript knows nothing about the held message.
+      return Promise.resolve(ok({ messages: [{ role: "assistant", text: "older" }], commits: [], agentRunning: false }));
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => { vi.restoreAllMocks(); __resetHistoryCache(); });
+
+  it("carries the held bubble across the install", async () => {
+    useSessionStore.getState().setSessionId("A");
+    useSessionStore.getState().setMessages([{ role: "user", text: "build me a thing", clientRequestId: "req-1" }]);
+    useSessionStore.getState().setPendingWsMessage({ type: "send_message", text: "build me a thing", requestId: "req-1" });
+
+    await loadSessionHistory("A");
+
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["older", "build me a thing"]);
+  });
+
+  it("does not carry an optimistic bubble that is no longer held", async () => {
+    // The narrow keying is the point: a `clientRequestId` is on every optimistic
+    // bubble, including delivered ones the server is merely slow to persist.
+    // Carrying those would resurrect rows a rewind had removed.
+    useSessionStore.getState().setSessionId("A");
+    useSessionStore.getState().setMessages([{ role: "user", text: "already delivered", clientRequestId: "req-1" }]);
+
+    await loadSessionHistory("A");
+
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["older"]);
+  });
+
+  it("does not duplicate a held message the payload already contains", async () => {
+    globalThis.fetch = vi.fn((url: string) => {
+      if (url.endsWith("/files")) return Promise.resolve(ok({ tree: [] }));
+      return Promise.resolve(ok({
+        messages: [{ role: "user", text: "build me a thing", clientRequestId: "req-1" }],
+        commits: [],
+        agentRunning: false,
+      }));
+    }) as unknown as typeof fetch;
+
+    useSessionStore.getState().setSessionId("A");
+    useSessionStore.getState().setMessages([{ role: "user", text: "build me a thing", clientRequestId: "req-1" }]);
+    useSessionStore.getState().setPendingWsMessage({ type: "send_message", text: "build me a thing", requestId: "req-1" });
+
+    await loadSessionHistory("A");
+
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["build me a thing"]);
+  });
+});

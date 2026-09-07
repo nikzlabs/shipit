@@ -255,6 +255,27 @@ export function MessageInput({
     // reached by staying quiet instead. Barring Send is recoverable; the turn is
     // not.
     || (network ? !network.loaded : false);
+  /**
+   * docs/291-composer-before-claim reqs 1, 2 — **whether a settings pick can be
+   * DELIVERED**, which is not the same question as whether Send is open.
+   *
+   * With a session bound, a pick has to reach the server over that session's
+   * socket, so `disabled` (which carries `status !== "open"`) rightly closes the
+   * four selectors: nothing would receive the pick.
+   *
+   * With NO session bound there is no socket to miss. The role, harness, model
+   * and reasoning picks are written to the seed slots and applied by the server
+   * from the connect URL (`useSessionWebSocket`), so they are delivered *by*
+   * being chosen. That is the whole window this feature is about — `/{repo}/new`
+   * with no warm session waiting, where the claim is a cold clone and the four
+   * controls used to sit dead for its whole duration while the network control
+   * beside them (docs/285 req 8, which solved this one control at a time) stayed
+   * live. Quick Capture reaches the same state for the same reason.
+   *
+   * `isLoading` stays unconditional: a running turn pins the parameters whether
+   * or not a socket is involved.
+   */
+  const settingsLocked = isLoading || (disabled && !!sessionId);
   const [text, setText] = useState("");
   // ── docs/272-user-selectable-roles — the role control's three states ─────────────────────
   // 1. no roles configured → nothing at all, the row exactly as it is today (req 16)
@@ -1129,7 +1150,7 @@ export function MessageInput({
                   // three pickers instead, so the mode stays changeable and the
                   // settings stay readable — matching the wide row exactly.
                   disabled={inert}
-                  pickersLocked={disabled || isLoading}
+                  pickersLocked={settingsLocked}
                 />
 
                 {surface === "chat" && (modelInfo ?? contextTokens > 0) && (
@@ -1342,7 +1363,7 @@ export function MessageInput({
                     ? { onAdjustParameters: revealRoleParameters }
                     : {})}
                   locked={roleLocked}
-                  disabled={disabled || isLoading || inert}
+                  disabled={settingsLocked || inert}
                 />
               </div>
             )}
@@ -1374,7 +1395,7 @@ export function MessageInput({
                   // unselectable and the model menu onto nothing at all. The
                   // compact row already read `inert` on its anchor, so the two
                   // layouts disagreed about the same fact.
-                  disabled={disabled || isLoading || inert}
+                  disabled={settingsLocked || inert}
                 />
               </div>
             )}
@@ -1387,7 +1408,7 @@ export function MessageInput({
                   modelInfo={modelInfo ?? null}
                   hasActiveSession={hasActiveSession}
                   seedFromHistory={!sessionId}
-                  disabled={disabled || isLoading || inert}
+                  disabled={settingsLocked || inert}
                 />
               </div>
             )}
@@ -1402,7 +1423,7 @@ export function MessageInput({
                   agent={agents.find((a) => a.id === activeAgentId)}
                   sessionReasoning={sessionReasoning}
                   onChange={(effort) => { leavePendingRole(); onReasoningChange(effort); }}
-                  disabled={disabled || isLoading || inert}
+                  disabled={settingsLocked || inert}
                   seedFromHistory={!hasActiveSession}
                 />
               </div>

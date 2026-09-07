@@ -160,7 +160,7 @@ import { dispatchAgentMessage } from "./utils/dispatch-agent-message.js";
 import type { ReviewerSlotView, RoleView } from "../server/shared/types/agent-types.js";
 import type { AgentInterfaceProvenance } from "../server/shared/agent-interface-sdk/protocol.js";
 import { buildIssueSeedPrompt } from "../server/shared/issue-ref.js";
-import { sendUserMessage } from "./utils/send-user-message.js";
+import { holdFirstUserMessage, sendUserMessage } from "./utils/send-user-message.js";
 import { buildReleaseConfirmMessage } from "./utils/release-confirm-message.js";
 import { isAgentMessagingBlocked } from "./utils/agent-messaging-trust.js";
 import { useChatDisabledReason, useHarnessOnboardingPanelVisible } from "./utils/chat-runnable.js";
@@ -736,8 +736,46 @@ export default function App() {
         // still carries it — `sendUserMessage` returns false only when nothing
         // reached the wire.
         if (issueRef && sent) useSessionStore.getState().setPendingIssueRef(undefined);
+      } else if (isNewSessionRoute) {
+        /*
+          docs/291-composer-before-claim req 3 — **the first message, typed before
+          the claim landed.**
+
+          The composer no longer waits for the claim, so this is now an ordinary
+          way to send rather than the dead end it used to be. `holdFirstUserMessage`
+          stashes the frame WITHOUT a session id — `useConnectionSync`'s flush fills
+          that in from the store when a socket opens — and the wait is given back
+          rather than left running: `discardHeldFirstMessage` undoes all of this if
+          the claim fails, or if the user leaves for another repository's `/new`,
+          whose claim would otherwise flush this message into a session in a
+          repository it was never typed for (req 5).
+
+          The permission mode is read under the `undefined` key on purpose: that is
+          where the composer writes it while no session is bound, so this sends what
+          the control was showing.
+        */
+        holdFirstUserMessage({
+          bubble: {
+            role: "user",
+            text,
+            files: filesForMessage,
+            images: imagesForMessage,
+            uploadPaths: uploadPathsForMessage,
+          },
+          frame: {
+            type: "send_message",
+            text,
+            files: settings.pendingFiles.length > 0 ? settings.pendingFiles : undefined,
+            uploads: uploadRefs.length > 0 ? uploadRefs : undefined,
+            permissionMode: (() => {
+              const pm = settings.getPermissionMode(undefined);
+              return pm !== "auto" ? pm : undefined;
+            })(),
+            ...(dictated ? { dictated: true } : {}),
+          },
+        });
       } else {
-        // No session — can't send without one (sessions are created via claim-session).
+        // No session and none on the way — nothing to hold the message for.
         // Still append the optimistic bubble so the user sees what they typed,
         // but DON'T flip isLoading: there's no agent to wait on.
         console.warn("[session] No active session — cannot send message");
@@ -1740,6 +1778,21 @@ export default function App() {
     if (!isMobile) return;
     useUiStore.getState().setMobileSidebarOpen(isHomeRoute);
   }, [isMobile, isHomeRoute]);
+  // docs/291-composer-before-claim req 3 — graduate the URL for a first message
+  // that was sent BEFORE the claim landed. `handleSend` does this itself when a
+  // session is already bound; here the id arrives afterwards, so the same
+  // transition has to happen when it does, or a session with a turn running keeps
+  // sitting on `/{repo}/new`.
+  //
+  // The stash is read imperatively rather than subscribed to: this fires on the
+  // id's arrival, and the flush that clears the stash cannot have run yet — it
+  // waits for a socket that this very id is what opens.
+  // eslint-disable-next-line no-restricted-syntax -- route sync on an async claim landing
+  useEffect(() => {
+    if (!showNewSessionView || !sessionId) return;
+    if (!useSessionStore.getState().pendingWsMessage) return;
+    void navigate(`/session/${sessionId}`, { replace: true });
+  }, [showNewSessionView, sessionId, navigate]);
   // Empty-state rocket: no messages yet, not mid-turn. We gate on historyLoaded
   // so we don't briefly flash the rocket on session switches before history
   // arrives — except for a brand-new-session route, where there's no history to
@@ -2282,11 +2335,16 @@ export default function App() {
       {(showHarnessOnboarding || !showHomeScreen || showNewSessionView) && (
         <MessageInput
           onSend={handleSend}
+          /* docs/291-composer-before-claim req 3 — the new-session view no longer
+             waits for its claim. It used to read `status !== "open" && !sessionId`,
+             which is exactly "the claim has not landed": on a repo with no warm
+             session that is a cold clone, and for its whole duration Send was dead
+             and every settings control with it. A message typed there is now held
+             and delivered when the session arrives (see `handleSend`), the same
+             stash the already-claimed-but-still-connecting case has always used. */
           disabled={
             agentMessagingBlocked ||
-            (showNewSessionView
-              ? status !== "open" && !sessionId
-              : status !== "open")
+            (!showNewSessionView && status !== "open")
           }
           /* docs/257 req 3 — set ONLY for the not-runnable case, and *in
              addition to* the expression above rather than folded into it: the

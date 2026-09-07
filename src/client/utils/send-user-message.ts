@@ -58,6 +58,43 @@ export interface SendUserMessageOptions {
  * @returns `true` if the message was accepted for delivery. On `false` the
  * optimistic state has already been rolled back and the user has been told.
  */
+/**
+ * docs/291-composer-before-claim req 3 — **send a first message before the session
+ * it belongs to exists.**
+ *
+ * The counterpart of `sendUserMessage` for `/{repo}/new` while the claim is still
+ * running. There is no id to address the frame to yet, and there does not need to
+ * be: `useConnectionSync`'s flush fills `sessionId` in from the store at the moment
+ * it puts the frame on the wire. So this is the SAME stash as the
+ * already-claimed-but-still-connecting case, and only what we are waiting for
+ * differs.
+ *
+ * The frame therefore MUST NOT carry a `sessionId` of its own — one would be the
+ * id of a session this message was not typed for.
+ *
+ * The wait is bounded and given back rather than left running:
+ * `discardHeldFirstMessage` undoes exactly this if the claim fails or the user
+ * leaves for another repository's new-session view.
+ */
+export function holdFirstUserMessage({
+  bubble,
+  frame,
+}: {
+  bubble: ChatMessage;
+  frame: Record<string, unknown>;
+}): void {
+  sendUserMessage({
+    bubble,
+    // Not "Thinking..." — nothing is. The workspace is still being made, which is
+    // what the user is actually waiting on.
+    activity: "Starting session...",
+    dispatch: (requestId) => {
+      useSessionStore.getState().setPendingWsMessage({ ...frame, requestId });
+      return true;
+    },
+  });
+}
+
 export function sendUserMessage({ bubble, activity, dispatch }: SendUserMessageOptions): boolean {
   const session = useSessionStore.getState();
   // `randomId`, not `crypto.randomUUID` — the latter is undefined on a plain

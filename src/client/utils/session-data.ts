@@ -401,6 +401,37 @@ function seedCardStoresFromHistory(messages: HistoryResponse["messages"]): void 
 }
 
 /**
+ * docs/291-composer-before-claim req 3 — **carry a message that has not been sent
+ * yet across the transcript install.**
+ *
+ * The install below is a wholesale replace, and the server's transcript is the
+ * whole truth about what HAS been sent. A message the browser is still HOLDING is
+ * by definition not in it: `/{repo}/new` now accepts a first message before the
+ * session is claimed, and the stash it goes into is flushed on the same `open` that
+ * starts this load — so the persisted history that comes back was fetched before
+ * the message existed, and installing it plainly would erase the user's own bubble
+ * off the screen a second after they sent it.
+ *
+ * Deliberately keyed on the STASH rather than on "has a `clientRequestId`": the id
+ * is on every optimistic bubble, including delivered ones the server is simply
+ * slow to persist, and carrying those would resurrect rows a legitimate rewind or
+ * a session switch had removed. Exactly one message can be held at a time, and
+ * this carries exactly that one, and only while the payload does not already
+ * contain it.
+ */
+export function carryHeldMessage(
+  current: ChatMessage[],
+  installed: ChatMessage[],
+): ChatMessage[] {
+  const held = useSessionStore.getState().pendingWsMessage;
+  const requestId = held?.requestId;
+  if (typeof requestId !== "string") return installed;
+  if (installed.some((m) => m.clientRequestId === requestId)) return installed;
+  const carried = current.filter((m) => m.clientRequestId === requestId);
+  return carried.length > 0 ? [...installed, ...carried] : installed;
+}
+
+/**
  * Fetch session history via HTTP and populate stores.
  * Shared between useConnectionSync (WS reconnect) and session-actions (session resume).
  */
@@ -504,7 +535,7 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
    * Guards: `useMessageHandler.test.ts`, `useConnectionSync.session-switch.test.tsx`,
    * and the ordering test in this file's suite.
    */
-  session.setMessages(materializeTranscript(data, cacheEntry));
+  session.setMessages(carryHeldMessage(session.messages, materializeTranscript(data, cacheEntry)));
 
   // Rehydrate the four card stores from the persisted rows. Runs on every
   // completed load, `304` included, and deliberately does NOT share the
