@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { useFileStore, markUploadDeleted, clearUploadTombstone } from "./file-store.js";
+import { useFileStore, markUploadDeleted, clearUploadTombstone, noteUploadsChanged } from "./file-store.js";
 import { useSessionStore } from "./session-store.js";
 import { getSavedDraftUploads, saveDraftUploads } from "../utils/local-storage.js";
 import type { UploadItem, UploadedFile } from "../../server/shared/types.js";
@@ -39,7 +39,10 @@ describe("file-store upload tombstones", () => {
     useFileStore.getState().reset();
     // hydrateUploads scans chat history to self-heal the draft-uploads set;
     // start empty so a draft path is only pruned when a test adds a sent message.
-    useSessionStore.setState({ messages: [] });
+    // `sessionId` is what these tests always meant: the session on screen is the
+    // one being hydrated. docs/294 req 2 refuses a listing for any other, so
+    // leaving it unset would drop every response here.
+    useSessionStore.setState({ messages: [], sessionId: SESSION_ID });
   });
 
   afterEach(() => {
@@ -201,7 +204,12 @@ describe("file-store upload tombstones", () => {
       expect(getSavedDraftUploads(SESSION_ID)).toEqual([]);
     });
 
-    it("self-heals: a drafted path whose file is gone from the server is pruned", async () => {
+    it("shows no chip for a drafted path the server does not have", async () => {
+      // docs/294 req 4 — this used to also DELETE the path from the draft set,
+      // which made a snapshot authoritative over a file it could not know
+      // about: another tab finishing an upload had its just-saved path erased
+      // from shared localStorage. What matters is that no chip appears, and a
+      // chip is built from the listing — so the path can simply stay.
       saveDraftUploads(SESSION_ID, ["/uploads/gone.png"]);
       stubUploadsFetch([uploaded("present.png")]);
 
@@ -210,7 +218,143 @@ describe("file-store upload tombstones", () => {
       const uploads = useFileStore.getState().sessionUploads;
       expect(uploads.map((u) => u.path)).toEqual(["/uploads/present.png"]);
       expect(uploads[0].pending).toBe(false);
-      expect(getSavedDraftUploads(SESSION_ID)).toEqual([]);
     });
+
+    it("does not erase a draft path another tab saved while this listing was in flight", async () => {
+      // The cross-tab case directly: the counters are per-tab, so nothing here
+      // can see the other tab's upload. Not pruning on absence is what makes
+      // that safe.
+      saveDraftUploads(SESSION_ID, ["/uploads/theirs.png"]);
+      stubUploadsFetch([uploaded("mine.png")]);
+
+      await useFileStore.getState().hydrateUploads(SESSION_ID);
+
+      expect(getSavedDraftUploads(SESSION_ID)).toEqual(["/uploads/theirs.png"]);
+    });
+  });
+});
+
+/**
+ * docs/294 reqs 1-4 — an upload listing is a snapshot, and `hydrateUploads`
+ * treats it as authority: it prunes the persisted draft set and rebuilds every
+ * non-pending chip. An answer that is no longer current must not get that
+ * authority, because the damage is invisible — `pendingInMemory` keeps the chip
+ * on screen and the attachment is only missing at the next reload.
+ */
+describe("hydrateUploads — an out-of-date listing is never applied", () => {
+  const OTHER_SESSION = "session-2";
+
+  beforeEach(() => {
+    localStorage.clear();
+    useFileStore.getState().reset();
+    useSessionStore.setState({ messages: [], sessionId: SESSION_ID });
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  it("refuses a listing for a session the user has left (req 2)", async () => {
+    // A drafted path for that session, so an applied response would build a
+    // pending chip here rather than merely a non-pending one.
+    saveDraftUploads(OTHER_SESSION, ["/uploads/theirs.png"]);
+    stubUploadsFetch([uploaded("theirs.png")]);
+
+    await useFileStore.getState().hydrateUploads(OTHER_SESSION);
+
+    expect(useFileStore.getState().sessionUploads).toEqual([]);
+  });
+
+  it("refuses a listing superseded by a newer one, and does not refetch (req 3)", async () => {
+    let calls = 0;
+    const resolvers: (() => void)[] = [];
+    globalThis.fetch = vi.fn(async () => {
+      const mine = ++calls;
+      await new Promise<void>((r) => resolvers.push(r));
+      // The first (older) request answers with a file the second does not have.
+      return new Response(
+        JSON.stringify({ files: mine === 1 ? [uploaded("old.png")] : [uploaded("new.png")] }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    const first = useFileStore.getState().hydrateUploads(SESSION_ID);
+    const second = useFileStore.getState().hydrateUploads(SESSION_ID);
+    // Let the OLDER one answer last — the race this guards.
+    resolvers[1]();
+    resolvers[0]();
+    await Promise.all([first, second]);
+
+    const names = useFileStore.getState().sessionUploads.map((u) => u.name);
+    expect(names).toEqual(["new.png"]);
+    // The superseded one did not start a third request of its own.
+    expect(calls).toBe(2);
+  });
+
+  it("refetches when an upload landed while the listing was in flight (req 1)", async () => {
+    // The defect: this listing was requested before `late.png` existed, so it
+    // prunes that path from the draft set and the chip is gone at next reload.
+    saveDraftUploads(SESSION_ID, ["/uploads/late.png"]);
+    let calls = 0;
+    globalThis.fetch = vi.fn(async () => {
+      const mine = ++calls;
+      if (mine === 1) {
+        // An upload lands while this request is open.
+        noteUploadsChanged(SESSION_ID);
+        return new Response(JSON.stringify({ files: [] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ files: [uploaded("late.png")] }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await useFileStore.getState().hydrateUploads(SESSION_ID);
+    await vi.waitFor(() => expect(calls).toBe(2));
+    await vi.waitFor(() =>
+      expect(useFileStore.getState().sessionUploads.map((u) => u.name)).toEqual(["late.png"]),
+    );
+    // req 4 — the attachment kept its place in the composer.
+    expect(getSavedDraftUploads(SESSION_ID)).toEqual(["/uploads/late.png"]);
+    expect(useFileStore.getState().sessionUploads[0].pending).toBe(true);
+  });
+
+  it("is not disturbed by a change in a session the user has left (req 1)", async () => {
+    // The counter is keyed by session on purpose: an outgoing session's uploads
+    // go on completing after a switch, and a global counter let those
+    // completions invalidate the NEW session's perfectly current listing —
+    // four in a row would exhaust the retry chain and leave its panel empty.
+    let listings = 0;
+    globalThis.fetch = vi.fn(async () => {
+      listings++;
+      noteUploadsChanged(OTHER_SESSION);
+      return new Response(JSON.stringify({ files: [uploaded("mine.png")] }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await useFileStore.getState().hydrateUploads(SESSION_ID);
+
+    expect(listings).toBe(1);
+    expect(useFileStore.getState().sessionUploads.map((u) => u.name)).toEqual(["mine.png"]);
+  });
+
+  it("gives up refetching rather than chasing a churning session (req 1)", async () => {
+    let calls = 0;
+    globalThis.fetch = vi.fn(async () => {
+      calls++;
+      // Out of date the moment it is produced — but only for a while. An
+      // endless source would make an unbounded implementation hang the worker
+      // instead of failing an assertion, and a crash is a worse guard than a
+      // red test.
+      if (calls <= 10) noteUploadsChanged(SESSION_ID);
+      return new Response(JSON.stringify({ files: [] }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await useFileStore.getState().hydrateUploads(SESSION_ID);
+    // Let the chain run itself out, then confirm it stopped rather than sampling
+    // a window it might merely not have filled yet.
+    await new Promise((r) => setTimeout(r, 100));
+    const settled = calls;
+    await new Promise((r) => setTimeout(r, 100));
+    expect(calls).toBe(settled);
+    // The first request plus exactly MAX_HYDRATE_REFETCHES more.
+    expect(calls).toBe(4);
   });
 });

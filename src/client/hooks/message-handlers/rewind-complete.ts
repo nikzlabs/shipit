@@ -1,6 +1,6 @@
 import type { WsRewindComplete } from "../../../server/shared/types.js";
 import { useSessionStore } from "../../stores/session-store.js";
-import { useFileStore } from "../../stores/file-store.js";
+import { useFileStore, noteUploadsChanged } from "../../stores/file-store.js";
 import { useGitStore } from "../../stores/git-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import type { Handler } from "./types.js";
@@ -32,6 +32,14 @@ export const handleRewindComplete: Handler<WsRewindComplete> = (_ctx, data) => {
     // (open or not) shows the post-rewind commits the next time it renders.
     if ("action" in data && (data.action === "code" || data.action === "both")) {
       useGitStore.getState().fetchLog(currentSessionId).catch((err: unknown) => console.warn("[git-log-refresh]", err));
+    }
+    // docs/294 req 1 — a chat or both rewind DELETES the rewound messages'
+    // upload files server-side (`rollback-handlers.ts`). The tree was already
+    // refreshed here; the uploads panel was not, so it went on showing files
+    // that are gone, and a listing held across the rewind could reinstall them.
+    if ("action" in data && (data.action === "chat" || data.action === "both")) {
+      noteUploadsChanged(currentSessionId);
+      void useFileStore.getState().hydrateUploads(currentSessionId);
     }
   }
   if ("snapshotSessionId" in data && data.snapshotSessionId && data.snapshotExpiresAt) {

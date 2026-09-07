@@ -93,7 +93,7 @@ interface FileState {
   removeSessionUploadById: (id: string) => void;
   updateSessionUpload: (id: string, patch: Partial<UploadItem>) => void;
   markUploadsSent: () => void;
-  hydrateUploads: (sessionId: string) => Promise<void>;
+  hydrateUploads: (sessionId: string, attempt?: number) => Promise<void>;
 
   // Unified preview actions
   openPreview: (sessionId: string, filePath: string, opts?: { actions?: FilePreviewAction[]; line?: number }) => Promise<void>;
@@ -202,6 +202,68 @@ export function isUploadActive(id: string): boolean {
   return activeUploads.has(id);
 }
 
+/** Is any upload for this session mid-request right now? */
+export function hasActiveUploads(): boolean {
+  return activeUploads.size > 0;
+}
+
+/**
+ * Uploads the user explicitly dismissed while they were still in flight.
+ *
+ * docs/294 req 7 — the completion handler has to know WHY a chip is missing, and
+ * the chip list cannot tell it: `switchSession` clears every chip, so "gone"
+ * means both "the user removed it" and "the user went elsewhere". Inferring it
+ * from the current session id fails in both directions — A→B→A restores the
+ * session without restoring the chip (so a live upload was deleted), and
+ * Remove-then-switch loses the removal (so a dismissed attachment came back).
+ * Recording the intent against the upload's own id is the only thing that
+ * survives both journeys. NOT cleared on session switch, for exactly that
+ * reason.
+ */
+const dismissedUploads = new Set<string>();
+
+export function noteUploadDismissed(id: string): void {
+  dismissedUploads.add(id);
+}
+
+export function wasUploadDismissed(id: string): boolean {
+  return dismissedUploads.has(id);
+}
+
+export function forgetUploadDismissal(id: string): void {
+  dismissedUploads.delete(id);
+}
+
+/**
+ * docs/294 — the two counters that tell `hydrateUploads` whether its answer is
+ * still true by the time it arrives.
+ *
+ * `uploadsChangeSeq` moves whenever the set of files on the server changes from
+ * this client (an upload lands, a file is deleted). A listing requested before
+ * such a change describes a world that no longer exists, and applying it left
+ * the panel showing a set of files that is not the one on disk.
+ *
+ * It is keyed BY SESSION, and that is load-bearing rather than tidy: a session's
+ * uploads go on completing after the user has switched away, and a global
+ * counter let those completions invalidate the *new* session's perfectly
+ * current listing — four of them in a row would exhaust the retry chain and
+ * leave the new session's panel empty.
+ *
+ * `hydrateSeq` identifies the newest hydration. An older one must not apply its
+ * answer over a newer one's, and must not refetch either: the newer request is
+ * already doing that.
+ */
+const uploadsChangeSeq = new Map<string, number>();
+let hydrateSeq = 0;
+
+/** How many times req 1's "fetch a fresh one" may chain before giving up. */
+const MAX_HYDRATE_REFETCHES = 3;
+
+/** Record that this client changed what the server holds for a session. */
+export function noteUploadsChanged(sessionId: string): void {
+  uploadsChangeSeq.set(sessionId, (uploadsChangeSeq.get(sessionId) ?? 0) + 1);
+}
+
 /**
  * Forget every pending upload: its bytes, and the record that a request is
  * running for it. Called when the chips themselves are dropped (a session
@@ -282,11 +344,45 @@ export const useFileStore = create<FileState>((set, get) => ({
     }));
   },
 
-  hydrateUploads: async (sessionId) => {
+  hydrateUploads: async (sessionId, attempt = 0) => {
+    // docs/294 reqs 1-3 — captured BEFORE the request, compared after it. The
+    // listing is a snapshot, and everything below treats it as authority: it
+    // prunes the draft set and rebuilds every non-pending chip. An answer that
+    // is no longer current must not get that authority.
+    const seq = ++hydrateSeq;
+    const changeAtStart = uploadsChangeSeq.get(sessionId) ?? 0;
+    // docs/294 req 1 — a mutation that is still UNRESOLVED cannot have bumped
+    // the counter yet, so the counter alone cannot see this overlap. A listing
+    // taken across an open upload observed a file the client had not yet learned
+    // about (two rows for it once the POST landed) or a file the server was
+    // about to roll back (a ready row for something that no longer exists).
+    const mutatingAtStart = hasActiveUploads();
     try {
       const res = await fetch(`/api/sessions/${sessionId}/files/uploads`);
       if (!res.ok) return;
       const data = (await res.json()) as { files: UploadedFile[] };
+
+      // req 3 — a newer hydration owns the store now. Drop this one, and do NOT
+      // refetch: the newer request is already fetching.
+      if (seq !== hydrateSeq) return;
+      // req 2 — the answer is for a session the user has left. `switchSession`
+      // sets the store's id synchronously, before history loads and before this
+      // is ever called, so the comparison is meaningful at both ends.
+      if (useSessionStore.getState().sessionId !== sessionId) return;
+      // req 1 — the listing predates a change this client made, so it cannot
+      // know about it. Take a fresh one. Bounded (non-requirement: no retry
+      // policy beyond this) so a session churning uploads cannot spin the
+      // server; the existing triggers still cover the give-up case.
+      if (
+        (uploadsChangeSeq.get(sessionId) ?? 0) !== changeAtStart
+        || mutatingAtStart
+        || hasActiveUploads()
+      ) {
+        if (attempt < MAX_HYDRATE_REFETCHES) {
+          void get().hydrateUploads(sessionId, attempt + 1);
+        }
+        return;
+      }
       const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg)$/i;
       const deletedPaths = getDeletedUploads();
       // Clean up the deleted set — remove entries for files that no longer exist on the server
@@ -307,11 +403,18 @@ export const useFileStore = create<FileState>((set, get) => ({
       // paths the user attached but hasn't sent yet, persisted so the chip
       // survives a reload/session-switch exactly like the composer's draft text.
       //
-      // Self-heal the draft set before applying it: drop any path the server no
-      // longer has, and any path chat history shows was already sent. This is
-      // what structurally prevents the old resurrection bug — even if the
-      // send-time removal was missed, an already-sent file is pruned here and
-      // never shown as a chip.
+      // Self-heal the draft set before applying it: drop any path chat history
+      // shows was already sent. This is what structurally prevents the old
+      // resurrection bug — even if the send-time removal was missed, an
+      // already-sent file is pruned here and never shown as a chip.
+      //
+      // docs/294 req 4 — it deliberately does NOT prune a path merely because
+      // this listing lacks it. That rule made a snapshot authoritative over
+      // something it could not have known about: a second tab that finished an
+      // upload while this listing was in flight had its just-saved draft path
+      // deleted out of shared localStorage, and the counters below cannot see
+      // another tab. Keeping the path costs a dead string; a chip is built from
+      // `data.files`, so a path with no file on the server renders nothing.
       const sentPaths = new Set<string>();
       for (const msg of useSessionStore.getState().messages) {
         if (msg.role !== "user") continue;
@@ -323,7 +426,7 @@ export const useFileStore = create<FileState>((set, get) => ({
       const draftSet = new Set(getSavedDraftUploads(sessionId));
       let draftChanged = false;
       for (const p of [...draftSet]) {
-        if (!serverPaths.has(p) || sentPaths.has(p)) { draftSet.delete(p); draftChanged = true; }
+        if (sentPaths.has(p)) { draftSet.delete(p); draftChanged = true; }
       }
       if (draftChanged) saveDraftUploads(sessionId, [...draftSet]);
 

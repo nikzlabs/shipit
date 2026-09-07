@@ -128,7 +128,7 @@ import type {
 
 import { useSessionStore } from "./stores/session-store.js";
 import { useGitStore } from "./stores/git-store.js";
-import { useFileStore, markUploadDeleted } from "./stores/file-store.js";
+import { useFileStore, markUploadDeleted, noteUploadDismissed } from "./stores/file-store.js";
 import { usePreviewStore } from "./stores/preview-store.js";
 import { usePresentStore } from "./stores/present-store.js";
 import { useTerminalStore } from "./stores/terminal-store.js";
@@ -139,7 +139,6 @@ import { useUiStore, type RightTab } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
 import {
   composeReviewMessage,
-  buildReviewSendFrame,
   resolveReviewer,
 } from "./utils/compose-review-body.js";
 import { handleSessionResume } from "./stores/actions/session-actions.js";
@@ -168,6 +167,9 @@ import { useChatDisabledReason, useHarnessOnboardingPanelVisible } from "./utils
 import { useGitHubGateLatch } from "./hooks/useGitHubGateLatch.js";
 import type { SendCommentsPayload } from "./components/FilePreviewModal.js";
 import { Spinner } from "./components/Spinner.js";
+import { buildAttachmentPlan } from "./utils/attachment-plan.js";
+import { deleteUploadFromServer } from "./hooks/useFileUpload.js";
+import { removeDraftUploads } from "./utils/local-storage.js";
 
 export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
@@ -588,6 +590,15 @@ export default function App() {
       // is concrete. Cross-agent output is surfaced by the consult card (docs/220);
       // a same-model review is narrated as prose. No review tool is involved.
       const trimmed = text.trim();
+      // docs/294 — one decision about the composer's attachments, made in a pure
+      // function so it can be tested without rendering App. Every branch below
+      // carries it out rather than answering it again.
+      const plan = buildAttachmentPlan({
+        text: trimmed,
+        uploadRefs,
+        uploads: payloadUploads,
+        pendingFiles: useSettingsStore.getState().pendingFiles,
+      });
       if (/^\/review(?:\s|$)/.test(trimmed)) {
         const reviewSettings = useSettingsStore.getState();
         const argMatch = /^\/review\s+@?(\S+)/.exec(trimmed);
@@ -632,27 +643,18 @@ export default function App() {
         // `handleSubmit` cleared the chips regardless: an upload attached
         // alongside `/review` vanished with no message and no error.
         sendUserMessage({
-          bubble: {
-            role: "user",
-            text: prompt,
-            ...(uploadRefs.length > 0 ? { uploadPaths: uploadRefs.map((u) => u.path) } : {}),
-            ...(reviewSettings.pendingFiles.length > 0
-              ? { files: reviewSettings.pendingFiles.map((f) => ({ path: f.path, contentPreview: "" })) }
-              : {}),
-          },
+          bubble: { role: "user", text: prompt, ...plan.bubble },
           activity: "Reviewing...",
           dispatch: (requestId) =>
             send({
               type: "send_message",
               requestId,
-              ...buildReviewSendFrame({
-              prompt,
+              text: prompt,
               sessionId: sid,
-              uploadRefs,
-              pendingFiles: reviewSettings.pendingFiles,
-            }),
+              ...plan.frame,
             }),
         });
+        if (plan.clearAttachments) reviewSettings.clearPendingFiles();
         return;
       }
 
@@ -661,35 +663,9 @@ export default function App() {
       const session = useSessionStore.getState();
       const settings = useSettingsStore.getState();
       useUiStore.getState().setShowTemplates(false);
-      // Separate image uploads (have previewUrl) from non-image uploads for display
-      const readyUploads = payloadUploads.filter(
-        (u) => u.status === "ready" && u.path,
-      );
-      const imageUploads = readyUploads.filter((u) => u.previewUrl);
-      const nonImageUploadRefs = uploadRefs.filter(
-        (ref) => !imageUploads.some((u) => u.path === ref.path),
-      );
-      const allFiles: { path: string; contentPreview: string }[] = [
-        ...settings.pendingFiles.map((f) => ({
-          path: f.path,
-          contentPreview: "",
-        })),
-        ...nonImageUploadRefs.map((u) => ({
-          path: u.path,
-          contentPreview: "",
-        })),
-      ];
-      const filesForMessage = allFiles.length > 0 ? allFiles : undefined;
-      const imagesForMessage =
-        imageUploads.length > 0
-          ? imageUploads.map((u) => ({
-              data: "",
-              mediaType: u.mimeType ?? "image/png",
-              src: u.dataUrl ?? u.previewUrl!,
-            }))
-          : undefined;
-      const uploadPathsForMessage =
-        uploadRefs.length > 0 ? uploadRefs.map((u) => u.path) : undefined;
+      const filesForMessage = plan.bubble.files;
+      const imagesForMessage = plan.bubble.images;
+      const uploadPathsForMessage = plan.bubble.uploadPaths;
 
       const currentSessionId = session.sessionId;
       if (currentSessionId) {
@@ -711,11 +687,7 @@ export default function App() {
           text,
           sessionId: currentSessionId,
           ...(issueRef ? { issueRef } : {}),
-          files:
-            settings.pendingFiles.length > 0
-              ? settings.pendingFiles
-              : undefined,
-          uploads: uploadRefs.length > 0 ? uploadRefs : undefined,
+          ...plan.frame,
           permissionMode: (() => {
             const pm = settings.getPermissionMode(currentSessionId);
             return pm !== "auto" ? pm : undefined;
@@ -774,7 +746,7 @@ export default function App() {
           },
         ]);
       }
-      settings.clearPendingFiles();
+      if (plan.clearAttachments) settings.clearPendingFiles();
       // MessageInput has already cleared its own upload chips at this point.
     },
     [
@@ -2086,13 +2058,25 @@ export default function App() {
             uploads={sessionUploads}
             onDeleteUpload={(u) => {
               const sid = useSessionStore.getState().sessionId;
+              // docs/294 req 7 — the panel is the other explicit removal, so it
+              // records the same intent the composer's Remove does. Without it, a
+              // still-uploading row deleted here would be read as a session
+              // switch when its POST lands, and kept.
+              noteUploadDismissed(u.id);
               if (u.path) markUploadDeleted(u.path);
               if (sid && u.path) {
-                const filename = u.path.replace(/^\/uploads\//, "");
-                void fetch(
-                  `/api/sessions/${sid}/files/uploads/${encodeURIComponent(filename)}`,
-                  { method: "DELETE" },
-                );
+                // docs/294 req 1 — the same brokered delete the composer's chips
+                // use, so this writer invalidates an in-flight listing too. It
+                // used to hand-roll the fetch and note no change, leaving a
+                // stale listing free to restore the file it had just removed.
+                //
+                // And retire the draft path, which the composer's Remove has
+                // always done: hydration no longer prunes a path merely because
+                // a listing lacks it, so an explicit delete has to say so or the
+                // path lingers and another tab's older listing can rebuild the
+                // chip for a file that is gone.
+                removeDraftUploads(sid, [u.path]);
+                void deleteUploadFromServer(sid, u.path);
               }
               if (u.previewUrl) URL.revokeObjectURL(u.previewUrl);
               if (u.path) useFileStore.getState().removeSessionUpload(u.path);

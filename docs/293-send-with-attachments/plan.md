@@ -108,8 +108,13 @@ write itself fails, and the rollback logs rather than swallows a cleanup error �
 
 **`/review` carries the attachments (req 4).** It composes its own prompt and
 dispatched it alone while `handleSubmit` cleared the chips regardless. It carries
-**both** kinds — uploads and `@`-mentioned workspace files — and consumes the
-latter, which it also used to leave attached to a later message. The frame is
+**both** kinds — uploads and `@`-mentioned workspace files.
+
+> **Correction (docs/294).** This section originally also said `/review`
+> *consumes* the `@`-mentioned files. It did not: the clearing call never made it
+> into the shipped branch, so those chips stayed attached to a later message. A
+> review of docs/294 caught the discrepancy between this doc and the code.
+> `docs/294` makes the claim true. The frame is
 built by `buildReviewSendFrame` in `compose-review-body.ts` rather than inline in
 `App.tsx`, because `App.tsx` has no test harness. Note the limit of that honestly:
 the helper is tested, App's *call* to it is not, so the extraction buys a test of

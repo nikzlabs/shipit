@@ -6,13 +6,14 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { StrictMode } from "react";
 import { renderHook, act, waitFor } from "@testing-library/react";
-import { useFileUpload } from "./useFileUpload.js";
+import { useFileUpload, deleteUploadFromServer } from "./useFileUpload.js";
 import {
   useFileStore,
   getUploadBytes,
   forgetPendingUploads,
 } from "../stores/file-store.js";
 import { getSavedDraftUploads } from "../utils/local-storage.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 /** A fetch stub whose POSTs hang until the returned `release` is called. */
 function gatedUploads() {
@@ -58,6 +59,9 @@ function stubUploads({ failFirst }: { failFirst: number }) {
 beforeEach(() => {
   useFileStore.setState({ sessionUploads: [] });
   forgetPendingUploads();
+  // A missing chip means "the user removed it" only while its session is still
+  // on screen, so every test has to state which session that is.
+  useSessionStore.setState({ messages: [], sessionId: SESSION });
   // Draft-upload paths are localStorage-backed, so an earlier test's successful
   // upload would otherwise satisfy a later test's draft assertion.
   localStorage.clear();
@@ -320,5 +324,271 @@ describe("useFileUpload — an upload removed mid-flight stays removed", () => {
     // It does not come back, and nothing was recorded that could bring it back.
     expect(result.current.uploads).toHaveLength(0);
     expect(getSavedDraftUploads(SESSION)).not.toContain("/uploads/notes.txt");
+  });
+});
+
+/**
+ * docs/294 req 1 — these drive the REAL writers. The store's own tests bump the
+ * counter from inside their fetch stub, so every production `noteUploadsChanged`
+ * call could be deleted and they would stay green. These would not.
+ */
+describe("useFileUpload — a write invalidates a listing already in flight", () => {
+  it("a landing upload makes an older listing refetch", async () => {
+    let listings = 0;
+    let releaseListing: (() => void) | undefined;
+    const listingGate = new Promise<void>((r) => { releaseListing = r; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({ files: [{ name: "notes.txt", path: "/uploads/notes.txt", size: 4, type: "upload" }] }),
+        };
+      }
+      if (url.includes("/files/uploads")) {
+        listings += 1;
+        // The first listing is held open while the upload lands under it.
+        if (listings === 1) await listingGate;
+        return { ok: true, json: async () => ({ files: [] }) };
+      }
+      return { ok: true, json: async () => ({ files: [] }) };
+    }));
+
+    const hydration = useFileStore.getState().hydrateUploads(SESSION);
+    const { result } = renderHook(() => useFileUpload(SESSION));
+    await act(async () => {
+      await result.current.uploadFiles([new File(["hi!!"], "notes.txt", { type: "text/plain" })]);
+    });
+    releaseListing?.();
+    await hydration;
+
+    // The held listing knew nothing of the upload, so it was dropped and a
+    // fresh one taken. Without the production `noteUploadsChanged` call there
+    // would be exactly one.
+    await vi.waitFor(() => expect(listings).toBe(2));
+  });
+
+  it("a delete invalidates a listing that started while it was still open", async () => {
+    // The listing is requested AFTER the DELETE is sent but BEFORE it lands, so
+    // only a bump on completion catches it. A bump at request start would have
+    // happened before this listing captured its counter, and it would apply a
+    // response describing a file that is gone.
+    let listings = 0;
+    let releaseDelete: (() => void) | undefined;
+    let releaseListing: (() => void) | undefined;
+    const deleteGate = new Promise<void>((r) => { releaseDelete = r; });
+    const listingGate = new Promise<void>((r) => { releaseListing = r; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        await deleteGate;
+        return { ok: true, json: async () => ({}) };
+      }
+      if (url.includes("/files/uploads")) {
+        listings += 1;
+        if (listings === 1) await listingGate;
+        return { ok: true, json: async () => ({ files: [] }) };
+      }
+      return { ok: true, json: async () => ({ files: [] }) };
+    }));
+
+    const deletion = deleteUploadFromServer(SESSION, "/uploads/notes.txt");
+    const hydration = useFileStore.getState().hydrateUploads(SESSION);
+    await vi.waitFor(() => expect(listings).toBe(1));
+
+    // The delete lands while that listing is still open.
+    releaseDelete?.();
+    await deletion;
+    releaseListing?.();
+    await hydration;
+
+    // So it is dropped and replaced. A bump at request start would have
+    // happened before this listing captured its counter, and it would have
+    // applied a response describing a file that is now gone.
+    await vi.waitFor(() => expect(listings).toBe(2));
+  });
+
+  it("a refused delete does not spend a listing's refetch budget", async () => {
+    // A definite refusal changed nothing on the server. Treating it as a change
+    // would let four of them in a row exhaust the chain and leave the panel
+    // empty — the regression in the opposite direction.
+    let listings = 0;
+    let releaseDelete: (() => void) | undefined;
+    let releaseListing: (() => void) | undefined;
+    const deleteGate = new Promise<void>((r) => { releaseDelete = r; });
+    const listingGate = new Promise<void>((r) => { releaseListing = r; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        await deleteGate;
+        return { ok: false, status: 403, statusText: "Forbidden", json: async () => ({}) };
+      }
+      if (url.includes("/files/uploads")) {
+        listings += 1;
+        if (listings === 1) await listingGate;
+        return { ok: true, json: async () => ({ files: [] }) };
+      }
+      return { ok: true, json: async () => ({ files: [] }) };
+    }));
+
+    // The listing is held open ACROSS the refused DELETE. Completing the delete
+    // first would let a wrong bump land before the listing captured its
+    // baseline, and the assertion would pass either way.
+    const deletion = deleteUploadFromServer(SESSION, "/uploads/notes.txt");
+    const hydration = useFileStore.getState().hydrateUploads(SESSION);
+    await vi.waitFor(() => expect(listings).toBe(1));
+    releaseDelete?.();
+    await deletion;
+    releaseListing?.();
+    await hydration;
+
+    // Nothing changed on the server, so nothing was refetched.
+    expect(listings).toBe(1);
+  });
+});
+
+describe("useFileUpload — leaving a session is not removing an attachment", () => {
+  it("keeps the file and records it as a draft when the upload lands after a switch", async () => {
+    // docs/294 finding: `switchSession` clears every chip, so the "no chip means
+    // the user dismissed it" rule read an ordinary session switch as a removal —
+    // deleting an attachment nobody removed, and writing its path into the
+    // GLOBAL tombstone set where it could filter a same-named file out of the
+    // session the user had just moved to.
+    const deletes: string[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") { deletes.push(url); return { ok: true, json: async () => ({}) }; }
+      if (init?.method !== "POST") return { ok: true, json: async () => ({ files: [] }) };
+      await gate;
+      return {
+        ok: true,
+        json: async () => ({ files: [{ name: "notes.txt", path: "/uploads/notes.txt", size: 4, type: "upload" }] }),
+      };
+    }));
+
+    const { result } = renderHook(() => useFileUpload(SESSION));
+    act(() => {
+      void result.current.uploadFiles([new File(["hi!!"], "notes.txt", { type: "text/plain" })]);
+    });
+    await waitFor(() => expect(result.current.uploads).toHaveLength(1));
+
+    // What `switchSession` does: clear the chips and move the store on.
+    act(() => {
+      useFileStore.getState().reset();
+      useSessionStore.setState({ sessionId: "session-2" });
+    });
+
+    await act(async () => { release?.(); await Promise.resolve(); });
+    await new Promise((r) => setTimeout(r, 20));
+
+    // The file is NOT deleted, and it is remembered as unsent so returning to
+    // that session shows the chip again (req 4).
+    expect(deletes).toEqual([]);
+    expect(getSavedDraftUploads(SESSION)).toContain("/uploads/notes.txt");
+  });
+});
+
+describe("useFileUpload — why a chip is missing (docs/294 req 7)", () => {
+  /** Stub whose upload POST hangs until `release` is called. */
+  function heldUpload() {
+    const deletes: string[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") { deletes.push(url); return { ok: true, json: async () => ({}) }; }
+      if (init?.method !== "POST") return { ok: true, json: async () => ({ files: [] }) };
+      await gate;
+      return {
+        ok: true,
+        json: async () => ({ files: [{ name: "notes.txt", path: "/uploads/notes.txt", size: 4, type: "upload" }] }),
+      };
+    }));
+    return { deletes, release: () => release?.() };
+  }
+
+  /** What `switchSession` does to this store. */
+  function switchTo(sessionId: string) {
+    useFileStore.getState().reset();
+    useSessionStore.setState({ sessionId });
+  }
+
+  it("keeps the file when the user leaves and COMES BACK before it lands", async () => {
+    // Both switches clear the chips, so returning to the original session makes
+    // "am I still here?" true again with no chip to match — which read as a
+    // removal and deleted an upload nobody dismissed.
+    const server = heldUpload();
+    const { result } = renderHook(() => useFileUpload(SESSION));
+    act(() => {
+      void result.current.uploadFiles([new File(["hi!!"], "notes.txt", { type: "text/plain" })]);
+    });
+    await waitFor(() => expect(result.current.uploads).toHaveLength(1));
+
+    act(() => { switchTo("session-2"); });
+    act(() => { switchTo(SESSION); });
+
+    await act(async () => { server.release(); await Promise.resolve(); });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(server.deletes).toEqual([]);
+    expect(getSavedDraftUploads(SESSION)).toContain("/uploads/notes.txt");
+  });
+
+  it("still deletes the file when the user REMOVED it and then left", async () => {
+    // The inverse: a dismissal followed by a switch used to look like an
+    // ordinary switch, so the attachment came back on return.
+    const server = heldUpload();
+    const { result } = renderHook(() => useFileUpload(SESSION));
+    act(() => {
+      void result.current.uploadFiles([new File(["hi!!"], "notes.txt", { type: "text/plain" })]);
+    });
+    await waitFor(() => expect(result.current.uploads).toHaveLength(1));
+
+    act(() => { result.current.removeUpload(0); });
+    act(() => { switchTo("session-2"); });
+
+    await act(async () => { server.release(); await Promise.resolve(); });
+    await vi.waitFor(() => expect(server.deletes.some((u) => u.includes("notes.txt"))).toBe(true));
+    // ...and it is not remembered as an attachment to restore.
+    expect(getSavedDraftUploads(SESSION)).not.toContain("/uploads/notes.txt");
+  });
+});
+
+describe("useFileUpload — a listing taken across an open upload (docs/294 req 1)", () => {
+  it("does not leave two rows for one file", async () => {
+    // The counter cannot see this overlap: an UNRESOLVED mutation has not
+    // bumped it yet. The listing observed the file the server had already
+    // saved, hydration added a row for it, and the POST then gave the same path
+    // to the pending placeholder — two rows for one file.
+    let listings = 0;
+    let releasePost: (() => void) | undefined;
+    const postGate = new Promise<void>((r) => { releasePost = r; });
+    const saved = { name: "notes.txt", path: "/uploads/notes.txt", size: 4, type: "upload" as const };
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        await postGate;
+        return { ok: true, json: async () => ({ files: [saved] }) };
+      }
+      if (url.includes("/files/uploads")) {
+        listings += 1;
+        // The server already has the file, even though the client does not know.
+        return { ok: true, json: async () => ({ files: [saved] }) };
+      }
+      return { ok: true, json: async () => ({ files: [] }) };
+    }));
+
+    const { result } = renderHook(() => useFileUpload(SESSION));
+    act(() => {
+      void result.current.uploadFiles([new File(["hi!!"], "notes.txt", { type: "text/plain" })]);
+    });
+    await waitFor(() => expect(result.current.uploads).toHaveLength(1));
+
+    // A listing taken while that POST is still open.
+    await useFileStore.getState().hydrateUploads(SESSION);
+
+    await act(async () => { releasePost?.(); await Promise.resolve(); });
+    await new Promise((r) => setTimeout(r, 20));
+
+    const rows = useFileStore.getState().sessionUploads.filter((u) => u.path === saved.path);
+    expect(rows).toHaveLength(1);
+    // It was refetched rather than applied.
+    expect(listings).toBeGreaterThan(1);
   });
 });

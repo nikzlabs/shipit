@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import type { WsClientMessage, ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { validateImages, imageAttachmentRefusal, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
+import { parseCompactCommand } from "../../shared/compact-command.js";
 import { modelSelectionOf } from "../session-agent-env.js";
 import { graduateSession } from "../services/graduate-session.js";
 import { pinIssueSeededSession } from "../services/issue-seeded-session.js";
@@ -26,22 +27,6 @@ type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
 
 type WsSendMessage = Extract<WsClientMessage, { type: "send_message" }>;
 type WsAnswerQuestion = Extract<WsClientMessage, { type: "answer_question" }>;
-
-/**
- * docs/178 §4 — recognize the `/compact` composer command, with optional
- * custom-compaction args (`/compact <instructions>`, which Claude's CLI
- * honors). Matches a leading `/compact` token only (so `/compactfoo` is not a
- * match). Returns the trimmed instructions when present. Recognizing the arg
- * form matters for correctness, not just Claude parity: without it a
- * `/compact <args>` on Codex would fall through and be sent as a literal
- * `turn/start` prompt — a no-op — instead of routing to its compaction RPC.
- */
-function parseCompactCommand(text: string): { match: boolean; instructions?: string } {
-  const m = /^\/compact(?:\s+([\s\S]+))?$/.exec(text.trim());
-  if (!m) return { match: false };
-  const instructions = m[1]?.trim();
-  return instructions ? { match: true, instructions } : { match: true };
-}
 
 function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
   const activeAgentId = ctx.getActiveAgentId();

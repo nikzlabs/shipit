@@ -20,11 +20,15 @@ import {
   clearUploadTombstone,
   retainUploadBytes,
   getUploadBytes,
+  noteUploadDismissed,
+  wasUploadDismissed,
+  forgetUploadDismissal,
   pendingUploadBytes,
   releaseUploadBytes,
   markUploadActive,
   markUploadSettled,
   isUploadActive,
+  noteUploadsChanged,
 } from "../stores/file-store.js";
 import { addDraftUpload, removeDraftUploads } from "../utils/local-storage.js";
 
@@ -36,17 +40,34 @@ interface UploadResponse {
 
 let uploadIdCounter = 0;
 
-/** Best-effort DELETE of an uploaded file the composer no longer refers to. */
-async function deleteUploadFromServer(sessionId: string, uploadPath: string): Promise<void> {
+/**
+ * Best-effort DELETE of an uploaded file nothing on screen refers to any more.
+ * Exported because the Uploads panel deletes files too, and docs/294 req 1 wants
+ * every writer to invalidate an in-flight listing — a hand-rolled fetch at
+ * another call site is exactly the writer that gets forgotten.
+ */
+export async function deleteUploadFromServer(sessionId: string, uploadPath: string): Promise<void> {
   const filename = uploadPath.replace(/^\/uploads\//, "");
   try {
     const res = await fetch(
       `/api/sessions/${sessionId}/files/uploads/${encodeURIComponent(filename)}`,
       { method: "DELETE" },
     );
-    if (!res.ok) console.warn(`[upload] DELETE ${uploadPath} failed: ${res.status} ${res.statusText}`);
+    if (!res.ok) {
+      console.warn(`[upload] DELETE ${uploadPath} failed: ${res.status} ${res.statusText}`);
+      // A definite refusal changed nothing, so it must NOT spend a listing's
+      // refetch budget — four of those in a row would leave the panel empty.
+      return;
+    }
+    // docs/294 req 1 — bumped on COMPLETION, not before the request: the point
+    // is "the server's set is now different", and a listing that started while
+    // the DELETE was still open would otherwise pass its freshness check with a
+    // file that has since gone.
+    noteUploadsChanged(sessionId);
   } catch (err: unknown) {
+    // Unknown outcome — the delete may well have landed. Invalidate.
     console.warn("[upload] DELETE failed:", err);
+    noteUploadsChanged(sessionId);
   }
 }
 
@@ -79,14 +100,27 @@ export function useFileUpload(sessionId: string | undefined) {
       for (let i = 0; i < items.length; i++) {
         const uploaded = data.files[i];
         if (uploaded) {
-          // docs/293 req 7 — the chip may be gone: Remove is available while an
-          // upload is in flight, and the request goes on regardless. Recording a
-          // draft for it would have `hydrateUploads` restore the attachment the
-          // user explicitly dismissed, onto a later message. Delete the file the
-          // server did save rather than leaving it orphaned.
-          if (!st.sessionUploads.some((u) => u.id === items[i].id)) {
+          // docs/293 req 7 / docs/294 req 7 — the chip may be gone for two very
+          // different reasons, and only one of them means "delete this file":
+          // the user dismissed it while it was uploading, or `switchSession`
+          // cleared every chip when they went elsewhere. The chip list cannot
+          // tell those apart, and neither can the current session id — A→B→A
+          // restores the session without restoring the chip, and a Remove
+          // followed by a switch loses the removal. So the dismissal is recorded
+          // against the upload's own id when it happens.
+          if (wasUploadDismissed(items[i].id)) {
             releaseUploadBytes(items[i].id);
+            forgetUploadDismissal(items[i].id);
+            markUploadDeleted(uploaded.path);
             void deleteUploadFromServer(sid, uploaded.path);
+            continue;
+          }
+          if (!st.sessionUploads.some((u) => u.id === items[i].id)) {
+            // Gone without being dismissed: the user left the session. Keep the
+            // file and remember it as unsent, so coming back shows the chip.
+            releaseUploadBytes(items[i].id);
+            clearUploadTombstone(uploaded.path);
+            addDraftUpload(sid, uploaded.path);
             continue;
           }
           // A fresh upload supersedes any stale tombstone for its path. Without
@@ -118,6 +152,10 @@ export function useFileUpload(sessionId: string | undefined) {
       }
     } finally {
       for (const item of items) markUploadSettled(item.id);
+      // Every outcome, not just success: a rejected batch may have written files
+      // and rolled them back (`api-routes-files.ts`), and a listing that saw
+      // those temporary files is just as stale as one that missed a new file.
+      noteUploadsChanged(sid);
     }
   }, []);
 
@@ -215,6 +253,9 @@ export function useFileUpload(sessionId: string | undefined) {
     const item = pendingUploads[index];
     if (!item) return;
     if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    // docs/294 req 7 — say so now, while we know it was the user. The upload may
+    // still be in flight, and its completion has no other way to find out.
+    noteUploadDismissed(item.id);
     if (item.path && sessionId) {
       markUploadDeleted(item.path);
       // The user dismissed the chip before sending — drop it from the draft set

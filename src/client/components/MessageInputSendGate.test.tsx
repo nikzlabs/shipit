@@ -166,3 +166,95 @@ describe("The gate holds on the overlay surface too", () => {
     expect(screen.getByTestId("send-button")).toBeDisabled();
   });
 });
+
+describe("/compact is a command, not a message (docs/294 reqs 5-6)", () => {
+  it("keeps the attachment in the composer and sends none with it", () => {
+    // The mid-turn path discards attachments server-side, so they vanished with
+    // no error. `/compact` asks the agent to summarise the conversation; it has
+    // no use for a file.
+    const onSend = vi.fn();
+    seedUpload({ status: "ready" });
+    render(<MessageInput onSend={onSend} disabled={false} />);
+    type("/compact");
+    fireEvent.click(sendButton());
+
+    expect(onSend).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "/compact", uploadRefs: [], uploads: [] }),
+    );
+    // req 5 — still attached, ready for the next real message.
+    expect(useFileStore.getState().sessionUploads[0].pending).toBe(true);
+  });
+
+  it("keeps it for `/compact <instructions>` too", () => {
+    // The arg form is the same command; a prefix-only check would treat it as
+    // an ordinary message and clear the chips.
+    const onSend = vi.fn();
+    seedUpload({ status: "ready" });
+    render(<MessageInput onSend={onSend} disabled={false} />);
+    type("/compact keep the design decisions");
+    fireEvent.click(sendButton());
+
+    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ uploadRefs: [] }));
+    expect(useFileStore.getState().sessionUploads[0].pending).toBe(true);
+  });
+
+  it("does not mistake an ordinary message for the command", () => {
+    // Non-vacuous control: `/compactfoo` is not `/compact`, and a real message
+    // must still carry and clear its attachment.
+    const onSend = vi.fn();
+    seedUpload({ status: "ready" });
+    render(<MessageInput onSend={onSend} disabled={false} />);
+    type("/compactfoo");
+    fireEvent.click(sendButton());
+
+    expect(onSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        uploadRefs: [{ path: "/uploads/notes.txt", type: "upload" }],
+      }),
+    );
+    expect(useFileStore.getState().sessionUploads[0].pending).toBe(false);
+  });
+});
+
+describe("/compact on the quick-capture overlay (docs/294 reqs 5-6)", () => {
+  it("is refused, so the attachment neither travels nor is destroyed", () => {
+    // Reqs 5 and 6 want the attachment kept in the composer and no attachment
+    // sent. This surface unmounts its composer on send, so a message that GOES
+    // cannot satisfy both — and a brand-new session has nothing to compact.
+    // Refusing the send is what makes both requirements true here.
+    const onSend = vi.fn();
+    render(<MessageInput surface="overlay" onSend={onSend} disabled={false} />);
+    const textarea = screen.getByRole("textbox");
+    const ev = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "clipboardData", {
+      value: { items: [], getData: () => "x".repeat(5000) },
+    });
+    fireEvent(textarea, ev);
+    fireEvent.change(textarea, { target: { value: "/compact" } });
+
+    const send = screen.getByTestId("send-button");
+    expect(send).toBeDisabled();
+    expect(send).toHaveAttribute("title", expect.stringContaining("nothing to compact"));
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("still sends an ordinary overlay message with its attachment", () => {
+    // Non-vacuous control: the bar is for the command, not for the surface.
+    const onSend = vi.fn();
+    render(<MessageInput surface="overlay" onSend={onSend} disabled={false} />);
+    const textarea = screen.getByRole("textbox");
+    const ev = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "clipboardData", {
+      value: { items: [], getData: () => "x".repeat(5000) },
+    });
+    fireEvent(textarea, ev);
+    fireEvent.change(textarea, { target: { value: "build me a thing" } });
+
+    expect(screen.getByTestId("send-button")).toBeEnabled();
+    fireEvent.click(screen.getByTestId("send-button"));
+    expect(onSend).toHaveBeenCalledWith(
+      expect.objectContaining({ deferredFiles: [expect.any(File)] }),
+    );
+  });
+});

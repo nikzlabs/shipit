@@ -35,6 +35,7 @@ import { useTextareaSizing } from "./hooks/useTextareaSizing.js";
 import { useMessageDraft } from "./hooks/useMessageDraft.js";
 import { useUploadBackend } from "./hooks/useUploadBackend.js";
 import { isLargePaste, buildPastedTextFile } from "./large-paste.js";
+import { isCompactCommand } from "../../../server/shared/compact-command.js";
 import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo, UploadRef } from "../../../server/shared/types.js";
 import type { UploadItem } from "../../hooks/useFileUpload.js";
 import type { AgentOption, ModelChoice } from "../../agent-types.js";
@@ -714,6 +715,16 @@ export function MessageInput({
   // refused rather than just hidden behind an empty-looking textarea. docs/285 —
   // `networkSaving` too, since pressing Contained then Enter in one breath is
   // precisely the sequence that barrier exists for.
+  /**
+   * docs/294 reqs 5-6 — `/compact` in quick capture. Reqs 5 and 6 say the
+   * attachment stays in the composer and the command carries none; on this
+   * surface the composer is unmounted on send, so "stays" and "carries none"
+   * cannot both hold for a message that goes. Refusing the send is what makes
+   * them both true — and a brand-new session has no conversation to compact
+   * anyway, so there was nothing for the command to do.
+   */
+  const compactInOverlay = isOverlay && isCompactCommand(text.trim());
+
   const uploadsInFlight = displayUploads.some((u) => u.status === "uploading");
   const uploadsFailed = displayUploads.some((u) => u.status === "error");
   // req 5 — attachments alone are a message; req 6 — nothing at all is not.
@@ -721,26 +732,35 @@ export function MessageInput({
   const sendBlocked =
     disabled || inert || networkSaving
     || (!text.trim() && !hasAttachment)
-    || uploadsInFlight   // req 1
-    || uploadsFailed;    // req 2
+    || uploadsInFlight     // docs/293 req 1
+    || uploadsFailed       // docs/293 req 2
+    || compactInOverlay;   // docs/294 reqs 5-6
   /** Why Send is unavailable, when the reason is one the user can act on. */
   const sendBlockedReason = uploadsInFlight
     ? "Waiting for attachments to finish uploading"
     : uploadsFailed
       ? "An attachment failed to upload — retry or remove it"
-      : undefined;
+      : compactInOverlay
+        ? "There is nothing to compact in a new session"
+        : undefined;
 
   const handleSubmit = () => {
     const trimmed = text.trim();
     // `sendBlocked` covers every bar, and it must be re-read HERE and not only
     // on the button: Enter reaches this directly.
     if (sendBlocked) return;
-    const uploadRefs = getUploadRefs();
+    // docs/294 reqs 5-6 — `/compact` is a control command asking the agent to
+    // summarise the conversation, not a message. It carries no attachment, and
+    // the chips stay in the composer for the user's next real message rather
+    // than being cleared into nothing (the mid-turn path discarded them
+    // server-side, so they vanished with no error at all).
+    const isCompact = isCompactCommand(trimmed);
+    const uploadRefs = isCompact ? [] : getUploadRefs();
     const payload: SendPayload = {
       text: trimmed,
       uploadRefs,
-      uploads: displayUploads,
-      deferredFiles: isOverlay ? localFiles : [],
+      uploads: isCompact ? [] : displayUploads,
+      deferredFiles: isCompact || !isOverlay ? [] : localFiles,
       // docs/218 — only carry the intent when the control was actually shown.
       ...(showResetControl ? { resetMergedBranch: resetChecked } : {}),
       // docs/144 — omitted entirely when the draft was typed.
@@ -762,7 +782,7 @@ export function MessageInput({
     // The transcript the cleanup notice referred to has now left the composer —
     // drop the notice so it doesn't linger over an empty input.
     voice.dismissCleanupWarning();
-    clearUploads();
+    if (!isCompact) clearUploads();
     setShowAutoComplete(false);
     setShowSkillMenu(false);
   };
