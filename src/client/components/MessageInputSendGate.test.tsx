@@ -216,12 +216,12 @@ describe("/compact is a command, not a message (docs/294 reqs 5-6)", () => {
   });
 });
 
-describe("/compact on the quick-capture overlay (docs/294 req 5)", () => {
-  it("carries the attachment, because the overlay closes on send", () => {
-    // req 5 keeps the attachment "in the composer" — but quick capture unmounts
-    // its composer on send, so withholding the file would destroy it rather
-    // than retain it. A new session has no conversation to compact either, so
-    // `/compact` there is just its first prompt.
+describe("/compact on the quick-capture overlay (docs/294 reqs 5-6)", () => {
+  it("is refused, so the attachment neither travels nor is destroyed", () => {
+    // Reqs 5 and 6 want the attachment kept in the composer and no attachment
+    // sent. This surface unmounts its composer on send, so a message that GOES
+    // cannot satisfy both — and a brand-new session has nothing to compact.
+    // Refusing the send is what makes both requirements true here.
     const onSend = vi.fn();
     render(<MessageInput surface="overlay" onSend={onSend} disabled={false} />);
     const textarea = screen.getByRole("textbox");
@@ -231,10 +231,30 @@ describe("/compact on the quick-capture overlay (docs/294 req 5)", () => {
     });
     fireEvent(textarea, ev);
     fireEvent.change(textarea, { target: { value: "/compact" } });
-    fireEvent.click(screen.getByTestId("send-button"));
 
+    const send = screen.getByTestId("send-button");
+    expect(send).toBeDisabled();
+    expect(send).toHaveAttribute("title", expect.stringContaining("nothing to compact"));
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("still sends an ordinary overlay message with its attachment", () => {
+    // Non-vacuous control: the bar is for the command, not for the surface.
+    const onSend = vi.fn();
+    render(<MessageInput surface="overlay" onSend={onSend} disabled={false} />);
+    const textarea = screen.getByRole("textbox");
+    const ev = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "clipboardData", {
+      value: { items: [], getData: () => "x".repeat(5000) },
+    });
+    fireEvent(textarea, ev);
+    fireEvent.change(textarea, { target: { value: "build me a thing" } });
+
+    expect(screen.getByTestId("send-button")).toBeEnabled();
+    fireEvent.click(screen.getByTestId("send-button"));
     expect(onSend).toHaveBeenCalledWith(
-      expect.objectContaining({ text: "/compact", deferredFiles: [expect.any(File)] }),
+      expect.objectContaining({ deferredFiles: [expect.any(File)] }),
     );
   });
 });

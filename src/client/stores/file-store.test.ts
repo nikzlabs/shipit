@@ -256,16 +256,14 @@ describe("hydrateUploads — an out-of-date listing is never applied", () => {
   });
 
   it("refuses a listing for a session the user has left (req 2)", async () => {
+    // A drafted path for that session, so an applied response would build a
+    // pending chip here rather than merely a non-pending one.
     saveDraftUploads(OTHER_SESSION, ["/uploads/theirs.png"]);
-    // The listing deliberately does NOT contain the drafted file, so an applied
-    // response would be visible in both assertions below rather than only one.
-    stubUploadsFetch([uploaded("unrelated.png")]);
+    stubUploadsFetch([uploaded("theirs.png")]);
 
     await useFileStore.getState().hydrateUploads(OTHER_SESSION);
 
     expect(useFileStore.getState().sessionUploads).toEqual([]);
-    // ...and it did not touch the other session's draft set on the way past.
-    expect(getSavedDraftUploads(OTHER_SESSION)).toEqual(["/uploads/theirs.png"]);
   });
 
   it("refuses a listing superseded by a newer one, and does not refetch (req 3)", async () => {

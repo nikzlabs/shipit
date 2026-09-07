@@ -28,6 +28,7 @@ import {
   noteUploadsChanged,
 } from "../stores/file-store.js";
 import { addDraftUpload, removeDraftUploads } from "../utils/local-storage.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 export type { UploadItem, UploadStatus } from "../../server/shared/types.js";
 
@@ -50,14 +51,20 @@ export async function deleteUploadFromServer(sessionId: string, uploadPath: stri
       `/api/sessions/${sessionId}/files/uploads/${encodeURIComponent(filename)}`,
       { method: "DELETE" },
     );
-    if (!res.ok) console.warn(`[upload] DELETE ${uploadPath} failed: ${res.status} ${res.statusText}`);
-  } catch (err: unknown) {
-    console.warn("[upload] DELETE failed:", err);
-  } finally {
+    if (!res.ok) {
+      console.warn(`[upload] DELETE ${uploadPath} failed: ${res.status} ${res.statusText}`);
+      // A definite refusal changed nothing, so it must NOT spend a listing's
+      // refetch budget — four of those in a row would leave the panel empty.
+      return;
+    }
     // docs/294 req 1 — bumped on COMPLETION, not before the request: the point
     // is "the server's set is now different", and a listing that started while
     // the DELETE was still open would otherwise pass its freshness check with a
     // file that has since gone.
+    noteUploadsChanged(sessionId);
+  } catch (err: unknown) {
+    // Unknown outcome — the delete may well have landed. Invalidate.
+    console.warn("[upload] DELETE failed:", err);
     noteUploadsChanged(sessionId);
   }
 }
@@ -87,9 +94,6 @@ export function useFileUpload(sessionId: string | undefined) {
         return;
       }
       const data = (await res.json()) as UploadResponse;
-      // docs/294 req 1 — the server holds something it did not a moment ago, so
-      // any listing already in flight is describing a world without it.
-      noteUploadsChanged(sid);
       const st = useFileStore.getState();
       for (let i = 0; i < items.length; i++) {
         const uploaded = data.files[i];
@@ -98,14 +102,30 @@ export function useFileUpload(sessionId: string | undefined) {
           // upload is in flight, and the request goes on regardless. Recording a
           // draft for it would have `hydrateUploads` restore the attachment the
           // user explicitly dismissed, onto a later message. Delete the file the
-          // server did save rather than leaving it orphaned.
-          if (!st.sessionUploads.some((u) => u.id === items[i].id)) {
+          // server did save rather than leaving it orphaned, and tombstone it so
+          // a listing already in flight cannot put it back.
+          //
+          // docs/294 — but "no chip" only means "dismissed" while we are still
+          // in the session that owns it. `switchSession` clears every chip
+          // (`useFileStore.reset()`), so without this check an upload started in
+          // A and completing after a switch to B was destroyed as though the
+          // user had removed it — and its path written into the GLOBAL tombstone
+          // set, from where it could filter a same-named file out of B. The user
+          // removed nothing; they changed session.
+          const chipGone = !st.sessionUploads.some((u) => u.id === items[i].id);
+          const stillInSession = useSessionStore.getState().sessionId === sid;
+          if (chipGone && stillInSession) {
             releaseUploadBytes(items[i].id);
-            // Tombstone it as well as deleting it: a listing already in flight
-            // can contain this file, and without the tombstone hydration would
-            // restore the attachment the user dismissed into the panel.
             markUploadDeleted(uploaded.path);
             void deleteUploadFromServer(sid, uploaded.path);
+            continue;
+          }
+          if (chipGone) {
+            // Left the session mid-upload. Keep the file and record it as an
+            // unsent draft, so coming back shows the chip again (req 4).
+            releaseUploadBytes(items[i].id);
+            clearUploadTombstone(uploaded.path);
+            addDraftUpload(sid, uploaded.path);
             continue;
           }
           // A fresh upload supersedes any stale tombstone for its path. Without
@@ -137,6 +157,10 @@ export function useFileUpload(sessionId: string | undefined) {
       }
     } finally {
       for (const item of items) markUploadSettled(item.id);
+      // Every outcome, not just success: a rejected batch may have written files
+      // and rolled them back (`api-routes-files.ts`), and a listing that saw
+      // those temporary files is just as stale as one that missed a new file.
+      noteUploadsChanged(sid);
     }
   }, []);
 

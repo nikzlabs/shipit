@@ -30,6 +30,11 @@ share is that nothing tells the user: an attachment is simply not there any more
    **in the composer**, ready for the user's next message.
 6. `/compact` carries no attachment to the agent.
 
+## Leaving a session is not removing an attachment
+
+7. Leaving a session does not delete an attachment. An upload that lands after
+   the user has switched away is kept, and is still there on return.
+
 ## Non-requirements
 
 - Nothing changes about what `/compact` does to the conversation, on either the

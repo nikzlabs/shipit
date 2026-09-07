@@ -41,6 +41,20 @@ non-pending chip. That is why a stale answer is destructive rather than merely
 useless — it pruned a just-uploaded file's draft path, and `pendingInMemory` kept
 the chip on screen so nothing looked wrong until the next reload.
 
+**A write invalidates only when the server's set actually changed, or when
+nobody can tell.** A DELETE that is definitely *refused* changed nothing, so it
+must not spend a listing's refetch budget — four refusals in a row would exhaust
+the chain and leave the panel empty. A network error is ambiguous and does
+invalidate. An upload POST invalidates on **every** outcome, because a rejected
+batch may have written files and rolled them back
+(`api-routes-files.ts`), and a listing that saw those temporary files is just as
+stale as one that missed a new file.
+
+**Rewind is a writer too.** A chat or both rewind deletes the rewound messages'
+upload files server-side (`rollback-handlers.ts`). The client refreshed the file
+tree and not the uploads panel, so it went on showing files that were gone.
+Found by review, along with the panel-delete writer above; both are now covered.
+
 **The change counter is keyed by session.** A session's uploads go on completing
 after the user has switched away — the request is not cancelled — so a global
 counter let those completions invalidate the *new* session's perfectly current
@@ -56,6 +70,12 @@ at its next reload. Removing the rule fixes it at the root rather than adding
 cross-tab signalling, and costs only a dead string — a chip is built from
 `data.files`, so a drafted path with no file on the server renders nothing. The
 sent-path prune, which is what structurally prevents resurrection, stays.
+
+Removing it did expose one thing that was hidden behind it: the Uploads panel
+deleted a file without retiring its draft path, which the absence rule used to
+sweep up. It now calls `removeDraftUploads` like the composer's Remove always
+has — otherwise the path lingers and another tab's older listing can rebuild a
+pending chip for a file that is gone.
 
 **The refetch is bounded.** Three chained attempts, then it stops. Unbounded is
 not a theoretical concern: with the bound removed, the guard test spins the
@@ -85,12 +105,25 @@ included. A WS-only guard would establish the invariant on neither, and would no
 give an older client back the chips it had already cleared. Req 6 is a statement
 about the composer, and that is where it is enforced.
 
-**`/compact` is not a command on the quick-capture overlay.** Req 5 keeps the
-attachment "in the composer" — but quick capture closes on send and unmounts the
-composer holding the file, so withholding it there would destroy the attachment
-rather than retain it. A new session also has no conversation to compact, so
-`/compact` there is simply its first prompt. Found by review, after the first
-attempt at req 5 introduced this loss.
+**`/compact` is refused in quick capture.** That surface unmounts its composer on
+send, so for a message that *goes*, reqs 5 and 6 cannot both hold: withhold the
+attachment and it is destroyed with the composer; send it and req 6 is broken.
+Two reviews landed on this from opposite sides — the first found that withholding
+destroyed the file, the second that sending it instead was an exception the
+requirements never granted. **Refusing the send is what makes both true**, and it
+needs no carve-out: a brand-new session has no conversation to compact, so there
+was nothing for the command to do. Send greys out with *"There is nothing to
+compact in a new session"*, in the same shape as the docs/293 bars beside it.
+
+**Leaving a session is not removing an attachment.** docs/293 made a missing chip
+mean "the user dismissed this", which deletes the uploaded file. But
+`switchSession` clears *every* chip, so an upload started in A and completing
+after a switch to B was destroyed as though it had been dismissed — and its path
+written into the **global** tombstone set, from where it could filter a
+same-named file out of B. The rule now applies only while that session is still
+on screen; otherwise the file is kept and recorded as an unsent draft, so
+returning shows the chip again. This is a defect docs/293 introduced, found by
+review here.
 
 **The `/compact` parser moved to `shared/`.** The client needs the same answer as
 the server, and the failure mode of two regexes drifting is exactly the silent

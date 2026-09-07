@@ -715,6 +715,16 @@ export function MessageInput({
   // refused rather than just hidden behind an empty-looking textarea. docs/285 —
   // `networkSaving` too, since pressing Contained then Enter in one breath is
   // precisely the sequence that barrier exists for.
+  /**
+   * docs/294 reqs 5-6 — `/compact` in quick capture. Reqs 5 and 6 say the
+   * attachment stays in the composer and the command carries none; on this
+   * surface the composer is unmounted on send, so "stays" and "carries none"
+   * cannot both hold for a message that goes. Refusing the send is what makes
+   * them both true — and a brand-new session has no conversation to compact
+   * anyway, so there was nothing for the command to do.
+   */
+  const compactInOverlay = isOverlay && isCompactCommand(text.trim());
+
   const uploadsInFlight = displayUploads.some((u) => u.status === "uploading");
   const uploadsFailed = displayUploads.some((u) => u.status === "error");
   // req 5 — attachments alone are a message; req 6 — nothing at all is not.
@@ -722,14 +732,17 @@ export function MessageInput({
   const sendBlocked =
     disabled || inert || networkSaving
     || (!text.trim() && !hasAttachment)
-    || uploadsInFlight   // req 1
-    || uploadsFailed;    // req 2
+    || uploadsInFlight     // docs/293 req 1
+    || uploadsFailed       // docs/293 req 2
+    || compactInOverlay;   // docs/294 reqs 5-6
   /** Why Send is unavailable, when the reason is one the user can act on. */
   const sendBlockedReason = uploadsInFlight
     ? "Waiting for attachments to finish uploading"
     : uploadsFailed
       ? "An attachment failed to upload — retry or remove it"
-      : undefined;
+      : compactInOverlay
+        ? "There is nothing to compact in a new session"
+        : undefined;
 
   const handleSubmit = () => {
     const trimmed = text.trim();
@@ -741,13 +754,7 @@ export function MessageInput({
     // the chips stay in the composer for the user's next real message rather
     // than being cleared into nothing (the mid-turn path discarded them
     // server-side, so they vanished with no error at all).
-    //
-    // Not on the overlay surface, though. Quick capture creates a NEW session,
-    // so there is no conversation to compact and `/compact` is simply that
-    // session's first prompt — and the overlay closes on send, unmounting the
-    // composer that req 5 would keep the attachment in. Withholding it there
-    // would destroy the file instead of retaining it.
-    const isCompact = !isOverlay && isCompactCommand(trimmed);
+    const isCompact = isCompactCommand(trimmed);
     const uploadRefs = isCompact ? [] : getUploadRefs();
     const payload: SendPayload = {
       text: trimmed,

@@ -59,6 +59,9 @@ function stubUploads({ failFirst }: { failFirst: number }) {
 beforeEach(() => {
   useFileStore.setState({ sessionUploads: [] });
   forgetPendingUploads();
+  // A missing chip means "the user removed it" only while its session is still
+  // on screen, so every test has to state which session that is.
+  useSessionStore.setState({ messages: [], sessionId: SESSION });
   // Draft-upload paths are localStorage-backed, so an earlier test's successful
   // upload would otherwise satisfy a later test's draft assertion.
   localStorage.clear();
@@ -330,10 +333,6 @@ describe("useFileUpload — an upload removed mid-flight stays removed", () => {
  * call could be deleted and they would stay green. These would not.
  */
 describe("useFileUpload — a write invalidates a listing already in flight", () => {
-  beforeEach(() => {
-    useSessionStore.setState({ messages: [], sessionId: SESSION });
-  });
-
   it("a landing upload makes an older listing refetch", async () => {
     let listings = 0;
     let releaseListing: (() => void) | undefined;
@@ -368,12 +367,21 @@ describe("useFileUpload — a write invalidates a listing already in flight", ()
     await vi.waitFor(() => expect(listings).toBe(2));
   });
 
-  it("a completed delete makes an older listing refetch", async () => {
+  it("a delete invalidates a listing that started while it was still open", async () => {
+    // The listing is requested AFTER the DELETE is sent but BEFORE it lands, so
+    // only a bump on completion catches it. A bump at request start would have
+    // happened before this listing captured its counter, and it would apply a
+    // response describing a file that is gone.
     let listings = 0;
+    let releaseDelete: (() => void) | undefined;
     let releaseListing: (() => void) | undefined;
+    const deleteGate = new Promise<void>((r) => { releaseDelete = r; });
     const listingGate = new Promise<void>((r) => { releaseListing = r; });
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
-      if (init?.method === "DELETE") return { ok: true, json: async () => ({}) };
+      if (init?.method === "DELETE") {
+        await deleteGate;
+        return { ok: true, json: async () => ({}) };
+      }
       if (url.includes("/files/uploads")) {
         listings += 1;
         if (listings === 1) await listingGate;
@@ -382,11 +390,82 @@ describe("useFileUpload — a write invalidates a listing already in flight", ()
       return { ok: true, json: async () => ({ files: [] }) };
     }));
 
+    const deletion = deleteUploadFromServer(SESSION, "/uploads/notes.txt");
     const hydration = useFileStore.getState().hydrateUploads(SESSION);
-    await deleteUploadFromServer(SESSION, "/uploads/notes.txt");
+    await vi.waitFor(() => expect(listings).toBe(1));
+
+    // The delete lands while that listing is still open.
+    releaseDelete?.();
+    await deletion;
     releaseListing?.();
     await hydration;
 
+    // So it is dropped and replaced. A bump at request start would have
+    // happened before this listing captured its counter, and it would have
+    // applied a response describing a file that is now gone.
     await vi.waitFor(() => expect(listings).toBe(2));
+  });
+
+  it("a refused delete does not spend a listing's refetch budget", async () => {
+    // A definite refusal changed nothing on the server. Treating it as a change
+    // would let four of them in a row exhaust the chain and leave the panel
+    // empty — the regression in the opposite direction.
+    let listings = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        return { ok: false, status: 403, statusText: "Forbidden", json: async () => ({}) };
+      }
+      if (url.includes("/files/uploads")) {
+        listings += 1;
+        return { ok: true, json: async () => ({ files: [] }) };
+      }
+      return { ok: true, json: async () => ({ files: [] }) };
+    }));
+
+    await deleteUploadFromServer(SESSION, "/uploads/notes.txt");
+    await useFileStore.getState().hydrateUploads(SESSION);
+    expect(listings).toBe(1);
+  });
+});
+
+describe("useFileUpload — leaving a session is not removing an attachment", () => {
+  it("keeps the file and records it as a draft when the upload lands after a switch", async () => {
+    // docs/294 finding: `switchSession` clears every chip, so the "no chip means
+    // the user dismissed it" rule read an ordinary session switch as a removal —
+    // deleting an attachment nobody removed, and writing its path into the
+    // GLOBAL tombstone set where it could filter a same-named file out of the
+    // session the user had just moved to.
+    const deletes: string[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") { deletes.push(url); return { ok: true, json: async () => ({}) }; }
+      if (init?.method !== "POST") return { ok: true, json: async () => ({ files: [] }) };
+      await gate;
+      return {
+        ok: true,
+        json: async () => ({ files: [{ name: "notes.txt", path: "/uploads/notes.txt", size: 4, type: "upload" }] }),
+      };
+    }));
+
+    const { result } = renderHook(() => useFileUpload(SESSION));
+    act(() => {
+      void result.current.uploadFiles([new File(["hi!!"], "notes.txt", { type: "text/plain" })]);
+    });
+    await waitFor(() => expect(result.current.uploads).toHaveLength(1));
+
+    // What `switchSession` does: clear the chips and move the store on.
+    act(() => {
+      useFileStore.getState().reset();
+      useSessionStore.setState({ sessionId: "session-2" });
+    });
+
+    await act(async () => { release?.(); await Promise.resolve(); });
+    await new Promise((r) => setTimeout(r, 20));
+
+    // The file is NOT deleted, and it is remembered as unsent so returning to
+    // that session shows the chip again (req 4).
+    expect(deletes).toEqual([]);
+    expect(getSavedDraftUploads(SESSION)).toContain("/uploads/notes.txt");
   });
 });

@@ -169,6 +169,7 @@ import type { SendCommentsPayload } from "./components/FilePreviewModal.js";
 import { Spinner } from "./components/Spinner.js";
 import { buildAttachmentPlan } from "./utils/attachment-plan.js";
 import { deleteUploadFromServer } from "./hooks/useFileUpload.js";
+import { removeDraftUploads } from "./utils/local-storage.js";
 
 export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
@@ -2063,6 +2064,13 @@ export default function App() {
                 // use, so this writer invalidates an in-flight listing too. It
                 // used to hand-roll the fetch and note no change, leaving a
                 // stale listing free to restore the file it had just removed.
+                //
+                // And retire the draft path, which the composer's Remove has
+                // always done: hydration no longer prunes a path merely because
+                // a listing lacks it, so an explicit delete has to say so or the
+                // path lingers and another tab's older listing can rebuild the
+                // chip for a file that is gone.
+                removeDraftUploads(sid, [u.path]);
                 void deleteUploadFromServer(sid, u.path);
               }
               if (u.previewUrl) URL.revokeObjectURL(u.previewUrl);
