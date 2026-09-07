@@ -49,7 +49,8 @@ later turn, and the agent reads them as live work in progress.
    command gives today (docs/178).
 
 9. If the compaction fails, the user's message still runs. The turn is never
-   lost because the compaction did not complete.
+   lost because the compaction did not complete. The transcript says that the
+   compaction did not succeed, so a failure is never silent.
 
 10. Where the session's agent backend cannot compact its context, the control is
     not offered.
@@ -59,19 +60,43 @@ later turn, and the agent reads them as live work in progress.
     offered. No second setting is added, and the setting says in its own
     description that it governs both actions.
 
+12. A `/compact` command that the user sends is still one compaction, and
+    nothing more. It does not compact twice, and it does not start the branch
+    reset. This boundary already exists today, and this feature does not weaken
+    it.
+
+## Requirement provenance
+
+Requirements 1 to 6 and 11 come from what the user asked for and decided.
+Requirements 7 to 10 and 12 were not asked for: each one keeps a guarantee that
+already ships (docs/218 for the merge notice, docs/178 for how a compaction
+appears and for the `/compact` boundary) from becoming weaker. They are recorded
+apart from the user's own requirements so that the difference stays visible.
+
 ## Open questions
 
-None.
+- **Does a continuation that the user did not type also compact?** docs/218
+  applies its branch reset to programmatic continuations as well as typed
+  messages — a wake turn after a merge, `shipit session message`, a click inside
+  an agent-built page. Those have no composer and no checkbox, so they follow the
+  global setting. Requirements 1 to 6 describe the composer only, so this feature
+  is silent about them. Options: (a) a programmatic continuation compacts too,
+  under the same setting, which matches docs/218 and covers the merge-wake turn
+  where nobody is watching; (b) the feature is deliberately composer-only, and an
+  unattended turn never has its context compacted without a person present.
 
 ## Resolved questions
 
 - **2026-09-07 — Should the control appear only when the context is large enough
   to be worth the cost of compacting?** No. A percentage threshold is
   model-dependent: on a 1M-token window even a low percentage is a very large
-  absolute context, which costs more per turn and gives worse results, so a
-  percentage gate becomes strictest exactly where the cost is highest. Compaction
-  between pull requests is always a win. This is why requirement 3 forbids any
-  occupancy or context-size threshold.
+  absolute context, which in the user's judgement costs more per turn and gives
+  worse results, so a percentage gate becomes strictest exactly where the cost is
+  highest. The user's decision is that compaction at the merge boundary is worth
+  it whatever the occupancy. This is why requirement 3 forbids any occupancy or
+  context-size threshold. (The reasoning recorded here is the decision-maker's;
+  the effect of context length on model quality is not measured in this
+  repository.)
 
 - **2026-09-07 — Which global setting governs the compaction: the existing
   "Start from the latest base after a merge" toggle, a new toggle beside it, or
