@@ -86,6 +86,18 @@ function makeAdapter(): { adapter: OpencodeAdapter; child: FakeChild; events: Ag
 
 const RUN_PARAMS: AgentRunParams = { prompt: "create hello.txt", cwd: "/tmp" };
 
+// The adapter creates its managed XDG state even when the CLI is a fake.
+// Never depend on permission to write the real agent home (CI is not root).
+let testHome: string;
+beforeEach(() => {
+  testHome = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-adapter-test-"));
+  vi.stubEnv("AGENT_HOME", testHome);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  fs.rmSync(testHome, { recursive: true, force: true });
+});
+
 describe("OpencodeAdapter", () => {
   beforeEach(() => {
     vi.useFakeTimers();
