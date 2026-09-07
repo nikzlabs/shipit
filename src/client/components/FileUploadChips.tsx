@@ -18,7 +18,7 @@ export interface FileUploadChipsProps {
 }
 
 /** Render an image upload as a thumbnail with overlay controls. */
-function ImageThumbnail({ u, index, onRemove }: { u: UploadItem; index: number; onRemove: (i: number) => void }) {
+function ImageThumbnail({ u, index, onRemove, onRetry }: { u: UploadItem; index: number; onRemove: (i: number) => void; onRetry: (i: number) => void }) {
   const openImagePreview = () => {
     const store = useFileStore.getState();
     const sid = useSessionStore.getState().sessionId;
@@ -56,16 +56,32 @@ function ImageThumbnail({ u, index, onRemove }: { u: UploadItem; index: number; 
           <Spinner size={ICON_SIZE.SM} className="text-white" />
         </div>
       )}
-      {u.status !== "uploading" && (
+      {/* docs/293 req 2 — a failed image blocks Send, so it has to LOOK failed
+          and offer the same retry a failed file chip does. Without this it drew
+          as an ordinary thumbnail and the user could not tell which attachment
+          was holding the message. */}
+      {u.status === "error" && (
         <button
-          onClick={() => onRemove(index)}
-          className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-(--color-error) text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-          aria-label={`Remove ${u.name}`}
-          title={`Remove ${u.name}`}
+          onClick={() => onRetry(index)}
+          className="absolute inset-0 flex flex-col items-center justify-center gap-0.5 rounded-md bg-(--color-error)/70 text-white"
+          aria-label={`Retry ${u.name}`}
+          title={u.error ? `${u.error} — click to retry` : "Retry"}
         >
-          &times;
+          <WarningCircleIcon size={ICON_SIZE.SM} />
+          <ArrowClockwiseIcon size={ICON_SIZE.XS} />
         </button>
       )}
+      {/* Removable in every state, including mid-upload: req 1 bars Send while
+          an attachment uploads, so a chip with no way off the screen would
+          strand the composer. */}
+      <button
+        onClick={() => onRemove(index)}
+        className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-(--color-error) text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+        aria-label={`Remove ${u.name}`}
+        title={`Remove ${u.name}`}
+      >
+        &times;
+      </button>
     </div>
   );
 }
@@ -123,16 +139,15 @@ function FileChip({ u, index, onRemove, onRetry }: { u: UploadItem; index: numbe
           <ArrowClockwiseIcon size={ICON_SIZE.XS} />
         </button>
       )}
-      {u.status !== "uploading" && (
-        <button
-          onClick={() => onRemove(index)}
-          className="ml-0.5 text-(--color-text-tertiary) hover:text-(--color-text-primary) shrink-0"
-          aria-label={`Remove ${u.name}`}
-          title={`Remove ${u.name}`}
-        >
-          &times;
-        </button>
-      )}
+      {/* Removable in every state, including mid-upload — see ImageThumbnail. */}
+      <button
+        onClick={() => onRemove(index)}
+        className="ml-0.5 text-(--color-text-tertiary) hover:text-(--color-text-primary) shrink-0"
+        aria-label={`Remove ${u.name}`}
+        title={`Remove ${u.name}`}
+      >
+        &times;
+      </button>
     </span>
   );
 }
@@ -144,7 +159,7 @@ export function FileUploadChips({ uploads, onRemove, onRetry }: FileUploadChipsP
     <div className="flex gap-1.5 flex-wrap items-end" data-testid="file-upload-chips">
       {uploads.map((u, i) =>
         u.previewUrl
-          ? <ImageThumbnail key={u.id} u={u} index={i} onRemove={onRemove} />
+          ? <ImageThumbnail key={u.id} u={u} index={i} onRemove={onRemove} onRetry={onRetry} />
           : <FileChip key={u.id} u={u} index={i} onRemove={onRemove} onRetry={onRetry} />,
       )}
     </div>

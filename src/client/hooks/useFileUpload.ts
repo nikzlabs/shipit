@@ -4,15 +4,25 @@
  * Pending uploads (not yet sent in a message) are shown as input chips.
  *
  * Files attached before a session exists (e.g. while on /{slug}/new before
- * claimSession resolves) are buffered locally; placeholder upload chips appear
- * immediately and the actual POST is deferred until sessionId is available.
+ * claimSession resolves) show a placeholder chip immediately; the POST runs as
+ * soon as a sessionId arrives. The bytes waiting for it live beside the store
+ * (`retainUploadBytes`, docs/293), not in this hook — see the resume pass below
+ * for why that difference matters.
  */
 
-// eslint-disable-next-line no-restricted-imports -- useEffect: drain deferred upload buffer when sessionId becomes available
+// eslint-disable-next-line no-restricted-imports -- useEffect: resume uploads when sessionId becomes available
 import { useCallback, useEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { UploadedFile, UploadRef, UploadItem } from "../../server/shared/types.js";
-import { useFileStore, markUploadDeleted, clearUploadTombstone } from "../stores/file-store.js";
+import {
+  useFileStore,
+  markUploadDeleted,
+  clearUploadTombstone,
+  retainUploadBytes,
+  getUploadBytes,
+  pendingUploadBytes,
+  releaseUploadBytes,
+} from "../stores/file-store.js";
 import { addDraftUpload, removeDraftUploads } from "../utils/local-storage.js";
 
 export type { UploadItem, UploadStatus } from "../../server/shared/types.js";
@@ -26,19 +36,11 @@ let uploadIdCounter = 0;
 export function useFileUpload(sessionId: string | undefined) {
   const pendingUploads = useFileStore(useShallow((s) => s.sessionUploads.filter((u) => u.pending)));
 
-  // Files attached before a session exists. Each entry maps a File to the
-  // placeholder UploadItem id created at attach time, so we can resolve to
-  // "ready" status (and rewrite name/path/size from the server response) once
-  // the session is ready and the POST completes.
-  const deferredFilesRef = useRef<{ file: File; itemId: string }[]>([]);
-
-  // docs/293 req 3 — the bytes behind each chip that has not landed on the
-  // server yet, so "Retry" can re-POST them instead of deleting the attachment.
-  // Entries are dropped the moment an upload succeeds or its chip goes away, so
-  // this never grows past what is on screen. A chip does not survive a reload
-  // (hydrateUploads rebuilds from the server, and a failed upload is not there),
-  // so an entry is never missed by outliving its item.
-  const filesByItemId = useRef<Map<string, File>>(new Map());
+  // Upload items this hook currently has a POST in flight for. Guards the resume
+  // pass below and a double Retry from starting a second request for the same
+  // chip. Hook-local on purpose: it describes THIS hook's requests, and a
+  // remounted hook has none.
+  const inFlightRef = useRef<Set<string>>(new Set());
 
   /** POST a batch of files; updates the existing UploadItems with server response. */
   const uploadToServer = useCallback(async (sid: string, files: File[], items: UploadItem[]) => {
@@ -46,6 +48,7 @@ export function useFileUpload(sessionId: string | undefined) {
     for (const file of files) {
       formData.append("file", file);
     }
+    for (const item of items) inFlightRef.current.add(item.id);
     try {
       const res = await fetch(`/api/sessions/${sid}/files/uploads`, {
         method: "POST",
@@ -83,7 +86,7 @@ export function useFileUpload(sessionId: string | undefined) {
             progress: 100,
           });
           // The bytes are on the server now — a retry would re-POST a duplicate.
-          filesByItemId.current.delete(items[i].id);
+          releaseUploadBytes(items[i].id);
         }
       }
     } catch (err) {
@@ -92,6 +95,8 @@ export function useFileUpload(sessionId: string | undefined) {
       for (const item of items) {
         st.updateSessionUpload(item.id, { status: "error", error: errorMsg, progress: 0 });
       }
+    } finally {
+      for (const item of items) inFlightRef.current.delete(item.id);
     }
   }, []);
 
@@ -119,7 +124,7 @@ export function useFileUpload(sessionId: string | undefined) {
 
       store.addSessionUploads(items);
       for (let i = 0; i < files.length; i++) {
-        filesByItemId.current.set(items[i].id, files[i]);
+        retainUploadBytes(items[i].id, files[i]);
       }
 
       // Read image files as data URLs for stable display in chat messages
@@ -134,34 +139,44 @@ export function useFileUpload(sessionId: string | undefined) {
         }
       }
 
-      if (!sessionId) {
-        // Defer — drained by the useEffect below when sessionId resolves
-        for (let i = 0; i < files.length; i++) {
-          deferredFilesRef.current.push({ file: files[i], itemId: items[i].id });
-        }
-        return;
-      }
+      // No session yet (the /{slug}/new view before claimSession resolves): the
+      // bytes are already retained above and the items read "uploading", which is
+      // exactly what the resume pass below looks for.
+      if (!sessionId) return;
 
       await uploadToServer(sessionId, files, items);
     },
     [sessionId, uploadToServer],
   );
 
-  // Drain the deferred buffer when a sessionId becomes available
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  /**
+   * Start (or restart) the POST for every chip that still reads "uploading" and
+   * still has its bytes. This is one pass rather than two because the two cases
+   * it covers are the same state seen from different angles:
+   *
+   *   - a session did not exist when the file was attached (the /{slug}/new view
+   *     before claimSession resolves), and now it does;
+   *   - THIS hook was remounted mid-upload, so the request that would have
+   *     finished the chip belonged to a hook that no longer exists. Crossing the
+   *     mobile breakpoint does that (`AppLayout` swaps component trees), and the
+   *     chip was left at "uploading" forever with docs/293 req 1 barring Send.
+   *
+   * Deriving the work from store state instead of a hook-local queue is what
+   * makes the second case heal itself: a remounted hook re-derives it. Chips this
+   * hook already has in flight are skipped, so a re-render cannot double-POST.
+   */
+  // eslint-disable-next-line no-restricted-syntax -- resumes uploads owned by a hook instance that no longer exists
   useEffect(() => {
-    if (!sessionId || deferredFilesRef.current.length === 0) return;
-    const queued = deferredFilesRef.current;
-    deferredFilesRef.current = [];
+    if (!sessionId) return;
     const all = useFileStore.getState().sessionUploads;
     const items: UploadItem[] = [];
     const files: File[] = [];
-    for (const q of queued) {
-      const item = all.find((u) => u.id === q.itemId);
-      if (item) {
-        items.push(item);
-        files.push(q.file);
-      }
+    for (const { id, file } of pendingUploadBytes()) {
+      if (inFlightRef.current.has(id)) continue;
+      const item = all.find((u) => u.id === id);
+      if (item?.status !== "uploading") continue;
+      items.push(item);
+      files.push(file);
     }
     if (files.length > 0) {
       void uploadToServer(sessionId, files, items);
@@ -173,7 +188,6 @@ export function useFileUpload(sessionId: string | undefined) {
     const item = pendingUploads[index];
     if (!item) return;
     if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
-    filesByItemId.current.delete(item.id);
     if (item.path && sessionId) {
       const filename = item.path.replace(/^\/uploads\//, "");
       markUploadDeleted(item.path);
@@ -195,38 +209,33 @@ export function useFileUpload(sessionId: string | undefined) {
   }, [sessionId, pendingUploads]);
 
   /**
-   * docs/293 req 3 — re-POST a failed upload's bytes. Previously this removed
-   * the chip, which read as "Retry deleted my attachment"; with req 2 blocking
-   * Send on a failed upload it would also have cleared the block by discarding
-   * the very thing the block protects.
+   * docs/293 req 3 — re-POST a failed upload's bytes. This used to remove the
+   * chip, which read as "Retry deleted my attachment"; with req 2 blocking Send
+   * on a failed upload it would also have cleared the block by discarding the
+   * very thing the block protects.
    *
-   * If the bytes are gone (the chip outlived the hook that holds them), fall
-   * back to removing the item — an unretryable chip that also blocks Send would
-   * strand the composer.
+   * Only a failed chip is retryable. A `ready` one has had its bytes released
+   * deliberately (re-POSTing them would duplicate the file on the server, not
+   * replace it), and an `uploading` one already has a request — its own, or the
+   * resume pass's. Where the bytes are somehow absent the chip is left failed
+   * rather than deleted: Remove is the explicit way to drop an attachment, and
+   * it is available on every chip.
    */
   const retryUpload = useCallback((index: number) => {
     const item = pendingUploads[index];
-    if (!item) return;
-    // Nothing to retry — and the bytes were dropped on success, so without this
-    // the fallback below would read "unretryable" and delete a landed upload.
-    if (item.status === "ready") return;
-    const file = filesByItemId.current.get(item.id);
-    if (!file) {
-      filesByItemId.current.delete(item.id);
-      useFileStore.getState().removeSessionUploadById(item.id);
-      return;
-    }
+    if (item?.status !== "error") return;
+    const file = getUploadBytes(item.id);
+    if (!file) return;
+    if (inFlightRef.current.has(item.id)) return;
     const retried: UploadItem = { ...item, status: "uploading", progress: 0 };
     useFileStore.getState().updateSessionUpload(item.id, {
       status: "uploading",
       progress: 0,
       error: undefined,
     });
-    if (!sessionId) {
-      // Same buffer the first attempt used — drained by the effect above.
-      deferredFilesRef.current.push({ file, itemId: item.id });
-      return;
-    }
+    // No session yet: the chip now reads "uploading" with its bytes retained,
+    // which is exactly what the resume pass picks up when one arrives.
+    if (!sessionId) return;
     void uploadToServer(sessionId, [file], [retried]);
   }, [pendingUploads, sessionId, uploadToServer]);
 
@@ -240,7 +249,7 @@ export function useFileUpload(sessionId: string | undefined) {
   /** Mark all pending uploads as sent (clears the input chips). */
   const clearUploads = useCallback(() => {
     const sentPaths = pendingUploads.map((u) => u.path).filter((p): p is string => Boolean(p));
-    filesByItemId.current.clear();
+    // `markUploadsSent` releases the retained bytes with the chips.
     useFileStore.getState().markUploadsSent();
     // These paths are now sent, so they're no longer a draft. Removing them
     // keeps the draft set tight; hydrateUploads would also prune them against

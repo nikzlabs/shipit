@@ -129,6 +129,39 @@ describe("Integration: File upload", () => {
     expect(body.files).toHaveLength(2);
   });
 
+  it("rolls the whole batch back when one file is rejected (docs/293)", async () => {
+    // Files were saved one at a time, so a failure part-way left the earlier
+    // ones on disk while the response carried no paths for them. The client
+    // marks the whole batch failed, and docs/293 req 3's retry then re-POSTed a
+    // file the server already had — stored a second time under a new name, an
+    // orphan no chip refers to.
+    const { payload, boundary } = buildMultipartBody([
+      { name: "file", filename: "kept.txt", content: Buffer.from("saved before the failure") },
+      // Over the 50 MB per-file cap, so reading this part throws after the first
+      // file is already on disk.
+      { name: "file", filename: "huge.bin", content: Buffer.alloc(51 * 1024 * 1024) },
+    ]);
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/files/uploads`,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload,
+    });
+
+    // The status is whatever the multipart layer produced — the point of this
+    // test is what is left on disk, not the code.
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
+
+    const list = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/files/uploads`,
+    });
+    const listed = (list.json() as { files: UploadedFile[] }).files.map((f) => f.name);
+    expect(listed).not.toContain("kept.txt");
+    expect(listed).not.toContain("huge.bin");
+  });
+
   it("handles filename collision with numeric suffix", async () => {
     // Upload same filename twice
     const { payload: p1, boundary: b1 } = buildMultipartBody([

@@ -647,6 +647,38 @@ describe("createHeadlessSession", () => {
     expect(claim.claim).not.toHaveBeenCalled();
   });
 
+  it("accepts an empty prompt when the message carries attachments (docs/293 req 5)", async () => {
+    // The composer sends attachments with no typed text; quick capture routes
+    // that through here, and rejecting it made the overlay the one surface where
+    // the requirement did not hold.
+    const claim = claimService();
+    const created = await createHeadlessSession(
+      sessionManager,
+      registry as unknown as SessionRunnerRegistry,
+      claim,
+      {
+        repoUrl: "https://github.com/acme/app.git",
+        prompt: "   ",
+        uploads: [{ filename: "pasted-text.txt", data: Buffer.from("a pasted blob") }],
+      },
+      "claude",
+      undefined,
+      undefined,
+      undefined,
+      graduationDeps,
+    );
+    expect(created).toBeTruthy();
+    expect(claim.claim).toHaveBeenCalled();
+    // The turn goes out with the attachment and an empty prompt — `assemblePrompt`
+    // drops the empty part, so the agent sees the attachment context alone.
+    const arg = registry.get(created.sessionId)?.dispatch.mock.calls[0][0] as {
+      text: string;
+      uploads?: unknown[];
+    };
+    expect(arg.text).toBe("");
+    expect(arg.uploads).toHaveLength(1);
+  });
+
   it("keeps env-prep account-neutral: no selection, no provisioning (docs/260 §5b)", async () => {
     // docs/260 removed session→account pinning: headless create's env-prep is
     // now a WARM-UP (`enforceAccountRouting` unset), and warm-ups are

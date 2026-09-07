@@ -239,8 +239,15 @@ export async function createHeadlessSession(
   // An explicit prompt/title still wins; the branch is never caller-supplied.
   const seed = opts.issueRef ? seedFromIssueRef(opts.issueRef) : undefined;
 
-  const trimmedPrompt = (opts.prompt?.trim() || seed?.prompt)?.trim();
-  if (!trimmedPrompt) throw new ServiceError(400, "prompt is required");
+  const trimmedPrompt = (opts.prompt?.trim() || seed?.prompt)?.trim() ?? "";
+  // docs/293 req 5 — attachments alone are a message. The composer allows a send
+  // with no typed text once an attachment is ready, and quick capture routes that
+  // send through here, so refusing it server-side would make the overlay the one
+  // surface where the requirement does not hold. `assemblePrompt` drops the empty
+  // part, so the agent's first turn is the attachment context on its own.
+  if (!trimmedPrompt && (opts.uploads ?? []).length === 0) {
+    throw new ServiceError(400, "prompt is required");
+  }
   if (trimmedPrompt.length > 50_000) {
     throw new ServiceError(400, "prompt exceeds 50,000 characters");
   }

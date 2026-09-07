@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { FileUploadChips } from "./FileUploadChips.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -157,5 +157,63 @@ describe("FileUploadChips", () => {
       screen.getByLabelText("Remove shot.png").click();
       expect(onRemove).toHaveBeenCalledWith(0);
     });
+  });
+});
+
+describe("FileUploadChips — recovery affordances (docs/293)", () => {
+  const image = (patch: Partial<UploadItem>): UploadItem => ({
+    id: "img",
+    name: "shot.png",
+    status: "ready",
+    progress: 100,
+    previewUrl: "blob:shot",
+    mimeType: "image/png",
+    ...patch,
+  } as UploadItem);
+
+  it("offers Retry on a failed image, not only on a failed file", () => {
+    // req 2 blocks Send on a failed attachment and tells the user to "retry or
+    // remove it". An image thumbnail offered neither, and drew as an ordinary
+    // one, so the user could not even tell which chip was holding the message.
+    const onRetry = vi.fn();
+    render(
+      <FileUploadChips
+        uploads={[image({ status: "error", error: "Upload failed" })]}
+        onRemove={vi.fn()}
+        onRetry={onRetry}
+      />,
+    );
+    const retry = screen.getByLabelText("Retry shot.png");
+    expect(retry).toHaveAttribute("title", expect.stringContaining("Upload failed"));
+    fireEvent.click(retry);
+    expect(onRetry).toHaveBeenCalledWith(0);
+  });
+
+  it("does not offer Retry on a healthy image", () => {
+    render(<FileUploadChips uploads={[image({})]} onRemove={vi.fn()} onRetry={vi.fn()} />);
+    expect(screen.queryByLabelText("Retry shot.png")).toBeNull();
+  });
+
+  it("lets an in-flight upload be removed", () => {
+    // req 1 bars Send while anything is uploading, so a chip with no way off the
+    // screen would strand the composer.
+    const onRemove = vi.fn();
+    const uploading: UploadItem = { id: "1", name: "data.csv", status: "uploading", progress: 10 };
+    render(<FileUploadChips uploads={[uploading]} onRemove={onRemove} onRetry={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText("Remove data.csv"));
+    expect(onRemove).toHaveBeenCalledWith(0);
+  });
+
+  it("lets an in-flight image upload be removed", () => {
+    const onRemove = vi.fn();
+    render(
+      <FileUploadChips
+        uploads={[image({ status: "uploading", progress: 10 })]}
+        onRemove={onRemove}
+        onRetry={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Remove shot.png"));
+    expect(onRemove).toHaveBeenCalledWith(0);
   });
 });

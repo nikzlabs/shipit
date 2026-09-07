@@ -4,9 +4,10 @@
  * cleared the block by discarding the attachment the block protects.
  */
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { StrictMode } from "react";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { useFileUpload } from "./useFileUpload.js";
-import { useFileStore } from "../stores/file-store.js";
+import { useFileStore, getUploadBytes, releaseAllUploadBytes } from "../stores/file-store.js";
 
 const SESSION = "session-1";
 
@@ -34,6 +35,7 @@ function stubUploads({ failFirst }: { failFirst: number }) {
 
 beforeEach(() => {
   useFileStore.setState({ sessionUploads: [] });
+  releaseAllUploadBytes();
 });
 
 afterEach(() => {
@@ -59,8 +61,10 @@ describe("useFileUpload.retryUpload", () => {
       { path: "/uploads/notes.txt", type: "upload" },
     ]);
     expect(server.posts).toBe(2);
-    // The retry carried the file, not an empty body.
-    expect((server.bodies[1].get("file") as File).name).toBe("notes.txt");
+    // The retry carried the same bytes, not just a file of the same name.
+    const resent = server.bodies[1].get("file") as File;
+    expect(resent.name).toBe("notes.txt");
+    expect(await resent.text()).toBe("hi!!");
   });
 
   it("clears the error so a retried chip stops blocking Send", async () => {
@@ -107,4 +111,128 @@ describe("useFileUpload.retryUpload", () => {
     // ...and it does not delete the chip either, which is what it used to do.
     expect(result.current.uploads).toHaveLength(1);
   });
+
+  it("still retries after the hook is remounted", async () => {
+    // The chips are store state; the hook is remounted whenever the layout
+    // crosses the mobile breakpoint. When the bytes lived in the hook, the
+    // replacement had none and Retry deleted the attachment.
+    const server = stubUploads({ failFirst: 1 });
+    const first = renderHook(() => useFileUpload(SESSION));
+    await act(async () => {
+      await first.result.current.uploadFiles([new File(["hi!!"], "notes.txt", { type: "text/plain" })]);
+    });
+    await waitFor(() => expect(first.result.current.uploads[0]?.status).toBe("error"));
+    first.unmount();
+
+    const second = renderHook(() => useFileUpload(SESSION));
+    expect(second.result.current.uploads).toHaveLength(1);
+    act(() => { second.result.current.retryUpload(0); });
+    await waitFor(() => expect(second.result.current.uploads[0]?.status).toBe("ready"));
+    expect(server.posts).toBe(2);
+  });
+});
+
+describe("useFileUpload — resuming an upload nobody is driving", () => {
+  it("uploads a chip attached before the session existed", async () => {
+    const server = stubUploads({ failFirst: 0 });
+    const { result, rerender } = renderHook(({ sid }) => useFileUpload(sid), {
+      initialProps: { sid: undefined as string | undefined },
+    });
+    await act(async () => {
+      await result.current.uploadFiles([new File(["hi!!"], "notes.txt", { type: "text/plain" })]);
+    });
+    expect(server.posts).toBe(0);
+    expect(result.current.uploads[0]?.status).toBe("uploading");
+
+    rerender({ sid: SESSION });
+    await waitFor(() => expect(result.current.uploads[0]?.status).toBe("ready"));
+    expect(server.posts).toBe(1);
+  });
+
+  it("resumes an upload whose hook was remounted mid-flight", async () => {
+    // Without this the chip sat at "uploading" forever: the request belonged to
+    // a hook that no longer exists, Retry only exists for errors, and docs/293
+    // req 1 bars Send while anything is uploading.
+    const server = stubUploads({ failFirst: 0 });
+    const first = renderHook(({ sid }) => useFileUpload(sid), {
+      initialProps: { sid: undefined as string | undefined },
+    });
+    await act(async () => {
+      await first.result.current.uploadFiles([new File(["hi!!"], "notes.txt", { type: "text/plain" })]);
+    });
+    expect(server.posts).toBe(0);
+    first.unmount();
+
+    // The replacement hook mounts with a session — and finishes the job.
+    const second = renderHook(() => useFileUpload(SESSION));
+    await waitFor(() => expect(second.result.current.uploads[0]?.status).toBe("ready"));
+    expect(server.posts).toBe(1);
+  });
+
+  it("does not re-POST a chip whose upload is already in flight", async () => {
+    // React StrictMode (on in `main.tsx`) double-invokes mount effects, so the
+    // resume pass runs twice over the same "uploading" chip. Without the
+    // in-flight guard that is two POSTs for one attachment in development.
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    let posts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method !== "POST") return { ok: true, json: async () => ({ files: [] }) };
+      posts += 1;
+      await gate;
+      return {
+        ok: true,
+        json: async () => ({ files: [{ name: "notes.txt", path: "/uploads/notes.txt", size: 4, type: "upload" }] }),
+      };
+    }));
+
+    // Attach with no session, so the chip is left for the resume pass...
+    const attach = renderHook(() => useFileUpload(undefined));
+    await act(async () => {
+      await attach.result.current.uploadFiles([new File(["hi!!"], "notes.txt", { type: "text/plain" })]);
+    });
+    expect(posts).toBe(0);
+    attach.unmount();
+
+    // ...then mount the real thing under StrictMode, which fires it twice.
+    const { result } = renderHook(() => useFileUpload(SESSION), { wrapper: StrictMode });
+    await waitFor(() => expect(posts).toBe(1));
+    expect(posts).toBe(1);
+
+    await act(async () => { release?.(); await Promise.resolve(); });
+    await waitFor(() => expect(result.current.uploads[0]?.status).toBe("ready"));
+    expect(posts).toBe(1);
+  });
+});
+
+describe("useFileUpload — retained bytes do not outlive their chips", () => {
+  it("releases the bytes when the chips are cleared on a session switch", async () => {
+    stubUploads({ failFirst: 1 });
+    const { result } = renderHook(() => useFileUpload(SESSION));
+    await act(async () => {
+      await result.current.uploadFiles([new File(["hi!!"], "notes.txt", { type: "text/plain" })]);
+    });
+    await waitFor(() => expect(result.current.uploads[0]?.status).toBe("error"));
+    const id = result.current.uploads[0].id;
+    expect(getUploadBytes(id)).toBeDefined();
+
+    // What `switchSession` does while the composer stays mounted.
+    act(() => { useFileStore.getState().reset(); });
+    expect(getUploadBytes(id)).toBeUndefined();
+  });
+
+  it("releases the bytes when a single chip is removed", async () => {
+    stubUploads({ failFirst: 1 });
+    const { result } = renderHook(() => useFileUpload(SESSION));
+    await act(async () => {
+      await result.current.uploadFiles([new File(["hi!!"], "notes.txt", { type: "text/plain" })]);
+    });
+    await waitFor(() => expect(result.current.uploads[0]?.status).toBe("error"));
+    const id = result.current.uploads[0].id;
+
+    act(() => { result.current.removeUpload(0); });
+    expect(getUploadBytes(id)).toBeUndefined();
+    expect(result.current.uploads).toHaveLength(0);
+  });
+
 });

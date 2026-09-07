@@ -139,3 +139,30 @@ describe("Send carries attachments alone", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 });
+
+describe("The gate holds on the overlay surface too", () => {
+  it("sends a locally-buffered attachment with no typed text", () => {
+    // The quick-capture overlay buffers Files locally instead of POSTing, so it
+    // reaches `sendBlocked` through a different backend. req 5 has to hold here
+    // as well — this is the surface whose server side rejected it.
+    const onSend = vi.fn();
+    render(<MessageInput surface="overlay" onSend={onSend} disabled={false} />);
+    const textarea = screen.getByRole("textbox");
+    const ev = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "clipboardData", {
+      value: { items: [], getData: () => "x".repeat(5000) },
+    });
+    fireEvent(textarea, ev);
+
+    expect(screen.getByTestId("send-button")).toBeEnabled();
+    fireEvent.click(screen.getByTestId("send-button"));
+    expect(onSend).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "", deferredFiles: [expect.any(File)] }),
+    );
+  });
+
+  it("still refuses an empty overlay composer", () => {
+    render(<MessageInput surface="overlay" onSend={vi.fn()} disabled={false} />);
+    expect(screen.getByTestId("send-button")).toBeDisabled();
+  });
+});

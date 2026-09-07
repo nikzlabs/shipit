@@ -9,6 +9,7 @@ import path from "node:path";
 import { createReadStream } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
+import type { UploadedFile } from "../shared/types.js";
 import { resolveSessionDir } from "./api-routes.js";
 
 import {
@@ -385,14 +386,27 @@ export async function registerFileRoutes(
 
       const uploadsDir = path.join(path.dirname(session.workspaceDir), "uploads");
 
+      // docs/293 — the batch is all-or-nothing. Files were saved one at a time
+      // and a failure part-way (a later file over the size limit, or over the
+      // session quota) left the earlier ones on disk while the response carried
+      // no paths for them. The client marks the whole batch failed, so a retry
+      // re-POSTed a file the server already had and `deduplicateFilename` stored
+      // it a second time under a new name — an orphan no chip refers to. Undoing
+      // this request's writes is what makes docs/293 req 3's retry safe.
+      const results: UploadedFile[] = [];
+      const rollback = async () => {
+        for (const saved of results) {
+          await deleteUpload(uploadsDir, path.basename(saved.path)).catch(() => {});
+        }
+      };
       try {
         const parts = request.files();
-        const results = [];
         let fileCount = 0;
 
         for await (const part of parts) {
           fileCount++;
           if (fileCount > MAX_UPLOAD_FILES_PER_REQUEST) {
+            await rollback();
             reply.code(400).send({ error: `Maximum ${MAX_UPLOAD_FILES_PER_REQUEST} files per upload` });
             return;
           }
@@ -408,6 +422,7 @@ export async function registerFileRoutes(
 
         return { files: results };
       } catch (err) {
+        await rollback();
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
           return;

@@ -139,6 +139,7 @@ import { useUiStore, type RightTab } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
 import {
   composeReviewMessage,
+  buildReviewSendFrame,
   resolveReviewer,
 } from "./utils/compose-review-body.js";
 import { handleSessionResume } from "./stores/actions/session-actions.js";
@@ -625,11 +626,23 @@ export default function App() {
           void navigate(`/session/${sid}`, { replace: true });
         }
         useFileStore.getState().closePreview();
+        // docs/293 req 4 — carry the composer's attachments too. This path
+        // composes its own prompt and used to dispatch it alone, while
+        // `handleSubmit` cleared the chips regardless: an upload attached
+        // alongside `/review` vanished with no message and no error.
         sendUserMessage({
-          bubble: { role: "user", text: prompt },
+          bubble: {
+            role: "user",
+            text: prompt,
+            ...(uploadRefs.length > 0 ? { uploadPaths: uploadRefs.map((u) => u.path) } : {}),
+          },
           activity: "Reviewing...",
           dispatch: (requestId) =>
-            send({ type: "send_message", requestId, text: prompt, sessionId: sid }),
+            send({
+              type: "send_message",
+              requestId,
+              ...buildReviewSendFrame({ prompt, sessionId: sid, uploadRefs }),
+            }),
         });
         return;
       }
