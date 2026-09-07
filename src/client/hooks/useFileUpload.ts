@@ -25,6 +25,7 @@ import {
   markUploadActive,
   markUploadSettled,
   isUploadActive,
+  noteUploadsChanged,
 } from "../stores/file-store.js";
 import { addDraftUpload, removeDraftUploads } from "../utils/local-storage.js";
 
@@ -39,6 +40,8 @@ let uploadIdCounter = 0;
 /** Best-effort DELETE of an uploaded file the composer no longer refers to. */
 async function deleteUploadFromServer(sessionId: string, uploadPath: string): Promise<void> {
   const filename = uploadPath.replace(/^\/uploads\//, "");
+  // docs/294 req 1 — same reason as a landing upload, in the other direction.
+  noteUploadsChanged();
   try {
     const res = await fetch(
       `/api/sessions/${sessionId}/files/uploads/${encodeURIComponent(filename)}`,
@@ -75,6 +78,9 @@ export function useFileUpload(sessionId: string | undefined) {
         return;
       }
       const data = (await res.json()) as UploadResponse;
+      // docs/294 req 1 — the server holds something it did not a moment ago, so
+      // any listing already in flight is describing a world without it.
+      noteUploadsChanged();
       const st = useFileStore.getState();
       for (let i = 0; i < items.length; i++) {
         const uploaded = data.files[i];

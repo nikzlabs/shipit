@@ -35,6 +35,7 @@ import { useTextareaSizing } from "./hooks/useTextareaSizing.js";
 import { useMessageDraft } from "./hooks/useMessageDraft.js";
 import { useUploadBackend } from "./hooks/useUploadBackend.js";
 import { isLargePaste, buildPastedTextFile } from "./large-paste.js";
+import { isCompactCommand } from "../../../server/shared/compact-command.js";
 import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo, UploadRef } from "../../../server/shared/types.js";
 import type { UploadItem } from "../../hooks/useFileUpload.js";
 import type { AgentOption, ModelChoice } from "../../agent-types.js";
@@ -735,12 +736,18 @@ export function MessageInput({
     // `sendBlocked` covers every bar, and it must be re-read HERE and not only
     // on the button: Enter reaches this directly.
     if (sendBlocked) return;
-    const uploadRefs = getUploadRefs();
+    // docs/294 reqs 5-6 — `/compact` is a control command asking the agent to
+    // summarise the conversation, not a message. It carries no attachment, and
+    // the chips stay in the composer for the user's next real message rather
+    // than being cleared into nothing (the mid-turn path discarded them
+    // server-side, so they vanished with no error at all).
+    const isCompact = isCompactCommand(trimmed);
+    const uploadRefs = isCompact ? [] : getUploadRefs();
     const payload: SendPayload = {
       text: trimmed,
       uploadRefs,
-      uploads: displayUploads,
-      deferredFiles: isOverlay ? localFiles : [],
+      uploads: isCompact ? [] : displayUploads,
+      deferredFiles: isCompact || !isOverlay ? [] : localFiles,
       // docs/218 — only carry the intent when the control was actually shown.
       ...(showResetControl ? { resetMergedBranch: resetChecked } : {}),
       // docs/144 — omitted entirely when the draft was typed.
@@ -762,7 +769,7 @@ export function MessageInput({
     // The transcript the cleanup notice referred to has now left the composer —
     // drop the notice so it doesn't linger over an empty input.
     voice.dismissCleanupWarning();
-    clearUploads();
+    if (!isCompact) clearUploads();
     setShowAutoComplete(false);
     setShowSkillMenu(false);
   };
