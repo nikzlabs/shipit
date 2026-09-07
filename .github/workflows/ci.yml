@@ -135,8 +135,19 @@ jobs:
       # lockfile validation here too, but skip extraction of the large platform
       # binaries: a split upstream publish can otherwise leave Renovate's lock
       # missing optional platform records and fail only during deployment.
-      - run: npm ci --ignore-scripts --dry-run
+      - name: Validate agent CLI lockfile
         working-directory: docker/agent-cli
+        run: |
+          npm ci --ignore-scripts --dry-run || {
+            status=$?
+            echo '::error title=Agent CLI lockfile validation failed::See the npm error above. For missing optional platform records on a Renovate PR, wait until those platform releases are at least seven days old, then request Renovate rebase/retry to regenerate the lockfile.'
+            echo 'If repair is still needed, run from the repository root:'
+            echo '  npm install --package-lock-only --ignore-scripts --min-release-age=7 --prefix docker/agent-cli'
+            echo '  npm ci --ignore-scripts --dry-run --prefix docker/agent-cli'
+            echo 'Review the lockfile change before saving it. A later Renovate rebase can discard a manual repair.'
+            echo 'See docs/141-cli-version-strategy/plan.md, Axis 2.'
+            exit "$status"
+          }
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run check-deps
