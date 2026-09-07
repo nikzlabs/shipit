@@ -22,6 +22,37 @@ if (process.env.NODE_ENV !== "test") {
 const nodeMajor = parseInt(process.versions.node.split(".")[0], 10);
 const clientExecArgv = nodeMajor >= 25 ? ["--no-webstorage"] : [];
 
+/**
+ * Vitest's default is 5000ms, and on a loaded box that made a green full-suite
+ * run untrustworthy: `npm test` failed 1-4 tests with "Test timed out in
+ * 5000ms" and a DIFFERENT file failed each run, while every one of them passed
+ * in isolation. The cost that read as a real regression was a stash-and-rerun
+ * to check `main` — run under the same contention, it reproduced the flake and
+ * looked like proof `main` was red.
+ *
+ * The timeout is a wall-clock deadline, but the work it bounds here is CPU
+ * bound with no intentional waiting, so what it actually measures is how
+ * loaded the host is. The dominant case, measured at load average 65 on 16
+ * cores: a file that does `vi.resetModules()` + `await import(...)` inside the
+ * test body pays the cold transform + execution of the whole transitive module
+ * graph in its FIRST test — 15.6s, against 0.06-0.85s for every later test in
+ * the same file, which hits the warm transform cache. Client render tests that
+ * drive `waitFor`/`userEvent` are the same class more cheaply (~2s at load 94).
+ *
+ * Global rather than per-file because the class has no grep-able boundary — it
+ * spans dynamic-import server tests and jsdom render tests — and a per-file
+ * override only covers the files that have already flaked. 30s is ~2x the
+ * worst measured cold import: the deadline exists to turn a deadlock into a
+ * failure, not to enforce a performance budget, and no unit test here is
+ * legitimately near it. A file needing more still sets its own
+ * (`turn-self-wake-commit.test.ts` uses `vi.setConfig`).
+ *
+ * MUST be set per project. Vitest 4 does not inherit the root `test` block's
+ * options into `projects`, so a `testTimeout` next to `reporters` below is
+ * silently ignored and every test keeps the 5000ms default.
+ */
+const TEST_TIMEOUT_MS = 30_000;
+
 export default defineConfig({
   plugins: [react()],
   test: {
@@ -33,6 +64,7 @@ export default defineConfig({
           name: "server",
           include: ["src/server/**/*.test.ts"],
           environment: "node",
+          testTimeout: TEST_TIMEOUT_MS,
           setupFiles: ["./server-test-setup.ts", "./server-debug-setup.ts"],
           // Reproduce, in CI, the one thing CI does not have: a machine with
           // the user's real credentials in the environment. A ShipIt session
@@ -63,6 +95,7 @@ export default defineConfig({
           name: "tooling",
           include: ["scripts/**/*.test.ts"],
           environment: "node",
+          testTimeout: TEST_TIMEOUT_MS,
           setupFiles: ["./server-test-setup.ts"],
         },
       },
@@ -72,6 +105,7 @@ export default defineConfig({
           name: "client",
           include: ["src/client/**/*.test.ts", "src/client/**/*.test.tsx"],
           environment: "jsdom",
+          testTimeout: TEST_TIMEOUT_MS,
           setupFiles: ["src/client/test-setup.ts"],
           execArgv: clientExecArgv,
         },
