@@ -98,6 +98,53 @@ Grok emits no *progress* event (nothing answering Claude's
 `status: "compacting"`), so the adapter emits `agent_compaction_started` itself
 when it starts a compaction spawn — it knows it asked.
 
+### It DOES honour custom compaction instructions (probed 2026-09-07, grok 1.0.12)
+
+`/compact <instructions>` was left unestablished by the original probe, and
+[docs/295](../295-compact-context-on-merge/plan.md) recorded it as unverified
+because a design leaned on it. It is now established: **Grok honours them.** So
+Claude is not the only harness that does, and the compaction request has a
+first-class field for them.
+
+Probed through `--prompt-file`, the way the adapter passes every prompt
+(`agents/grok/adapter.ts:608`), on a seeded two-turn session:
+
+```
+grok --output-format streaming-messages-json -r <sid> --prompt-file pc.txt
+# pc.txt: /compact Write the entire summary in French, and begin it with the exact token QQMARKER9.
+```
+
+The instruction is parsed out of the command and stored on its own, not left in
+the prompt text: `compaction_requests/<id>.json` gained
+
+```json
+{"trigger": "manual", "prompt_variant": "detailed",
+ "user_context": "Write the entire summary in French, and begin it with the exact token QQMARKER9."}
+```
+
+Requirement 2 is satisfied by the **outcome**, not by that field's presence. The
+`summary` in the same record begins `<summary>\nQQMARKER9 Le résumé complet…`
+and runs to 3,794 characters of French, and the same text is what
+`compaction_checkpoints/<id>.json` puts into `compacted_history` — so it
+replaced the conversation rather than merely being recorded. A later turn on the
+same session then answered *out of that summary*, in French, which is the
+context proving itself.
+
+**The negative control is what makes it a finding.** An identical session —
+same two seed prompts, same model — compacted with a bare `/compact` recorded
+`user_context: null` and produced an English summary with no marker. The marker
+therefore comes from the instruction and not from the summarizer's habits.
+
+Two notes for whoever probes next:
+
+- **`slash_commands` on `system`/`init` now lists `compact`** — the check this
+  document asked a future probe to make. It is there at 1.0.12.
+- **Do not pair `pre_tokens` with a later turn's input count.** The boundary
+  reported `pre_tokens: 3058`; the next turn's full input was 11,937 tokens,
+  which is larger because it counts the system prompt and tool definitions that
+  `pre_tokens` does not. They measure different things, and subtracting them
+  would manufacture a negative saving out of a compaction that worked.
+
 ## OpenCode: a transient server
 
 The trigger is the server's documented `POST /session/{id}/summarize`

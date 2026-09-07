@@ -85,25 +85,38 @@ handling (`agent_result`, the `done` path, the post-turn commit sequence) is
 built around one spawn per turn. This is named as a risk rather than asserted as
 safe, because nothing in the shipped code proves it today.
 
-## Custom compaction instructions — Claude only
+## Custom compaction instructions — Claude and Grok
 
 A default summary ends with the shipped work's next steps, which is the wrong
-emphasis for a session whose work just merged. Claude accepts custom
-instructions (`session/agents/claude/adapter.ts:595` passes them through to
-`/compact <instructions>`), so the compaction carries a short post-merge
-instruction: keep the durable context — user preferences, repo conventions,
-unresolved questions — and drop the completed implementation detail.
+emphasis for a session whose work just merged. So the compaction carries a short
+post-merge instruction: keep the durable context — user preferences, repo
+conventions, unresolved questions — and drop the completed implementation
+detail.
 
-The other three do not honour it. Codex's `thread/compact/start` has no slot for
-it (`agents/codex/adapter.ts:525`), and OpenCode's `summarize` route has none
-either (`agents/opencode/adapter.ts:853`). Grok's trigger is in-band so the text
-reaches the CLI, but whether it honours arguments is **unverified** and must not
-be assumed.
+**Two harnesses honour it.** Claude passes instructions through to
+`/compact <instructions>` (`session/agents/claude/adapter.ts:595`). Grok honours
+them too — probed 2026-09-07 at grok 1.0.12 and written up in
+[docs/276](../276-headless-compaction-triggers/plan.md#it-does-honour-custom-compaction-instructions-probed-2026-09-07-grok-1012);
+it lifts them into a `user_context` field on its compaction request, and an
+instructed summary differs from a bare one under a negative control.
 
-So on three of four harnesses the docs/218 prefix is the **only** thing stopping
+Grok needs no adapter change **for this feature**, because this feature always
+takes the spawn path. Its trigger is the prompt, so `/compact <instructions>`
+delivers the instruction with the text — which is exactly what the probe drove.
+`GrokAdapter.compact()` does ignore its argument
+(`agents/grok/adapter.ts:1060`), but that method is the *resident, mid-turn*
+path, and Grok has no resident process to compact; the method exists only to
+warn. A session continuing after a merge is idle, so the step spawns.
+
+**Two do not.** Codex's `thread/compact/start` has no slot for them
+(`agents/codex/adapter.ts:525`) and OpenCode's `summarize` route has none either
+(`agents/opencode/adapter.ts:853`).
+
+So on **two of four** harnesses the docs/218 prefix is the only thing stopping
 the agent continuing the shipped work. That is why req 7 is a requirement rather
 than a nicety, and why the prefix must never be reordered ahead of the
-compaction as an optimisation.
+compaction as an optimisation — the instruction cannot be relied on to carry
+that meaning everywhere.
 
 ## The per-send intent (req 5, req 6)
 
@@ -237,5 +250,7 @@ bubble is not.
   checkbox is there to untick. Requirement 3 rules out shortening it with a size
   gate. On a programmatic continuation nobody is waiting, so the cost is lower
   there — but so is the supervision, which is why req 13 includes it.
-- **Grok's instruction handling is unverified.** Treat it as not honoured until
-  someone probes it, exactly as docs/276 req 4 requires.
+- ~~**Grok's instruction handling is unverified.**~~ Settled 2026-09-07: Grok
+  honours them, and the spawn path this feature uses delivers them (docs/276).
+  This risk is closed, and the post-merge instruction now reaches two harnesses
+  rather than one.
