@@ -146,6 +146,8 @@ jobs:
           cache: npm
       - run: npm ci
       # Keep the nested production-image lock validation in sync with ci.yml.
+      # Missing platform records: see docs/141-cli-version-strategy/plan.md,
+      # Axis 2, for the cooldown-safe repair command and rebase warning.
       - run: npm ci --ignore-scripts --dry-run
         working-directory: docker/agent-cli
       - run: npm run lint

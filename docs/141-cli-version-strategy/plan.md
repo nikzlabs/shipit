@@ -217,11 +217,52 @@ risk:
    `docker/agent-cli/` under Node 24. This exercises npm's production lockfile
    validation without downloading and extracting the large platform binaries.
    It catches an incomplete lock graph when an upstream package publishes its
-   optional platform packages at different times. Renovate can retain the
-   early registry snapshot even after the cooldown; when this check fails on a
-   bump, regenerate the nested lock with `npm install --package-lock-only
-   --ignore-scripts --prefix docker/agent-cli` after every platform package is
-   available.
+   optional platform packages at different times. Renovate passes npm a
+   `--before` cutoff calculated as the current time minus `minimumReleaseAge`.
+   The main package can clear that cutoff before a later platform publish does.
+   npm then succeeds but omits that optional package. In this incident, the
+   cause was npm's cutoff, not registry caching or an OS/CPU/libc filter.
+   It was reproduced byte for byte for PR #2663 with npm 11.15.0: a cutoff of
+   `2026-08-31T17:20:07Z` produced the incomplete lock; `17:31:00Z` produced
+   the repaired lock. The main package was published at `17:07:28.168Z`,
+   ARM64 glibc at `17:30:23.691Z`, and ARM64 musl at `17:05:01.263Z`.
+   See [the incident analysis](https://github.com/nikzlabs/shipit-planning/issues/523)
+   and [Renovate's cutoff implementation](https://github.com/renovatebot/renovate/blob/44.69.1/lib/modules/manager/npm/post-update/npm.ts).
+
+   **Recovery:** read the npm error first. If it names missing optional platform
+   records, wait until those platform releases also clear the seven-day cooldown,
+   then request Renovate's rebase/retry so the bot regenerates its own lock.
+   Check their publication times with `npm view <package> time --json`.
+   If a manual repair is still needed, run these commands from the repository root:
+
+   ```sh
+   npm install --package-lock-only --ignore-scripts --min-release-age=7 --prefix docker/agent-cli
+   npm ci --ignore-scripts --dry-run --prefix docker/agent-cli
+   ```
+
+   The repair command needs npm 11.10 or newer for `--min-release-age`; the
+   tested Node 24 toolchain uses npm 11.12.1. This option applies the same
+   seven-day cutoff to newly resolved packages. If validation still reports
+   missing records, check their publication times and wait; do not remove the
+   cooldown option to make the repair pass.
+   npm 11.12.1 can write an empty optional entry if repair is attempted too early,
+   then report `Invalid Version:` on validation or retry. Restore only that
+   attempt's lockfile edits before retrying after the cooldown. npm 11.15.0
+   omits these empty entries; see [npm's upstream fix](https://github.com/npm/cli/pull/9343).
+   Review the lockfile change before saving it. A manual commit can stop automatic
+   rebases; an explicitly requested Renovate rebase can discard it. Keep the
+   validation gate unchanged so any recurrence still fails.
+
+   **Scope:** accept the occasional failed bump and make recovery explicit.
+   This does not guarantee a complete lock when every PR first opens. Running
+   npm twice repeats the same cutoff; increasing `minimumReleaseAge` moves the
+   same race to a later day. The hosted App cannot run `postUpgradeTasks`.
+   A separate branch-writing repair service would need write credentials and
+   coordination with Renovate's force pushes. Rebasing whenever the base branch
+   advances adds CI runs and still depends on a base change after the platform
+   cooldown. That upkeep is not justified by the two distinct defective updates
+   found across 38 lockfile-changing commits (including release copies and the
+   incident PR commits).
 5. **Provenance / SBOM (higher effort, diminishing returns).** Verify npm
    provenance attestations where available; scan the resulting image.
 
