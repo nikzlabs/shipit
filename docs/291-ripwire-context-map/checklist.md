@@ -7,8 +7,13 @@
 - [x] Record release, contributor and version-age risk
 - [x] Re-check the planning#332 LemonCrow blockers against today's code on both sides
 - [x] Measure the token saving with a real tokenizer, without integrating anything (`measure.py`)
-- [ ] Decide the pinned version (v0.3.8, or v0.4.0 with a waiver) — open question in `requirements.md`
+- [x] Run the observed A/B against real agents, all six task pairs (`pair.sh`, `analyse.py`)
+- [x] Revise the recommendation to match what was measured (req 1 is **not met**)
+- [ ] Decide the pinned version — **moot unless the verdict is overridden**; the recommendation is now not to adopt
+
+Only if the not-adopt verdict is overridden:
+
 - [ ] Add the pinned binary and checksum verification to the session-worker Dockerfiles
-- [ ] Write one skill for the `--for` lens
+- [ ] Write one skill for the `--for` lens — and make it fire conditionally, not "run it first"
 - [ ] Update `src/server/shipit-docs/` for the new agent-facing command
 - [ ] Verify `ripwire --version` inside a built session container

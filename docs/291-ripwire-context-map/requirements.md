@@ -17,6 +17,10 @@ for ShipIt, not how ripwire does it. The design and the measurements are in
 1. An agent must be able to find the symbols relevant to a task without reading
    whole files first, and the answer must cost less than the grep-and-read pass it
    replaces.
+   **Not met.** Measured against real agents on six tasks, ripwire costs 83.5% of
+   the baseline, saves about 5% on the median task, and costs *more* on three of the
+   six. The first half of the requirement holds; the cost half does not. See
+   [plan.md](plan.md).
 2. Every file path, line number and symbol name the tool reports must be correct.
    An agent acts on these directly, so a wrong location is worse than no answer.
 3. The tool must work on TypeScript, because that is what ShipIt is written in and

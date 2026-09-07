@@ -14,9 +14,23 @@ grammars for 21 languages, ranks symbols with Personalized PageRank, and prints 
 minified XML map. It needs no API key, no embeddings, no index server and no daemon.
 It also exposes an MCP server.
 
-**Recommendation: adopt it narrowly.** Bake a pinned binary into the session-worker
-image and add one skill for the `--for` lens. Do not adopt the vendor's 19 skills,
-`--test-gate`, or `--doc-drift`.
+**Recommendation: do not adopt it now.** This reverses an earlier draft of this doc,
+which recommended baking in a pinned binary and one skill. That recommendation rested
+on a token saving that measurement did not support.
+
+The retrieval is accurate — it returns the right symbols with exact line numbers in
+about 2.6 s. But accuracy was never the question; the question was whether it saves
+an agent work. Measured against real agents on six tasks, it costs **83.5%** of the
+baseline, saves about **5% on the median task**, and costs **more on half of them**.
+That is too small and too unreliable to justify adding a dependency on a six-week-old
+project with one author (req 6, and the project risk below).
+
+What would change this verdict: evidence that the tool can be invoked
+*conditionally*, on diffuse multi-file questions only, where it did win clearly. The
+blanket "run it first" shape the vendor's skills teach is measurably wrong here.
+
+If it is adopted anyway, the narrow shape still holds — a pinned binary and one
+skill, never the vendor's 19 skills, `--test-gate`, or `--doc-drift`.
 
 ## Measurements
 
@@ -63,7 +77,7 @@ the real definition sites rather than trusted:
 signatures, not bodies, so an agent still reads the bodies of the files it edits. The
 measurement covers the search phase that the map replaces, and nothing else.
 
-#### The observed baseline contradicts the floor (partial, 2 of 6 tasks)
+#### The observed baseline contradicts the floor
 
 The number above prices an *artificial* baseline. To see what agents actually spend,
 the same tasks were given to real sub-agents twice — once with ripwire on PATH and
@@ -76,23 +90,45 @@ per-run overhead at 47,858 context tokens, which is subtracted.
 |---|---:|---:|---:|---:|---:|
 | post-turn auto-push scheduler lease | 23,590 | 26,261 | **111.3%** | 0.261 | 0.274 |
 | preview subdomain proxy routing | 25,027 | 7,553 | 30.2% | 0.282 | 0.196 |
-| **Total (2 of 6)** | **48,617** | **33,814** | **69.6%** | 0.543 | 0.471 |
+| persist chat transcript card to history | 12,601 | 16,591 | **131.7%** | 0.196 | 0.215 |
+| shared git tree ownership uid drop | 16,373 | 10,415 | 63.6% | 0.246 | 0.191 |
+| message group boundaries at tool result | 2,286 | 6,610 | **289.2%** | 0.155 | 0.187 |
+| turn executor commit and pr terminal paths | 12,940 | 10,116 | 78.2% | 0.279 | 0.206 |
+| **Total** | **92,817** | **77,546** | **83.5%** | **1.420** | **1.269** |
 
-**This is the finding that matters, and it corrects the floor number above.** The
-16.8% figure does *not* survive contact with a real agent. On the first task the
-ripwire arm cost **more** than the baseline — it paid ~3.3K tokens for the map and
-then read the file bodies anyway, because a map of signatures did not answer the
-question. On the second it saved about 70%. Two tasks is not enough to state an
-average, and the variance between them is larger than the effect the floor
-measurement implied.
+Aggregate saving **16.5%** of tokens and 10.6% of cost. Median ratio **94.7%**, so
+the typical task saves about 5%. **Ripwire cost more on 3 of the 6 tasks.**
+
+**This corrects the floor number above, and nearly inverts it.** The floor said
+ripwire costs 16.8% of a grep-and-read pass. Measured against real agents it costs
+**83.5%**. The floor was not wrong about what it measured; it was wrong as a proxy
+for what an agent spends, because it credited ripwire with replacing file reads that
+the agent goes on to make anyway.
+
+The mechanism is visible in the spread, which matters more than the total:
+
+- **The map is a fixed charge of roughly 3,000 tokens**, incurred whether or not the
+  task needed it. It pays for itself only when it prevents reading a large file.
+- **Task 5 is the clearest case against.** The baseline solved it in 2,286 tokens
+  because one grep was enough. Adding ripwire cost 6,610 — nearly three times as
+  much — pure overhead on an easy question.
+- **Tasks 2 and 4 are the case for.** Both are diffuse questions spanning several
+  files, where the ranked map genuinely replaced an exploration.
+- The aggregate 16.5% saving exists only because the total is dominated by the
+  expensive tasks. It is not what a typical task sees.
 
 Note also that the baseline agent on task 1 located `post-turn-hold.ts` — the file
-ripwire's own map missed, and the reason that task scores 50% recall above.
+ripwire's own map missed, and the reason that task scores 50% recall above. On that
+task ripwire was both more expensive and less complete.
 
-**Status: incomplete.** Four of the six pairs are unrun. Sub-agent spawns are capped
-at 3 per turn, so the 13-run experiment cannot execute in one turn; it needs roughly
-three more. The floor measurement is retained above because it is the conservative
-bound, but where the two disagree, **the observed number is the one to believe**.
+**What this rules out:** a blanket "run ripwire first" instruction, which is exactly
+what the vendor's bundled skills teach. On this codebase that instruction loses on
+half the tasks. Any adoption would have to fire *conditionally* — on diffuse,
+multi-file questions only — and nothing in a skill description reliably makes that
+distinction in advance.
+
+The floor measurement is retained above as the conservative bound. Where the two
+disagree, **the observed number governs**.
 
 Three things bound how far the number can be pushed:
 
@@ -245,11 +281,23 @@ ShipIt's shape as it stands.
   consequences of the tool-replacement shape, and that shape is what the prior
   evaluation already rejected.
 - planning#332's recommendation — spike the MCP-only, opt-in shape behind a
-  measurement gate — is **still viable and still unbuilt**. Global mode without
-  `--project` registers the MCP server and does not write project enforcement, so
-  the `lc` tools would be *added* rather than substituted. In that shape the three
-  blockers above do not fire, and the two tools become directly comparable on
-  retrieval quality. Nothing in this evaluation forecloses that.
+  measurement gate — **has since been built and measured** (PR #2685). Two of its
+  findings bear directly on this doc.
+
+  First, it corrected the premise stated here in an earlier draft. Project
+  enforcement really is gated on `--project` (`install_claude.sh:598`), but global
+  mode *also* installs the plugin, whose agents hide `Bash`. So the "adds rather than
+  substitutes" shape holds only if you register the MCP server yourself and never run
+  the installer — narrower than this doc originally claimed.
+
+  Second, on retrieval it beat ripwire decisively: **the same 91.7% positioned recall
+  for 3,788 response tokens against ripwire's 18,673**. That is measured on the same
+  tasks, after a review found and fixed three scoring flaws that had all flattered
+  LemonCrow. What blocks LemonCrow is its integration surface, not its retrieval.
+
+  Read together with the A/B above, the conclusion is not "ripwire instead" — it is
+  that ripwire's retrieval is the weaker of the two *and* does not pay for itself
+  against plain grep-and-read on this codebase.
 
 ## Key files
 
