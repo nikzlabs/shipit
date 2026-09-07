@@ -176,6 +176,11 @@ can be set because nothing routes through the fetched registry.
 
 ## Auth scope (req 5)
 
+The proposed ChatGPT follow-up is now described in
+[docs/295](../295-opencode-chatgpt/plan.md). It reuses the OpenAI login rather
+than adding a separate OpenCode login integration. This is a design only; the
+launch behavior below remains the implemented behavior.
+
 Launch = key-billed modes only, enforced structurally by the missing `account`
 credential target (see catalogue row). `AGENT_CREDENTIAL_PATHS` still lists
 `.local/share/opencode/` so per-agent credential isolation and sub-agent
