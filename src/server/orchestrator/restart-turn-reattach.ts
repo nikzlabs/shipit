@@ -30,8 +30,9 @@
  *    current image the moment the user opens the session, and
  *    `container_started` then re-sends `session_container_freshness` as
  *    `current`, so the banner never appears.
- *  - **It does not touch the session's Compose stack.** That is the shutdown
- *    path's job, and it has already done it — see {@link reattachInFlightTurns}.
+ *  - **It does not touch the session's Compose stack.** That belongs to
+ *    `compose-stack-reaper.ts`, which runs later in the same boot — see
+ *    {@link reattachInFlightTurns}.
  *
  * It is NOT the steady-state reclaim path. `idle-enforcer.ts` owns that, driven
  * by the docs/284 memory budget; this one fires once per boot and is driven by
@@ -141,26 +142,30 @@ const RECLAIM_CONFIRM_DELAY_MS = 1000;
  * reclaim the stale idle ones. Returns the number of turns adopted. Never
  * throws — a failure on one session must not block boot or affect the others.
  *
- * **Why the Compose stack is not this sweep's business.** It reads as the
- * obvious other half of the memory, and it is already owned elsewhere: a clean
- * update takes every stack down on the way OUT (`shutdown-manager.ts` →
- * `disposeAll` → each runner's `disposed` handler → `compose down`, plus
- * docs/284's sweep for the stacks with no runner left), so by the time this
- * sweep runs there is usually no stack to reclaim. A stack that survives —
- * i.e. the orchestrator crashed — is unroutable regardless, because
+ * **Why the Compose stack is not this sweep's business — and what corrected the
+ * reason** (docs/290). This docstring used to say a clean update takes every
+ * stack down on the way OUT, so there was usually nothing left to reclaim. That
+ * was false: the shutdown hook's `compose down`s are un-awaited children of a
+ * process that then exits and is removed, so completion is not guaranteed and
+ * often does not happen — production carried 23 surviving stacks across seven
+ * recreations over five days, four spinning a dev server at 100% CPU.
+ *
+ * What was true is the rest of it: a surviving stack is unroutable, because
  * `preview-proxy.ts` resolves a service port through the in-memory
  * `serviceManagers` map that died with the process, and the first attach that
  * rebuilds that map opens `ServiceManager.start()` with `killStaleContainers()`,
  * which force-removes every `shipit-parent-session` container before
- * `compose up`. So such a stack serves nobody and does not survive being
- * opened; it is not a preview being preserved.
+ * `compose up`. So such a stack serves nobody — but "nobody reopens the session"
+ * is exactly the case that leaves it running forever.
  *
- * The narrow residual is a crashed orchestrator's surviving stack, which holds
- * its memory until its session is next opened. Taking it here would need a
- * teardown primitive this module does not have (`containerManager.destroy` is
- * the wrong one — it also reaps the volumes the session created through the
- * Docker API proxy), for the smaller share of the memory: the incident measured
- * 25.3 GiB in agent containers against 5.0 GiB in previews.
+ * It is still not THIS sweep's job, for the reason it never was: taking it needs
+ * a teardown primitive keyed on the compose PROJECT rather than on the session
+ * (`containerManager.destroy` is the wrong one — it also reaps the volumes the
+ * session created through the Docker API proxy, and its parent-session sweep
+ * would take the egress sidecars a surviving agent container still needs). That
+ * primitive now exists as `compose-stack-reaper.ts`, wired into the same boot
+ * from `startup-monitors.ts` — after this sweep, so a stack whose turn is
+ * adopted here is kept.
  */
 /**
  * docs/288 — sessions whose `/agent/status` probe failed at startup. Their
@@ -170,6 +175,24 @@ const RECLAIM_CONFIRM_DELAY_MS = 1000;
  * exists for it.
  */
 export const unprobedAfterRestart = new Set<string>();
+
+/**
+ * docs/290 — sessions this sweep decided hold LIVE WORK and deliberately did not
+ * adopt. A runner is NOT the record of that decision, which is the review
+ * finding this exists to answer: a worker reporting `turnActive: false` with a
+ * self-woken turn, an outstanding background task, a running `agent.install` or
+ * a live terminal is KEPT here and gets no runner — and a worker on the current
+ * build returns even earlier, before those fields are consulted at all.
+ *
+ * Its agent container sits on the session's compose network, so it can be
+ * driving those services by DNS right now even though no viewer can reach them.
+ * `compose-stack-reaper.ts` reads this set so it never takes a stack out from
+ * under work this sweep chose to preserve.
+ *
+ * Recorded for EVERY freshness, not only `stale`: the reclaim below is what
+ * freshness gates, and this set is not about reclaim.
+ */
+export const liveWorkAfterRestart = new Set<string>();
 
 export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number> {
   const {
@@ -207,6 +230,13 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
       const session = sessionManager.get(c.sessionId);
       if (!session?.workspaceDir) return false;
       if (status.turnActive !== true) {
+        // docs/290 — BEFORE the freshness gate, deliberately. Freshness decides
+        // whether this sweep may RECLAIM the container; it says nothing about
+        // whether the session holds live work, and returning early without
+        // recording that left the compose reaper reading "no runner" as "idle"
+        // for a current-build worker with a self-woken turn in flight.
+        const liveWork = staleIdleHoldReason(status);
+        if (liveWork) liveWorkAfterRestart.add(c.sessionId);
         const freshness = getContainerFreshness(c.workerBuildId, orchestratorBuildId);
         // docs/242 — never touch a worker that matches this build, and never one
         // whose build cannot be established (a custom/unlabeled image must not
@@ -215,9 +245,7 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
         // docs/241-keep-preview-running — an always-on reservation is a
         // user-facing guarantee, so it wins over reclaim, exactly as it does in
         // the idle enforcer. `holdsActiveReservation`, not the raw flag.
-        const hold = holdsActiveReservation(session)
-          ? "the session holds an always-on preview reservation"
-          : staleIdleHoldReason(status);
+        const hold = holdsActiveReservation(session) ? "the session holds an always-on preview reservation" : liveWork;
         if (hold) {
           console.log(`[worker-reclaim] Keeping stale container for ${c.sessionId} — ${hold}`);
           return false;
@@ -233,6 +261,9 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
               c.workerUrl, "/agent/status", { timeoutMs: PROBE_TIMEOUT_MS },
             ) as WorkerAgentStatus;
           } catch (err) {
+            // docs/290 — the same reasoning as `unprobedAfterRestart`: we asked
+            // and got no answer, so "no runner" cannot be read as "idle".
+            liveWorkAfterRestart.add(c.sessionId);
             console.log(
               `[worker-reclaim] Keeping stale container for ${c.sessionId}`
               + ` — its confirming probe failed: ${getErrorMessage(err)}`,
@@ -242,6 +273,7 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
           if (confirm.turnActive === true) {
             // It woke between the two probes. Leave it: this sweep has already
             // decided not to adopt it, and a turn is never something to destroy.
+            liveWorkAfterRestart.add(c.sessionId);
             console.log(
               `[worker-reclaim] Keeping stale container for ${c.sessionId}`
               + ` — a turn started between the two probes`,
@@ -250,6 +282,7 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
           }
           const confirmedHold = staleIdleHoldReason(confirm);
           if (confirmedHold) {
+            liveWorkAfterRestart.add(c.sessionId);
             console.log(
               `[worker-reclaim] Keeping stale container for ${c.sessionId} — ${confirmedHold}`
               + ` (reported on the confirming probe)`,
@@ -284,13 +317,15 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
           // session teardown, which also reaps every volume the SESSION created
           // through the Docker API proxy — data an agent made inside the
           // container, which a memory sweep must not delete. The Compose stack
-          // is not this sweep's to take either: the shutdown path already
-          // `compose down`s every stack on a clean update, and one that survives
-          // a crash is unroutable anyway (`preview-proxy.ts` resolves a service
-          // port through the in-memory `serviceManagers` map, which the restart
-          // emptied). Reasoning in full:
-          // docs/242-stale-session-container-indicator/plan.md.
+          // is not this sweep's to take either — `compose-stack-reaper.ts` runs
+          // later in this same boot and takes it by compose project name.
+          // Reasoning in full: docs/242-stale-session-container-indicator and
+          // docs/290-compose-stack-outlives-session.
           await containerManager.destroyAgentContainer(c.sessionId);
+          // Established idle twice over and now gone: nothing here can hold a
+          // stack. Cleared rather than merely not-added, so a re-entry of this
+          // sweep in one process cannot leave a stale claim behind.
+          liveWorkAfterRestart.delete(c.sessionId);
           console.log(
             `[worker-reclaim] Destroyed stale idle agent container for ${c.sessionId}`
             + ` (no viewer at boot; a fresh one starts on the current image when the session is opened)`,
@@ -316,6 +351,10 @@ export async function reattachInFlightTurns(deps: ReattachDeps): Promise<number>
         // runner has no `resumeInFlightTurn` (it cannot outlive the process).
         return (await runner.resumeInFlightTurn?.()) ?? false;
       } catch (err) {
+        // docs/290 — the worker positively reported a turn in flight and we
+        // failed to build a runner for it. There is live work here and nothing
+        // downstream can infer it from the empty registry.
+        liveWorkAfterRestart.add(c.sessionId);
         console.error(
           `[turn-reattach] failed to reattach ${c.sessionId}: ${getErrorMessage(err)}`,
         );

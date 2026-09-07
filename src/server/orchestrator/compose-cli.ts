@@ -22,6 +22,7 @@
 import { spawn } from "node:child_process";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
+import { composeProjectName } from "./compose-stack-reaper.js";
 
 /**
  * Receives a compose command's own output (stdout + stderr) as it arrives.
@@ -152,7 +153,10 @@ export class ComposeCli {
       "compose",
       ...(this.noProjectFile ? [] : ["-f", this.composeFile]),
       "-f", this.overrideFile,
-      "-p", `shipit-${this.sessionId.slice(0, 12)}`,
+      // docs/290 — the project name is shared with the label-driven teardown in
+      // `compose-stack-reaper.ts`, which takes down a stack with no compose file
+      // and no manager. The two must agree, so there is one function.
+      "-p", composeProjectName(this.sessionId),
       ...extra,
     ];
   }

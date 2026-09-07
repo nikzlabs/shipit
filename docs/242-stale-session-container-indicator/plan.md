@@ -218,15 +218,27 @@ section defended keeping it on the wrong grounds — that the stack "keeps
 serving". It does not, and the question that exposed it is worth recording:
 *if the stack stays, why does "Restart agent" restart it too?*
 
+> **Correction (docs/290).** The first bullet below was wrong, and it was wrong
+> in the direction that hurts: a clean update takes **no** stack down. Both paths
+> it names are fire-and-forget (`trackComposeStop`, `void mgr.stop()`), nothing
+> awaits them, and the update's `docker compose up -d` removes the orchestrator
+> container their `compose down` children run in. Completion is not guaranteed:
+> 23 stacks survived across seven recreations over five days to 2026-09-06, four
+> of them spinning a dev server at 100% CPU. The other three bullets stand, and so does the
+> conclusion for *this* sweep: taking the stack is someone else's job. That job
+> now exists — `reapSurvivingComposeStacks` (`compose-stack-reaper.ts`), a
+> separate boot pass keyed on `com.docker.compose.project`, running after this
+> sweep so an adopted turn's stack is kept.
+
 The pieces, each verified in code:
 
-- **A clean update already takes every stack down, on the way out.**
-  `shutdown-manager.ts` calls `disposeAll({ preserveAgent: true })`, and each
-  runner's `disposed` handler runs `compose down` for its session
-  (`service-manager-setup.ts`); docs/284 added the same for stacks with no runner
-  left. So on the ordinary `deploy.sh` path the boot sweep meets no stacks at all.
-  The agent container is the deliberate opposite case — it must survive, so its
-  turn can be adopted (docs/240).
+- **A clean update already takes every stack down, on the way out.** *(False —
+  see the correction above.)* `shutdown-manager.ts` calls `disposeAll({
+  preserveAgent: true })`, and each runner's `disposed` handler runs
+  `compose down` for its session (`service-manager-setup.ts`); docs/284 added the
+  same for stacks with no runner left. So on the ordinary `deploy.sh` path the
+  boot sweep meets no stacks at all. The agent container is the deliberate
+  opposite case — it must survive, so its turn can be adopted (docs/240).
 - **A stack that does survive — the orchestrator crashed — is unroutable.**
   `preview-proxy.ts`'s `resolveTarget` maps a service port through the in-memory
   `serviceManagers` map, which died with the process. Nothing can reach it.
@@ -253,12 +265,15 @@ reap a project's compose-declared named volume — those carry `shipit-managed` 
 `shipit-session`, not `shipit-parent-session` — so "it would delete the user's
 database" was also wrong.)
 
-The narrow residual: a crashed orchestrator's surviving stack holds its memory
-until its session is next opened, and it is not a docs/284 **tier 2** candidate
-either, since tier 2 only considers stacks *tier 1* orphaned (`tier1At`). Taking
-it here would need a teardown primitive this module does not have, for the
-smaller share of the memory — the incident measured 25.3 GiB in agent containers
-against 5.0 GiB in previews (see [Out of scope](#out-of-scope)).
+The narrow residual: a surviving stack holds its memory until its session is next
+opened, and it is not a docs/284 **tier 2** candidate either, since tier 2 only
+considers stacks *tier 1* orphaned (`tier1At`). Taking it here would need a
+teardown primitive this module does not have, for what looked like the smaller
+share of the memory — the incident measured 25.3 GiB in agent containers against
+5.0 GiB in previews (see [Out of scope](#out-of-scope)). docs/290 built that
+primitive and found the residual is not narrow at all: because shutdown does not
+wait for its teardowns, survivors accumulate across updates — 23 of them over
+five days — and their cost is CPU rather than memory. It is still not this sweep's, but it now has an owner.
 
 This sweep is **not** the steady-state reclaim path. `idle-enforcer.ts` owns
 that, driven by the docs/284 memory budget; this one fires once per boot and is
@@ -437,12 +452,19 @@ authoritatively reports no live work; live turns remain untouched.
 
 ### Reclaim the Compose stack too, for the last 5 GiB
 
-Rejected: on the clean-update path there is no stack left to reclaim (the
-shutdown already `compose down`ed it), and the crash-path residual is unroutable
-and dies on the next open regardless. The tempting call —
-`containerManager.destroy()` — is also the wrong primitive: it reaps every volume
-the session created through the Docker API proxy. See
-[The Compose stack is not this sweep's business](#the-compose-stack-is-not-this-sweeps-business).
+Rejected **for this sweep**, and one of the two reasons given was false.
+
+The reason that held: `containerManager.destroy()`, the tempting call, is the
+wrong primitive — it reaps every volume the session created through the Docker
+API proxy, and its `shipit-parent-session` sweep would also take the docs/172
+egress sidecars a surviving agent container still needs.
+
+The reason that did not: "on the clean-update path there is no stack left to
+reclaim (the shutdown already `compose down`ed it)". Shutdown starts those downs
+without awaiting them and the process is then removed, so survivors are routine —
+see the correction in [The Compose stack is not this sweep's
+business](#the-compose-stack-is-not-this-sweeps-business). docs/290 reclaims them
+from a separate boot pass with a project-scoped primitive.
 
 ### Hold a stale container while its terminal has no running process
 

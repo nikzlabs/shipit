@@ -48,6 +48,25 @@ export interface TierEscalationDeps {
   /** Prune named volumes by `shipit-session=<id>` label when no runner is left. */
   pruneVolumes?: (sessionId: string) => Promise<void>;
   /**
+   * docs/290 — take a session's Compose stack down BY PROJECT NAME, whether or
+   * not this process has a manager for it in `serviceManagers`
+   * (`downComposeStackByProject`). Volumes are not touched; the rungs below
+   * still decide those for themselves.
+   *
+   * Required because `serviceManagers` is process-local and `containerManager
+   * .destroy()` returns immediately for a session with no container record —
+   * which is exactly the state at `light`. So a stack that outlived an earlier
+   * orchestrator was invisible to BOTH, and `light → evicted` deleted the
+   * workspace out from under a still-mounted, still-watching dev server: the
+   * watcher saw the wipe, began a restart against a root that no longer exists,
+   * and pinned a CPU core until the host was rebooted. Four production stacks
+   * did exactly this for three to four days.
+   *
+   * Omit in tests that don't exercise the teardown; the rungs then behave as
+   * they did before, which is what every pre-docs/290 test asserts.
+   */
+  stopComposeStack?: (sessionId: string) => Promise<unknown>;
+  /**
    * Git factory bound to a workspace dir. Used at `light → evicted` to
    * auto-commit + push a dirty checkout before wiping it. Omit in tests that
    * don't exercise dirty remediation.
@@ -237,6 +256,20 @@ async function reclaimToLight(
     const mgr = deps.serviceManagers.get(session.id);
     if (mgr) {
       try { await mgr.stop({ removeVolumes: true }); } catch { /* best-effort */ }
+      // Drop the stopped manager rather than leaving it in the map. The map is
+      // what `setupServiceManager` consults to decide between ADOPTING a
+      // manager and building one, and adoption never calls `start()` — so a
+      // stopped manager left here means the session's next activation silently
+      // comes up with no preview at all.
+      deps.serviceManagers.delete(session.id);
+    }
+    // docs/290 — and the stack this process has no manager for, which is the
+    // one the map cannot see: it survived an earlier orchestrator (see
+    // `stopComposeStack`). Unconditional rather than an `else`, because a
+    // manager's own `compose down` can have been the one killed mid-flight.
+    if (deps.stopComposeStack) {
+      try { await deps.stopComposeStack(session.id); }
+      catch (err) { console.warn(`[disk-janitor] light: compose teardown failed for ${session.id}:`, getMessage(err)); }
     }
     if (pruneVolumes) {
       try { await pruneVolumes(session.id); } catch { /* best-effort */ }
@@ -702,6 +735,66 @@ async function reclaimToEvicted(
     } catch (err) {
       console.warn(`[disk-janitor] evict: container destroy failed for ${session.id}:`, getMessage(err));
     }
+  }
+
+  // docs/290 req 2 — the stack goes down BEFORE the wipe, always.
+  //
+  // Neither line above covers this. `destroy()` returns on its first statement
+  // for a session with no container record, which is precisely the state at
+  // `light`; and `serviceManagers` is process-local, so a stack that outlived an
+  // earlier orchestrator is in neither the map nor the container index. A
+  // service mounts the workspace as a subpath of the shared volume, so wiping it
+  // underneath a running service is never correct — the dev server's watcher
+  // sees the deletion, restarts against a root that no longer exists, and spins
+  // a core forever with `docker exec` refusing to enter it ("current working
+  // directory is outside of container mount namespace root").
+  //
+  // No volume removal here: this rung reclaims the CHECKOUT, and
+  // `reclaimRegenerableSessionDirs` below is what drops the overlay upper.
+  const evictMgr = deps.serviceManagers.get(session.id);
+  if (evictMgr) {
+    try { await evictMgr.stop(); } catch { /* best-effort */ }
+    // Same reason as the `light` rung: a stopped manager left in the map is
+    // adopted by the next activation and never started.
+    deps.serviceManagers.delete(session.id);
+  }
+  if (deps.stopComposeStack) {
+    try {
+      await deps.stopComposeStack(session.id);
+    } catch (err) {
+      // A stack we failed to stop is a stack still mounted on the workspace, so
+      // this is the one teardown failure that must ABORT the wipe rather than
+      // proceed best-effort. The session stays at `light` and the next pass
+      // tries again.
+      //
+      // Through `warnStuck`, not a bare `console.warn` (review finding). A
+      // Docker daemon that refuses this teardown refuses it identically on every
+      // hourly and per-activation pass, which is exactly the shape that logged
+      // the same pair 117 times an hour for eight days before the throttle
+      // existed. The git block above cleared any previous signature, so this one
+      // is recorded fresh.
+      const message = getMessage(err);
+      warnStuck(
+        session, deps, `compose-teardown:${message}`,
+        `[disk-janitor] evict skipped for ${session.id} — its compose stack could not be `
+        + "stopped, and wiping a workspace a service still has mounted is never correct "
+        + `(repeats of this same failure stay quiet): ${message}`,
+      );
+      return "skipped";
+    }
+  }
+
+  // planning#296's re-check, once more — and this time it is the LAST thing
+  // before the wipe rather than the last thing before the teardown (review
+  // finding). Everything between the two takes real time: `containerManager
+  // .destroy()` stops a container with a 5s grace, and the compose teardown is
+  // a stop-and-remove per service plus a verifying re-list. A session the user
+  // opened inside that window has a runner, may already be installing, and its
+  // checkout must not be deleted underneath it.
+  const stillIdle = sessionManager.get(session.id);
+  if (!stillIdle || !canAutoDescend(stillIdle, deps.runnerRegistry)) {
+    console.warn(`[disk-janitor] evict skipped for ${session.id} — became active during teardown`);
+    return "skipped";
   }
 
   if (session.workspaceDir) {

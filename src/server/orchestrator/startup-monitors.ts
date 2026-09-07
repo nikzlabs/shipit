@@ -14,6 +14,9 @@ import { overlayLiveScopeSource, pluginLiveArtifactSource } from "./disk-livenes
 import { DEFAULT_DISK_LADDER, assertDiskLadderOrdering, type DiskLadderThresholds } from "./sessions.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import { createKeepPreviewRestartSupervisor, restoreReservedPreviews } from "./keep-preview-running.js";
+import { downComposeStackByProject, reapSurvivingComposeStacks } from "./compose-stack-reaper.js";
+import { liveWorkAfterRestart, unprobedAfterRestart } from "./restart-turn-reattach.js";
+import { serializeStackOp } from "./stack-op-queue.js";
 import { startWarmTierSweep } from "./warm-tier-sweep.js";
 import { stopWarmPreview } from "./warm-preview.js";
 
@@ -333,6 +336,18 @@ export async function startStartupMonitors(
             serviceManagers,
             containerManager,
             pruneVolumes: (sid) => pruneSessionVolumes(sid),
+            // docs/290 req 2 — teardown by compose PROJECT name, so the rungs
+            // reach a stack this process never started. `serviceManagers` is
+            // process-local and `containerManager.destroy()` no-ops without a
+            // container record, so before this the `light → evicted` rung wiped
+            // workspaces out from under running services.
+            // On the session's stack queue, like every other compose invocation
+            // (`stack-op-queue.ts`): a session activated mid-pass runs its own
+            // `compose up` through that queue, and an unserialized teardown can
+            // land inside it.
+            stopComposeStack: (sid) => serializeStackOp(
+              sid, () => downComposeStackByProject(containerManager.dockerClient, sid),
+            ),
             createGitManager,
             ladder,
             // planning#296 — persisted warning when a dirty checkout can't be made
@@ -434,6 +449,32 @@ export async function startStartupMonitors(
     });
     if (restored.length > 0) {
       console.log(`[keep-preview] Restoring ${restored.length} reserved preview runtime(s)`);
+    }
+    // ---- docs/290: reap the Compose stacks that outlived the last process ----
+    // Placed HERE, and the position is the whole of its correctness. Every keep
+    // signal it reads is a runner, and runners are created by two boot steps
+    // that must both have finished: `reattachInFlightTurns` (docs/240, awaited
+    // in `bootstrap-managers.ts`) and `restoreReservedPreviews` immediately
+    // above. Run it any earlier and it reaps the stack of a session that was
+    // about to get one.
+    //
+    // Fire-and-forget and paced: nothing on the boot path waits for it, and it
+    // is reclaiming what has already been running for days.
+    if (!isTestMode) {
+      void (async () => {
+        const reaped = await reapSurvivingComposeStacks({
+          docker: containerManager.dockerClient,
+          sessionManager,
+          runnerRegistry,
+          serviceManagers,
+          unprobed: unprobedAfterRestart,
+          liveWork: liveWorkAfterRestart,
+          paceMs: 500,
+        });
+        if (reaped > 0) {
+          console.log(`[compose-reap] Took down ${reaped} compose stack(s) left by a previous orchestrator`);
+        }
+      })();
     }
     setupContainerHealthMonitoring(
       containerManager,

@@ -438,6 +438,166 @@ describe("escalateDiskTiers", () => {
     expect(fs.existsSync(wsDir)).toBe(false);
   });
 
+  // docs/290 req 2 — a workspace is never wiped while a service still has it
+  // mounted. The stack this rung has to reach is precisely the one it CANNOT see:
+  // `serviceManagers` is process-local, and `containerManager.destroy()` returns
+  // on its first statement for a session with no container record — which is the
+  // state at `light`. Four production stacks were wiped out from under a running
+  // dev server this way, each then pinning a CPU core for three to four days.
+  it("docs/290: light → evicted stops a stack that is NOT in serviceManagers, before the wipe", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-surviving-stack");
+    await initRepo(wsDir);
+    insertSession({
+      id: "stack-survivor",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const order: string[] = [];
+    const { registry } = fakeRegistry();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      // Empty, exactly as production has it for a stack that outlived an
+      // earlier orchestrator process.
+      serviceManagers: new Map(),
+      createGitManager: (dir) => new GitManager(dir),
+      stopComposeStack: (sid) => {
+        order.push(`stop:${sid}`);
+        // Proves the ORDER, not just the call: the workspace must still be
+        // there when the stack goes down.
+        expect(fs.existsSync(wsDir)).toBe(true);
+        return Promise.resolve();
+      },
+    });
+
+    expect(order).toEqual(["stop:stack-survivor"]);
+    expect(result.toEvicted).toBe(1);
+    expect(fs.existsSync(wsDir)).toBe(false);
+  });
+
+  // The other half of req 2: a teardown we could not complete means the service
+  // may still be mounted, so the wipe is the one best-effort step that must
+  // abort instead of proceeding.
+  it("docs/290: refuses to wipe when the compose stack could not be stopped", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-stack-stuck");
+    await initRepo(wsDir);
+    insertSession({
+      id: "stack-stuck",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+      stopComposeStack: () => Promise.reject(new Error("daemon unreachable")),
+    });
+
+    expect(result.toEvicted).toBe(0);
+    expect(sm.get("stack-stuck")?.diskTier).toBe("light");
+    expect(fs.existsSync(wsDir)).toBe(true);
+  });
+
+  // Review finding: the activity re-check ran BEFORE the teardown, and the
+  // teardown takes real time (a 5s-grace container stop, a stop-and-remove per
+  // service, a verifying re-list). A session the user opened inside that window
+  // was wiped anyway.
+  it("docs/290: refuses to wipe a session that became active DURING the teardown", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-active-during-teardown");
+    await initRepo(wsDir);
+    insertSession({
+      id: "late-active",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    // Idle for every check until the teardown runs; a viewer has attached by
+    // the time it returns.
+    let attached = false;
+    const registry = {
+      get: () => (attached ? { running: false, viewerCount: 1, agentBusy: false, disposed: true } : undefined),
+      dispose: () => {},
+    } as unknown as SessionRunnerRegistry;
+
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+      stopComposeStack: () => { attached = true; return Promise.resolve(); },
+    });
+
+    expect(result.toEvicted).toBe(0);
+    expect(sm.get("late-active")?.diskTier).toBe("light");
+    expect(fs.existsSync(wsDir)).toBe(true);
+  });
+
+  // The same blindness one rung up: `hot → light` looked for a manager in the
+  // process-local map and stopped nothing when it found none.
+  it("docs/290: hot → light tears down a stack with no manager and no runner", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-light-stack");
+    fs.mkdirSync(wsDir, { recursive: true });
+    insertSession({
+      id: "light-stack",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.lightAfterMs / 86_400_000 + 1),
+      diskTier: "hot",
+      workspaceDir: wsDir,
+    });
+
+    const stopped: string[] = [];
+    const { registry } = fakeRegistry(); // no runner for this session
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      stopComposeStack: (sid) => { stopped.push(sid); return Promise.resolve(); },
+    });
+
+    expect(result.toLight).toBe(1);
+    expect(stopped).toEqual(["light-stack"]);
+  });
+
+  // A manager left in `serviceManagers` after being stopped is worse than none:
+  // `setupServiceManager` ADOPTS it on the next activation and never calls
+  // `start()`, so the session comes back with no preview at all.
+  it("docs/290: drops the manager from the map once its stack is stopped", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-drop-mgr");
+    fs.mkdirSync(wsDir, { recursive: true });
+    insertSession({
+      id: "drop-mgr",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.lightAfterMs / 86_400_000 + 1),
+      diskTier: "hot",
+      workspaceDir: wsDir,
+    });
+
+    const stopOpts: unknown[] = [];
+    const serviceManagers = new Map<string, { stop: (o?: unknown) => Promise<void> }>([
+      ["drop-mgr", { stop: (o?: unknown) => { stopOpts.push(o); return Promise.resolve(); } }],
+    ]);
+    const { registry } = fakeRegistry();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      serviceManagers,
+    } as unknown as TierEscalationDeps);
+
+    expect(result.toLight).toBe(1);
+    expect(stopOpts).toEqual([{ removeVolumes: true }]);
+    expect(serviceManagers.has("drop-mgr")).toBe(false);
+  });
+
   // docs/217 — eviction must remove `workspace/` ONLY and spare the sibling
   // `scratch/` (mounted at /persist). Scratch is an only-copy with no git backup,
   // so an evicting reclaim path that took the session root with it would be
