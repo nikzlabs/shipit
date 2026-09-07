@@ -167,7 +167,7 @@ import { useChatDisabledReason, useHarnessOnboardingPanelVisible } from "./utils
 import { useGitHubGateLatch } from "./hooks/useGitHubGateLatch.js";
 import type { SendCommentsPayload } from "./components/FilePreviewModal.js";
 import { Spinner } from "./components/Spinner.js";
-import { buildAttachmentPlan } from "./utils/attachment-plan.js";
+import { runSend } from "./utils/send-handler.js";
 import { deleteUploadFromServer } from "./hooks/useFileUpload.js";
 import { removeDraftUploads } from "./utils/local-storage.js";
 
@@ -574,188 +574,16 @@ export default function App() {
   });
 
   // ── Callback helpers ──
+  // docs/293 req 4 — the send decision itself lives in `runSend`, so it can be
+  // tested without rendering App. Everything React-shaped is passed in; the rest
+  // it reads from the stores. This wrapper is only the dependency binding.
   const handleSend = useCallback(
-    async (payload: SendPayload) => {
-      const {
-        text,
-        uploadRefs,
-        uploads: payloadUploads,
-        resetMergedBranch,
-        dictated,
-      } = payload;
-      // docs/203, docs/220 — `/review [@path]` is a chat-native entry point to AI
-      // review: same composed prompt as the modal button, sent as a normal
-      // `send_message`. The reviewer (cross-agent vs fresh subagent) is resolved
-      // here, at click time, from the settings store + agent registry — the prompt
-      // is concrete. Cross-agent output is surfaced by the consult card (docs/220);
-      // a same-model review is narrated as prose. No review tool is involved.
-      const trimmed = text.trim();
-      // docs/294 — one decision about the composer's attachments, made in a pure
-      // function so it can be tested without rendering App. Every branch below
-      // carries it out rather than answering it again.
-      const plan = buildAttachmentPlan({
-        text: trimmed,
-        uploadRefs,
-        uploads: payloadUploads,
-        pendingFiles: useSettingsStore.getState().pendingFiles,
-      });
-      if (/^\/review(?:\s|$)/.test(trimmed)) {
-        const reviewSettings = useSettingsStore.getState();
-        const argMatch = /^\/review\s+@?(\S+)/.exec(trimmed);
-        const targetFile =
-          argMatch?.[1] ?? useFileStore.getState().previewFile ?? undefined;
-        const sid = useSessionStore.getState().sessionId;
-        if (!sid) {
-          useUiStore
-            .getState()
-            .setToast({ message: "Start a session before running /review." });
-          return;
-        }
-        if (useSessionStore.getState().isLoading) {
-          useUiStore.getState().setToast({
-            message:
-              "Wait for the current turn to finish before running /review.",
-          });
-          return;
-        }
-        if (!targetFile) {
-          useUiStore.getState().setToast({
-            message:
-              "/review needs a file — open one in preview, or use /review @path/to/file.",
-          });
-          return;
-        }
-        const prompt = composeReviewMessage(
-          targetFile,
-          resolveReviewer({
-            enableSubAgents: useSettingsStore.getState().enableSubAgents,
-            activeAgentId: useUiStore.getState().activeAgentId,
-          }),
-        );
-        // On /{slug}/new route — graduate: transition URL to /session/{id}, so
-        // a /review sent from a fresh session doesn't leave the URL on .../new.
-        if (isNewSessionRoute) {
-          void navigate(`/session/${sid}`, { replace: true });
-        }
-        useFileStore.getState().closePreview();
-        // docs/293 req 4 — carry the composer's attachments too. This path
-        // composes its own prompt and used to dispatch it alone, while
-        // `handleSubmit` cleared the chips regardless: an upload attached
-        // alongside `/review` vanished with no message and no error.
-        sendUserMessage({
-          bubble: { role: "user", text: prompt, ...plan.bubble },
-          activity: "Reviewing...",
-          dispatch: (requestId) =>
-            send({
-              type: "send_message",
-              requestId,
-              text: prompt,
-              sessionId: sid,
-              ...plan.frame,
-            }),
-        });
-        if (plan.clearAttachments) reviewSettings.clearPendingFiles();
-        return;
-      }
-
-      requestPermission();
-      disableAutoFix();
-      const session = useSessionStore.getState();
-      const settings = useSettingsStore.getState();
-      useUiStore.getState().setShowTemplates(false);
-      const filesForMessage = plan.bubble.files;
-      const imagesForMessage = plan.bubble.images;
-      const uploadPathsForMessage = plan.bubble.uploadPaths;
-
-      const currentSessionId = session.sessionId;
-      if (currentSessionId) {
-        // On /{slug}/new route — graduate: transition URL to /session/{id}
-        if (isNewSessionRoute) {
-          void navigate(`/session/${currentSessionId}`, { replace: true });
-        }
-
-        // planning#322 — first message of a session the Issues tab seeded from an
-        // issue. Only the session it was seeded for may claim it: prefilling
-        // doesn't pin the user to that session, and the ref must not follow
-        // them into an unrelated one.
-        const pendingIssue = useSessionStore.getState().pendingIssueRef;
-        const issueRef =
-          pendingIssue?.sessionId === currentSessionId ? pendingIssue.ref : undefined;
-
-        const message = {
-          type: "send_message" as const,
-          text,
-          sessionId: currentSessionId,
-          ...(issueRef ? { issueRef } : {}),
-          ...plan.frame,
-          permissionMode: (() => {
-            const pm = settings.getPermissionMode(currentSessionId);
-            return pm !== "auto" ? pm : undefined;
-          })(),
-          // docs/218 — per-send opt-out for the auto-reset-merged-branch control.
-          ...(resetMergedBranch !== undefined ? { resetMergedBranch } : {}),
-          // docs/144 — tell the agent this message was spoken, not typed, so it
-          // reads STT artifacts as artifacts. The bubble above stays verbatim.
-          ...(dictated ? { dictated: true } : {}),
-        };
-
-        const sent = sendUserMessage({
-          bubble: {
-            role: "user",
-            text,
-            files: filesForMessage,
-            images: imagesForMessage,
-            uploadPaths: uploadPathsForMessage,
-          },
-          activity: "Thinking...",
-          dispatch: (requestId) => {
-            const frame = { ...message, requestId };
-            if (send(frame)) return true;
-            // The send was dropped — e.g. we just claimed a session on
-            // /{slug}/new and the socket is still connecting. Dropping it here
-            // would leave the user with an optimistic bubble + spinner and no
-            // response, so stash it and let useConnectionSync flush it the
-            // moment the WS opens. (docs/144 fix #2)
-            //
-            // The attempt-then-stash order matters: `status` is React state and
-            // can lag the real readyState in both directions, so trusting it
-            // either dropped a sendable frame or stashed one the socket would
-            // have taken. `send`'s return value is the readyState itself.
-            useSessionStore.getState().setPendingWsMessage(frame);
-            return true;
-          },
-        });
-        // Consumed: the ref belongs to the frame now (including the stashed-
-        // for-reconnect case). Left in place on a dropped send so the retry
-        // still carries it — `sendUserMessage` returns false only when nothing
-        // reached the wire.
-        if (issueRef && sent) useSessionStore.getState().setPendingIssueRef(undefined);
-      } else {
-        // No session — can't send without one (sessions are created via claim-session).
-        // Still append the optimistic bubble so the user sees what they typed,
-        // but DON'T flip isLoading: there's no agent to wait on.
-        console.warn("[session] No active session — cannot send message");
-        session.setMessages((prev) => [
-          ...prev,
-          {
-            role: "user",
-            text,
-            files: filesForMessage,
-            images: imagesForMessage,
-            uploadPaths: uploadPathsForMessage,
-          },
-        ]);
-      }
-      if (plan.clearAttachments) settings.clearPendingFiles();
-      // MessageInput has already cleared its own upload chips at this point.
-    },
-    [
-      send,
-      requestPermission,
-      disableAutoFix,
-      navigate,
-      isNewSessionRoute,
-    ],
+    (payload: SendPayload): boolean =>
+      runSend(
+        { send, requestPermission, disableAutoFix, navigate, isNewSessionRoute },
+        payload,
+      ),
+    [send, requestPermission, disableAutoFix, navigate, isNewSessionRoute],
   );
 
   const handleRequestRewindPreview = useCallback(

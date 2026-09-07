@@ -392,7 +392,7 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
     setRoles([DEEP_DIVE]);
     render(
       <MessageInput
-        onSend={vi.fn()}
+        onSend={vi.fn().mockReturnValue(true)}
         disabled={false}
         agents={[claude]}
         activeAgentId="claude"
@@ -413,7 +413,7 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
     setRoles([DEEP_DIVE]);
     render(
       <MessageInput
-        onSend={vi.fn()}
+        onSend={vi.fn().mockReturnValue(true)}
         disabled={false}
         agents={[claude]}
         activeAgentId="claude"
@@ -442,7 +442,7 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
     setRoles([DEEP_DIVE]);
     render(
       <MessageInput
-        onSend={vi.fn()}
+        onSend={vi.fn().mockReturnValue(true)}
         disabled={false}
         agents={[claude]}
         activeAgentId="claude"
@@ -463,7 +463,7 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
     setRoles([DEEP_DIVE]);
     render(
       <MessageInput
-        onSend={vi.fn()}
+        onSend={vi.fn().mockReturnValue(true)}
         disabled={false}
         agents={[claude]}
         activeAgentId="claude"
@@ -525,7 +525,7 @@ describe("a locked role keeps the ROUTE to the parameters (docs/272 reqs 4, 5, 1
   function renderLocked() {
     render(
       <MessageInput
-        onSend={vi.fn()}
+        onSend={vi.fn().mockReturnValue(true)}
         disabled={false}
         agents={[claude]}
         activeAgentId="claude"
@@ -564,7 +564,7 @@ describe("a locked role keeps the ROUTE to the parameters (docs/272 reqs 4, 5, 1
   it("keeps the revealed parameters in the session where they were requested", async () => {
     const renderSession = (sessionId: string) => (
       <MessageInput
-        onSend={vi.fn()}
+        onSend={vi.fn().mockReturnValue(true)}
         disabled={false}
         agents={[claude]}
         activeAgentId="claude"
@@ -624,7 +624,7 @@ describe("role parameter reveal is scoped to one session", () => {
     const onRoleChange = vi.fn();
     const renderSession = (sessionId: string, sessionRoleName: string) => (
       <MessageInput
-        onSend={vi.fn()}
+        onSend={vi.fn().mockReturnValue(true)}
         disabled={false}
         agents={[claude]}
         activeAgentId="claude"

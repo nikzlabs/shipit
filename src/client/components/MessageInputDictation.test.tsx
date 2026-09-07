@@ -68,7 +68,7 @@ beforeEach(() => {
 
 describe("MessageInput dictation provenance (docs/144)", () => {
   it("omits `dictated` for a typed message", () => {
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     render(<MessageInput onSend={onSend} disabled={false} />);
     fireEvent.change(screen.getByPlaceholderText(PLACEHOLDER), {
       target: { value: "fix the auth bug" },
@@ -79,7 +79,7 @@ describe("MessageInput dictation provenance (docs/144)", () => {
   });
 
   it("marks a dictated message", () => {
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     render(<MessageInput onSend={onSend} disabled={false} />);
     dictate("fix the off bug");
     fireEvent.click(screen.getByLabelText("Send message"));
@@ -91,7 +91,7 @@ describe("MessageInput dictation provenance (docs/144)", () => {
   it("marks a message that mixes typing and dictation", () => {
     // The point of the hint is transcription artifacts, and a partly-dictated
     // message has them just the same.
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     render(<MessageInput onSend={onSend} disabled={false} />);
     const textarea = screen.getByPlaceholderText(PLACEHOLDER);
     fireEvent.change(textarea, { target: { value: "in auth.ts," } });
@@ -101,7 +101,7 @@ describe("MessageInput dictation provenance (docs/144)", () => {
   });
 
   it("does not carry the flag onto the NEXT message", () => {
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     render(<MessageInput onSend={onSend} disabled={false} />);
     dictate("first one");
     fireEvent.click(screen.getByLabelText("Send message"));
@@ -118,7 +118,7 @@ describe("MessageInput dictation provenance (docs/144)", () => {
   it("drops the flag when the user clears the draft and types instead", () => {
     // Dictate, think better of it, select-all-delete, type it by hand. Nothing
     // spoken survives into the sent text, so the hint would be a lie.
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     render(<MessageInput onSend={onSend} disabled={false} />);
     const textarea = screen.getByPlaceholderText(PLACEHOLDER);
     dictate("scrap this");

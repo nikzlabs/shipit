@@ -20,7 +20,7 @@ afterEach(() => {
 describe("PlanApproval", () => {
   describe("rendering", () => {
     it("renders the plan approval card with accept and suggest buttons", () => {
-      render(<PlanApproval onSend={vi.fn()} disabled={false} />);
+      render(<PlanApproval onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
       expect(screen.getByTestId("plan-approval")).toBeInTheDocument();
       expect(screen.getByTestId("accept-plan")).toBeInTheDocument();
       expect(screen.getByTestId("suggest-changes")).toBeInTheDocument();
@@ -28,21 +28,21 @@ describe("PlanApproval", () => {
     });
 
     it("renders plan content when planContent prop is provided", () => {
-      render(<PlanApproval onSend={vi.fn()} disabled={false} planContent="# My Plan\n\nStep 1: Do something" />);
+      render(<PlanApproval onSend={vi.fn().mockReturnValue(true)} disabled={false} planContent="# My Plan\n\nStep 1: Do something" />);
       const planEl = screen.getByTestId("plan-content");
       expect(planEl).toBeInTheDocument();
       expect(planEl.textContent).toContain("My Plan");
     });
 
     it("does not render plan content when planContent is not provided", () => {
-      render(<PlanApproval onSend={vi.fn()} disabled={false} />);
+      render(<PlanApproval onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
       expect(screen.queryByTestId("plan-content")).not.toBeInTheDocument();
     });
   });
 
   describe("accept flow", () => {
     it("calls onSend with execute text and switches permission mode to auto", () => {
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       useSettingsStore.getState().setPermissionMode("test-session", "plan");
       render(<PlanApproval onSend={onSend} disabled={false} />);
 
@@ -59,7 +59,7 @@ describe("PlanApproval", () => {
       useSettingsStore.getState().setPermissionMode("session-b", "plan");
       useSessionStore.getState().setSessionId("session-a");
 
-      render(<PlanApproval onSend={vi.fn()} disabled={false} />);
+      render(<PlanApproval onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
       fireEvent.click(screen.getByTestId("accept-plan"));
 
       expect(useSettingsStore.getState().getPermissionMode("session-a")).toBe("auto");
@@ -67,7 +67,7 @@ describe("PlanApproval", () => {
     });
 
     it("shows accepted confirmation after clicking accept", () => {
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       render(<PlanApproval onSend={onSend} disabled={false} />);
 
       fireEvent.click(screen.getByTestId("accept-plan"));
@@ -80,17 +80,17 @@ describe("PlanApproval", () => {
 
   describe("expand to fullscreen", () => {
     it("does not show the expand button when there is no plan content", () => {
-      render(<PlanApproval onSend={vi.fn()} disabled={false} />);
+      render(<PlanApproval onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
       expect(screen.queryByTestId("expand-plan")).not.toBeInTheDocument();
     });
 
     it("shows the expand button when plan content is provided", () => {
-      render(<PlanApproval onSend={vi.fn()} disabled={false} planContent="# Plan\n\nDo the thing" />);
+      render(<PlanApproval onSend={vi.fn().mockReturnValue(true)} disabled={false} planContent="# Plan\n\nDo the thing" />);
       expect(screen.getByTestId("expand-plan")).toBeInTheDocument();
     });
 
     it("opens a fullscreen dialog with the plan and action buttons when expanded", () => {
-      render(<PlanApproval onSend={vi.fn()} disabled={false} planContent="# Plan\n\nDo the thing" />);
+      render(<PlanApproval onSend={vi.fn().mockReturnValue(true)} disabled={false} planContent="# Plan\n\nDo the thing" />);
 
       fireEvent.click(screen.getByTestId("expand-plan"));
 
@@ -103,7 +103,7 @@ describe("PlanApproval", () => {
     });
 
     it("accepting from the expanded dialog drives the same accept flow", () => {
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       render(<PlanApproval onSend={onSend} disabled={false} planContent="# Plan" />);
 
       fireEvent.click(screen.getByTestId("expand-plan"));
@@ -118,7 +118,7 @@ describe("PlanApproval", () => {
 
   describe("feedback flow", () => {
     it("shows feedback input when suggest changes is clicked", () => {
-      render(<PlanApproval onSend={vi.fn()} disabled={false} />);
+      render(<PlanApproval onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
 
       fireEvent.click(screen.getByTestId("suggest-changes"));
 
@@ -127,7 +127,7 @@ describe("PlanApproval", () => {
     });
 
     it("calls onSend with feedback text without changing permission mode", () => {
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       useSettingsStore.getState().setPermissionMode("test-session", "plan");
       render(<PlanApproval onSend={onSend} disabled={false} />);
 
@@ -140,7 +140,7 @@ describe("PlanApproval", () => {
     });
 
     it("submits feedback on Enter key", () => {
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       render(<PlanApproval onSend={onSend} disabled={false} />);
 
       fireEvent.click(screen.getByTestId("suggest-changes"));
@@ -152,7 +152,7 @@ describe("PlanApproval", () => {
     });
 
     it("does not submit empty feedback", () => {
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       render(<PlanApproval onSend={onSend} disabled={false} />);
 
       fireEvent.click(screen.getByTestId("suggest-changes"));
@@ -162,7 +162,7 @@ describe("PlanApproval", () => {
     });
 
     it("shows feedback confirmation after submitting", () => {
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       render(<PlanApproval onSend={onSend} disabled={false} />);
 
       fireEvent.click(screen.getByTestId("suggest-changes"));
@@ -176,12 +176,12 @@ describe("PlanApproval", () => {
 
   describe("disabled state", () => {
     it("disables accept button when disabled", () => {
-      render(<PlanApproval onSend={vi.fn()} disabled={true} />);
+      render(<PlanApproval onSend={vi.fn().mockReturnValue(true)} disabled={true} />);
       expect(screen.getByTestId("accept-plan")).toBeDisabled();
     });
 
     it("does not call onSend when disabled", () => {
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       render(<PlanApproval onSend={onSend} disabled={true} />);
 
       fireEvent.click(screen.getByTestId("accept-plan"));
@@ -196,7 +196,7 @@ describe("PlanApproval", () => {
   // again for a plan that's already been answered.
   describe("resolved (history reload)", () => {
     it("renders read-only confirmation when resolved is true", () => {
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       render(<PlanApproval onSend={onSend} disabled={false} resolved={true} />);
       expect(screen.queryByTestId("accept-plan")).not.toBeInTheDocument();
       expect(screen.queryByTestId("suggest-changes")).not.toBeInTheDocument();
@@ -206,7 +206,7 @@ describe("PlanApproval", () => {
     it("local accept flow takes precedence over resolved when both are set", () => {
       // Imagine a tool_result arrives mid-render — the local accept message
       // should still be shown, since the user just saw their click.
-      const onSend = vi.fn();
+      const onSend = vi.fn().mockReturnValue(true);
       const { rerender } = render(<PlanApproval onSend={onSend} disabled={false} />);
       fireEvent.click(screen.getByTestId("accept-plan"));
       rerender(<PlanApproval onSend={onSend} disabled={false} resolved={true} />);
