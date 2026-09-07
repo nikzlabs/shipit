@@ -248,6 +248,9 @@ export async function dispatchAgentMessage(
     onTurnComplete: undefined,
     deliveryId: undefined,
     dictated: undefined,
+    // No composer involved — a server-originated dispatch has no tick boxes.
+    resetMergedBranch: undefined,
+    compactContext: undefined,
   }));
 
   return { ok: true, queued: wasRunning };

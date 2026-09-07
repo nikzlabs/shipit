@@ -236,6 +236,66 @@ describe("dispatched turn — pre-turn context compaction (docs/295 req 13)", ()
     expect(delivered).toEqual(["compact:ensure"]);
   });
 
+  it("runs neither hook for a queued `/compact`, and spawns it as a compaction (req 12)", async () => {
+    // The send handler classifies an IMMEDIATE `/compact`, but one that had to
+    // queue — behind a merge hold, or behind a dispatched turn — drains through
+    // this path. Unclassified here it reset the branch, added a second
+    // compaction, and then handed the CLI the literal command behind a
+    // `[System] …PR was merged…` prefix without the adapter's compaction flag,
+    // so the in-band recognition never happened either.
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    const hooks = makeHooks();
+    hooks.install(deps);
+    let promptSeen = "";
+    let compactFlag: boolean | undefined;
+    deps.buildRunParams = vi.fn(async (_sid, _agentId, prompt, _route, rpOpts) => {
+      promptSeen = prompt;
+      compactFlag = rpOpts?.compact;
+      return { prompt, cwd: "/tmp/s1" } as never;
+    });
+
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "/compact", execution: "interactive" }));
+    await flushTurn();
+
+    expect(hooks.order).toEqual([]);
+    // No merge prefix in front of it — that is what defeats in-band parsing.
+    expect(promptSeen).toBe("/compact");
+    expect(compactFlag).toBe(true);
+  });
+
+  it("still recognizes `/compact <instructions>`", async () => {
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    const hooks = makeHooks();
+    hooks.install(deps);
+
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "/compact keep the open questions" }));
+    await flushTurn();
+
+    expect(hooks.order).toEqual([]);
+  });
+
+  it("does NOT treat an ordinary message mentioning compact as the command", async () => {
+    // The other half of the guard: a skip that fires too eagerly would silently
+    // stop resetting merged branches.
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    const hooks = makeHooks();
+    hooks.install(deps);
+
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "please /compact the docs folder later" }));
+    await flushTurn();
+
+    expect(hooks.order).toEqual(["compact", "reset"]);
+  });
+
   it("is a no-op when the runtime wires no hook (minimal setups)", async () => {
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);

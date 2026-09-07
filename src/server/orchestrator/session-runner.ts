@@ -23,6 +23,7 @@ import { runAgentToCompletion, buildSubAgentRunParams } from "../shared/sub-agen
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import type { PreTurnResetHookResult, PreTurnResetRunner } from "./pre-turn-reset-hook.js";
 import type { PreTurnCompactHookResult } from "./pre-turn-compact-hook.js";
+import type { MergeRecheckOutcome } from "./services/pre-turn-merge-recheck.js";
 
 // `runDispatchedTurn` lives in a separate module because it depends on
 // `wireAgentListeners` at runtime, which would otherwise create an import
@@ -265,6 +266,19 @@ export interface QueuedMessage {
   deliveryId?: string;
   /** docs/144 — voice-dictated prompt (see `AgentDispatchOptions.dictated`). */
   dictated?: boolean;
+  /**
+   * docs/218 + docs/295 — the composer's two per-send tick boxes, carried
+   * through the queue.
+   *
+   * A user who unticks "start from the latest base" (or "compact the context")
+   * and sends while a turn is running gets their message QUEUED, and the intent
+   * used to be dropped at that boundary: when the entry drained the session was
+   * still eligible, the absent intent read as "follow the global setting", and
+   * the action they had just declined ran anyway. Per-send means per-send,
+   * whether or not the send happened to land on a busy runner.
+   */
+  resetMergedBranch?: boolean;
+  compactContext?: boolean;
 }
 
 /**
@@ -354,6 +368,13 @@ export interface AgentDispatchOptions {
    * composes has been through speech-to-text.
    */
   dictated?: boolean;
+  /**
+   * docs/218 + docs/295 — the composer's per-send tick boxes, so a user-typed
+   * message that had to queue still carries the choice the user made when they
+   * sent it. Absent on every server-originated dispatch: there is no box.
+   */
+  resetMergedBranch?: boolean;
+  compactContext?: boolean;
 }
 
 export const REPOSITORY_UNTRUSTED_CODE = "repository_untrusted" as const;
@@ -451,7 +472,10 @@ export function dispatchOnRunner(
   // all here would run against a branch a merge is landing. `releaseQueuedTurn`
   // routes through `dispatch`, so this one check covers the drain too — and the
   // executor calls it when the hold clears, which is what starts the held turn.
-  if (runner.mergeHold) return enqueueAndReport();
+  // docs/288 + docs/295 — the session is held either side of a turn: a merge in
+  // flight before it, a pre-turn compaction inside it. Both mean "queue this,
+  // do not start it alongside".
+  if (runner.mergeHold || runner.preTurnHold) return enqueueAndReport();
 
   // docs/260-turn-level-account-routing req 13 — a resident process holding background work (a sub-agent
   // review, agent-started background tasks) may not be displaced by a system
@@ -652,6 +676,8 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.onTurnComplete !== undefined) queued.onTurnComplete = opts.onTurnComplete;
   if (opts.deliveryId !== undefined) queued.deliveryId = opts.deliveryId;
   if (opts.dictated !== undefined) queued.dictated = opts.dictated;
+  if (opts.resetMergedBranch !== undefined) queued.resetMergedBranch = opts.resetMergedBranch;
+  if (opts.compactContext !== undefined) queued.compactContext = opts.compactContext;
   return queued;
 }
 
@@ -801,6 +827,20 @@ export interface SystemTurnDeps {
     runner: PreTurnResetRunner,
     sessionId: string,
     sessionDir: string,
+    /**
+     * docs/295 — the docs/282 merge probe's answer, when the pre-turn
+     * compaction that runs ahead of this already paid for it. Sharing it is
+     * what stops the two gates reading different snapshots inside the poll
+     * window, and keeps the probe at one per turn.
+     */
+    mergeRecheck?: MergeRecheckOutcome,
+    /**
+     * docs/218 — the composer's tick box, when the entry that drained onto this
+     * transport carried one. Absent for every server-originated dispatch, which
+     * is nearly all of them; present so that this path and the interactive one
+     * read the same field rather than one of them silently ignoring it.
+     */
+    intent?: boolean,
   ) => Promise<PreTurnResetHookResult>;
   /**
    * docs/295 — compact the agent's context before this turn's prompt is built,
@@ -1235,6 +1275,23 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * `releaseQueuedTurn()` that lets the held-back turn start.
    */
   mergeHold: boolean;
+  /**
+   * docs/295 — the session is inside a turn's PRE-turn phase (today: the
+   * merged-session context compaction) and must not admit another turn.
+   *
+   * Separate from `running` on purpose. The pre-turn work is not a turn: it
+   * publishes no delivery, announces no completion, and its transcript rows are
+   * final rather than in-progress — so borrowing `running` for it would make
+   * every "did a turn just finish?" consumer answer for work the user never
+   * sent. What it DOES need is the one thing `running` also buys: arrivals get
+   * queued rather than started alongside it. This is that, and nothing else.
+   *
+   * Same shape and the same three admission points as {@link mergeHold}, which
+   * exists for the same reason on the other side of a turn. No release callback:
+   * the user's own turn starts the moment the hold clears and drains the queue
+   * when it ends.
+   */
+  preTurnHold: boolean;
   wasInterrupted: boolean;
   /**
    * planning#318 follow-up — monotonic per-runner TURN identity, bumped by
@@ -1827,6 +1884,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _systemTurnInProgress = false;
   /** docs/288 — ShipIt is merging this session's PR; no turn may start. */
   private _mergeHold = false;
+  private _preTurnHold = false;
   private _wasInterrupted = false;
   /** See `SessionRunnerInterface.turnEpoch`. */
   turnEpoch = 0;
@@ -1902,6 +1960,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set systemTurnInProgress(v: boolean) { this._systemTurnInProgress = v; }
   get mergeHold(): boolean { return this._mergeHold; }
   set mergeHold(v: boolean) { this._mergeHold = v; }
+  get preTurnHold(): boolean { return this._preTurnHold; }
+  set preTurnHold(v: boolean) { this._preTurnHold = v; }
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
   get lastTurnErrored(): boolean { return this._lastTurnErrored; }

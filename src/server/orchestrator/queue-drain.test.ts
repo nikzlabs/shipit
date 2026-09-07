@@ -77,6 +77,8 @@ describe("queue drain routing (planning#257)", () => {
       files: [{ path: "src/a.ts" }],
       uploads: [{ path: "/uploads/a.png", type: "upload" }],
       permissionMode: "plan",
+      resetMergedBranch: false,
+      compactContext: false,
       postTurn: "none",
       systemTurn: true,
       onTurnComplete,

@@ -1472,6 +1472,9 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
         onTurnComplete: undefined,
         deliveryId: "delivery-running",
         dictated: undefined,
+        // No composer involved — a server-originated dispatch has no tick boxes.
+        resetMergedBranch: undefined,
+        compactContext: undefined,
       }));
       expect(runner.running).toBe(true);
       expect(runner.hasDelivery("delivery-running")).toBe(true);

@@ -216,6 +216,9 @@ export async function wakeSessionWithTurn(
     deliveryId: opts.deliveryId,
     // A wake turn is composed by the orchestrator — never spoken.
     dictated: undefined,
+    // No composer involved — a server-originated dispatch has no tick boxes.
+    resetMergedBranch: undefined,
+    compactContext: undefined,
     execution: undefined,
     images: undefined,
     files: undefined,

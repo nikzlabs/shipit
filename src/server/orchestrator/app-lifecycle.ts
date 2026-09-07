@@ -1381,6 +1381,9 @@ export function createPrStatusPoller(
         postTurn: undefined,
         deliveryId: undefined,
         dictated: undefined,
+        // No composer involved — a server-originated dispatch has no tick boxes.
+        resetMergedBranch: undefined,
+        compactContext: undefined,
       })).settled;
       const detail = outcome.detail ? ` (${outcome.detail})` : "";
       console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — fix turn settled as ${outcome.status}${detail}`);

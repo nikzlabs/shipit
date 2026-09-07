@@ -5,6 +5,7 @@ import { buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js"
 import { postTurnCommit } from "./post-turn.js";
 import { billingModeForRoute } from "../sessions.js";
 import { resolveRunner } from "./resolve-runner.js";
+import { parseCompactCommand } from "../../shared/compact-command.js";
 import { emitResetEligible } from "../services/pre-turn-reset.js";
 import { applyPreTurnReset, type PreTurnResetHookResult } from "../pre-turn-reset-hook.js";
 import { applyPreTurnCompaction } from "../pre-turn-compact-hook.js";
@@ -137,6 +138,23 @@ export async function drainNextQueuedMessage(
 }
 
 /**
+ * docs/178 — is this queued text the ShipIt `/compact` command, for the agent
+ * that will run it?
+ *
+ * The same two conditions `handleSendMessage` applies at send time: the text
+ * parses as the command, and the active backend can actually compact. Asked
+ * again at DRAIN time rather than carried on the entry, because the answer is
+ * derived from the text (which the queue does carry) plus the live agent — and
+ * re-deriving it is what keeps a queued `/compact` from being handled as
+ * ordinary prose the moment it stops being the message at the front.
+ */
+function isCompactCommandFor(ctx: FullCtx, text: string): boolean {
+  const capable =
+    ctx.agentRegistry.get(ctx.getActiveAgentId())?.capabilities.supportsCompaction ?? false;
+  return capable && parseCompactCommand(text).match;
+}
+
+/**
  * The WS transport's own queue re-entry: resolve the entry's attachments and
  * start an interactive turn. Reached ONLY for `execution: "interactive"` entries
  * (see `startQueuedMessage`) — a server-dispatched entry would lose its
@@ -196,6 +214,19 @@ async function runQueuedInteractiveMessage(
       // docs/144 — the hint rode the queue with the message; keep it attached
       // now the message finally becomes a turn.
       ...(next.dictated ? { dictated: true } : {}),
+      // docs/218 + docs/295 — and so do the composer's two tick boxes. Without
+      // this the untick is dropped at the queue boundary: the entry drains while
+      // the session is still eligible, the absent intent reads as "follow the
+      // global setting", and the action the user just declined runs anyway.
+      ...(next.resetMergedBranch !== undefined ? { resetMergedBranch: next.resetMergedBranch } : {}),
+      ...(next.compactContext !== undefined ? { compactContext: next.compactContext } : {}),
+      // docs/178 — a `/compact` that had to queue is still a `/compact` when it
+      // drains. Re-derived from the queued text rather than carried as a flag,
+      // because it IS derived: the same parse the send handler ran, against the
+      // agent that will actually run the turn. Without it the literal `/compact`
+      // reached the model AND the pre-turn steps ran on top of it, which is
+      // exactly the double-compaction req 12 forbids.
+      ...(isCompactCommandFor(ctx, next.text) ? { compact: true } : {}),
     });
   } catch (err) {
     console.error("[queue] Error processing queued message:", getErrorMessage(err));
@@ -694,6 +725,13 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
             createGitManager: ctx.createGitManager,
             chatHistoryManager: ctx.chatHistoryManager,
             getAutoResetMergedBranch: () => ctx.credentialStore.getAutoResetMergedBranch(),
+            // docs/282 + docs/295 — one merge probe per turn, paid for here and
+            // handed to the reset below, so both gates read the same snapshot.
+            mergeRecheckDeps: {
+              verifyPrState: (id) =>
+                ctx.prStatusPoller.forceVerifySessionPrState(id, { armAbsentDebounce: false }),
+              awaitMergeHandling: (id) => ctx.prStatusPoller.awaitMergeHandling(id),
+            },
           },
           turnDeps: deps,
           runner,
@@ -749,6 +787,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       sessionDir: capturedSessionDir,
       // The per-send tick box (Phase 3): `false` = unticked for this message.
       ...(opts.resetMergedBranch !== undefined ? { intent: opts.resetMergedBranch } : {}),
+      // docs/295 — reuse the compaction's merge probe rather than paying for a
+      // second one that could answer differently.
+      ...(compaction?.mergeRecheck !== undefined ? { mergeRecheck: compaction.mergeRecheck } : {}),
     });
   }
   const resetAgentPrefix = resetHook.agentPrefix;

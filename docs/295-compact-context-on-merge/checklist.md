@@ -68,14 +68,15 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
       checkbox involved (req 13) — same file, `intent: undefined` asserted.
 - [x] A retried dispatched turn compacts once, not twice.
 - [x] A `postTurn: "none"` turn never compacts.
-- [ ] **A `/compact` send with the control visible compacts exactly once and
-      does not reset the branch (req 12).** Implemented — the pre-step and the
-      reset share one `!opts.compact` clause in `agent-execution.ts` — but NOT
-      covered by a test. The obvious place (`integration_tests/compaction.test.ts`)
-      would be blind by construction: its session is not merged, so the hook
-      short-circuits on eligibility and the test passes with or without the
-      guard. A real guard needs a merged, reset-eligible session in that
-      harness. Flagged to review rather than ticked.
+- [x] A `/compact` compacts exactly once and does not reset the branch (req 12),
+      on the queued path as well as the immediate one — three tests in
+      `dispatched-turn-pre-turn-compact.test.ts`, including a negative control
+      (an ordinary message mentioning `/compact` still runs both hooks).
+      **Still uncovered on the immediate WS send**, where the two skips share one
+      `!opts.compact` clause: the obvious harness is blind by construction (its
+      session is not merged, so the hook short-circuits on eligibility and the
+      test would pass either way). A real guard there needs a merged,
+      reset-eligible session in `integration_tests/compaction.test.ts`.
 - [x] A failed compaction still runs the turn **and** leaves a notice (req 9).
 - [x] A compaction that reports no event is not reported as a success.
 - [x] The two checkboxes are independent (req 6).
@@ -85,7 +86,7 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
       `showCompactControl` reads no usage state, and the composer tests render
       with none wired.
 - [x] Delete each guard singly and watch it fail, so no test passes with the
-      defect present. 17 server mutations + 5 client mutations run, each failing
+      defect present. 29 server mutations + 7 client mutations run, each failing
       the one test that covers it. Two had to be rewritten because the first
       attempt was unreachable: req 11 turns out to be enforced *structurally*
       (the compaction control is nested inside the reset control's block, so the
@@ -125,25 +126,101 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
       holds background work (docs/260 req 13). `dispatchOnRunner` enforces this
       by enqueuing; this hook drives the executor directly and bypassed it.
 
-### Still open from the review
+### Second review round — the mechanism was wrong, and was reworked
 
-- [ ] **The compaction emits the runner's unscoped `turn_result`**, which the
-      outer dispatch's settlement latches as evidence that *its* prompt ran. A
-      later drop is then reported as `interrupted` ("do not re-deliver") for a
-      user message that never ran. Not local to this hook.
-- [ ] **Recovery attempts escape the hook's observation.** The executor may
-      replace the agent on auth heal or quota failover; the hook watches and
-      kills only the first, so a successful compaction on attempt two is
-      reported as `no-compaction`, and a timeout kills the retired process while
-      the live one stays installed.
-- [ ] **A programmatic continuation misses a merge the reset then discovers.**
-      Eligibility is read before `recheckMergeBeforeTurn`, so inside the poll
-      window the turn resets without compacting.
-- [ ] **The queue drops per-send intent** (`compactContext`, `resetMergedBranch`,
-      and the `/compact` classification). Pre-existing for docs/218; this feature
-      inherits it, and a queued `/compact` can reach the pre-turn steps without
-      `opts.compact`.
-- [ ] **The composer keeps an untick across a session switch** — the non-sticky
-      effect keys on the visibility boolean, which stays true between two
-      already-eligible sessions.
+A second review found six more defects, four P1, again probe-confirmed — and
+named the real problem: **owning the agent slot does not require being a turn.**
+The first shape ran the compaction through `executeAgentTurn`, and every
+remaining piece of the turn lifecycle was wrong for a maintenance step nested
+inside someone else's send. Patching them one at a time was the losing move; the
+rework collapses most of them.
+
+- [x] **The compaction is now a slot-owning OPERATION, not a turn.** It installs
+      a proxy in `_agent`, wires four narrow listeners, calls `prepareAgentEnv` +
+      `buildRunParams({compact:true})` + `agent.run`, awaits its own latch, and
+      clears the slot. It cannot commit, push, drain, settle, announce readiness
+      or publish a delivery — by construction rather than by a flag.
+- [x] **`running` stays false throughout**, so no completion is announced for a
+      turn that has not run, and `emitChatCard` takes its already-final append
+      path — the card is durable when written, with no in-progress rows for the
+      user's turn to replace.
+- [x] **Admission is held by `preTurnHold`**, a new runner flag mirroring
+      docs/288's `mergeHold` at the same three admission points, taken *before*
+      the first await. The window that needed closing was never the compaction
+      itself but the merge probe and the eligibility check around it.
+- [x] **`TurnInput.nestedInSurroundingTurn` is gone**, with its guard. It existed
+      only to suppress `turn_result` for the shape that no longer exists — and
+      the readiness and delivery signals it did not cover are gone with it.
+- [x] **A queued `/compact` is classified on the dispatched drain too (req 12).**
+      The send handler classifies an immediate send; one that queued behind a
+      merge hold or a dispatched turn drains through `runDispatchedTurn`, which
+      knew nothing about it — so it ran both hooks and then handed the CLI the
+      literal command behind a merge prefix, without the compaction flag.
+- [x] **The spawn is raced against the settle latch**, so a stall inside
+      `prepareAgentEnv` / `buildRunParams` cannot park the user's message. (This
+      regressed during the rework and was caught by its own guard.)
+
+### Third review round — the slot-owning shape holds; its composition does not yet
+
+The reviewer confirmed the shape is viable ("installing the proxy before `run()`
+correctly gives container SSE events a matching run token") and then found ten
+more defects, six P1, in how it COMPOSES with the callers around it. Its sharpest
+point is about the tests, and it is right: *"the tests split the system at
+exactly the failing boundary — isolated hook tests manufacture `running: false`,
+while real dispatch tests replace the hook. No test joins real admission, the
+real operation, and subsequent history replacement."*
+
+**Fixed here**
+
+- [x] **The compaction card was being deleted by the user's turn.** The design
+      claimed `running` is false during the operation; it is not — BOTH callers
+      set it before this hook is reached (`send-message.ts` right before
+      `runAgentWithMessage`, `dispatchOnRunner` in the same tick as the
+      delivery). So `emitChatCard` took the in-progress branch and the user's
+      turn deleted the card at its first `replaceInProgress`: rendered live,
+      gone on reload. The card is now emitted and appended directly, the same
+      route `emitNoticePostTurn` takes. **The harness hardcoded `running: false`,
+      so every card assertion was blind** — it now uses the production shape.
+- [x] **The spawn discarded the credential route** `prepareAgentEnv` selected.
+      It cannot be recovered from the session row (docs/260 §1b threads it as a
+      value), so the compaction ran on the service's group credential rather
+      than the account routing picked — possibly one routing had set aside.
+- [x] **A failed compaction left "Compacting…" up** across the user's whole
+      turn. The indicator is now cleared on every exit, not just on success.
+
+**Still open — these are real and this is not mergeable until they are done**
+
+- [ ] **Timing out does not cancel setup.** The un-awaited spawn has no
+      ownership check after its awaits, so a `prepareAgentEnv` that resolves
+      after the timeout still calls `agent.run()` — into a slot the user's turn
+      now owns. In container mode a conflicting start retries and can kill the
+      worker's resident agent, i.e. the user's actual turn.
+- [ ] **`preTurnHold` is not checked at every admission point.** Programmatic
+      steering tries to steer before the hold is consulted; the `answer_question`
+      path and the post-attachment recheck in `send-message.ts` check only
+      `mergeHold`; the periodic container reconciler ignores it entirely; and the
+      hold is released before the branch reset, leaving that window open.
+- [ ] **A dispatched queue drain loses delivery ownership during compaction.**
+      `drainNext` dequeues the entry but publishes neither its `deliveryId` nor
+      `running` until `executeAgentTurn` — so the delivery reads as not-in-flight
+      for the whole pre-turn phase, and `preTurnHold` only queues the duplicate a
+      supervisor then sends. `agentBusy` and the disposal guard do not include
+      the hold either.
+- [ ] **Req 12 is still breakable on the dispatched path**: the dependency-gap
+      prefix is prepended unconditionally, so `/compact` can still reach the CLI
+      as `[System] …run install…` followed by the command — which Grok will not
+      recognise in-band.
+- [ ] **`/review` drops the composer's opt-out** — `send-handler.ts` builds that
+      WS message without `compactContext` or `resetMergedBranch`, so an unticked
+      compaction runs anyway.
+- [ ] **Credential teardown omits `finalizeAgentEnv`**, so a token the compaction
+      CLI rotated just before exit may never be published to sibling sessions.
+- [ ] **Run-param assembly consumes pending conversation replay** and the result
+      handler writes back every session id without the missing-conversation
+      guard, so a failed resume can overwrite a good id with a useless one.
+- [ ] **The test strategy needs one integration test** that joins real admission,
+      the real operation, and the user's turn's history replacement. Mutation
+      counts on isolated units do not establish that the composition is safe —
+      finding 1 is the proof, and it survived two rounds of them.
+
 - [x] Comment the outcome on `planning#522`.

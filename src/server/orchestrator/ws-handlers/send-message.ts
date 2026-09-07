@@ -124,7 +124,9 @@ export async function handleSendMessage(
   // busy for the same reason: this turn would push behind a merge already in
   // flight. The executor clears the hold and calls `releaseQueuedTurn`, which is
   // what starts the message queued here.
-  const heldByMerge = runnerForQueue?.mergeHold === true;
+  // docs/295 — a pre-turn compaction holds the session the same way a merge
+  // does: not running, but not free to start a second turn either.
+  const heldByMerge = runnerForQueue?.mergeHold === true || runnerForQueue?.preTurnHold === true;
   if (runnerForQueue?.running || runnerForQueue?.systemTurnInProgress || heldByMerge) {
     // Verify with the worker that an agent is actually running. The local
     // `running` flag can get stranded `true` if the orchestrator missed a
@@ -147,6 +149,7 @@ export async function handleSendMessage(
     if (
       actuallyRunning || runnerForQueue.running || runnerForQueue.systemTurnInProgress
       || runnerForQueue.mergeHold
+      || runnerForQueue.preTurnHold
     ) {
       // docs/178 — `/compact` while a turn is in flight: trigger compaction on
       // the resident live process (streaming Claude injects `/compact`; live
@@ -265,6 +268,7 @@ export async function handleSendMessage(
             // docs/144 — a dictated message steered into a running turn needs
             // the transcription hint just as much as one that starts a turn.
             dictated: msg.dictated,
+
           });
           // docs/138 + docs/140 — the streaming CLI keeps its spawn-time
           // `--permission-mode` for life, so a steered message inherits plan
@@ -389,6 +393,13 @@ export async function handleSendMessage(
         deliveryId: undefined,
         // docs/144 — rides the queue so the hint survives the drain.
         dictated: msg.dictated,
+
+        // docs/218 + docs/295 — the composer's tick boxes ride the queue. Without
+        // this the user's untick is dropped at the queue boundary: the entry
+        // drains while the session is still eligible, the absent intent reads as
+        // "follow the global setting", and the action they had just declined runs.
+        resetMergedBranch: msg.resetMergedBranch,
+        compactContext: msg.compactContext,
       }));
       return;
     }
@@ -615,6 +626,11 @@ export async function handleSendMessage(
     turnRunner.dispatch(prepareDispatch({
       text: userText,
       agentInterface: undefined,
+      // docs/218 + docs/295 — the same message, so the same per-send tick boxes.
+      // A merge hold is just another way for a send to wait, and waiting must
+      // not change what the user asked for.
+      resetMergedBranch: msg.resetMergedBranch,
+      compactContext: msg.compactContext,
       execution: "interactive",
       images: allImages,
       files: validatedFiles,
@@ -626,6 +642,7 @@ export async function handleSendMessage(
       onTurnComplete: undefined,
       deliveryId: undefined,
       dictated: msg.dictated,
+
     }));
     return;
   }
@@ -695,6 +712,10 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     runnerEarly.dispatch(prepareDispatch({
       text: answerText,
       agentInterface: undefined,
+      // An answer to AskUserQuestion is not a composer send — the tick boxes
+      // are not on screen for it, so there is no per-send intent to carry.
+      resetMergedBranch: undefined,
+      compactContext: undefined,
       execution: "interactive",
       images: undefined,
       files: undefined,
@@ -709,6 +730,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
       onTurnComplete: undefined,
       deliveryId: undefined,
       dictated: msg.dictated,
+
     }));
     return;
   }

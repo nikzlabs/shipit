@@ -879,6 +879,56 @@ describe("MessageInput", () => {
       expect(onSend.mock.calls[0]![0]).not.toHaveProperty("compactContext");
     });
 
+    it("re-ticks after a send, so the untick applies to that one message (req 5)", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      // Must report the send as ACCEPTED: the re-tick sits after the refusal
+      // check, so a composer whose parent turned the send away keeps both the
+      // text and the tick state the user had.
+      const onSend = renderComposer(vi.fn(() => true));
+      // Untick BOTH. Unticking only the compaction is not the case to test: the
+      // still-ticked reset optimistically clears eligibility, both controls
+      // vanish for the turn, and their reappearance re-ticks them anyway. It is
+      // the all-unticked send that leaves the session eligible and the controls
+      // on screen — so without an explicit re-tick the opt-out would silently
+      // ride every later message in the session.
+      fireEvent.click(screen.getByTestId("reset-merged-branch-control"));
+      fireEvent.click(screen.getByTestId("compact-context-control"));
+      typeAndSend();
+      typeAndSend();
+      expect(onSend.mock.calls[0]![0]).toMatchObject({
+        compactContext: false, resetMergedBranch: false,
+      });
+      expect(onSend.mock.calls[1]![0]).toMatchObject({
+        compactContext: true, resetMergedBranch: true,
+      });
+    });
+
+    it("does not carry an untick into a different session", () => {
+      // The composer is not keyed by session, so switching between two ALREADY
+      // eligible sessions leaves the visibility boolean true throughout — the
+      // re-check has to key on the session too, or one session's opt-out
+      // silently governs another session's send.
+      usePrStore.setState({ resetEligibleBySession: { s1: true, s2: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      const onSend = vi.fn();
+      const { rerender } = render(
+        <MessageInput
+          onSend={onSend} disabled={false} sessionId="s1"
+          agents={compactingAgent} activeAgentId="claude"
+        />,
+      );
+      fireEvent.click(screen.getByTestId("compact-context-control")); // untick in s1
+      rerender(
+        <MessageInput
+          onSend={onSend} disabled={false} sessionId="s2"
+          agents={compactingAgent} activeAgentId="claude"
+        />,
+      );
+      typeAndSend();
+      expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ compactContext: true }));
+    });
+
     it("re-ticks whenever the control reappears (non-sticky, req 5)", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });

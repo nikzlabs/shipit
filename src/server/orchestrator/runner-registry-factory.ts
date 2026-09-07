@@ -660,7 +660,7 @@ export function createRunnerRegistry(
         // Same lazy poller resolution as `postTurnReArmReset` below. Skipped
         // when the poller or credential store is absent (minimal test wiring) —
         // the reset needs the merged PR's base branch and the global setting.
-        preTurnReset: async (runner, sessionId, sessionDir) => {
+        preTurnReset: async (runner, sessionId, sessionDir, mergeRecheck, intent) => {
           const prStatusPoller = getPrStatusPoller?.();
           if (!prStatusPoller || !credentialStore) return { agentPrefix: "" };
           return await applyPreTurnReset({
@@ -675,6 +675,8 @@ export function createRunnerRegistry(
             runner,
             sessionId,
             sessionDir,
+            ...(mergeRecheck !== undefined ? { mergeRecheck } : {}),
+            ...(intent !== undefined ? { intent } : {}),
           });
         },
         // docs/295 — compact the context of a merged session before the turn's
@@ -687,6 +689,7 @@ export function createRunnerRegistry(
         // there is nothing to consult and the answer is "do not compact".
         preTurnCompact: async (runner, agentId, sessionId, sessionDir, createAgent, intent) => {
           if (!credentialStore) return { outcome: { kind: "not-applicable" } };
+          const prStatusPoller = getPrStatusPoller?.();
           return await applyPreTurnCompaction({
             deps: {
               getSession: (id) => sessionManager.get(id),
@@ -694,6 +697,17 @@ export function createRunnerRegistry(
               createGitManager,
               chatHistoryManager,
               getAutoResetMergedBranch: () => credentialStore.getAutoResetMergedBranch(),
+              // docs/282 + docs/295 — one merge probe per turn, paid for here
+              // and handed to the reset, so both gates read the same snapshot.
+              ...(prStatusPoller
+                ? {
+                    mergeRecheckDeps: {
+                      verifyPrState: (id: string) =>
+                        prStatusPoller.forceVerifySessionPrState(id, { armAbsentDebounce: false }),
+                      awaitMergeHandling: (id: string) => prStatusPoller.awaitMergeHandling(id),
+                    },
+                  }
+                : {}),
             },
             turnDeps: systemTurnDeps,
             runner,

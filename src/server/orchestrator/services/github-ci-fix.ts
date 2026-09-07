@@ -331,6 +331,9 @@ export async function triggerCIFix(
     onTurnComplete: undefined,
     deliveryId: undefined,
     dictated: undefined,
+    // No composer involved — a server-originated dispatch has no tick boxes.
+    resetMergedBranch: undefined,
+    compactContext: undefined,
   }));
   // attemptNumber is vestigial (the client ignores it); a manual fix is always a
   // single one-shot, so report 1.

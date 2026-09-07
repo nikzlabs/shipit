@@ -41,6 +41,8 @@ import type { TurnOutcome } from "./turn-settlement.js";
 import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protocol.js";
 import { formatSessionMessagePrompt } from "./session-message-origin.js";
 import { dependencyGapAgentPrefix } from "./dependency-staleness.js";
+import { isCompactCommand } from "../shared/compact-command.js";
+import { getAgentCapabilities } from "../shared/agent-registry.js";
 
 /**
  * How many times a dispatched first turn that exited WITHOUT producing a result
@@ -99,6 +101,23 @@ export async function runDispatchedTurn(
   // trust-revoke UI), and makes later revocation fail closed.
   runner.assertCanDispatch();
   const { text, activity } = opts;
+
+  // docs/178 + docs/295 req 12 — a `/compact` the user typed is one compaction
+  // and nothing more, on EVERY path that can end up running it.
+  //
+  // The send handler classifies an immediate send, but a `/compact` that had to
+  // queue — behind a merge hold, or behind a dispatched turn — drains through
+  // HERE, and this path knew nothing about the command. It ran both pre-turn
+  // hooks (so the branch reset and a second compaction fired for a maintenance
+  // command that must trigger neither) and then handed the CLI the literal
+  // `/compact` with a `[System] …PR was merged…` prefix in front of it, without
+  // the adapter's compaction flag — so the in-band recognition the prefix
+  // defeats never happened either, and the command was spent as prose.
+  //
+  // Re-derived from the queued text rather than carried as a flag, because it
+  // IS derived: the same parse, against the agent that will actually run it.
+  const isCompactRequest =
+    (getAgentCapabilities(agentId)?.supportsCompaction ?? false) && isCompactCommand(text);
 
   // docs/163 — a child/quick-session dispatched turn must run as a *streaming*
   // process when live steering is on and the agent supports it, EXACTLY as a
@@ -257,12 +276,16 @@ export async function runDispatchedTurn(
   //
   // Outside `runOnce` like the reset, so a no-result retry re-runs the agent but
   // not the compaction. A retried turn must not compact twice.
-  const compaction = sessionDir && opts.postTurn !== "none"
-    ? await deps.preTurnCompact?.(runner, agentId, runner.sessionId, sessionDir, createAgent)
+  const compaction = sessionDir && opts.postTurn !== "none" && !isCompactRequest
+    ? await deps.preTurnCompact?.(
+        runner, agentId, runner.sessionId, sessionDir, createAgent, opts.compactContext,
+      )
     : undefined;
 
-  const reset = sessionDir && opts.postTurn !== "none"
-    ? await deps.preTurnReset?.(runner, runner.sessionId, sessionDir)
+  const reset = sessionDir && opts.postTurn !== "none" && !isCompactRequest
+    ? await deps.preTurnReset?.(
+        runner, runner.sessionId, sessionDir, compaction?.mergeRecheck, opts.resetMergedBranch,
+      )
     : undefined;
 
   // docs/218 + docs/295 — both hooks anchor their transcript record right after
@@ -285,7 +308,7 @@ export async function runDispatchedTurn(
   // silence. Same `postTurn: "none"` exclusion as the reset above and for the
   // same reason: a rebase-resolution turn is a step inside the git operation
   // that produced the notice, not a continuation to be warned about.
-  const pendingNotice = opts.postTurn !== "none"
+  const pendingNotice = opts.postTurn !== "none" && !isCompactRequest
     ? deps.consumePendingAgentNotice?.(runner.sessionId) ?? ""
     : "";
   // The consume is read-and-CLEAR, so a turn that dies before the agent ever
@@ -320,7 +343,7 @@ export async function runDispatchedTurn(
   // agent-facing copy makes silence the safe fallback. The two notices differ
   // because their stakes do — a branch that was rewritten in silence is a
   // correctness hazard, a missed report status is not.
-  const bugOutcomeNotice = opts.systemTurn
+  const bugOutcomeNotice = opts.systemTurn || isCompactRequest
     ? ""
     : buildBugOutcomeNotice(deps.consumeBugOutcomes?.(runner.sessionId) ?? []);
 
@@ -543,6 +566,9 @@ export async function runDispatchedTurn(
       // reuse branch).
       ...(reuse ? { reuseExistingAgent: true } : {}),
       ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
+      // docs/178 — map the spawn to the adapter's compaction trigger instead of
+      // running `/compact` as an ordinary prompt.
+      ...(isCompactRequest ? { compact: true } : {}),
       // docs/169 — post-turn policy + system-turn marker + completion signal.
       ...(opts.postTurn !== undefined ? { postTurn: opts.postTurn } : {}),
       ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
