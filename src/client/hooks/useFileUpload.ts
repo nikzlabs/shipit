@@ -32,6 +32,14 @@ export function useFileUpload(sessionId: string | undefined) {
   // the session is ready and the POST completes.
   const deferredFilesRef = useRef<{ file: File; itemId: string }[]>([]);
 
+  // docs/293 req 3 — the bytes behind each chip that has not landed on the
+  // server yet, so "Retry" can re-POST them instead of deleting the attachment.
+  // Entries are dropped the moment an upload succeeds or its chip goes away, so
+  // this never grows past what is on screen. A chip does not survive a reload
+  // (hydrateUploads rebuilds from the server, and a failed upload is not there),
+  // so an entry is never missed by outliving its item.
+  const filesByItemId = useRef<Map<string, File>>(new Map());
+
   /** POST a batch of files; updates the existing UploadItems with server response. */
   const uploadToServer = useCallback(async (sid: string, files: File[], items: UploadItem[]) => {
     const formData = new FormData();
@@ -74,6 +82,8 @@ export function useFileUpload(sessionId: string | undefined) {
             size: uploaded.size,
             progress: 100,
           });
+          // The bytes are on the server now — a retry would re-POST a duplicate.
+          filesByItemId.current.delete(items[i].id);
         }
       }
     } catch (err) {
@@ -108,6 +118,9 @@ export function useFileUpload(sessionId: string | undefined) {
       }));
 
       store.addSessionUploads(items);
+      for (let i = 0; i < files.length; i++) {
+        filesByItemId.current.set(items[i].id, files[i]);
+      }
 
       // Read image files as data URLs for stable display in chat messages
       for (let i = 0; i < files.length; i++) {
@@ -160,6 +173,7 @@ export function useFileUpload(sessionId: string | undefined) {
     const item = pendingUploads[index];
     if (!item) return;
     if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    filesByItemId.current.delete(item.id);
     if (item.path && sessionId) {
       const filename = item.path.replace(/^\/uploads\//, "");
       markUploadDeleted(item.path);
@@ -180,12 +194,41 @@ export function useFileUpload(sessionId: string | undefined) {
     }
   }, [sessionId, pendingUploads]);
 
-  /** Retry a failed upload — removes it, user can re-attach. */
+  /**
+   * docs/293 req 3 — re-POST a failed upload's bytes. Previously this removed
+   * the chip, which read as "Retry deleted my attachment"; with req 2 blocking
+   * Send on a failed upload it would also have cleared the block by discarding
+   * the very thing the block protects.
+   *
+   * If the bytes are gone (the chip outlived the hook that holds them), fall
+   * back to removing the item — an unretryable chip that also blocks Send would
+   * strand the composer.
+   */
   const retryUpload = useCallback((index: number) => {
     const item = pendingUploads[index];
     if (!item) return;
-    useFileStore.getState().removeSessionUploadById(item.id);
-  }, [pendingUploads]);
+    // Nothing to retry — and the bytes were dropped on success, so without this
+    // the fallback below would read "unretryable" and delete a landed upload.
+    if (item.status === "ready") return;
+    const file = filesByItemId.current.get(item.id);
+    if (!file) {
+      filesByItemId.current.delete(item.id);
+      useFileStore.getState().removeSessionUploadById(item.id);
+      return;
+    }
+    const retried: UploadItem = { ...item, status: "uploading", progress: 0 };
+    useFileStore.getState().updateSessionUpload(item.id, {
+      status: "uploading",
+      progress: 0,
+      error: undefined,
+    });
+    if (!sessionId) {
+      // Same buffer the first attempt used — drained by the effect above.
+      deferredFilesRef.current.push({ file, itemId: item.id });
+      return;
+    }
+    void uploadToServer(sessionId, [file], [retried]);
+  }, [pendingUploads, sessionId, uploadToServer]);
 
   /** Get pending ready uploads as UploadRef[] for send_message. */
   const getUploadRefs = useCallback((): UploadRef[] => {
@@ -197,6 +240,7 @@ export function useFileUpload(sessionId: string | undefined) {
   /** Mark all pending uploads as sent (clears the input chips). */
   const clearUploads = useCallback(() => {
     const sentPaths = pendingUploads.map((u) => u.path).filter((p): p is string => Boolean(p));
+    filesByItemId.current.clear();
     useFileStore.getState().markUploadsSent();
     // These paths are now sent, so they're no longer a draft. Removing them
     // keeps the draft set tight; hydrateUploads would also prune them against
