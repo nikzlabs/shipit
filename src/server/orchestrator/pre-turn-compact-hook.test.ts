@@ -142,6 +142,7 @@ function makeHarness(over: {
   setting?: boolean;
   intent?: boolean;
   resident?: boolean;
+  backgroundWork?: string[];
 } = {}): Harness {
   const emitted: WsServerMessage[] = [];
   const appended: PersistedMessage[] = [];
@@ -167,6 +168,9 @@ function makeHarness(over: {
     getAgent: () => slot.agent,
     setAgent: (a: AgentProcess | null) => { slot.agent = a; },
     isStreamingActive: over.resident ?? false,
+    backgroundWorkDescriptions: over.backgroundWork ?? [],
+    systemTurnInProgress: false,
+    activeDeliveryId: undefined,
     running: false,
     chatMessageGroups: [],
     recordedCards: [],
@@ -309,6 +313,99 @@ describe("applyPreTurnCompaction — what it runs", () => {
     expect(input.prompt).toContain("merged");
   });
 
+  it("never leaves the session admitting a second turn while the caller is still mid-send", async () => {
+    // The executor releases turn ownership when the COMPACTION ends, but the
+    // caller then spends seconds in the branch reset before the user's turn
+    // claims the runner. A message arriving in that window would read the
+    // session as idle and be admitted — two agents, one slot, one working tree.
+    executeAgentTurn.mockImplementation(async (runner, _deps, agent, input) => {
+      // Mid-compaction: the WS send handler queues on this flag.
+      expect(runner!.systemTurnInProgress).toBe(true);
+      (agent as FakeAgent).fire({ type: "agent_compacted" } as AgentEvent);
+      // What the executor really does on its way out, `postTurn: "none"` and all.
+      runner!.running = false;
+      runner!.systemTurnInProgress = false;
+      input.onTurnComplete?.(TURN_COMPLETED);
+    });
+    const h = makeHarness();
+    await applyPreTurnCompaction(h.args);
+    expect(h.args.runner.running).toBe(true);
+  });
+
+  it("gives back the outer turn's delivery identity", async () => {
+    // The executor assigns `activeDeliveryId` unconditionally — including to
+    // `undefined` — so an unshielded compaction erases the delivery a dispatched
+    // continuation is running on behalf of. A retry supervisor reads exactly
+    // that to decide whether the work is still in flight.
+    executeAgentTurn.mockImplementation(async (runner, _deps, agent, input) => {
+      runner!.activeDeliveryId = undefined; // what the executor does
+      (agent as FakeAgent).fire({ type: "agent_compacted" } as AgentEvent);
+      input.onTurnComplete?.(TURN_COMPLETED);
+    });
+    const h = makeHarness();
+    h.args.runner.activeDeliveryId = "watch-7:attempt-1";
+    await applyPreTurnCompaction(h.args);
+    expect(h.args.runner.activeDeliveryId).toBe("watch-7:attempt-1");
+  });
+
+  it("puts systemTurnInProgress back even when the turn never settles", async () => {
+    // The timeout path reaches the `finally` WITHOUT the executor's terminal
+    // sequence having run. Left set, the flag suppresses live steering for the
+    // rest of the session and makes the queue drain stand down, stranding every
+    // later message.
+    executeAgentTurn.mockImplementation(async (_runner, _deps, _agent, _input) => {
+      // Starts a turn and never settles it.
+    });
+    const h = makeHarness();
+    vi.useFakeTimers();
+    try {
+      const pending = applyPreTurnCompaction(h.args);
+      await vi.advanceTimersByTimeAsync(300_001);
+      const result = await pending;
+      expect(result.outcome.kind).toBe("failed");
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(h.args.runner.systemTurnInProgress).toBe(false);
+    expect(h.slot.agent).toBeNull();
+  });
+
+  it("times out a setup that stalls INSIDE the executor, not just one that stalls after it", async () => {
+    // The sharper shape of the same failure. `prepareAgentEnv` and
+    // `buildRunParams` are awaits INSIDE `executeAgentTurn` that the timer
+    // cannot interrupt — so a hung credential round-trip means the executor's
+    // own promise never resolves. Sequencing (`await executeAgentTurn` and only
+    // then `await settled`) parks the user's message forever while the timer
+    // fires into a promise nobody is waiting on; racing them does not.
+    executeAgentTurn.mockImplementation(() => new Promise<void>(() => { /* never resolves */ }));
+    const h = makeHarness();
+    vi.useFakeTimers();
+    try {
+      const pending = applyPreTurnCompaction(h.args);
+      await vi.advanceTimersByTimeAsync(300_001);
+      const result = await pending;
+      expect(result.outcome.kind).toBe("failed");
+    } finally {
+      vi.useRealTimers();
+    }
+    // And the session is handed back usable rather than wedged.
+    expect(h.args.runner.systemTurnInProgress).toBe(false);
+    expect(h.slot.agent).toBeNull();
+  });
+
+  it("skips the compaction rather than killing a resident that holds background work", async () => {
+    // docs/260 req 13 — `dispatchOnRunner` refuses to let a system turn displace
+    // such a process, but this hook drives the executor directly and bypasses
+    // that admission check. Enqueuing is not available here (the compaction has
+    // to finish before the user's turn is assembled), so it stands down.
+    executorThat({ compacted: true });
+    const h = makeHarness({ resident: true, backgroundWork: ["reviewing the diff"] });
+    const result = await applyPreTurnCompaction(h.args);
+    expect(result.outcome).toEqual({ kind: "not-applicable" });
+    expect(executeAgentTurn).not.toHaveBeenCalled();
+    expect(h.killed).toEqual([]);
+  });
+
   it("retires and settles a resident process before spawning, then hands the slot back empty", async () => {
     executorThat({ compacted: true });
     const h = makeHarness({ resident: true });
@@ -368,6 +465,17 @@ describe("applyPreTurnCompaction — what it reports", () => {
     const h = makeHarness();
     const result = await applyPreTurnCompaction(h.args);
     expect(result.outcome).toEqual({ kind: "compacted" });
+  });
+
+  it("returns a failed outcome when the agent cannot even be created (req 9)", async () => {
+    // The user's message must run whatever happens here. A throw out of this
+    // hook skips BOTH callers' executors, so the message is lost outright —
+    // and without even the notice the failure outcome exists to carry.
+    const h = makeHarness();
+    h.args.createAgent = () => { throw new Error("container unreachable"); };
+    const result = await applyPreTurnCompaction(h.args);
+    expect(result.outcome).toEqual({ kind: "failed", detail: "container unreachable" });
+    expect(result.afterUserMessagePersisted).toBeDefined();
   });
 
   it("writes its notice exactly once across both delivery routes", async () => {

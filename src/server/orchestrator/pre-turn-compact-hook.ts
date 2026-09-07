@@ -198,7 +198,34 @@ export async function applyPreTurnCompaction(
   }
   if (!eligible) return NOT_APPLICABLE;
 
-  const outcome = await runCompactionTurn({ turnDeps, runner, agentId, sessionId, createAgent });
+  // docs/260 req 13 — a resident process holding background work (a sub-agent
+  // review, agent-started background tasks) may not be displaced by a system
+  // turn: the fresh spawn retires it and the tokens already spent on that work
+  // are lost. `dispatchOnRunner` enforces this by ENQUEUING such a system turn,
+  // but this hook drives the executor directly and so bypasses that admission
+  // check entirely. Enqueuing is not available here — the compaction has to
+  // finish before the user's turn is assembled — so the answer is to skip it.
+  // Losing one compaction is a far smaller harm than killing a running review.
+  if (runner.getAgent() !== null && runner.backgroundWorkDescriptions.length > 0) {
+    console.log(
+      `[pre-turn-compact] skipping the compaction for ${sessionId}: the resident process holds `
+      + `${runner.backgroundWorkDescriptions.length} background task(s) that retiring it would lose`,
+    );
+    return NOT_APPLICABLE;
+  }
+
+  // Requirement 9 is that the user's message runs whatever happens here, so
+  // NOTHING below may throw out of this function. `runCompactionTurn` creates an
+  // agent and touches the runner before its own `try`, and a throw there (a
+  // container that will not hand back a proxy) would reject the hook, skip both
+  // callers' executors, and lose the user's message entirely — without even the
+  // failure notice this outcome exists to carry.
+  let outcome: CompactOutcome;
+  try {
+    outcome = await runCompactionTurn({ turnDeps, runner, agentId, sessionId, createAgent });
+  } catch (err) {
+    outcome = { kind: "failed", detail: err instanceof Error ? err.message : String(err) };
+  }
 
   if (outcome.kind === "compacted") {
     // The compaction card (docs/178) is the record, emitted and persisted by the
@@ -269,6 +296,33 @@ async function runCompactionTurn(args: {
 }): Promise<CompactOutcome> {
   const { turnDeps, runner, agentId, sessionId, createAgent } = args;
 
+  // ── Turn ownership, borrowed and given back ───────────────────────────────
+  //
+  // The executor OWNS the runner's turn-lifecycle state, and it releases that
+  // state when the turn it is running ends — which here is the compaction, not
+  // the user's message. Three pieces have to be shielded, and each one was a
+  // live defect before this block existed:
+  //
+  //  1. `systemTurnInProgress`. `finishTurn` clears it, and the caller then
+  //     spends seconds in the branch reset (a `git fetch`, a force-push) before
+  //     the user's turn claims the runner. A message arriving in that window
+  //     reads the session as idle and is ADMITTED — two agents, one slot, one
+  //     working tree. Held across the whole nested turn INCLUDING the settle
+  //     gap (`tryDrain` clears `running` several awaits before `onTurnComplete`
+  //     fires), because the WS send handler queues on exactly this flag.
+  //  2. `activeDeliveryId`. The executor assigns it unconditionally, including
+  //     to `undefined`, so the compaction erases the delivery a dispatched
+  //     continuation is running on behalf of — and `hasDelivery` then answers
+  //     false for a delivery that is very much in flight, which is what a
+  //     merge-watch retry supervisor reads before re-sending.
+  //  3. `running`, on the way out. Restored to true rather than to its prior
+  //     value: the caller is mid-send and owns the session until its own
+  //     executor takes over a few statements later. Its `finally` and the
+  //     `verifyRunningState` reconciler are the backstops if it never does.
+  const priorSystemTurn = runner.systemTurnInProgress;
+  const priorDeliveryId = runner.activeDeliveryId;
+  runner.systemTurnInProgress = true;
+
   // A system turn never adopts the resident streaming process, and declining to
   // adopt does not make it go away — it is still running in the worker, and the
   // fresh spawn below would displace its slot and orphan it. Retire it, settling
@@ -317,7 +371,8 @@ async function runCompactionTurn(args: {
   }, COMPACTION_TIMEOUT_MS);
 
   try {
-    await executeAgentTurn(runner, turnDeps, agent, {
+    // Deliberately NOT awaited — see the `return await settled` below.
+    void executeAgentTurn(runner, turnDeps, agent, {
       agentId,
       sessionId,
       prompt: `/compact ${POST_MERGE_COMPACTION_INSTRUCTIONS}`,
@@ -360,15 +415,21 @@ async function runCompactionTurn(args: {
                 },
         );
       },
+    }).catch((err: unknown) => {
+      // A throw out of `executeAgentTurn` itself (env prep, run-param assembly)
+      // means the turn never started, so `onTurnComplete` will never fire.
+      settle({ kind: "failed", detail: err instanceof Error ? err.message : String(err) });
     });
-    return await settled;
-  } catch (err) {
-    // A throw out of `executeAgentTurn` itself (env prep, run-param assembly)
-    // means the turn never started, so `onTurnComplete` will never fire.
-    settle({
-      kind: "failed",
-      detail: err instanceof Error ? err.message : String(err),
-    });
+    // `settled` is the ONLY thing this function waits for, and the executor's
+    // promise is deliberately not part of that wait.
+    //
+    // Awaiting the executor first would make the timeout unable to end a setup
+    // that stalls INSIDE it: `prepareAgentEnv` and `buildRunParams` are awaits
+    // the timer cannot interrupt, so a hung credential round-trip parked the
+    // user's message forever while the timer fired into a promise nobody was
+    // waiting on. The executor reaches this latch by its own routes instead —
+    // `onTurnComplete` on every terminal path, the `catch` above if it throws
+    // before starting a turn at all — so nothing is dropped by not awaiting it.
     return await settled;
   } finally {
     clearTimeout(timer);
@@ -377,5 +438,15 @@ async function runCompactionTurn(args: {
     // that turn's `superseded` settlement (harmless) and, in container mode, own
     // the SSE routing its events depend on (not harmless).
     if (runner.getAgent() === agent) runner.setAgent(null);
+    // Give back what was borrowed above. In a `finally` because the timeout path
+    // reaches here WITHOUT the executor's terminal sequence having run, so this
+    // is the only thing that puts `systemTurnInProgress` back — left set, it
+    // suppresses live steering for the rest of the session and makes the WS
+    // queue drain stand down, stranding every later message.
+    runner.systemTurnInProgress = priorSystemTurn;
+    runner.activeDeliveryId = priorDeliveryId;
+    // The caller is still mid-send and owns the session until its own executor
+    // claims the runner; until then nothing else may be admitted.
+    runner.running = true;
   }
 }

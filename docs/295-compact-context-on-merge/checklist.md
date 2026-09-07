@@ -94,6 +94,54 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 ## Close-out
 
 - [x] `npm run lint:dev` and `npm run typecheck` clean.
-- [ ] Independent review against every numbered requirement
-      (`shipit agent run --role reviewer`), review-only.
+- [x] Independent review against every numbered requirement
+      (`shipit agent run --role reviewer`), review-only. It found eight defects,
+      several confirmed with its own in-memory probes, all in one theme: the
+      executor OWNS the runner's turn-lifecycle state and releases it when the
+      *compaction* ends, not when the user's message does. `postTurn: "none"`
+      suppresses the drain and the commit — it does not stop the turn giving up
+      ownership. Fixed below; the remainder is listed as open.
+
+### Fixed from the review
+
+- [x] The session no longer reads idle between the compaction settling and the
+      user's turn claiming the runner (the branch reset sits in that window and
+      takes seconds, so a message arriving there was ADMITTED — two agents, one
+      working tree).
+- [x] The compaction no longer erases the outer turn's `activeDeliveryId`, which
+      a merge-watch retry supervisor reads to decide whether work is in flight.
+- [x] `systemTurnInProgress` is restored even on the timeout path, where the
+      executor's terminal sequence never runs. Left set, it suppressed live
+      steering for the rest of the session and stranded the queue.
+- [x] The timeout now bounds a stall INSIDE the executor (`prepareAgentEnv`,
+      `buildRunParams`), not just one after it — the executor's promise is raced
+      against the settle latch rather than awaited ahead of it.
+- [x] A `createAgent` throw returns a `failed` outcome instead of rejecting the
+      hook, which used to skip both callers' executors and lose the user's
+      message outright — a direct req 9 violation.
+- [x] The compaction stands down rather than killing a resident process that
+      holds background work (docs/260 req 13). `dispatchOnRunner` enforces this
+      by enqueuing; this hook drives the executor directly and bypassed it.
+
+### Still open from the review
+
+- [ ] **The compaction emits the runner's unscoped `turn_result`**, which the
+      outer dispatch's settlement latches as evidence that *its* prompt ran. A
+      later drop is then reported as `interrupted` ("do not re-deliver") for a
+      user message that never ran. Not local to this hook.
+- [ ] **Recovery attempts escape the hook's observation.** The executor may
+      replace the agent on auth heal or quota failover; the hook watches and
+      kills only the first, so a successful compaction on attempt two is
+      reported as `no-compaction`, and a timeout kills the retired process while
+      the live one stays installed.
+- [ ] **A programmatic continuation misses a merge the reset then discovers.**
+      Eligibility is read before `recheckMergeBeforeTurn`, so inside the poll
+      window the turn resets without compacting.
+- [ ] **The queue drops per-send intent** (`compactContext`, `resetMergedBranch`,
+      and the `/compact` classification). Pre-existing for docs/218; this feature
+      inherits it, and a queued `/compact` can reach the pre-turn steps without
+      `opts.compact`.
+- [ ] **The composer keeps an untick across a session switch** — the non-sticky
+      effect keys on the visibility boolean, which stays true between two
+      already-eligible sessions.
 - [ ] Comment the outcome on `planning#522`.
