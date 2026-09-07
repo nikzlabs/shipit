@@ -2,41 +2,50 @@
 
 Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md).
 
-## Blocked
+## First — settle the one unproven thing
 
-- [ ] Answer the open question in `requirements.md`: does a continuation the
-      user did not type also compact? Implementation waits for it.
+- [ ] Establish in code whether a compaction spawn can run in a turn's pre-spawn
+      phase without the executor treating its completion as the user's turn
+      finishing (`agent_result`, the `done` path, the post-turn commit
+      sequence). Everything below assumes an answer to this.
 
-## Wire path
+## The shared step
 
-- [ ] Add `compactContext?: boolean` to `WsSendMessage`
-      (`shared/types/ws-client-messages.ts`), documented as non-sticky per-send
-      intent beside `resetMergedBranch`.
-- [ ] Carry it through `ws-handlers/send-message.ts` into the idle send path.
+- [ ] New `orchestrator/pre-turn-compact-hook.ts` — decide, run one compaction
+      spawn (`run({ compact: true })` semantics), await it, return an outcome.
+- [ ] Return an **outcome**, never bare completion: errored, compacted, or
+      produced no compaction event at all.
+- [ ] Give Claude the post-merge instructions in the compaction prompt; leave
+      the other harnesses to ignore them.
+- [ ] Do not persist a user row or echo a `/compact` bubble for the step.
+- [ ] Never let the outcome gate the turn that follows (req 9).
 
-## The compaction pre-step
+## Wiring both transports (req 13)
 
-- [ ] In the idle path of `send-message.ts`, when the intent is set, the backend
-      declares `supportsCompaction`, and the send is **not** already an
-      `isCompactRequest` (req 12), run the compaction turn before the user's
-      turn.
-- [ ] Give the compaction turn Claude's post-merge instructions in its prompt;
-      leave the other harnesses to ignore them.
-- [ ] Do not persist a user row or echo a `/compact` bubble for the synthetic
-      turn.
-- [ ] Await it, and never let its outcome gate the user's turn (req 9).
-- [ ] Report the outcome, not the completion: a notice when the turn errored,
-      and a notice when the turn produced no compaction event at all (req 9,
-      docs/276 req 2).
+- [ ] Call it from `ws-handlers/agent-execution.ts`, before `applyPreTurnReset`.
+- [ ] Call it from `dispatched-turn.ts`, before `deps.preTurnReset` — once per
+      dispatched message, **outside `runOnce`**, so a no-result retry does not
+      compact twice.
+- [ ] Apply the same `postTurn: "none"` exclusion the reset uses, so a
+      rebase-conflict resolution step never compacts.
+- [ ] Wire it into `SystemTurnDeps` in `runner-registry-factory.ts`, beside
+      `preTurnReset`.
+
+## Wire path for the per-send intent
+
+- [ ] `compactContext?: boolean` on `WsSendMessage`
+      (`shared/types/ws-client-messages.ts`), documented as non-sticky.
+- [ ] Carry it through `ws-handlers/send-message.ts` into the turn options.
+- [ ] Suppress the step when the send is already an `isCompactRequest` (req 12).
 
 ## Composer control
 
 - [ ] `showCompactControl = showResetControl && supportsCompaction` in
-      `MessageInput.tsx` — no usage or occupancy state read (req 3, req 10).
+      `MessageInput.tsx` — reads no usage or occupancy state (req 3, req 10).
 - [ ] Checked by default, non-sticky, re-checked whenever the control reappears
       (req 2, req 5), mirroring `resetChecked`.
-- [ ] Render it as a subordinate line inside the existing control block, not as
-      an equal-weight second row.
+- [ ] Render as a subordinate line inside the existing control block, not an
+      equal-weight second row.
 - [ ] Put the flag on the send payload only when the control was shown.
 
 ## Setting
@@ -47,18 +56,22 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 
 ## Tests
 
-- [ ] The compaction turn runs before the user's turn, and the user's turn still
-      carries the docs/218 merge prefix (req 7).
+- [ ] The compaction runs before the reset, and the turn still carries the
+      docs/218 merge prefix afterwards (req 7).
+- [ ] A dispatched continuation compacts under the global setting, with no
+      checkbox involved (req 13).
+- [ ] A retried dispatched turn compacts once, not twice.
+- [ ] A `postTurn: "none"` turn never compacts.
 - [ ] A `/compact` send with the control visible compacts exactly once and does
       not reset the branch (req 12).
-- [ ] A failed compaction still runs the user's turn **and** leaves a notice
-      (req 9). Prove the notice case goes red without the fix.
-- [ ] A compaction that reports nothing is not reported as a success.
-- [ ] The two checkboxes are independent: unticking either does not change what
-      the other does (req 6).
-- [ ] The control is hidden when the harness declares `supportsCompaction:
-      false` (req 10), and hidden when the global setting is off (req 11).
+- [ ] A failed compaction still runs the turn **and** leaves a notice (req 9).
+- [ ] A compaction that reports no event is not reported as a success.
+- [ ] The two checkboxes are independent (req 6).
+- [ ] The control is hidden when the harness cannot compact (req 10) and when
+      the global setting is off (req 11).
 - [ ] The control's visibility does not change with context occupancy (req 3).
+- [ ] Delete each guard singly and watch it fail, so no test passes with the
+      defect present.
 
 ## Close-out
 

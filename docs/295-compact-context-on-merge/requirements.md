@@ -65,9 +65,13 @@ later turn, and the agent reads them as live work in progress.
     reset. This boundary already exists today, and this feature does not weaken
     it.
 
+13. A continuation that the user did not type also compacts, under the same
+    setting and in the same conditions in which its branch is reset. It has no
+    checkbox, so the setting alone decides.
+
 ## Requirement provenance
 
-Requirements 1 to 6 and 11 come from what the user asked for and decided.
+Requirements 1 to 6, 11 and 13 come from what the user asked for and decided.
 Requirements 7 to 10 and 12 were not asked for: each one keeps a guarantee that
 already ships (docs/218 for the merge notice, docs/178 for how a compaction
 appears and for the `/compact` boundary) from becoming weaker. They are recorded
@@ -75,15 +79,7 @@ apart from the user's own requirements so that the difference stays visible.
 
 ## Open questions
 
-- **Does a continuation that the user did not type also compact?** docs/218
-  applies its branch reset to programmatic continuations as well as typed
-  messages — a wake turn after a merge, `shipit session message`, a click inside
-  an agent-built page. Those have no composer and no checkbox, so they follow the
-  global setting. Requirements 1 to 6 describe the composer only, so this feature
-  is silent about them. Options: (a) a programmatic continuation compacts too,
-  under the same setting, which matches docs/218 and covers the merge-wake turn
-  where nobody is watching; (b) the feature is deliberately composer-only, and an
-  unattended turn never has its context compacted without a person present.
+None.
 
 ## Resolved questions
 
@@ -105,3 +101,13 @@ apart from the user's own requirements so that the difference stays visible.
   Advanced that reads as a near-duplicate of the first. This carries a
   constraint into the design: turning that one setting off must hide both
   controls, which requirement 11 states.
+
+- **2026-09-07 — Does a continuation that the user did not type also compact?**
+  Yes, governed by the same setting. A wake turn after a merge, a
+  `shipit session message`, and a click inside an agent-built page already get
+  the branch reset of docs/218 under that setting, and the wake turn is where a
+  stale context does the most harm, because nobody is watching the agent re-read
+  work that already shipped. A narrower answer covering only the wake turn was
+  offered and rejected: it would split programmatic continuations into two
+  classes that docs/218 treats as one, and the two gates could then disagree.
+  Recorded as requirement 13.
