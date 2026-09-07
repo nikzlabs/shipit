@@ -217,3 +217,27 @@ describe("FileUploadChips — recovery affordances (docs/293)", () => {
     expect(onRemove).toHaveBeenCalledWith(0);
   });
 });
+
+describe("FileUploadChips — the way out is actually reachable (docs/293 req 7)", () => {
+  it("reveals an image's Remove without hover on touch and keyboard", () => {
+    // A class assertion, deliberately: jsdom computes no styles and a synthetic
+    // click cannot tell a visible control from an invisible one. What can be
+    // checked is that the reveal is not hover-only — which is the defect: on a
+    // touch device the control did not exist, and req 1 bars Send while an
+    // attachment uploads.
+    render(
+      <FileUploadChips
+        uploads={[{
+          id: "img", name: "shot.png", status: "uploading", progress: 10,
+          previewUrl: "blob:shot", mimeType: "image/png",
+        } as UploadItem]}
+        onRemove={vi.fn()}
+        onRetry={vi.fn()}
+      />,
+    );
+    const cls = screen.getByLabelText("Remove shot.png").className;
+    expect(cls).toContain("group-hover:opacity-100");
+    expect(cls).toContain("pointer-coarse:opacity-100");
+    expect(cls).toContain("focus-visible:opacity-100");
+  });
+});

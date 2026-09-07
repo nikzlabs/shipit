@@ -50,6 +50,14 @@ converted paste is the case where the clipboard is the user's only other copy.
   and a retry duplicates it. Ruling that out needs an idempotency key on the
   upload request. The *reachable* version of this — a batch that failed part-way,
   leaving earlier files written — is fixed (req 4).
+- **`hydrateUploads`' stale-snapshot and session-ownership bugs.** A listing that
+  returns after a newer upload landed prunes that upload's persisted draft path,
+  and the response is applied with no check that it belongs to the session now
+  in view. Both predate this work and belong to hydration rather than to Send.
+  Tracked as planning#519.
+- **`/compact` drops attachments the same way `/review` did.** The active-turn
+  interception in `send-message.ts` returns without handling them, after the
+  composer has already cleared its chips. Pre-existing; tracked with the above.
 - Nothing changes about *when* a composer is dead as a whole (`disabledReason`,
   `docs/257`) or about Send waiting for the workspace on a new-session view
   (`docs/291`). Those bars already exist and keep their own reasons.

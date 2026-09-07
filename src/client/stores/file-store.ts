@@ -177,9 +177,42 @@ export function releaseUploadBytes(id: string): void {
   uploadBytes.delete(id);
 }
 
-export function releaseAllUploadBytes(): void {
-  uploadBytes.clear();
+/**
+ * Upload items with a POST in flight *anywhere*, not just in one hook.
+ *
+ * Module-level for the same reason the bytes are: unmounting a hook does not
+ * cancel its `fetch`, which goes on running and goes on writing to this store.
+ * A replacement hook with its own private set therefore saw an "uploading" chip
+ * with bytes and no owner, and POSTed it a second time — two copies on the
+ * server, and a chip whose bytes were released by whichever request landed
+ * first, leaving Retry with nothing. Ownership belongs to the request, so the
+ * record of it has to outlive the component that started it.
+ */
+const activeUploads = new Set<string>();
+
+export function markUploadActive(id: string): void {
+  activeUploads.add(id);
 }
+
+export function markUploadSettled(id: string): void {
+  activeUploads.delete(id);
+}
+
+export function isUploadActive(id: string): boolean {
+  return activeUploads.has(id);
+}
+
+/**
+ * Forget every pending upload: its bytes, and the record that a request is
+ * running for it. Called when the chips themselves are dropped (a session
+ * switch), where an in-flight request has nothing left to update and an id with
+ * no chip can never be resumed — so keeping either would only leak.
+ */
+export function forgetPendingUploads(): void {
+  uploadBytes.clear();
+  activeUploads.clear();
+}
+
 
 function errorMessageFromResponse(status: number, fallback: string, body: unknown): string {
   if (body && typeof body === "object" && "error" in body && typeof body.error === "string") {
@@ -211,7 +244,7 @@ export const useFileStore = create<FileState>((set, get) => ({
   // Drops `sessionUploads`, so the bytes held for those chips go with them —
   // a session switch calls this while the composer stays mounted.
   reset: () => {
-    releaseAllUploadBytes();
+    forgetPendingUploads();
     set(initialState);
   },
 

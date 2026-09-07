@@ -73,10 +73,15 @@ function ImageThumbnail({ u, index, onRemove, onRetry }: { u: UploadItem; index:
       )}
       {/* Removable in every state, including mid-upload: req 1 bars Send while
           an attachment uploads, so a chip with no way off the screen would
-          strand the composer. */}
+          strand the composer.
+
+          `pointer-coarse` and `focus-visible` are part of that, not polish: a
+          hover-only reveal is a control that does not exist on a touch device or
+          to the keyboard, and req 7 is about there being a way out rather than
+          about the DOM containing a button. */}
       <button
         onClick={() => onRemove(index)}
-        className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-(--color-error) text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+        className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-(--color-error) text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 transition-opacity"
         aria-label={`Remove ${u.name}`}
         title={`Remove ${u.name}`}
       >

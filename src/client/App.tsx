@@ -589,6 +589,7 @@ export default function App() {
       // a same-model review is narrated as prose. No review tool is involved.
       const trimmed = text.trim();
       if (/^\/review(?:\s|$)/.test(trimmed)) {
+        const reviewSettings = useSettingsStore.getState();
         const argMatch = /^\/review\s+@?(\S+)/.exec(trimmed);
         const targetFile =
           argMatch?.[1] ?? useFileStore.getState().previewFile ?? undefined;
@@ -635,13 +636,21 @@ export default function App() {
             role: "user",
             text: prompt,
             ...(uploadRefs.length > 0 ? { uploadPaths: uploadRefs.map((u) => u.path) } : {}),
+            ...(reviewSettings.pendingFiles.length > 0
+              ? { files: reviewSettings.pendingFiles.map((f) => ({ path: f.path, contentPreview: "" })) }
+              : {}),
           },
           activity: "Reviewing...",
           dispatch: (requestId) =>
             send({
               type: "send_message",
               requestId,
-              ...buildReviewSendFrame({ prompt, sessionId: sid, uploadRefs }),
+              ...buildReviewSendFrame({
+              prompt,
+              sessionId: sid,
+              uploadRefs,
+              pendingFiles: reviewSettings.pendingFiles,
+            }),
             }),
         });
         return;

@@ -34,7 +34,7 @@
  * fully decoupled from AI review.
  */
 
-import type { UploadRef } from "../../server/shared/types.js";
+import type { UploadRef, FileContextRef } from "../../server/shared/types.js";
 
 export type ReviewerMode = "role" | "subagent";
 
@@ -158,10 +158,19 @@ export function buildReviewSendFrame(opts: {
   prompt: string;
   sessionId: string;
   uploadRefs: UploadRef[];
-}): { text: string; sessionId: string; uploads?: UploadRef[] } {
+  pendingFiles: FileContextRef[];
+}): {
+  text: string;
+  sessionId: string;
+  uploads?: UploadRef[];
+  files?: FileContextRef[];
+} {
   return {
     text: opts.prompt,
     sessionId: opts.sessionId,
     ...(opts.uploadRefs.length > 0 ? { uploads: opts.uploadRefs } : {}),
+    // Both kinds, not just uploads: an `@`-mentioned workspace file is an
+    // attachment too, and the composer clears those on send as well.
+    ...(opts.pendingFiles.length > 0 ? { files: opts.pendingFiles } : {}),
   };
 }

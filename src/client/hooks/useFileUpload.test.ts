@@ -7,7 +7,29 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { StrictMode } from "react";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { useFileUpload } from "./useFileUpload.js";
-import { useFileStore, getUploadBytes, releaseAllUploadBytes } from "../stores/file-store.js";
+import {
+  useFileStore,
+  getUploadBytes,
+  forgetPendingUploads,
+} from "../stores/file-store.js";
+import { getSavedDraftUploads } from "../utils/local-storage.js";
+
+/** A fetch stub whose POSTs hang until the returned `release` is called. */
+function gatedUploads() {
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((r) => { release = r; });
+  let posts = 0;
+  vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+    if (init?.method !== "POST") return { ok: true, json: async () => ({ files: [] }) };
+    posts += 1;
+    await gate;
+    return {
+      ok: true,
+      json: async () => ({ files: [{ name: "notes.txt", path: "/uploads/notes.txt", size: 4, type: "upload" }] }),
+    };
+  }));
+  return { get posts() { return posts; }, release: () => release?.() };
+}
 
 const SESSION = "session-1";
 
@@ -35,7 +57,10 @@ function stubUploads({ failFirst }: { failFirst: number }) {
 
 beforeEach(() => {
   useFileStore.setState({ sessionUploads: [] });
-  releaseAllUploadBytes();
+  forgetPendingUploads();
+  // Draft-upload paths are localStorage-backed, so an earlier test's successful
+  // upload would otherwise satisfy a later test's draft assertion.
+  localStorage.clear();
 });
 
 afterEach(() => {
@@ -149,10 +174,10 @@ describe("useFileUpload — resuming an upload nobody is driving", () => {
     expect(server.posts).toBe(1);
   });
 
-  it("resumes an upload whose hook was remounted mid-flight", async () => {
-    // Without this the chip sat at "uploading" forever: the request belonged to
-    // a hook that no longer exists, Retry only exists for errors, and docs/293
-    // req 1 bars Send while anything is uploading.
+  it("resumes an upload whose hook went away before the POST started", async () => {
+    // Without this the chip sat at "uploading" forever: the queue that would
+    // have started it belonged to a hook that no longer exists, Retry only
+    // exists for errors, and docs/293 req 1 bars Send while anything uploads.
     const server = stubUploads({ failFirst: 0 });
     const first = renderHook(({ sid }) => useFileUpload(sid), {
       initialProps: { sid: undefined as string | undefined },
@@ -165,6 +190,31 @@ describe("useFileUpload — resuming an upload nobody is driving", () => {
 
     // The replacement hook mounts with a session — and finishes the job.
     const second = renderHook(() => useFileUpload(SESSION));
+    await waitFor(() => expect(second.result.current.uploads[0]?.status).toBe("ready"));
+    expect(server.posts).toBe(1);
+  });
+
+  it("does NOT restart an upload whose request is still running", async () => {
+    // Unmounting does not cancel the `fetch`: it runs to completion and still
+    // writes to the store. A replacement hook that re-POSTed would put two
+    // copies on the server, and whichever landed first would release the bytes —
+    // leaving the other's failure on a chip Retry could no longer fix.
+    const server = gatedUploads();
+    const first = renderHook(() => useFileUpload(SESSION));
+    act(() => {
+      void first.result.current.uploadFiles([new File(["hi!!"], "notes.txt", { type: "text/plain" })]);
+    });
+    await waitFor(() => expect(server.posts).toBe(1));
+
+    // Remount with the request still open — what crossing the mobile breakpoint
+    // does mid-upload.
+    first.unmount();
+    const second = renderHook(() => useFileUpload(SESSION));
+    await act(async () => { await Promise.resolve(); });
+    expect(server.posts).toBe(1);
+
+    // The original request still lands, and the surviving hook sees the result.
+    await act(async () => { server.release(); await Promise.resolve(); });
     await waitFor(() => expect(second.result.current.uploads[0]?.status).toBe("ready"));
     expect(server.posts).toBe(1);
   });
@@ -235,4 +285,40 @@ describe("useFileUpload — retained bytes do not outlive their chips", () => {
     expect(result.current.uploads).toHaveLength(0);
   });
 
+});
+
+describe("useFileUpload — an upload removed mid-flight stays removed", () => {
+  it("records no draft and deletes the file the server saved (docs/293 req 7)", async () => {
+    // Remove is available while an upload is in flight, and the request goes on
+    // regardless. Recording a draft for a chip the user dismissed had
+    // `hydrateUploads` restore it onto a later message.
+    const deletes: string[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") { deletes.push(url); return { ok: true, json: async () => ({}) }; }
+      if (init?.method !== "POST") return { ok: true, json: async () => ({ files: [] }) };
+      await gate;
+      return {
+        ok: true,
+        json: async () => ({ files: [{ name: "notes.txt", path: "/uploads/notes.txt", size: 4, type: "upload" }] }),
+      };
+    }));
+
+    const { result } = renderHook(() => useFileUpload(SESSION));
+    act(() => {
+      void result.current.uploadFiles([new File(["hi!!"], "notes.txt", { type: "text/plain" })]);
+    });
+    await waitFor(() => expect(result.current.uploads).toHaveLength(1));
+
+    // Dismiss it while the POST is still open.
+    act(() => { result.current.removeUpload(0); });
+    expect(result.current.uploads).toHaveLength(0);
+
+    await act(async () => { release?.(); await Promise.resolve(); });
+    await waitFor(() => expect(deletes.some((u) => u.includes("notes.txt"))).toBe(true));
+    // It does not come back, and nothing was recorded that could bring it back.
+    expect(result.current.uploads).toHaveLength(0);
+    expect(getSavedDraftUploads(SESSION)).not.toContain("/uploads/notes.txt");
+  });
 });

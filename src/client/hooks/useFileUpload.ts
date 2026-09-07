@@ -11,7 +11,7 @@
  */
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: resume uploads when sessionId becomes available
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { UploadedFile, UploadRef, UploadItem } from "../../server/shared/types.js";
 import {
@@ -22,6 +22,9 @@ import {
   getUploadBytes,
   pendingUploadBytes,
   releaseUploadBytes,
+  markUploadActive,
+  markUploadSettled,
+  isUploadActive,
 } from "../stores/file-store.js";
 import { addDraftUpload, removeDraftUploads } from "../utils/local-storage.js";
 
@@ -33,14 +36,22 @@ interface UploadResponse {
 
 let uploadIdCounter = 0;
 
+/** Best-effort DELETE of an uploaded file the composer no longer refers to. */
+async function deleteUploadFromServer(sessionId: string, uploadPath: string): Promise<void> {
+  const filename = uploadPath.replace(/^\/uploads\//, "");
+  try {
+    const res = await fetch(
+      `/api/sessions/${sessionId}/files/uploads/${encodeURIComponent(filename)}`,
+      { method: "DELETE" },
+    );
+    if (!res.ok) console.warn(`[upload] DELETE ${uploadPath} failed: ${res.status} ${res.statusText}`);
+  } catch (err: unknown) {
+    console.warn("[upload] DELETE failed:", err);
+  }
+}
+
 export function useFileUpload(sessionId: string | undefined) {
   const pendingUploads = useFileStore(useShallow((s) => s.sessionUploads.filter((u) => u.pending)));
-
-  // Upload items this hook currently has a POST in flight for. Guards the resume
-  // pass below and a double Retry from starting a second request for the same
-  // chip. Hook-local on purpose: it describes THIS hook's requests, and a
-  // remounted hook has none.
-  const inFlightRef = useRef<Set<string>>(new Set());
 
   /** POST a batch of files; updates the existing UploadItems with server response. */
   const uploadToServer = useCallback(async (sid: string, files: File[], items: UploadItem[]) => {
@@ -48,7 +59,7 @@ export function useFileUpload(sessionId: string | undefined) {
     for (const file of files) {
       formData.append("file", file);
     }
-    for (const item of items) inFlightRef.current.add(item.id);
+    for (const item of items) markUploadActive(item.id);
     try {
       const res = await fetch(`/api/sessions/${sid}/files/uploads`, {
         method: "POST",
@@ -68,6 +79,16 @@ export function useFileUpload(sessionId: string | undefined) {
       for (let i = 0; i < items.length; i++) {
         const uploaded = data.files[i];
         if (uploaded) {
+          // docs/293 req 7 — the chip may be gone: Remove is available while an
+          // upload is in flight, and the request goes on regardless. Recording a
+          // draft for it would have `hydrateUploads` restore the attachment the
+          // user explicitly dismissed, onto a later message. Delete the file the
+          // server did save rather than leaving it orphaned.
+          if (!st.sessionUploads.some((u) => u.id === items[i].id)) {
+            releaseUploadBytes(items[i].id);
+            void deleteUploadFromServer(sid, uploaded.path);
+            continue;
+          }
           // A fresh upload supersedes any stale tombstone for its path. Without
           // this, re-uploading a same-named file (server reuses the name via
           // deduplicateFilename) leaves a prior delete's tombstone in place, and
@@ -96,7 +117,7 @@ export function useFileUpload(sessionId: string | undefined) {
         st.updateSessionUpload(item.id, { status: "error", error: errorMsg, progress: 0 });
       }
     } finally {
-      for (const item of items) inFlightRef.current.delete(item.id);
+      for (const item of items) markUploadSettled(item.id);
     }
   }, []);
 
@@ -156,14 +177,20 @@ export function useFileUpload(sessionId: string | undefined) {
    *
    *   - a session did not exist when the file was attached (the /{slug}/new view
    *     before claimSession resolves), and now it does;
-   *   - THIS hook was remounted mid-upload, so the request that would have
-   *     finished the chip belonged to a hook that no longer exists. Crossing the
-   *     mobile breakpoint does that (`AppLayout` swaps component trees), and the
-   *     chip was left at "uploading" forever with docs/293 req 1 barring Send.
+   *   - THIS hook was remounted before the POST was ever started, so the queue
+   *     that would have started it belonged to a hook that no longer exists.
+   *     Crossing the mobile breakpoint does that (`AppLayout` swaps component
+   *     trees), and the chip was left at "uploading" forever with docs/293 req 1
+   *     barring Send.
    *
    * Deriving the work from store state instead of a hook-local queue is what
-   * makes the second case heal itself: a remounted hook re-derives it. Chips this
-   * hook already has in flight are skipped, so a re-render cannot double-POST.
+   * makes the second case heal itself: a remounted hook re-derives it.
+   *
+   * `isUploadActive` is what keeps that from becoming a duplicate-upload bug.
+   * Unmounting does NOT cancel an in-flight `fetch` — it runs to completion and
+   * still writes to the store — so a chip mid-upload has an owner even though its
+   * hook is gone, and must not be restarted. The same check absorbs React
+   * StrictMode's double-invoked mount effect.
    */
   // eslint-disable-next-line no-restricted-syntax -- resumes uploads owned by a hook instance that no longer exists
   useEffect(() => {
@@ -172,7 +199,7 @@ export function useFileUpload(sessionId: string | undefined) {
     const items: UploadItem[] = [];
     const files: File[] = [];
     for (const { id, file } of pendingUploadBytes()) {
-      if (inFlightRef.current.has(id)) continue;
+      if (isUploadActive(id)) continue;
       const item = all.find((u) => u.id === id);
       if (item?.status !== "uploading") continue;
       items.push(item);
@@ -189,19 +216,11 @@ export function useFileUpload(sessionId: string | undefined) {
     if (!item) return;
     if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
     if (item.path && sessionId) {
-      const filename = item.path.replace(/^\/uploads\//, "");
       markUploadDeleted(item.path);
       // The user dismissed the chip before sending — drop it from the draft set
       // so it isn't restored on the next reload.
       removeDraftUploads(sessionId, [item.path]);
-      void (async () => {
-        try {
-          const res = await fetch(`/api/sessions/${sessionId}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" });
-          if (!res.ok) console.warn(`[upload] DELETE ${item.path} failed: ${res.status} ${res.statusText}`);
-        } catch (err: unknown) {
-          console.warn("[upload] DELETE failed:", err);
-        }
-      })();
+      void deleteUploadFromServer(sessionId, item.path);
       useFileStore.getState().removeSessionUpload(item.path);
     } else {
       useFileStore.getState().removeSessionUploadById(item.id);
@@ -226,7 +245,7 @@ export function useFileUpload(sessionId: string | undefined) {
     if (item?.status !== "error") return;
     const file = getUploadBytes(item.id);
     if (!file) return;
-    if (inFlightRef.current.has(item.id)) return;
+    if (isUploadActive(item.id)) return;
     const retried: UploadItem = { ...item, status: "uploading", progress: 0 };
     useFileStore.getState().updateSessionUpload(item.id, {
       status: "uploading",

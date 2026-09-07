@@ -239,16 +239,36 @@ export async function saveUploadedFile(
     throw new ServiceError(413, `Upload would exceed session quota of ${MAX_UPLOAD_SESSION_QUOTA / 1024 / 1024} MB`);
   }
 
-  // Sanitize and deduplicate
-  const sanitized = sanitizeFilename(rawFilename);
-  const finalName = await deduplicateFilename(uploadsDir, sanitized);
-
   // Ensure uploads directory exists
   await fs.mkdir(uploadsDir, { recursive: true });
 
-  // Write the file
-  const filePath = path.join(uploadsDir, finalName);
-  await fs.writeFile(filePath, data);
+  // docs/293 — claim the name by CREATING it exclusively, and retry the next
+  // suffix on a collision. `deduplicateFilename` only reports a name that was
+  // free a moment ago: two concurrent requests both got the same answer, both
+  // wrote, and one silently overwrote the other. That became worse once the
+  // route learned to roll its own writes back, since the rollback would then
+  // delete a file the *other* request had successfully stored. An exclusive
+  // create is what makes "this request wrote it" true enough to undo.
+  const sanitized = sanitizeFilename(rawFilename);
+  let finalName: string;
+  let filePath: string;
+  const ext = path.extname(sanitized);
+  const base = path.basename(sanitized, ext);
+  for (let attempt = 0; ; attempt++) {
+    finalName = attempt === 0 ? sanitized : `${base}-${attempt}${ext}`;
+    filePath = path.join(uploadsDir, finalName);
+    try {
+      // "wx" — create, and fail if it already exists.
+      await fs.writeFile(filePath, data, { flag: "wx" });
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") continue;
+      // A write that created the file and then failed (a full disk) leaves a
+      // partial file the caller has no name for. Clean up our own mess.
+      await fs.unlink(filePath).catch(() => {});
+      throw err;
+    }
+  }
   // docs/150 §7 — the orchestrator (root) writes into the per-session uploads
   // mount; chown so the agent's `shipit` user can read its own attachments.
   // No-op unless SHIPIT_SESSION_WORKER_UID is set.

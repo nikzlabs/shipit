@@ -58,32 +58,62 @@ the same one.
 **Resume is derived from state, not queued (req 7).** One effect POSTs every chip
 that still reads "uploading" and still has bytes. Deriving the work rather than
 holding a queue is what lets a *replacement* hook finish a job it never started —
-a queue can only be drained by whoever owns it. Chips this hook already has in
-flight are skipped, which matters concretely rather than defensively: React
-StrictMode (on in `main.tsx`) double-invokes mount effects, so without the guard
-every deferred upload is POSTed twice in development.
+a queue can only be drained by whoever owns it.
 
-**Remove is available in every state (req 7).** It used to be hidden while
-uploading. With req 1 barring Send on an uploading attachment, a chip with no way
-off the screen is a composer that cannot send anything at all. Removing mid-flight
-can orphan a file in `/uploads`; a stranded composer is the worse failure.
+**And an in-flight request owns its chip, so the record of it is module-level
+too.** This is the correction a second review forced, on a premise that read as
+obvious and was false: unmounting a hook does **not** cancel its `fetch`. The
+request runs to completion and goes on writing to the store. With the in-flight
+set held per-hook, a replacement mounted mid-upload saw a chip with bytes and no
+apparent owner and POSTed it again — two copies on the server, and whichever
+landed first released the bytes, so the other's failure landed on a chip Retry
+could no longer fix. Ownership belongs to the request, so `isUploadActive` lives
+beside the bytes. The same check absorbs React StrictMode's double-invoked mount
+effect (`main.tsx`), which would otherwise POST every deferred upload twice in
+development.
+
+**Remove is available in every state, and actually reachable (req 7).** It used to
+be hidden while uploading — and with req 1 barring Send on an uploading
+attachment, a chip with no way off the screen is a composer that cannot send
+anything at all. Two things follow that the first pass got wrong. Removing
+mid-flight does not stop the request, so when it lands the completion now finds
+no chip, deletes the file it just stored and records no draft path; without that,
+`hydrateUploads` restored the attachment the user had explicitly dismissed, onto a
+later message. And an image's Remove was `opacity-0` until hover, which is not a
+control at all on a touch device — `pointer-coarse` and `focus-visible` reveals
+were added, because req 7 is about a way out existing rather than about the DOM
+containing a button.
 
 **A failed image looks failed (req 2).** `ImageThumbnail` received no `onRetry`
 and rendered an error exactly like a success, so req 2's "retry or remove it"
 pointed at a control that did not exist — on a chip the user could not identify as
 the one holding the message.
 
-**The upload batch is all-or-nothing (req 4).** Files were saved one at a time and
-a failure part-way left the earlier ones on disk while the response carried no
-paths for them. The client marks the whole batch failed, so req 3's retry re-POSTed
-a file the server already had, and `deduplicateFilename` stored it again under a
-new name — an orphan no chip refers to. The route now undoes its own writes.
+**The upload batch is all-or-nothing (req 4) — and the rollback owns what it
+deletes.** Files were saved one at a time and a failure part-way left the earlier
+ones on disk while the response carried no paths for them. The client marks the
+whole batch failed, so req 3's retry re-POSTed a file the server already had, and
+`deduplicateFilename` stored it again under a new name — an orphan no chip refers
+to. The route now undoes its own writes.
+
+That fix needed a second one to be safe, and the second review is what caught it:
+`deduplicateFilename` reports a name that was free *a moment ago*, so two
+concurrent requests could both take `same.txt`. Overwriting was the old bug;
+with a rollback in place, one request's failure would have **deleted the other's
+successful upload**. `saveUploadedFile` now claims its name with an exclusive
+create (`flag: "wx"`) and retries the next suffix on `EEXIST`, so "this request
+wrote it" is true enough to undo. It also unlinks its own partial file when the
+write itself fails, and the rollback logs rather than swallows a cleanup error —
+"all-or-nothing" should not be a stronger claim than the code.
 
 **`/review` carries the attachments (req 4).** It composes its own prompt and
-dispatched it alone while `handleSubmit` cleared the chips regardless. The frame is
-now built by `buildReviewSendFrame` in `compose-review-body.ts` rather than inline
-in `App.tsx` — `App.tsx` has no test harness, and a silent-loss fix with no test is
-the thing this doc is about.
+dispatched it alone while `handleSubmit` cleared the chips regardless. It carries
+**both** kinds — uploads and `@`-mentioned workspace files — and consumes the
+latter, which it also used to leave attached to a later message. The frame is
+built by `buildReviewSendFrame` in `compose-review-body.ts` rather than inline in
+`App.tsx`, because `App.tsx` has no test harness. Note the limit of that honestly:
+the helper is tested, App's *call* to it is not, so the extraction buys a test of
+the payload shape and not of the wiring.
 
 **`markUploadsSent` is deliberately left alone.** Clearing every pending chip
 regardless of status is what made the original loss silent. Reqs 1 and 2 make it
@@ -104,11 +134,12 @@ as a guard for a state the gate prevents.
 | File | Role |
 |---|---|
 | `src/client/components/MessageInput/MessageInput.tsx` | `sendBlocked`, `sendBlockedReason`, the four button sites and `handleSubmit`. |
-| `src/client/stores/file-store.ts` | The retained bytes and their release points — the chips' lifetime. |
-| `src/client/hooks/useFileUpload.ts` | `retryUpload`, the resume pass, the in-flight set. |
+| `src/client/stores/file-store.ts` | The retained bytes and the in-flight set — both at the chips' lifetime, not a hook's. |
+| `src/client/hooks/useFileUpload.ts` | `retryUpload`, the resume pass, and the removed-mid-flight cleanup. |
 | `src/client/components/FileUploadChips.tsx` | Remove in every state; error face + Retry on images. |
 | `src/client/utils/compose-review-body.ts` | `buildReviewSendFrame` — `/review` carries the uploads. |
-| `src/server/orchestrator/api-routes-files.ts` | Batch rollback on failure. |
+| `src/server/orchestrator/api-routes-files.ts` | Batch rollback on failure, logged rather than swallowed. |
+| `src/server/orchestrator/services/files.ts` | Exclusive filename claim, so the rollback owns what it deletes. |
 | `src/server/orchestrator/services/headless-sessions.ts` | Empty prompt allowed when files are attached. |
 | `src/server/orchestrator/prompt-assembly.ts` | Unchanged — `.filter(Boolean)` is why an empty `text` needs no work. |
 | `src/client/components/visual-elements.ts` | Unchanged — `role === "user"` already renders an empty-text bubble. |
@@ -122,20 +153,40 @@ as a guard for a state the gate prevents.
 - `useFileUpload.test.ts` — retry re-POSTs the same *bytes* (content, not just the
   name), the error clears, a second retry works, a `ready` upload is neither
   re-POSTed nor deleted, retry still works **after a remount**, an upload attached
-  before the session resumes, an upload whose hook was remounted resumes, StrictMode
-  does not double-POST, and the bytes go when the chips go.
+  before the session resumes, an upload whose hook went away before its POST
+  started resumes, an upload whose request is **still running** is NOT restarted,
+  StrictMode does not double-POST, an upload removed mid-flight stays removed
+  (its file deleted, no draft recorded), and the bytes go when the chips go.
 - `FileUploadChips.test.tsx` — Retry on a failed image, no Retry on a healthy one,
   Remove on an in-flight file and an in-flight image.
-- `compose-review-body.test.ts` — `/review` carries the uploads, and omits the key
-  when there are none.
+- `compose-review-body.test.ts` — `/review` carries the uploads, the
+  `@`-mentioned files, and both at once; each key is omitted when empty.
 - `file-upload.test.ts` (integration) — a batch that fails part-way leaves nothing
   on disk.
+- `files-upload.test.ts` — eight concurrent uploads of one name get eight distinct
+  files and nobody is overwritten; a write that creates the file and then fails
+  leaves nothing behind.
 - `headless-sessions.test.ts` — an empty prompt with an attachment is accepted and
   dispatched; an empty prompt with nothing attached is still refused.
 
-Every clause was proved red on its own by mutating exactly what it guards. Two
-mutations changed the design rather than the tests: `markUploadsSent`'s byte
-release stayed green (removed as dead), and the in-flight guard stayed green until
-the test was rewritten to fire the effect the way React actually does — under
-StrictMode — at which point it went red. A test that cannot fail is a finding
-about the test or the code, not a pass.
+Every clause was proved red on its own by mutating exactly what it guards. Four
+mutations came back green and each one was a finding rather than a pass:
+
+- `markUploadsSent`'s byte release — unreachable, because a `ready` upload already
+  released its bytes. **Deleted**, along with its test.
+- The in-flight guard — the test re-rendered, which does not re-run the effect.
+  **Rewritten** to mount under StrictMode, the way React actually double-fires it.
+- The "remounted mid-flight" test — it asserted *zero* POSTs before unmounting, so
+  it could only ever exercise the deferred case. **Split** into that case and a
+  real one with a gated request still open, which is what exposed the
+  duplicate-POST bug.
+- The partial-write cleanup — the mock rejected without creating a file, so there
+  was nothing to clean up. **Rewritten** to create the file and then throw.
+
+## Known limits, not fixed here
+
+Recorded as non-requirements and tracked as **planning#519**: `hydrateUploads`
+applies a stale listing (pruning a newer upload's draft path) and applies it with
+no session check, and `/compact` drops attachments the way `/review` did. All
+three predate this work and belong to other subsystems; the hydration pair needs a
+decision about what an out-of-date answer should do, which is its own doc.

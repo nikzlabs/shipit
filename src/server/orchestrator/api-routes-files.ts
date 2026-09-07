@@ -396,7 +396,12 @@ export async function registerFileRoutes(
       const results: UploadedFile[] = [];
       const rollback = async () => {
         for (const saved of results) {
-          await deleteUpload(uploadsDir, path.basename(saved.path)).catch(() => {});
+          // Safe to delete: `saveUploadedFile` claims each name with an
+          // exclusive create, so this request is the only writer of it.
+          await deleteUpload(uploadsDir, path.basename(saved.path)).catch((err: unknown) => {
+            // Not silent — a failure here leaves a file no chip refers to.
+            app.log.warn(`[upload] rollback of ${saved.path} failed: ${getErrorMessage(err)}`);
+          });
         }
       };
       try {
