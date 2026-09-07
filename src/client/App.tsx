@@ -168,6 +168,7 @@ import { useGitHubGateLatch } from "./hooks/useGitHubGateLatch.js";
 import type { SendCommentsPayload } from "./components/FilePreviewModal.js";
 import { Spinner } from "./components/Spinner.js";
 import { buildAttachmentPlan } from "./utils/attachment-plan.js";
+import { deleteUploadFromServer } from "./hooks/useFileUpload.js";
 
 export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
@@ -2058,11 +2059,11 @@ export default function App() {
               const sid = useSessionStore.getState().sessionId;
               if (u.path) markUploadDeleted(u.path);
               if (sid && u.path) {
-                const filename = u.path.replace(/^\/uploads\//, "");
-                void fetch(
-                  `/api/sessions/${sid}/files/uploads/${encodeURIComponent(filename)}`,
-                  { method: "DELETE" },
-                );
+                // docs/294 req 1 — the same brokered delete the composer's chips
+                // use, so this writer invalidates an in-flight listing too. It
+                // used to hand-roll the fetch and note no change, leaving a
+                // stale listing free to restore the file it had just removed.
+                void deleteUploadFromServer(sid, u.path);
               }
               if (u.previewUrl) URL.revokeObjectURL(u.previewUrl);
               if (u.path) useFileStore.getState().removeSessionUpload(u.path);

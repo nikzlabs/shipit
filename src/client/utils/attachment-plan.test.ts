@@ -51,8 +51,10 @@ describe("buildAttachmentPlan — an ordinary message", () => {
     const plan = buildAttachmentPlan({
       text: "hello", uploadRefs: [], uploads: [], pendingFiles: [],
     });
-    expect(plan.frame).toEqual({});
-    expect(plan.bubble).toEqual({});
+    // `toEqual({})` passes for a key set to `undefined`; the key must be absent,
+    // so the frame does not send the server down the attachment path for nothing.
+    expect(Object.keys(plan.frame)).toEqual([]);
+    expect(Object.keys(plan.bubble)).toEqual([]);
     expect(plan.clearAttachments).toBe(true);
   });
 
@@ -90,16 +92,34 @@ describe("buildAttachmentPlan — an ordinary message", () => {
     expect(plan.bubble.images?.[0].src).toBe("data:image/png;base64,AAA");
   });
 
-  it("ignores an upload that is not ready when splitting images from files", () => {
-    // An uploading chip has no path yet, so it cannot be referenced at all.
+  it("ignores an upload that is not ready, even though it has a path", () => {
+    // Split from the missing-path case below on purpose: combined, either
+    // condition alone rejected the fixture, so neither was actually pinned.
     const plan = buildAttachmentPlan({
       text: "x",
-      uploadRefs: [NOTES],
-      uploads: [upload({ status: "uploading", path: undefined, previewUrl: "blob:x" })],
+      uploadRefs: [SHOT],
+      uploads: [upload({
+        id: "img", name: "shot.png", path: "/uploads/shot.png",
+        status: "error", previewUrl: "blob:x", mimeType: "image/png",
+      })],
       pendingFiles: [],
     });
     expect(plan.bubble.images).toBeUndefined();
-    expect(plan.bubble.files).toEqual([{ path: "/uploads/notes.txt", contentPreview: "" }]);
+    expect(plan.bubble.files).toEqual([{ path: "/uploads/shot.png", contentPreview: "" }]);
+  });
+
+  it("ignores a ready upload that has no path yet", () => {
+    const plan = buildAttachmentPlan({
+      text: "x",
+      uploadRefs: [SHOT],
+      uploads: [upload({
+        id: "img", name: "shot.png", path: undefined,
+        status: "ready", previewUrl: "blob:x", mimeType: "image/png",
+      })],
+      pendingFiles: [],
+    });
+    expect(plan.bubble.images).toBeUndefined();
+    expect(plan.bubble.files).toEqual([{ path: "/uploads/shot.png", contentPreview: "" }]);
   });
 });
 
@@ -111,8 +131,8 @@ describe("buildAttachmentPlan — /compact (docs/294 reqs 5-6)", () => {
       uploads: [upload({})],
       pendingFiles: [{ path: "src/index.ts" }],
     });
-    expect(plan.frame).toEqual({});
-    expect(plan.bubble).toEqual({});
+    expect(Object.keys(plan.frame)).toEqual([]);
+    expect(Object.keys(plan.bubble)).toEqual([]);
     // req 5 — the attachments stay in the composer for the next real message.
     expect(plan.clearAttachments).toBe(false);
   });

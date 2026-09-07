@@ -37,11 +37,14 @@ interface UploadResponse {
 
 let uploadIdCounter = 0;
 
-/** Best-effort DELETE of an uploaded file the composer no longer refers to. */
-async function deleteUploadFromServer(sessionId: string, uploadPath: string): Promise<void> {
+/**
+ * Best-effort DELETE of an uploaded file nothing on screen refers to any more.
+ * Exported because the Uploads panel deletes files too, and docs/294 req 1 wants
+ * every writer to invalidate an in-flight listing — a hand-rolled fetch at
+ * another call site is exactly the writer that gets forgotten.
+ */
+export async function deleteUploadFromServer(sessionId: string, uploadPath: string): Promise<void> {
   const filename = uploadPath.replace(/^\/uploads\//, "");
-  // docs/294 req 1 — same reason as a landing upload, in the other direction.
-  noteUploadsChanged();
   try {
     const res = await fetch(
       `/api/sessions/${sessionId}/files/uploads/${encodeURIComponent(filename)}`,
@@ -50,6 +53,12 @@ async function deleteUploadFromServer(sessionId: string, uploadPath: string): Pr
     if (!res.ok) console.warn(`[upload] DELETE ${uploadPath} failed: ${res.status} ${res.statusText}`);
   } catch (err: unknown) {
     console.warn("[upload] DELETE failed:", err);
+  } finally {
+    // docs/294 req 1 — bumped on COMPLETION, not before the request: the point
+    // is "the server's set is now different", and a listing that started while
+    // the DELETE was still open would otherwise pass its freshness check with a
+    // file that has since gone.
+    noteUploadsChanged(sessionId);
   }
 }
 
@@ -80,7 +89,7 @@ export function useFileUpload(sessionId: string | undefined) {
       const data = (await res.json()) as UploadResponse;
       // docs/294 req 1 — the server holds something it did not a moment ago, so
       // any listing already in flight is describing a world without it.
-      noteUploadsChanged();
+      noteUploadsChanged(sid);
       const st = useFileStore.getState();
       for (let i = 0; i < items.length; i++) {
         const uploaded = data.files[i];
@@ -92,6 +101,10 @@ export function useFileUpload(sessionId: string | undefined) {
           // server did save rather than leaving it orphaned.
           if (!st.sessionUploads.some((u) => u.id === items[i].id)) {
             releaseUploadBytes(items[i].id);
+            // Tombstone it as well as deleting it: a listing already in flight
+            // can contain this file, and without the tombstone hydration would
+            // restore the attachment the user dismissed into the panel.
+            markUploadDeleted(uploaded.path);
             void deleteUploadFromServer(sid, uploaded.path);
             continue;
           }

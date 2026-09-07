@@ -741,7 +741,13 @@ export function MessageInput({
     // the chips stay in the composer for the user's next real message rather
     // than being cleared into nothing (the mid-turn path discarded them
     // server-side, so they vanished with no error at all).
-    const isCompact = isCompactCommand(trimmed);
+    //
+    // Not on the overlay surface, though. Quick capture creates a NEW session,
+    // so there is no conversation to compact and `/compact` is simply that
+    // session's first prompt — and the overlay closes on send, unmounting the
+    // composer that req 5 would keep the attachment in. Withholding it there
+    // would destroy the file instead of retaining it.
+    const isCompact = !isOverlay && isCompactCommand(trimmed);
     const uploadRefs = isCompact ? [] : getUploadRefs();
     const payload: SendPayload = {
       text: trimmed,

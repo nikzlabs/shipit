@@ -11,12 +11,15 @@ Implements [requirements.md](./requirements.md).
 
 ```
 hydrateUploads(sessionId)
-  capture  seq = ++hydrateSeq,  changeAtStart = uploadsChangeSeq
+  capture  seq = ++hydrateSeq,  changeAtStart = changeSeq[sessionId]
   fetch …
-  ├── seq !== hydrateSeq                → drop, do NOT refetch  (req 3)
-  ├── store.sessionId !== sessionId     → drop                  (req 2)
-  ├── uploadsChangeSeq !== changeAtStart→ drop, refetch once    (req 1, bounded)
-  └── otherwise                         → apply
+  ├── seq !== hydrateSeq                 → drop, do NOT refetch  (req 3)
+  ├── store.sessionId !== sessionId      → drop                  (req 2)
+  ├── changeSeq[sessionId] !== captured  → drop, refetch once    (req 1, bounded)
+  └── otherwise                          → apply
+
+writers that bump changeSeq[sessionId]
+  upload POST succeeded · upload DELETE completed (composer chips AND the panel)
 
 buildAttachmentPlan({ text, uploadRefs, uploads, pendingFiles })
   → { frame, bubble, clearAttachments }        (reqs 5-6, and docs/293 req 4)
@@ -24,7 +27,8 @@ buildAttachmentPlan({ text, uploadRefs, uploads, pendingFiles })
 
 ## Key decisions
 
-**Two counters, because there are two different questions.** `hydrateSeq` answers
+**Two counters, because there are two different questions.** (`uploadsChangeSeq`
+is keyed **by session**; see below.) `hydrateSeq` answers
 *is a newer hydration already running?* — if so this answer is not just stale, it
 is redundant, so it is dropped without a refetch (req 3). `uploadsChangeSeq`
 answers *did the world change under this request?* — that one nobody else is
@@ -36,6 +40,22 @@ response as authority: it prunes the persisted draft set and rebuilds every
 non-pending chip. That is why a stale answer is destructive rather than merely
 useless — it pruned a just-uploaded file's draft path, and `pendingInMemory` kept
 the chip on screen so nothing looked wrong until the next reload.
+
+**The change counter is keyed by session.** A session's uploads go on completing
+after the user has switched away — the request is not cancelled — so a global
+counter let those completions invalidate the *new* session's perfectly current
+listing. Four interleaved completions would exhaust the retry chain and leave the
+new session's panel empty: the regression in the opposite direction. Found by
+review.
+
+**A draft path is no longer pruned merely because a listing lacks it.** That rule
+made a snapshot authoritative over something it could not have known about, and
+the counters cannot see another tab: tab A's in-flight listing deleted from
+shared localStorage a draft path tab B had just saved, and B lost the attachment
+at its next reload. Removing the rule fixes it at the root rather than adding
+cross-tab signalling, and costs only a dead string — a chip is built from
+`data.files`, so a drafted path with no file on the server renders nothing. The
+sent-path prune, which is what structurally prevents resurrection, stays.
 
 **The refetch is bounded.** Three chained attempts, then it stops. Unbounded is
 not a theoretical concern: with the bound removed, the guard test spins the
@@ -55,9 +75,22 @@ and the Refresh button's call had neither.
 interception calls `agent.compact()` and returns, discarding whatever the frame
 carried, while the composer had already cleared its chips — a silent loss. The
 fix is client-side: the command carries no attachment, so there is nothing for
-the server to discard. **No defensive server change was added**: guarding a state
-the client no longer produces is the same dead code that was deleted from
-`markUploadsSent` in docs/293.
+the server to discard. **No defensive server change was added**, and the scope of
+that decision is narrower than it first looks — review was right to press on it.
+"The updated composer no longer produces it" is true; "the server can no longer
+receive it" is not. An already-open older tab still sends the previous
+attachment-bearing frame, and the HTTP dispatch route
+(`api-routes-agent.ts`) accepts text plus attachments for any prompt, `/compact`
+included. A WS-only guard would establish the invariant on neither, and would not
+give an older client back the chips it had already cleared. Req 6 is a statement
+about the composer, and that is where it is enforced.
+
+**`/compact` is not a command on the quick-capture overlay.** Req 5 keeps the
+attachment "in the composer" — but quick capture closes on send and unmounts the
+composer holding the file, so withholding it there would destroy the attachment
+rather than retain it. A new session also has no conversation to compact, so
+`/compact` there is simply its first prompt. Found by review, after the first
+attempt at req 5 introduced this loss.
 
 **The `/compact` parser moved to `shared/`.** The client needs the same answer as
 the server, and the failure mode of two regexes drifting is exactly the silent
@@ -74,6 +107,21 @@ that (`buildReviewSendFrame`) was correctly called out in review as an object
 literal extracted only to test it, covering one branch of three.
 `buildReviewSendFrame` is **deleted**: the new function answers the same question
 for every path, so keeping both would leave two places to forget.
+
+**The extraction is not behaviour-neutral, and saying so was wrong.** Review
+compared it line by line against the pre-extraction code and found three
+differences on the `/review` path. All three are kept as deliberate corrections,
+recorded here rather than left to be discovered:
+
+1. A `/review` bubble now shows image thumbnails and non-image file rows, where
+   it previously carried only `uploadPaths` and mentioned-file rows. It now draws
+   its attachments the way every other message does.
+2. `/review` now clears the `@`-mentioned files. It did not before — and
+   `docs/293`'s plan claimed it did, which was the doc being wrong about its own
+   code. That doc now carries a correction.
+3. Empty frame fields are absent properties rather than present-and-`undefined`.
+   Identical once serialized; the test asserts on `Object.keys` rather than
+   `toEqual({})`, which cannot tell the two apart.
 
 **What was NOT extracted.** `handleSend`'s effects — the `/review` guards and
 toasts, URL graduation, `requestPermission`, `sendUserMessage` — stay in `App`.
@@ -92,6 +140,7 @@ the decision that has actually been getting things wrong.
 | `src/client/components/MessageInput/MessageInput.tsx` | `/compact` withholds the uploads and keeps the chips. |
 | `src/server/shared/compact-command.ts` | The one `/compact` parser, read by client and server. |
 | `src/client/utils/compose-review-body.ts` | `buildReviewSendFrame` removed — subsumed. |
+| `src/client/App.tsx` (uploads panel) | Its delete goes through the brokered helper, so it invalidates a listing too. |
 
 ## Tests
 
@@ -112,6 +161,17 @@ notes on how the tests were arrived at, since both were wrong first:
 - **The existing `hydrateUploads` tests all went red** when the session guard
   landed — they hydrated with no session in view. That is the guard working; the
   fixture now states what those tests always meant (`sessionId: SESSION_ID`).
+- **The store's counter tests could not fail on a missing production call.**
+  Their fetch stub bumped the counter itself, so every `noteUploadsChanged()` in
+  the app could have been deleted and they would have stayed green. There are now
+  two tests in `useFileUpload.test.ts` that drive the real writers — a landing
+  upload and a completed delete — against a held-open listing, and both go red
+  when their production call is removed.
+- **The foreign-session test's draft assertion did not discriminate.** Its
+  listing contained the very path it asserted survived, so an unguarded prune
+  would have preserved it too. The listing no longer contains it.
+- **One plan fixture combined two rejection conditions** (not `ready` *and* no
+  path), so removing either left the other rejecting it. Split in two.
 - **The bound's first test could not fail.** Its fetch stub reported a change on
   every call, so removing the bound produced an endless request loop that killed
   the worker instead of a red assertion. The stub now stops after ten, and the

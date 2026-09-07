@@ -6,13 +6,14 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { StrictMode } from "react";
 import { renderHook, act, waitFor } from "@testing-library/react";
-import { useFileUpload } from "./useFileUpload.js";
+import { useFileUpload, deleteUploadFromServer } from "./useFileUpload.js";
 import {
   useFileStore,
   getUploadBytes,
   forgetPendingUploads,
 } from "../stores/file-store.js";
 import { getSavedDraftUploads } from "../utils/local-storage.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 /** A fetch stub whose POSTs hang until the returned `release` is called. */
 function gatedUploads() {
@@ -320,5 +321,72 @@ describe("useFileUpload — an upload removed mid-flight stays removed", () => {
     // It does not come back, and nothing was recorded that could bring it back.
     expect(result.current.uploads).toHaveLength(0);
     expect(getSavedDraftUploads(SESSION)).not.toContain("/uploads/notes.txt");
+  });
+});
+
+/**
+ * docs/294 req 1 — these drive the REAL writers. The store's own tests bump the
+ * counter from inside their fetch stub, so every production `noteUploadsChanged`
+ * call could be deleted and they would stay green. These would not.
+ */
+describe("useFileUpload — a write invalidates a listing already in flight", () => {
+  beforeEach(() => {
+    useSessionStore.setState({ messages: [], sessionId: SESSION });
+  });
+
+  it("a landing upload makes an older listing refetch", async () => {
+    let listings = 0;
+    let releaseListing: (() => void) | undefined;
+    const listingGate = new Promise<void>((r) => { releaseListing = r; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({ files: [{ name: "notes.txt", path: "/uploads/notes.txt", size: 4, type: "upload" }] }),
+        };
+      }
+      if (url.includes("/files/uploads")) {
+        listings += 1;
+        // The first listing is held open while the upload lands under it.
+        if (listings === 1) await listingGate;
+        return { ok: true, json: async () => ({ files: [] }) };
+      }
+      return { ok: true, json: async () => ({ files: [] }) };
+    }));
+
+    const hydration = useFileStore.getState().hydrateUploads(SESSION);
+    const { result } = renderHook(() => useFileUpload(SESSION));
+    await act(async () => {
+      await result.current.uploadFiles([new File(["hi!!"], "notes.txt", { type: "text/plain" })]);
+    });
+    releaseListing?.();
+    await hydration;
+
+    // The held listing knew nothing of the upload, so it was dropped and a
+    // fresh one taken. Without the production `noteUploadsChanged` call there
+    // would be exactly one.
+    await vi.waitFor(() => expect(listings).toBe(2));
+  });
+
+  it("a completed delete makes an older listing refetch", async () => {
+    let listings = 0;
+    let releaseListing: (() => void) | undefined;
+    const listingGate = new Promise<void>((r) => { releaseListing = r; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") return { ok: true, json: async () => ({}) };
+      if (url.includes("/files/uploads")) {
+        listings += 1;
+        if (listings === 1) await listingGate;
+        return { ok: true, json: async () => ({ files: [] }) };
+      }
+      return { ok: true, json: async () => ({ files: [] }) };
+    }));
+
+    const hydration = useFileStore.getState().hydrateUploads(SESSION);
+    await deleteUploadFromServer(SESSION, "/uploads/notes.txt");
+    releaseListing?.();
+    await hydration;
+
+    await vi.waitFor(() => expect(listings).toBe(2));
   });
 });

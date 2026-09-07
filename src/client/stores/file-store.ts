@@ -208,23 +208,28 @@ export function isUploadActive(id: string): boolean {
  *
  * `uploadsChangeSeq` moves whenever the set of files on the server changes from
  * this client (an upload lands, a file is deleted). A listing requested before
- * such a change describes a world that no longer exists, and applying it pruned
- * the just-uploaded file's persisted draft path — so the chip stayed on screen,
- * looking fine, and the attachment was gone at the next reload.
+ * such a change describes a world that no longer exists, and applying it left
+ * the panel showing a set of files that is not the one on disk.
+ *
+ * It is keyed BY SESSION, and that is load-bearing rather than tidy: a session's
+ * uploads go on completing after the user has switched away, and a global
+ * counter let those completions invalidate the *new* session's perfectly
+ * current listing — four of them in a row would exhaust the retry chain and
+ * leave the new session's panel empty.
  *
  * `hydrateSeq` identifies the newest hydration. An older one must not apply its
  * answer over a newer one's, and must not refetch either: the newer request is
  * already doing that.
  */
-let uploadsChangeSeq = 0;
+const uploadsChangeSeq = new Map<string, number>();
 let hydrateSeq = 0;
 
 /** How many times req 1's "fetch a fresh one" may chain before giving up. */
 const MAX_HYDRATE_REFETCHES = 3;
 
-/** Record that this client changed what the server holds. */
-export function noteUploadsChanged(): void {
-  uploadsChangeSeq++;
+/** Record that this client changed what the server holds for a session. */
+export function noteUploadsChanged(sessionId: string): void {
+  uploadsChangeSeq.set(sessionId, (uploadsChangeSeq.get(sessionId) ?? 0) + 1);
 }
 
 /**
@@ -313,7 +318,7 @@ export const useFileStore = create<FileState>((set, get) => ({
     // prunes the draft set and rebuilds every non-pending chip. An answer that
     // is no longer current must not get that authority.
     const seq = ++hydrateSeq;
-    const changeAtStart = uploadsChangeSeq;
+    const changeAtStart = uploadsChangeSeq.get(sessionId) ?? 0;
     try {
       const res = await fetch(`/api/sessions/${sessionId}/files/uploads`);
       if (!res.ok) return;
@@ -330,7 +335,7 @@ export const useFileStore = create<FileState>((set, get) => ({
       // know about it. Take a fresh one. Bounded (non-requirement: no retry
       // policy beyond this) so a session churning uploads cannot spin the
       // server; the existing triggers still cover the give-up case.
-      if (uploadsChangeSeq !== changeAtStart) {
+      if ((uploadsChangeSeq.get(sessionId) ?? 0) !== changeAtStart) {
         if (attempt < MAX_HYDRATE_REFETCHES) {
           void get().hydrateUploads(sessionId, attempt + 1);
         }
@@ -356,11 +361,18 @@ export const useFileStore = create<FileState>((set, get) => ({
       // paths the user attached but hasn't sent yet, persisted so the chip
       // survives a reload/session-switch exactly like the composer's draft text.
       //
-      // Self-heal the draft set before applying it: drop any path the server no
-      // longer has, and any path chat history shows was already sent. This is
-      // what structurally prevents the old resurrection bug — even if the
-      // send-time removal was missed, an already-sent file is pruned here and
-      // never shown as a chip.
+      // Self-heal the draft set before applying it: drop any path chat history
+      // shows was already sent. This is what structurally prevents the old
+      // resurrection bug — even if the send-time removal was missed, an
+      // already-sent file is pruned here and never shown as a chip.
+      //
+      // docs/294 req 4 — it deliberately does NOT prune a path merely because
+      // this listing lacks it. That rule made a snapshot authoritative over
+      // something it could not have known about: a second tab that finished an
+      // upload while this listing was in flight had its just-saved draft path
+      // deleted out of shared localStorage, and the counters below cannot see
+      // another tab. Keeping the path costs a dead string; a chip is built from
+      // `data.files`, so a path with no file on the server renders nothing.
       const sentPaths = new Set<string>();
       for (const msg of useSessionStore.getState().messages) {
         if (msg.role !== "user") continue;
@@ -372,7 +384,7 @@ export const useFileStore = create<FileState>((set, get) => ({
       const draftSet = new Set(getSavedDraftUploads(sessionId));
       let draftChanged = false;
       for (const p of [...draftSet]) {
-        if (!serverPaths.has(p) || sentPaths.has(p)) { draftSet.delete(p); draftChanged = true; }
+        if (sentPaths.has(p)) { draftSet.delete(p); draftChanged = true; }
       }
       if (draftChanged) saveDraftUploads(sessionId, [...draftSet]);
 

@@ -215,3 +215,26 @@ describe("/compact is a command, not a message (docs/294 reqs 5-6)", () => {
     expect(useFileStore.getState().sessionUploads[0].pending).toBe(false);
   });
 });
+
+describe("/compact on the quick-capture overlay (docs/294 req 5)", () => {
+  it("carries the attachment, because the overlay closes on send", () => {
+    // req 5 keeps the attachment "in the composer" — but quick capture unmounts
+    // its composer on send, so withholding the file would destroy it rather
+    // than retain it. A new session has no conversation to compact either, so
+    // `/compact` there is just its first prompt.
+    const onSend = vi.fn();
+    render(<MessageInput surface="overlay" onSend={onSend} disabled={false} />);
+    const textarea = screen.getByRole("textbox");
+    const ev = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "clipboardData", {
+      value: { items: [], getData: () => "x".repeat(5000) },
+    });
+    fireEvent(textarea, ev);
+    fireEvent.change(textarea, { target: { value: "/compact" } });
+    fireEvent.click(screen.getByTestId("send-button"));
+
+    expect(onSend).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "/compact", deferredFiles: [expect.any(File)] }),
+    );
+  });
+});
