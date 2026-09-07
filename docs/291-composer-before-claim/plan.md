@@ -57,8 +57,9 @@ socket is involved. Quick Capture reaches the same state for the same reason (no
 docstring already says it wants.
 
 **`App.tsx` is untouched.** The composer's `disabled` still carries the claim clause,
-because Send genuinely cannot work without a session — see the open question in
-[requirements.md](./requirements.md). This change is entirely about what *else* was
+because Send genuinely cannot work without a session, and holding a message across the
+claim was raised and declined on 2026-09-07 (see the receipt in
+[requirements.md](./requirements.md)). This change is entirely about what *else* was
 reading that flag.
 
 ## The seed has to agree with the row (req 4)
@@ -99,7 +100,7 @@ session resuming itself is not a switch" early return.
 
 - **A bound session still bars picks on a closed socket.** The fix is a distinction, not
   a removal.
-- **Send still waits for the claim on `/{repo}/new`** — see the open question.
+- **Send still waits for the claim on `/{repo}/new`** — asked and settled, 2026-09-07.
 - **The first turn still locks the role** (docs/272 req 4). This is about the window
   *before* the first turn, not after it.
 

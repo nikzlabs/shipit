@@ -10,6 +10,5 @@
       the bound and unbound cases, the switch and the resume-itself cases
 - [x] `npm run typecheck`, `npm run lint:dev`, full client suite green
 - [x] Independent review against the numbered requirements (Codex, via `--role reviewer`)
-- [ ] **[needs the human]** Answer the open question: should Send also work before the
-      claim lands? Reqs 3 and 5 were built, reviewed, and withdrawn — see
-      `requirements.md`.
+- [x] Open question answered (2026-09-07): Send goes on waiting for the workspace; reqs 3
+      and 5 withdrawn — see the receipt in `requirements.md`

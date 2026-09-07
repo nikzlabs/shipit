@@ -15,7 +15,8 @@ so tens of seconds. "It doesn't make sense to me as a user."
 2. The composer settings a role is made of — **harness, model, reasoning level** — are
    live in that same window. They are the controls the role's "Adjust parameters…" opens,
    so they cannot be dead while the role control is live.
-3. *(withdrawn — see Open questions)*
+3. *(withdrawn 2026-09-07 — Send goes on waiting for the workspace; see Resolved
+   questions)*
 4. Whatever was chosen before the session existed is what the session actually
    **starts on** — the role, and the harness/model/level it sets. Including the case where
    the user left a role by adjusting one of its parameters.
@@ -34,28 +35,34 @@ Req 1 is the report's own words. Reqs 2 and 4 are not: they are what req 1 needs
 to be true rather than separate asks — the three parameters are what a role *is*, and a
 control the user can operate that does not decide anything is not "working".
 
-**Reqs 3 and 5 were withdrawn during implementation, and the withdrawal is the open
-question below.** They read: *"the user can type and send a first message in that window,
-delivered as soon as the session is ready"* and *"a message held for a session that never
-arrives is rolled back and the user is told"*. Both came from reading the report's "start
-typing" as *compose and send* rather than *type into the box* — typing already worked
-before this change; only Send was barred. That reading was mine, not the report's.
+**Reqs 3 and 5 were mine, not the report's, and are withdrawn.** They read: *"the user can
+type and send a first message in that window, delivered as soon as the session is ready"*
+and *"a message held for a session that never arrives is rolled back and the user is
+told"*. Both came from reading the report's "start typing" as *compose and send* rather
+than *type into the box* — typing already worked before this change; only Send was barred.
+See the receipt below.
 
 ## Open questions
 
-- **Should Send also work before the claim lands, holding the message until the session
-  is ready?** Built and then withdrawn. It works for the ordinary case, but an
-  independent review found six defects inherent to holding a message across an unbounded
-  wait, none of which the feature as reported implies: a second send silently replaces the
-  first; leaving via Home or the repo picker can deliver the message into a different
-  repository's session; a claim failure followed by another send waits forever; Stop does
-  not cancel a held message; and a network-mode pick made *after* the send bypasses the
-  container-rebuild barrier docs/285 put in front of the first turn. Closing those means
-  ownership, capacity, cancellation and claim-scoping rules — a queue — which is a large
-  mechanism to infer from two words. **The question for the human: is waiting for the
-  workspace before you can press Send actually a problem, or was the role control the
-  whole of it?**
+- None.
 
 ## Resolved questions
 
-- (none yet)
+- **2026-09-07 — Should Send also work before the claim lands, holding the message until
+  the session is ready?** Answer: **no — ship the role fix as it stands.** Reqs 3 and 5
+  are withdrawn and Send goes on waiting for the workspace.
+
+  The question was raised because the held-send half had been built and then found to
+  carry six defects inherent to holding a message across an unbounded wait, none of them
+  implied by what was reported: a second send silently replaces the first; leaving via
+  Home or the repository picker can deliver the message into a *different repository's*
+  session; a claim failure followed by another send waits forever; Stop does not cancel a
+  held message; and a network-mode pick made *after* the send bypasses the
+  container-rebuild barrier `docs/285-network-mode-at-session-creation` puts in front of
+  the first turn. Closing those means ownership, capacity, cancellation and claim-scoping
+  rules — a queue.
+
+  **Constraint this carries:** a future request to make Send work during the claim is a
+  new feature with its own requirements, not a resumption of this one. The withdrawn code
+  is in this branch's history if it is ever wanted as a starting point, but the six
+  defects above are its requirements list, not its bug list.
