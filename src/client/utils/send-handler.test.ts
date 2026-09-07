@@ -42,11 +42,18 @@ function framesFrom(d: SendDeps): Record<string, unknown>[] {
 }
 
 beforeEach(() => {
+  // Reset everything a send WRITES, not just what it reads. A successful send
+  // leaves an activity label, an optimistic runner mark and — on the reconnect
+  // path — a stashed frame behind, and a later test inheriting those exercises a
+  // different rollback than the one it names.
   useSessionStore.setState({
     sessionId: "s1",
     isLoading: false,
     messages: [],
     pendingIssueRef: undefined,
+    pendingWsMessage: undefined,
+    activity: undefined,
+    activeRunnerSessions: new Set<string>(),
   });
   useSettingsStore.setState({ pendingFiles: [] });
   useFileStore.setState({ previewFile: null, sessionUploads: [] });
@@ -123,11 +130,25 @@ describe("an accepted /review carries its attachments and cleans up after itself
   });
 
   it("graduates the URL only once the send has gone out", () => {
+    // The ORDER is the point, so it is asserted from inside the dispatch: at the
+    // moment the frame is handed to the socket, the route must not have moved
+    // yet. Asserting only that navigation eventually happened would pass with
+    // the call back above the dispatch, which is the bug this guards.
     useFileStore.setState({ previewFile: "src/a.ts" });
-    const d = deps({ isNewSessionRoute: true });
+    let navigatedBeforeDispatch: boolean | undefined;
+    const navigate = vi.fn();
+    const d = deps({
+      isNewSessionRoute: true,
+      navigate,
+      send: vi.fn(() => {
+        navigatedBeforeDispatch = navigate.mock.calls.length > 0;
+        return true;
+      }),
+    });
 
     expect(runSend(d, payload({ text: "/review" }))).toBe(true);
-    expect(d.navigate).toHaveBeenCalledWith("/session/s1", { replace: true });
+    expect(navigatedBeforeDispatch).toBe(false);
+    expect(navigate).toHaveBeenCalledWith("/session/s1", { replace: true });
   });
 });
 
@@ -214,7 +235,18 @@ describe("/compact carries nothing and takes nothing away (docs/294 reqs 5-6)", 
     useSettingsStore.setState({ pendingFiles: [{ path: "src/b.ts" }] });
     const d = deps();
 
-    expect(runSend(d, payload({ text: "/compact" }))).toBe(true);
+    // The uploads have to be PRESENT for their absence on the wire to mean
+    // anything. Without them the assertion below cannot fail, including against
+    // wiring that forwards the payload's uploads directly instead of the plan's.
+    expect(
+      runSend(
+        d,
+        payload({
+          text: "/compact",
+          uploadRefs: [{ path: "/uploads/notes.txt", type: "upload" }],
+        }),
+      ),
+    ).toBe(true);
 
     const [frame] = framesFrom(d);
     expect(frame.text).toBe("/compact");
@@ -222,5 +254,27 @@ describe("/compact carries nothing and takes nothing away (docs/294 reqs 5-6)", 
     expect(frame).not.toHaveProperty("files");
     // req 5 — still there for the user's next real message.
     expect(useSettingsStore.getState().pendingFiles).toEqual([{ path: "src/b.ts" }]);
+  });
+});
+
+describe("an ordinary send with no session at all", () => {
+  it("reports acceptance and shows the user what it carried", () => {
+    // Pinning INHERITED behaviour, not endorsing it: nothing is dispatched, yet
+    // this returns `true` and clears the `@`-mentions. It is not the req 4 loss
+    // — the bubble names every attachment, so the user is told — but it is the
+    // one acceptance in this file that is not backed by a send, and it should
+    // fail loudly if someone changes it by accident.
+    useSessionStore.setState({ sessionId: undefined });
+    useSettingsStore.setState({ pendingFiles: [{ path: "src/b.ts" }] });
+    const d = deps();
+
+    expect(runSend(d, payload({ text: "hello" }))).toBe(true);
+    expect(d.send).not.toHaveBeenCalled();
+    expect(useSessionStore.getState().messages.at(-1)).toMatchObject({
+      role: "user",
+      text: "hello",
+      files: [{ path: "src/b.ts", contentPreview: "" }],
+    });
+    expect(useSettingsStore.getState().pendingFiles).toEqual([]);
   });
 });
