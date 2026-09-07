@@ -183,6 +183,29 @@ mutations came back green and each one was a finding rather than a pass:
 - The partial-write cleanup — the mock rejected without creating a file, so there
   was nothing to clean up. **Rewritten** to create the file and then throw.
 
+## Verified in a real browser
+
+On the dogfood inner instance, not only in jsdom. A localhost upload of a few KB
+lands too fast to observe, so the checks use pastes large enough to make each
+state real:
+
+| What was done | Send | Tooltip |
+|---|---|---|
+| Empty composer | disabled | none |
+| 10 MB paste, upload landed, **no typed text** | **enabled** | none |
+| 55 MB paste, in flight | disabled | *Waiting for attachments to finish uploading* |
+| 55 MB paste, after the failure | disabled | *An attachment failed to upload — retry or remove it* |
+
+While the 55 MB upload was in flight the chip carried a **Remove** control (req
+7) — before this change it had none. After the failure it carried Retry as well,
+and clicking it re-POSTed the 55 MB and settled back to error rather than
+deleting the chip.
+
+For the removed-mid-flight case: a 40 MB paste (under the cap, so it *would* have
+succeeded) was dismissed at 0%. The chip went and did not come back when the
+request landed, and the session's `uploads/` directory on disk contains no 40 MB
+file — the completion deleted what the server had saved.
+
 ## Known limits, not fixed here
 
 Recorded as non-requirements and tracked as **planning#519**: `hydrateUploads`

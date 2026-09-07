@@ -41,5 +41,5 @@
 - [x] `npm run typecheck` and `npm run lint:dev` clean
 - [x] Two independent reviews; every finding verified before acting on it
 - [x] Out-of-scope defects recorded and filed as planning#519
-- [ ] Full `npm test` after the second round of fixes
-- [ ] Re-verify in a real browser on the dogfood instance
+- [x] Full `npm test` after the second round of fixes
+- [x] Re-verify in a real browser on the dogfood instance
