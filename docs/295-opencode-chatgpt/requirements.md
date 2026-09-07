@@ -8,15 +8,15 @@ description: Use a connected ChatGPT account with OpenCode inside ShipIt.
 ## Requirement source
 
 The user asked to investigate OpenCode's OpenAI subscription support, then
-said: “go ahead and design this integration.” This change delivers a design.
-It does not enable the integration. Implementation is a separate work item.
+said: “go ahead and design this integration”, then “go ahead and implement it.”
+This change implements the account integration.
 
 The user goal is to use ChatGPT subscription access with the OpenCode harness
-inside ShipIt. The requirements below express the proposed experience and
+inside ShipIt. The requirements below express the requested experience and
 safety constraints. Shared account storage and token projection are design
 choices, not additional requests from the user.
 
-## Proposed requirements
+## Requirements
 
 1. A user can select OpenCode with a supported OpenAI model and subscription
    billing. ShipIt shows the selected service, model, and billing mode.
@@ -42,6 +42,9 @@ choices, not additional requests from the user.
 9. ShipIt offers only model and capability combinations verified for this
    route. Subscription usage remains subscription usage; API-price estimates
    are not presented as charges.
+
+The user subsequently authorized implementation. The initial supported model is
+GPT-5.5; additional models need runtime validation before they are offered.
 
 ## Scope
 

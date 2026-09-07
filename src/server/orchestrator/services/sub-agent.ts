@@ -84,6 +84,7 @@ import {
   releaseSubAgentSpawnHome,
   removeSubAgentCredentials,
   subAgentSpawnHomeContainerDir,
+  subAgentSpawnHomeDir,
   syncAgentTokenBack,
   syncProviderAccountTokenBack,
 } from "../session-credentials.js";
@@ -142,6 +143,7 @@ function rejectSpawn(
 }
 
 export interface RunSubAgentDeps {
+  ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
   sessionManager: SessionManager;
   credentialStore: CredentialStore;
   agentRegistry: AgentRegistry;
@@ -536,9 +538,11 @@ export async function runSubAgent(
   // release: the session row is mutable under a running turn, and the two
   // halves disagreeing is worse than either answer.
   const isContainer = runner instanceof ContainerSessionRunner;
-  const provisioned = isContainer && !!deps.credentialsDir;
+  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  const provisioned = (isContainer || subAgentId === "opencode") && !!deps.credentialsDir;
   const credentialsDir = deps.credentialsDir;
-  const sameHarness = subAgentId === session.agentId;
+  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  const sameHarness = subAgentId === session.agentId || subAgentId === "opencode";
 
   const spawnId = randomUUID();
   const cardId = randomUUID();
@@ -549,7 +553,9 @@ export async function runSubAgent(
   // runner's own default for partial stubs.
   const originatingTurnEpoch = runner.turnEpoch ?? 0;
 
-  const provisionAttempt = (): void => {
+  const provisionAttempt = async (): Promise<void> => {
+    // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
+    if (subAgentId === "opencode" && accountId && deps.ensureAgentTokenFresh && !await deps.ensureAgentTokenFresh("codex", accountId)) throw new ServiceError(401, "ChatGPT account renewal failed.");
     if (!provisioned || !credentialsDir) return;
     if (sameHarness) {
       console.log(
@@ -735,7 +741,7 @@ export async function runSubAgent(
     // lent out refuses the session's own write-backs, which is the very state
     // this fix exists to end. Nothing between here and the spawn needs
     // credentials, so the only thing the move changes is what cleans up.
-    provisionAttempt();
+    await provisionAttempt();
     // docs/252 phase 3 — with the route scoped to the sub-agent's own
     // selection, this says whether the consult needs shaping: an
     // account-delivered credential is the CLI's own login and is left alone, a
@@ -766,7 +772,7 @@ export async function runSubAgent(
         // the run never reads (or writes) the session subtree the live
         // primary is using.
         ...(sameHarness && provisioned
-          ? { homeDir: subAgentSpawnHomeContainerDir(spawnId) }
+          ? { homeDir: runner instanceof ContainerSessionRunner ? subAgentSpawnHomeContainerDir(spawnId) : subAgentSpawnHomeDir(credentialsDir!, sessionId, spawnId) }
           : {}),
         // docs/261 reqs 5 + 7 — a reviewer and an explicit call both name a level
         // wherever the harness declares levels. Two cases legitimately do not: a
@@ -910,7 +916,7 @@ export async function runSubAgent(
       route = fallback.route;
       accountId = route.kind === "account" ? route.id : undefined;
       attemptedRouteIds.add(route.id);
-      provisionAttempt();
+      await provisionAttempt();
       result = await spawn();
       exhausted = detectExhaustion(result);
     }

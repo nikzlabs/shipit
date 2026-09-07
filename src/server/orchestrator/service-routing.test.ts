@@ -233,7 +233,7 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
    * assertion that says so out loud. A future service with an account-delivered
    * subscription a second harness can carry breaks the equality, not this test.
    */
-  it("asks the account walk about the selected service, not the harness's vendor", () => {
+  it("refuses a stale account selection whose model style the harness cannot carry", () => {
     const asked: string[] = [];
     selectRouteForSelection(
       "codex",
@@ -249,7 +249,7 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
         },
       },
     );
-    expect(asked).toEqual(["anthropic"]);
+    expect(asked).toEqual([]);
   });
 
   /**
@@ -894,4 +894,10 @@ describe("residentRouteNeedsRelease — moving a live session back (docs/260-tur
       residentRouteNeedsRelease(liveSession, "claude", residentOn(ids.secondary, ["sub-agent review"]), deps),
     ).toBe(false);
   });
+});
+
+it("captures a checked OpenCode account route and refuses a filtered native model", () => {
+  const selection = { serviceId: "openai", billingMode: "sub" as const, modelId: "gpt-5.5" };
+  expect(serviceRoutingForSelection("opencode", selection, { kind: "account", id: "account-a" }, storeHolding())).toMatchObject({ style: "openai-responses", credentialTarget: { kind: "openai-chatgpt", accountId: "account-a" } });
+  expect(serviceRoutingForSelection("opencode", { ...selection, modelId: "gpt-6-astra" }, { kind: "account", id: "account-a" }, storeHolding())).toBeUndefined();
 });

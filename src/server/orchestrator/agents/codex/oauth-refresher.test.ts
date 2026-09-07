@@ -177,6 +177,16 @@ describe("CodexOAuthRefresher", () => {
     rigs = [];
   });
 
+  it("does not treat an unchanged rejected token as a successful forced refresh", async () => {
+    const now = 1_700_000_000_000;
+    const rig = buildRig({ accounts: [makeAccount("codex-default")], initialFreshness: { "codex-default": now + 3600000 }, initialNow: now });
+    rigs.push(rig);
+    expect(await rig.refresher.ensureFresh("codex-default")).toBe(true);
+    expect(rig.spawnHandle.invocations).toHaveLength(0);
+    expect(await rig.refresher.ensureFresh("codex-default", { force: true })).toBe(false);
+    expect(rig.spawnHandle.invocations).toHaveLength(2);
+  });
+
   it("noop when token is healthy and tier1 does not rotate", async () => {
     const now = 1_700_000_000_000;
     const future = now + 14 * 24 * 60 * 60 * 1000;

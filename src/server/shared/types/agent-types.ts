@@ -1098,7 +1098,7 @@ export type AgentContentBlock =
  * variable, or the route works or fails depending on how the install happens to
  * be signed in (docs/252 Appendix A).
  */
-export interface ServiceRouting {
+export interface StringServiceRouting {
   serviceId: string;
   /** Display name, for the provider block Codex wants and for logs. */
   serviceName: string;
@@ -1112,6 +1112,19 @@ export interface ServiceRouting {
   /** Where this harness reads the credential from. */
   credentialTarget: CredentialTarget;
 }
+
+/** Explicit account delivery; no secret crosses the worker protocol. */
+export interface OpenAIAccountRouting {
+  serviceId: "openai";
+  serviceName: string;
+  billingMode: "sub";
+  style: "openai-responses";
+  baseUrl: string;
+  credentialSourceEnv?: never;
+  credentialTarget: { kind: "openai-chatgpt"; accountId: string };
+}
+
+export type ServiceRouting = StringServiceRouting | OpenAIAccountRouting;
 
 export interface AgentRunParams {
   prompt: string;

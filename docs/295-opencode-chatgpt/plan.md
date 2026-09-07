@@ -1,15 +1,100 @@
 ---
-title: ChatGPT subscriptions in OpenCode — design
+title: ChatGPT subscriptions in OpenCode
 description: Reuse OpenAI login and quota, with an access-token projection for OpenCode.
 ---
 
 # ChatGPT subscriptions in OpenCode
 
-This is a proposed implementation design. Production behavior is unchanged.
+The user authorized implementation after the design. The implementation notes below
+state the shipped scope; the design sections retain the reasoning behind it.
 The acceptance conditions are in [requirements.md](./requirements.md), and
-remaining implementation work is in [checklist.md](./checklist.md).
+completion record is in [checklist.md](./checklist.md).
 
-## Decision
+## Implementation
+
+OpenCode 1.18.25 can now use the existing OpenAI subscription account. The initial
+model is **GPT-5.5**. Other OpenAI subscription models remain Codex-only until
+checked against OpenCode's native model filter and runtime behavior. API-key
+routes retain Chat Completions or Anthropic Messages; adding the account route
+does not enable general Responses support for API keys.
+
+- `shared/types/agent-types.ts` carries an explicit `openai-chatgpt` account
+  target with the internal route ID, never a secret. Catalogue credential
+  targets constrain styles, and model rows can constrain harnesses.
+- `shared/opencode-account.ts` validates token expiry and account identity,
+  writes an atomic access-only auth file with mode 0600, and checks that a
+  worker's projected account matches its captured route.
+- The managed XDG root is `HOME/.local/share/opencode/shipit-data`; its auth
+  file is `opencode/auth.json` below that root. This nested location uses the
+  existing private credential mount. A SQLite snapshot migrates the previous
+  database, including WAL data, once. Legacy storage and snapshots are copied;
+  terminal auth is not. Disconnect preserves conversation data.
+- `orchestrator/openai-account-delivery.ts` watches the canonical `.codex`
+  directory for source rewrites. This is one-way delivery, not a second refresh
+  scheduler. Each destination has an opaque binding ID, so a late account-A
+  event cannot overwrite account B or restore revoked auth. Bootstrap restores
+  watches from persisted bindings. Sign-out revokes both primary and scoped
+  consumers; scoped cleanup closes its binding.
+- The image installer retains the Codex CLI as an auth dependency when only
+  OpenCode is selected, while the installed-harness report still offers only
+  OpenCode. The installer test checks both the binary and report.
+- The existing Codex refresher owns renewal. Admission awaits freshness before
+  projection; a forced recovery succeeds only if the access token changes.
+  The existing tier-two Codex execution probe can consume subscription quota.
+- Foreground, resume, compaction, naming, review, and PR text use the same
+  account config. All OpenCode background spawns get private homes, including
+  local runtime. Background renewal failure uses the existing explicit failure
+  result; it does not select API billing.
+- Native account spawns enable built-in auth, restrict providers to OpenAI,
+  remove ambient provider credentials, and pin model and small model. Critical
+  routing also goes through `OPENCODE_CONFIG_CONTENT`: the pinned loader reads
+  it **after** project config, unlike `OPENCODE_CONFIG`. Key routes continue to
+  disable built-in auth. Compaction explicitly names provider `openai`.
+
+### Validation
+
+`node --import tsx scripts/probe-opencode-chatgpt.mjs` runs the pinned binary
+with synthetic tokens, an isolated home, and a local TLS recorder that never
+forwards traffic. It checks the ChatGPT endpoint and account header, tool use,
+access replacement within a process, conflicting project config, reasoning,
+database migration/resume, and native-provider compaction. Unit tests cover
+projection permissions, identity mismatch, concurrent consumers, late updates,
+revocation, restart restoration, route eligibility, and forced renewal.
+
+The authenticated smoke test also passed: the current ChatGPT account returned
+`OK` from GPT-5.5 with no tools or authentication error, using an isolated home
+and only an access-token projection. It did not renew or copy a refresh token.
+The synthetic probe additionally checks image payloads, the production naming
+path, preservation of the git tool environment, the model whitelist, and the
+expired-token error without API fallback.
+
+The CLI's provider endpoint reports context 400,000, input 272,000, output
+128,000. ShipIt's context dial uses the 272,000 input budget, so the existing
+catalogue value is correct; no redundant `byHarness` override is needed.
+Quota remains the existing `openai-chatgpt-usage` pool: verified at
+`bootstrap-managers.ts:recordAgentRateLimits`, where the captured credential
+route's owner selects the quota provider, and at
+`service-routing.ts:selectRouteForSelection`, where service and billing mode
+scope account selection. This does not claim that a tiny smoke call can measure
+a visible percentage change in the provider's quota display.
+
+### Independent implementation review
+
+ShipIt's configured reviewer checked the implementation. The fixes retain the
+git/browser/SDK environment, restrict ChatGPT recovery to subscription billing,
+preserve a live projection during a partial or expired source rewrite, keep
+terminal logins on disconnect, migrate the former global local-runtime home,
+validate model eligibility again when shaping the route, and exclude projected
+auth from orphan-state repair. Restart restores archived consumers too. The
+match path refreshes only the projection, avoiding a recursive state ownership
+walk. Naming uses a disposable HOME as well as disposable XDG data; it never
+receives the canonical Codex HOME.
+
+The suggestion to remove `OPENCODE_CONFIG_CONTENT` was rejected: the pinned
+source loads project settings after `OPENCODE_CONFIG` and before content, and
+the conflicting-project runtime test verifies why the final layer is needed.
+
+## Design decisions
 
 Keep the existing `openai-chatgpt` login and its canonical Codex credential
 root. Add OpenCode as a consumer of that account. Deliver only the current
@@ -47,7 +132,7 @@ and revise this design; do not ship a refresh-token copy as a shortcut.
 No new screen, shell action button, or transcript card is needed. Any existing
 card reused for an error must keep its persistence and session ownership.
 
-## Evidence and limits
+## Design evidence and limits (before implementation)
 
 Checked on 2026-09-07. Read source, not live account credentials.
 
@@ -131,9 +216,9 @@ A terminal login can replace the same auth file with a real refresh token.
 Therefore the managed projection must not share that default auth file.
 
 Use a persistent, session-scoped XDG root such as
-`/credentials/opencode-managed-data` for all ShipIt OpenCode turns and
+`/credentials/.local/share/opencode/shipit-data` for all ShipIt OpenCode turns and
 compaction in that session. The CLI then reads
-`/credentials/opencode-managed-data/opencode/auth.json`. This is a path
+`/credentials/.local/share/opencode/shipit-data/opencode/auth.json`. This is a path
 inside the session credential mount, not the global credential volume.
 Use the corresponding managed directory under the resolved home in local
 mode. Reviews and naming get their existing isolated task data roots, with
@@ -273,7 +358,7 @@ current model representation cannot state this intersection. Apply it to
 picker, admission, and background selection together. A missing restriction
 preserves existing eligibility. For GPT-5.5/5.6 variants, native auth can set
 400,000 context / 272,000 input / 128,000 output; verify actual compaction and
-publish the effective harness-specific window with the existing `byHarness`
+publish the effective input budget; use `byHarness` only if it differs from the default
 metadata rather than copying Codex's display value. Any later CLI change must
 re-run these contract fixtures.
 
@@ -326,10 +411,10 @@ Any estimated value remains explicitly an estimate under current usage rules.
 
 All paths below are under `src/server/`.
 
-| Area | Existing files to change or test |
+| Area | Files changed or checked |
 |---|---|
 | Catalogue and route types | `shared/catalogue/{types,harnesses,services,index}.ts`, `shared/types/agent-types.ts`, `orchestrator/service-routing.ts` |
-| Delivery and provenance | `orchestrator/session-agent-env.ts`, `session-agent-credentials.ts`, `session-credentials-scaffold.ts`, proposed `openai-account-delivery.ts` |
+| Delivery and provenance | `orchestrator/session-agent-env.ts`, `session-agent-credentials.ts`, `session-credentials-scaffold.ts`, `openai-account-delivery.ts` |
 | Refresh and revocation | `orchestrator/token-sync-manager.ts`, `bootstrap-managers.ts`, `provider-account-manager.ts`, `agents/codex/oauth-refresher.ts` |
 | Spawn and errors | `shared/opencode-spawn-shaping.ts`, `shared/opencode-stream.ts`, `session/agents/opencode/{adapter,compaction}.ts` |
 | Recovery | `orchestrator/credential-failure-policy.ts`, `ws-handlers/agent-listeners.ts`, turn execution/auth retry callers |
@@ -337,27 +422,24 @@ All paths below are under `src/server/`.
 | UI projections | Existing Settings login completion, account status, and model selector projections; tests must prove both harnesses update. |
 | Agent reference | `shipit-docs/environment.md`, and any auth/config documentation whose statements change. |
 
-The first implementation step is a local fake-endpoint probe of the pinned
-CLI with the real ShipIt environment, default-auth flag, and configuration
-merge order: fresh token, expired access with no refresh token, atomic token replacement
-between requests, provider overrides, model filtering, images, reasoning,
-resume, and compaction. Record only synthetic fixtures and sanitized results.
-An authenticated smoke test must later confirm an entitled model and real
-quota attribution before release. Do not run a second raw CLI with credentials
-from a differently pinned session; use the sanctioned test environment.
+The committed CLI probe exercises fresh and expired access-only tokens, live
+replacement, config precedence, model filtering, image payloads, reasoning,
+migration, resume, compaction, naming, and the tool environment. It uses no real
+credentials and never forwards its fake TLS requests. The separate authenticated
+smoke used this session's own account in an isolated home; only a sanitized
+pass/fail result was kept.
 
-Co-located tests cover projection schema and permissions, identity mismatch,
-malformed expiry, A-to-B races, disconnect during refresh, restart discovery,
-isolated task updates, preservation of the OpenCode database, and no publish-back.
-Integration tests cover shared quota, login fan-out, exact subscription route,
-bounded auth recovery, network/model errors, and no API-key fallback. Include
-existing Codex and OpenCode key routes as negative regression cases.
+Co-located tests cover schema and permissions, identity mismatch, malformed
+expiry, late account-A updates, disconnect, restart restoration, concurrent
+consumers, state preservation, route restrictions, and recovery billing policy.
+Existing affected tests cover Codex and OpenCode key-route regressions. The
+installer test also covers an OpenCode-only selection with Codex available as
+an auth dependency but absent from the session-harness report.
 
-Run affected tests, `npm run lint:dev`, and `npm run typecheck` for the eventual
-code change. This documentation-only design does not claim those code gates
-have passed.
+Affected tests, lint, and typecheck passed. See the implementation validation
+section above for the runtime measurements and the limits of the quota check.
 
-## Independent review resolution
+## Earlier design review resolution
 
 The independent reviewer checked source and the pinned binary. The design
 now addresses disabled native auth, correct XDG paths, terminal-file races,
@@ -366,7 +448,8 @@ quota cost of renewal. Credential-specific style narrowing was added during
 review and is specified above. Existing environment scrubbing already removes
 `OPENCODE_AUTH_CONTENT`; keep and test that behavior instead of reimplementing it.
 The review also confirmed the per-fetch auth read, empty-refresh schema, and
-missing Codex freshness hook. Runtime checks remain implementation gates.
+missing Codex freshness hook. The implementation and runtime checks above close
+those gates.
 
 ## Alternatives and scope control
 

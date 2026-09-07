@@ -200,23 +200,15 @@ export const HARNESSES = [
     // so the adapter appends `/v1` to catalogue A_MSG endpoints when it
     // writes the provider block. Order is preference: chat-completions first
     // (OpenCode's dominant native path; reasoning delivery fully verified).
-    styles: ["openai-chat-completions", "anthropic-messages"],
+    styles: ["openai-chat-completions", "anthropic-messages", "openai-responses"],
     spawn: {
       credential: {
-        // The adapter writes a per-turn provider block whose `apiKey` is
-        // `{env:OPENCODE_PROVIDER_API_KEY}` — a ShipIt-chosen variable, so
-        // one delivery works for every service. Deliberately NO `account`
-        // target (docs/268 req 5): the eligibility join then structurally
-        // excludes every `via: "account"` mode (Anthropic OAuth, ChatGPT) —
-        // upstream removed Anthropic subscription login, and ShipIt's
-        // ChatGPT/Copilot OAuth wiring for OpenCode is follow-up work.
-        string: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY" },
-        account: undefined,
+        // Responses is account-only. String routes retain their verified styles.
+        string: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY", styles: ["openai-chat-completions", "anthropic-messages"] },
+        account: { kind: "scoped-home", styles: ["openai-responses"] },
       },
-      // `opencode run --model shipit/<modelId>` — the adapter always routes
-      // through its own `shipit` provider block, never OpenCode's built-in
-      // registry, so the flag value is `shipit/<modelId>` (docs/268 plan.md,
-      // "serviceId → provider/model").
+      // String routes use shipit/<modelId>; ChatGPT accounts use the
+      // explicitly selected native openai/<modelId> provider (docs/295).
       model: { kind: "flag", flag: "--model" },
       // The base URL lives in the per-turn config file's provider block; the
       // CLI has no endpoint env var or flag.

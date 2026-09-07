@@ -62,6 +62,7 @@ export interface OpencodeCompactionOptions {
    * summarize with no `providerID` is rejected `400 Missing key ["providerID"]`.
    */
   modelId: string;
+  providerId?: "openai" | "shipit";
   cwd: string;
   /**
    * The turn env, built by the adapter — `OPENCODE_CONFIG` (which carries the
@@ -110,7 +111,7 @@ export async function compactOpencodeSession(opts: OpencodeCompactionOptions): P
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerID: SHIPIT_PROVIDER_ID, modelID: modelId }),
+        body: JSON.stringify({ providerID: opts.providerId ?? SHIPIT_PROVIDER_ID, modelID: modelId }),
       },
       SUMMARIZE_TIMEOUT_MS,
     );

@@ -628,7 +628,7 @@ function buildTarget(
     candidate.route,
     deps.credentialStore,
   );
-  const credentialSecret = serviceRouting
+  const credentialSecret = serviceRouting?.credentialSourceEnv
     ? credentialSecretForRoute(
         deps,
         candidate.selection,

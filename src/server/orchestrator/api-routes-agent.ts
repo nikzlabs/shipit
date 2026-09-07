@@ -62,6 +62,7 @@ export async function registerAgentRoutes(
           {
             runnerRegistry: deps.runnerRegistry,
             agentRegistry: deps.agentRegistry,
+            ...(deps.ensureAgentTokenFresh ? { ensureAgentTokenFresh: deps.ensureAgentTokenFresh } : {}),
             credentialStore: deps.credentialStore,
             authManager: deps.authManager,
             sessionManager: deps.sessionManager,

@@ -136,3 +136,8 @@ describe("vendorOwnedRecovery — whose healer can act on this credential", () =
     expect(glm).toMatchObject({ stopsOnFailure: false, vendorOwnedRecovery: false });
   });
 });
+
+it("routes OpenCode recovery to ChatGPT only for subscription billing", () => {
+  expect(credentialFailurePolicyFor(session({ agentId: "opencode", serviceId: "openai", billingMode: "sub" })).vendorOwnedRecovery).toBe(true);
+  expect(credentialFailurePolicyFor(session({ agentId: "opencode", serviceId: "openai", billingMode: "key" }))).toMatchObject({ stopsOnFailure: true, vendorOwnedRecovery: false });
+});

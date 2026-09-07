@@ -939,7 +939,7 @@ describe("support before a credential exists (the add-service table)", () => {
     // of Anthropic and OpenAI but neither subscription (no account target, and
     // the env-OAuth token is carrier-restricted to Claude Code — docs/268 req 5).
     expect(harnessServiceSupport("opencode", "anthropic")).toBe("some");
-    expect(harnessServiceSupport("opencode", "openai")).toBe("some");
+    expect(harnessServiceSupport("opencode", "openai")).toBe("all");
     expect(harnessSupportsMode("opencode", "anthropic", "sub")).toBe(false);
     expect(harnessSupportsMode("opencode", "anthropic", "key")).toBe(true);
     // GLM's coding plan delivers a BEARER token (ANTHROPIC_AUTH_TOKEN);
@@ -1529,7 +1529,7 @@ describe("credentials", () => {
       // the new harness really should re-evaluate on this sign-in, then update
       // the expectation.
       expect(harnessesForLoginIntegration("anthropic-oauth")).toEqual(["claude"]);
-      expect(harnessesForLoginIntegration("openai-chatgpt")).toEqual(["codex"]);
+      expect(harnessesForLoginIntegration("openai-chatgpt")).toEqual(["codex", "opencode"]);
       expect(harnessesForLoginIntegration("xai-oauth")).toEqual(["grok"]);
     });
 
@@ -1548,7 +1548,7 @@ describe("credentials", () => {
       const chatgpt = getService("openai")?.modes
         .find((m) => m.kind === "sub")
         ?.credentials.find((c) => c.via === "account");
-      expect(chatgpt?.carriers).toEqual(["codex"]);
+      expect(chatgpt?.carriers).toEqual(["codex", "opencode"]);
       expect(harnessCanCarry("grok", {
         serviceId: "openai", billingMode: "sub", via: "account",
       })).toBe(false);
@@ -1737,4 +1737,12 @@ describe("per-model image input (planning#460)", () => {
       "unverified",
     );
   });
+});
+
+
+it("offers only the checked OpenCode ChatGPT model and keeps Responses account-only", () => {
+  const entries = catalogueEntriesForHarness("opencode").filter(e => e.service.id === "openai" && e.mode.kind === "sub");
+  expect(entries.map(e => e.model.id)).toEqual(["gpt-5.5"]);
+  expect(resolveStyle("opencode", getModel({ serviceId: "openai", billingMode: "key", modelId: "gpt-5.5" })!, "string")).toBe("openai-chat-completions");
+  expect(harnessCanCarry("opencode", { serviceId: "anthropic", billingMode: "sub", via: "account" })).toBe(false);
 });

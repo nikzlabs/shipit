@@ -94,6 +94,7 @@ import {
   releaseSubAgentCredentials,
   releaseSubAgentSpawnHome,
   subAgentSpawnHomeContainerDir,
+  subAgentSpawnHomeDir,
   syncAgentTokenBack,
   syncProviderAccountTokenBack,
 } from "../session-credentials.js";
@@ -126,6 +127,7 @@ export interface NonTurnFailurePersister extends InProgressPersister {
 }
 
 export interface NonTurnWorkDeps {
+  ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
   credentialStore: CredentialStore;
   providerAccountManager?: ProviderAccountManager | undefined;
   /**
@@ -527,7 +529,7 @@ async function runNonTurnSpawn(
   // optional: without it an account-backed background model spawns into a
   // container that holds someone else's credentials, or none.
   const credentialsDir = deps.credentialsDir;
-  const provisioned = runner instanceof ContainerSessionRunner && !!credentialsDir;
+  const provisioned = (runner instanceof ContainerSessionRunner || target.harnessId === "opencode") && !!credentialsDir;
   const accountId = target.route?.kind === "account" ? target.route.id : undefined;
   // Captured once, like `runSubAgent`'s flag: a spawn on the session's OWN
   // harness must not write the session subtree — the primary CLI is routinely
@@ -536,7 +538,7 @@ async function runNonTurnSpawn(
   // 2026-08-21 401 loop). Such a spawn gets an isolated per-spawn home instead;
   // an unpinned or unknown session keeps the cross-harness path, where there is
   // no live same-subtree reader to collide with.
-  const sameHarness = deps.sessionManager?.get(sessionId)?.agentId === target.harnessId;
+  const sameHarness = deps.sessionManager?.get(sessionId)?.agentId === target.harnessId || target.harnessId === "opencode";
   try {
     // Inside the try, so the `finally` always closes the borrow it opens
     // (planning#445): a provisioning failure that threw past the cleanup used to
@@ -544,6 +546,7 @@ async function runNonTurnSpawn(
     // refuses the session's own token write-backs — the state this fix exists
     // to end. `runSubAgent` opens its window in the same place, for the same
     // reason.
+    if (target.harnessId === "opencode" && accountId && deps.ensureAgentTokenFresh && !await deps.ensureAgentTokenFresh("codex", accountId)) throw new Error("ChatGPT account renewal failed.");
     if (provisioned && credentialsDir) {
       if (sameHarness) {
         provisionSubAgentSpawnHome(credentialsDir, sessionId, spawnId, target.harnessId, accountId);
@@ -559,7 +562,7 @@ async function runNonTurnSpawn(
       model: target.selection.modelId,
       ...(target.serviceRouting ? { serviceRouting: target.serviceRouting } : {}),
       ...(sameHarness && provisioned
-        ? { homeDir: subAgentSpawnHomeContainerDir(spawnId) }
+        ? { homeDir: runner instanceof ContainerSessionRunner ? subAgentSpawnHomeContainerDir(spawnId) : subAgentSpawnHomeDir(credentialsDir, sessionId, spawnId) }
         : {}),
       timeoutMs: NON_TURN_SPAWN_TIMEOUT_MS,
       maxOutputChars: NON_TURN_MAX_OUTPUT_CHARS,

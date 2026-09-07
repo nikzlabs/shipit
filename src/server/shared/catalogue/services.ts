@@ -433,12 +433,9 @@ export const SERVICES = [
         // base URL below look inconsistent and are not.)
         endpoints: { [O_RESP]: "https://api.openai.com/v1" },
         quota: "openai-chatgpt-usage",
-        // `carriers` — a ChatGPT subscription is a login to OpenAI's account
-        // system and only Codex can present it. Load-bearing since
-        // planning#435: Grok also speaks `openai-responses` and now carries an
-        // `account` target, so without this the style join would offer this
-        // subscription on Grok and every such turn would 401.
-        credentials: [{ via: "account", login: "openai-chatgpt", carriers: ["codex"] }],
+        // ChatGPT accounts share their owner and quota across Codex and
+        // OpenCode. Model rows below narrow the checked OpenCode launch set.
+        credentials: [{ via: "account", login: "openai-chatgpt", carriers: ["codex", "opencode"] }],
         // The `gpt-5.6 → gpt-5.6-sol` remap. It arrived as the hand-written
         // `normalizeCodexModelId` shim, which was mode-blind and style-blind —
         // so its placement under both modes under `openai-responses` is this
@@ -447,21 +444,21 @@ export const SERVICES = [
         // resolved by `retirementSuccessor` (req 13).
         retired: [{ id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-5.6-sol" } }],
         models: [
-          { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
+          { id: "gpt-5.6-sol", harnesses: ["codex"], label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
           // Codex 0.153.2 carries GPT-6 Astra but hides it when the account is
           // not entitled yet. Keep Sol first so a fresh install does not
           // default to a model its account may not be able to run.
-          { id: "gpt-6-astra", label: "GPT-6 Astra", ...MODEL_IDENTITIES.gpt6astra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt6astra, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
-          { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
-          { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", ...MODEL_IDENTITIES.gpt56luna, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.luna },
+          { id: "gpt-6-astra", harnesses: ["codex"], label: "GPT-6 Astra", ...MODEL_IDENTITIES.gpt6astra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt6astra, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
+          { id: "gpt-5.6-terra", harnesses: ["codex"], label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
+          { id: "gpt-5.6-luna", harnesses: ["codex"], label: "GPT-5.6 Luna", ...MODEL_IDENTITIES.gpt56luna, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.luna },
           // OpenAI lists Spark after the GPT-5.6 family in its recommended Codex
           // models. Keep that vendor order while leaving Sol as the default.
-          { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", ...MODEL_IDENTITIES.gpt53codexSpark, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt53codexSparkProvisional },
-          { id: "gpt-5.4", label: "GPT-5.4", ...MODEL_IDENTITIES.gpt54, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54 },
-          { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", ...MODEL_IDENTITIES.gpt54mini, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54mini },
-          { id: "gpt-5.5", label: "GPT-5.5", ...MODEL_IDENTITIES.gpt55, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt55 },
-          { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", ...MODEL_IDENTITIES.gpt53codex, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt53codex },
-          { id: "gpt-5.2", label: "GPT-5.2", ...MODEL_IDENTITIES.gpt52, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt52 },
+          { id: "gpt-5.3-codex-spark", harnesses: ["codex"], label: "GPT-5.3 Codex Spark", ...MODEL_IDENTITIES.gpt53codexSpark, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt53codexSparkProvisional },
+          { id: "gpt-5.4", harnesses: ["codex"], label: "GPT-5.4", ...MODEL_IDENTITIES.gpt54, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54 },
+          { id: "gpt-5.4-mini", harnesses: ["codex"], label: "GPT-5.4 Mini", ...MODEL_IDENTITIES.gpt54mini, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54mini },
+          { id: "gpt-5.5", harnesses: ["codex", "opencode"], label: "GPT-5.5", ...MODEL_IDENTITIES.gpt55, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt55 },
+          { id: "gpt-5.3-codex", harnesses: ["codex"], label: "GPT-5.3 Codex", ...MODEL_IDENTITIES.gpt53codex, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt53codex },
+          { id: "gpt-5.2", harnesses: ["codex"], label: "GPT-5.2", ...MODEL_IDENTITIES.gpt52, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt52 },
         ],
       },
       {

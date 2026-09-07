@@ -1,3 +1,5 @@
+import path from "node:path";
+import { revokeOpenCodeSource } from "../openai-account-delivery.js";
 /**
  * Settings services — reads (agents, global settings) and mutations
  * (git identity, global settings, agents, API key).
@@ -989,8 +991,9 @@ function runnerOnAccount(
     return runner.residentRoute.kind === "account" && accountIds.has(runner.residentRoute.id);
   }
   if (!credentialsDir) return false;
-  const recorded = readSessionAccountMarker(credentialsDir, runner.sessionId)[provider];
-  return recorded !== undefined && accountIds.has(recorded);
+  const markers = readSessionAccountMarker(credentialsDir, runner.sessionId);
+  const recorded = markers[provider];
+  return (recorded !== undefined && accountIds.has(recorded)) || (provider === "codex" && markers.opencode !== undefined && accountIds.has(markers.opencode));
 }
 
 /** Session ids whose live process is on one of `accountIds` AND busy (req 13). */
@@ -1051,7 +1054,14 @@ function revokeRecordedAccountCopies(
     console.warn(`[provider-accounts] no credentialsDir: sessions keep their copies of ${context}`);
     return;
   }
+  if (provider === "codex") {
+    for (const id of accountIds) revokeOpenCodeSource(path.join(credentialsDir, "provider-accounts", "codex", id));
+  }
   for (const session of sessionManager.listAll()) {
+    if (provider === "codex") {
+      const consumerAccount = readSessionAccountMarker(credentialsDir, session.id).opencode;
+      if (consumerAccount && accountIds.has(consumerAccount)) revokeSessionProviderCredentials(credentialsDir, session.id, "opencode");
+    }
     const recorded = readSessionAccountMarker(credentialsDir, session.id)[provider];
     if (recorded !== undefined && accountIds.has(recorded)) {
       // Also clears the marker, so the next turn's identity check reprovisions.

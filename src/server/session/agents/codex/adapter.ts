@@ -334,7 +334,7 @@ export class CodexAdapter
     const providerArgs = codexProviderArgs(routing);
     const shaped = routing !== undefined && providerArgs.length > 0;
     if (shaped && routing) {
-      const secret = env[routing.credentialSourceEnv];
+      const secret = routing.credentialSourceEnv ? env[routing.credentialSourceEnv] : undefined;
       if (routing.credentialTarget.kind === "env") {
         if (secret) env[routing.credentialTarget.name] = secret;
         // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- the key is a catalogue-declared variable name, not caller input.

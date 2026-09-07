@@ -1,3 +1,4 @@
+import { ensureManagedOpenCodeData, openCodeAccessToken, writeOpenCodeAccount, OPENCODE_ACCOUNT_MARKER } from "../../../shared/opencode-account.js";
 /**
  * OpencodeAdapter conformance tests (docs/268 req 4).
  *
@@ -594,7 +595,7 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     function tempHome(withLog: boolean): { home: string; logFile: string } {
       const home = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-stall-"));
       homes.push(home);
-      const logDir = path.join(home, ".local", "share", "opencode", "log");
+      const logDir = path.join(home, ".local", "share", "opencode", "shipit-data", "opencode", "log");
       if (withLog) fs.mkdirSync(logDir, { recursive: true });
       return { home, logFile: path.join(logDir, "run.log") };
     }
@@ -713,5 +714,62 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     adapter.on("error", (e) => errors.push(e));
     expect(() => adapter.compact()).not.toThrow();
     expect(errors).toHaveLength(0);
+  });
+});
+
+
+describe("OpenCode ChatGPT account route", () => {
+  const routing = { serviceId: "openai", serviceName: "OpenAI", billingMode: "sub", style: "openai-responses", baseUrl: "https://api.openai.com/v1", credentialTarget: { kind: "openai-chatgpt", accountId: "account-a" } } as const;
+  function provision(home: string) {
+    const data = ensureManagedOpenCodeData(home);
+    const access_token = `e30.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, "https://api.openai.com/auth": { chatgpt_account_id: "external-a" } })).toString("base64url")}.test`;
+    writeOpenCodeAccount(data, openCodeAccessToken({ tokens: { access_token, refresh_token: "never-copy" } }));
+    fs.writeFileSync(path.join(data, OPENCODE_ACCOUNT_MARKER), JSON.stringify({ accountId: "account-a" }));
+    return data;
+  }
+  it("uses native routing and a private home, scrubs ambient credentials, and preserves resume", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "oc-account-adapter-"));
+    const data = provision(home);
+    const child = new FakeChild();
+    const spawnFn = vi.fn(() => child as unknown as ChildProcess);
+    const adapter = new OpencodeAdapter({ spawnFn });
+    vi.stubEnv("OPENAI_API_KEY", "wrong-key");
+    vi.stubEnv("ANTHROPIC_API_KEY", "wrong-provider");
+    vi.stubEnv("GIT_CONFIG_GLOBAL", "/credentials/.gitconfig");
+    vi.stubEnv("PLAYWRIGHT_BROWSERS_PATH", "/opt/playwright");
+    vi.stubEnv("JAVA_HOME", "/opt/java");
+    try {
+      adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing, homeDir: home, sessionId: SESSION });
+      expect(spawnFn).toHaveBeenCalledOnce();
+      const call = (spawnFn.mock.calls as unknown as [string, string[], { env: Record<string, string> }][])[0];
+      expect(call[1]).toContain("openai/gpt-5.5");
+      expect(call[1]).toContain(SESSION);
+      expect(call[2].env.XDG_DATA_HOME).toBe(data);
+      expect(call[2].env.OPENCODE_DISABLE_DEFAULT_PLUGINS).toBe("0");
+      expect(call[2].env.OPENAI_API_KEY).toBeUndefined();
+      expect(call[2].env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(call[2].env.GIT_CONFIG_GLOBAL).toBe("/credentials/.gitconfig");
+      expect(call[2].env.PLAYWRIGHT_BROWSERS_PATH).toBe("/opt/playwright");
+      expect(call[2].env.JAVA_HOME).toBe("/opt/java");
+      expect(JSON.parse(call[2].env.OPENCODE_CONFIG_CONTENT)).toMatchObject({ enabled_providers: ["openai"], small_model: "openai/gpt-5.5" });
+      child.close(0);
+    } finally { adapter.kill(); vi.unstubAllEnvs(); fs.rmSync(home, { recursive: true, force: true }); }
+  });
+  it("refuses a projection for another route and classifies the native empty-refresh failure", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "oc-account-adapter-"));
+    const data = provision(home);
+    const child = new FakeChild();
+    const spawnFn = vi.fn(() => child as unknown as ChildProcess);
+    const adapter = new OpencodeAdapter({ spawnFn });
+    const authRequired = vi.fn(); adapter.on("auth_required", authRequired);
+    try {
+      fs.writeFileSync(path.join(data, OPENCODE_ACCOUNT_MARKER), JSON.stringify({ accountId: "account-b" }));
+      adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing, homeDir: home });
+      expect(spawnFn).not.toHaveBeenCalled(); expect(authRequired).toHaveBeenCalledOnce();
+      provision(home);
+      adapter.run({ ...RUN_PARAMS, model: "gpt-5.5", serviceRouting: routing, homeDir: home });
+      child.emitStdout([JSON.stringify({ type: "error", sessionID: SESSION, error: { name: "UnknownError", data: { message: "Token refresh failed: 400" } } })]);
+      expect(authRequired).toHaveBeenCalledTimes(2);
+    } finally { adapter.kill(); fs.rmSync(home, { recursive: true, force: true }); }
   });
 });

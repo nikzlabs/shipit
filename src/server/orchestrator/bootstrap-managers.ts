@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import { perSessionCredentialsDir } from "./session-credentials-scaffold.js";
+import { restoreOpenCodeAccount } from "./openai-account-delivery.js";
+import { accountOwnerHarness } from "./provider-account-manager.js";
 import { AgentMergeClaimStore } from "./agent-merge-claims.js";
 import { reconcileAgentMergeClaims } from "./services/agent-merge-settlement.js";
 import { AgentMergeExecutor } from "./services/agent-merge-executor.js";
@@ -370,6 +374,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     credentialStore,
     providerAccountManager,
     getRunnerRegistry: () => registryHolder.ref ?? undefined,
+    ensureAgentTokenFresh: (...args) => ensureAgentTokenFresh(...args),
     chatHistoryManager,
     usageManager,
     // The credential window a background spawn needs: its harness and account
@@ -499,16 +504,15 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   agentAuthRequiredHooks.set("claude", nudgeClaudeOAuthRefresh);
   agentAuthRequiredHooks.set("codex", nudgeCodexOAuthRefresh);
   const onAgentAuthRequired = (agentId: AgentId): void => {
-    agentAuthRequiredHooks.get(agentId)?.();
+    agentAuthRequiredHooks.get(accountOwnerHarness(agentId))?.();
   };
   /**
    * docs/179 — proactively heal an agent's OAuth source token before someone
    * reads it (session start, AI session naming, the 401 auto-retry). Keyed by
    * agent like {@link onAgentAuthRequired}: Claude registers the refresher's
    * `ensureFresh` (a no-op when the token is healthy, an awaited single-flight
-   * refresh when it's within the safety margin). Codex's auth is unaffected by
-   * the rotating-refresh-token stampede, so it registers no hook and resolves
-   * to a no-op. Returns `true` when the token is usable after the call.
+   * refresh when it's within the safety margin). Codex also registers its awaited refresher; OpenCode
+   * account consumers dispatch through that same owner. Returns `true` when the token is usable after the call.
    */
   const ensureTokenFreshHooks = new Map<
     AgentId,
@@ -528,6 +532,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       return false;
     }
   });
+  ensureTokenFreshHooks.set("codex", async (accountId, opts) => {
+    if (!accountId) return false;
+    return codexOAuthRefresherRef.ref?.ensureFresh(accountId, opts) ?? false;
+  });
   // docs/179 — `opts.force` is set only by the runtime-401 recovery; the
   // proactive callers (env-prep step 2a, session naming) omit it and keep the
   // cheap expiry short-circuit.
@@ -536,7 +544,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     accountId?: string,
     opts?: { force?: boolean },
   ): Promise<boolean> => {
-    const hook = ensureTokenFreshHooks.get(agentId);
+    const hook = ensureTokenFreshHooks.get(accountOwnerHarness(agentId));
     return hook ? hook(accountId, opts) : true;
   };
   // docs/149 — same shape as the WS handler's readSystemPrompt, hoisted to
@@ -1242,6 +1250,18 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       sseBroadcast,
       runtimeMode,
     });
+    // Reattach durable consumers before the owner can publish a new token.
+    for (const session of sessionManager.listAll()) {
+      const home = perSessionCredentialsDir(credentialsDir, session.id);
+      const sourceForAccount = (id: string) => providerAccountManager.resolveCredentialRoot("codex", id);
+      restoreOpenCodeAccount(home, sourceForAccount);
+      const spawns = path.join(home, "sub-agent-homes");
+      if (fs.existsSync(spawns)) {
+        for (const entry of fs.readdirSync(spawns, { withFileTypes: true })) {
+          if (entry.isDirectory()) restoreOpenCodeAccount(path.join(spawns, entry.name), sourceForAccount);
+        }
+      }
+    }
     codexOAuthRefresherRef.ref = codexRefresher;
     codexRefresher.start();
     // docs/150-multiple-provider-subscriptions req 3 — mirror Claude's wiring above. Without this, a revoked

@@ -238,7 +238,7 @@ export function harnessesForLoginIntegration(loginId: LoginIntegrationId): Agent
               && c.login === loginId
               && (!c.carriers || c.carriers.includes(harness.id)),
           )
-          && mode.models.some((model) => resolveStyle(harness.id, model) !== undefined),
+          && mode.models.some((model) => resolveStyle(harness.id, model, "account") !== undefined),
       ),
   ).map((harness) => harness.id);
 }
@@ -285,10 +285,20 @@ export function modelIdentityFor(selection: ModelSelection): ModelIdentity | und
  * implementer picking arbitrarily — is how a silent per-turn inconsistency gets
  * built.
  */
-export function resolveStyle(harnessId: AgentId, model: ModelDef): ApiStyle | undefined {
+export function resolveStyle(harnessId: AgentId, model: ModelDef, via?: "account" | "string"): ApiStyle | undefined {
   const harness = getHarness(harnessId);
-  if (!harness) return undefined;
-  return harness.styles.find((style) => model.styles.includes(style));
+  if (!harness || (model.harnesses && !model.harnesses.includes(harnessId))) return undefined;
+  const allowed = via ? harness.spawn.credential[via]?.styles : undefined;
+  return harness.styles.find((style) => model.styles.includes(style) && (!allowed || allowed.includes(style)));
+}
+
+function resolveModeStyle(harnessId: AgentId, mode: BillingModeDef, model: ModelDef): ApiStyle | undefined {
+  for (const credential of mode.credentials) {
+    if (!harnessCredentialTarget(harnessId, credential.via)) continue;
+    const style = resolveStyle(harnessId, model, credential.via);
+    if (style) return style;
+  }
+  return undefined;
 }
 
 /** The endpoint a turn on this selection and harness would be sent to. */
@@ -296,7 +306,7 @@ export function resolveEndpoint(harnessId: AgentId, selection: ModelSelection): 
   const mode = getMode(selection.serviceId, selection.billingMode);
   const model = mode?.models.find((m) => m.id === selection.modelId);
   if (!mode || !model) return undefined;
-  const style = resolveStyle(harnessId, model);
+  const style = resolveModeStyle(harnessId, mode, model);
   return style ? mode.endpoints[style] : undefined;
 }
 
@@ -593,7 +603,7 @@ export function catalogueEntriesForHarness(harnessId: AgentId): CatalogueEntry[]
   for (const service of SERVICES) {
     for (const mode of service.modes) {
       for (const model of mode.models) {
-        if (resolveStyle(harnessId, model) === undefined) continue;
+        if (resolveModeStyle(harnessId, mode, model) === undefined) continue;
         out.push({
           selection: { serviceId: service.id, billingMode: mode.kind, modelId: model.id },
           service,
@@ -687,6 +697,8 @@ export function harnessCanCarry(harnessId: AgentId, credential: ConfiguredCreden
   // up delivered under a name nothing reads.
   const declared = modeCredentialFor(credential.serviceId, credential.billingMode, credential.via);
   if (!declared) return false;
+  const mode = getMode(credential.serviceId, credential.billingMode);
+  if (!mode?.models.some((model) => resolveStyle(harnessId, model, credential.via) !== undefined)) return false;
   // A credential may be restricted to the harnesses that can actually
   // authenticate with it (`carriers` — see the type's docstring). Without this
   // check an Anthropic-subscription OAuth token would make subscription models
@@ -860,7 +872,7 @@ export function resolveSpawnShaping(
   const mode = getMode(selection.serviceId, selection.billingMode);
   const model = mode?.models.find((m) => m.id === selection.modelId);
   if (!harness || !mode || !model) return undefined;
-  const style = resolveStyle(harnessId, model);
+  const style = resolveModeStyle(harnessId, mode, model);
   const url = style ? mode.endpoints[style] : undefined;
   if (!style || !url) return undefined;
   const sourceEnv = storageEnvFor(selection.serviceId, selection.billingMode);
@@ -988,7 +1000,7 @@ export function retirementSuccessor(
   // only fire on a row that shipped with the test disabled — in which case
   // returning nothing beats returning a triple that names no row.
   const successor = mode.models.find((m) => m.id === successorId);
-  if (!successor?.styles.includes(style)) return undefined;
+  if (!successor?.styles.includes(style) || !resolveModeStyle(harnessId, mode, successor)) return undefined;
   return {
     serviceId: selection.serviceId,
     billingMode: selection.billingMode,

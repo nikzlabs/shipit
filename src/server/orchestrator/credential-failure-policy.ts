@@ -96,7 +96,8 @@ export function credentialFailurePolicyForRoute(
     // for, reintroduced by a service row.
     vendorOwnedRecovery:
       serviceId === undefined
-      || (serviceId === nativeService && loginIntegrationForService(serviceId) !== undefined),
+      // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
+      || ((serviceId === nativeService || (agentId === "opencode" && serviceId === "openai" && billingMode === "sub")) && loginIntegrationForService(serviceId) !== undefined),
   };
 }
 

@@ -885,6 +885,7 @@ export const SUBTREE_STATE_SUBPATHS: Readonly<Record<string, readonly string[]>>
   ".claude": CLAUDE_SESSION_STATE_SUBPATHS,
   ".codex": CODEX_SESSION_STATE_SUBPATHS,
   ".grok": GROK_SESSION_STATE_SUBPATHS,
+  ".local/share/opencode": ["shipit-data", "opencode.db", "opencode.db-wal", "opencode.db-shm", "storage", "snapshot"],
 };
 
 /** Subtrees under a Codex home that can hold a thread's rollout jsonl. */
@@ -1494,6 +1495,8 @@ function mergeOrphanState(orphanPath: string, dstPath: string, rel: string): Orp
           force: false,
           errorOnExist: false,
           dereference: true,
+          // OpenCode projections are disposable; repair carries state only.
+          filter: (source) => rel !== ".local/share/opencode" || !["auth.json", ".shipit-openai-account.json"].includes(path.basename(source)),
         });
         result.preserved = true;
       } catch (err) {
