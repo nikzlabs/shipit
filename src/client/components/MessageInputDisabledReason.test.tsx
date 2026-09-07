@@ -168,7 +168,10 @@ describe("MessageInput disabledReason (docs/257 req 3)", () => {
     const paste = (placeholder: string) => {
       const file = new File(["x"], "shot.png", { type: "image/png" });
       fireEvent.paste(screen.getByPlaceholderText(placeholder), {
-        clipboardData: { items: [{ type: "image/png", getAsFile: () => file }] },
+        clipboardData: {
+          items: [{ type: "image/png", getAsFile: () => file }],
+          getData: () => "",
+        },
       });
     };
     render(

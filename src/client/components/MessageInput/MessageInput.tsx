@@ -34,6 +34,7 @@ import { applyRoleSeeds } from "../../utils/role-seed.js";
 import { useTextareaSizing } from "./hooks/useTextareaSizing.js";
 import { useMessageDraft } from "./hooks/useMessageDraft.js";
 import { useUploadBackend } from "./hooks/useUploadBackend.js";
+import { isLargePaste, buildPastedTextFile } from "./large-paste.js";
 import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo, UploadRef } from "../../../server/shared/types.js";
 import type { UploadItem } from "../../hooks/useFileUpload.js";
 import type { AgentOption, ModelChoice } from "../../agent-types.js";
@@ -901,6 +902,15 @@ export function MessageInput({
       if (imageFiles.length > 0) {
         e.preventDefault();
         addFiles(imageFiles);
+        return;
+      }
+      // docs/292 reqs 1-3 — a large paste is attached as a text file instead of
+      // filling the composer with thousands of unreadable characters. A smaller
+      // one falls through to the browser's own insert.
+      const pastedText = e.clipboardData.getData("text/plain");
+      if (isLargePaste(pastedText)) {
+        e.preventDefault();
+        addFiles([buildPastedTextFile(pastedText)]);
       }
     },
     [addFiles, inert],
