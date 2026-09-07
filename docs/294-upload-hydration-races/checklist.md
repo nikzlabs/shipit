@@ -19,6 +19,8 @@
 - [x] Invalidate on every upload POST outcome — a rolled-back batch changed the set too
 - [x] Cover the rewind writer, which deletes upload files server-side
 - [x] A session switch is not a removal: keep the file, record it as a draft (req 7)
+- [x] Record the dismissal against the upload's ID — the current session cannot reconstruct either journey
+- [x] Do not trust a listing taken across an unresolved mutation, which the counter cannot see
 
 ## `/compact`
 
@@ -47,10 +49,13 @@
 - [x] Record the three `/review` behaviour changes; correct docs/293's claim about its own code
 - [x] Pin the DELETE bump's TIMING, not just its presence — the first test could not tell start from completion
 - [x] Drop the foreign-session draft assertion, which stopped discriminating once absence-pruning went
+- [x] Hold a listing open across the refused DELETE — the test completed it first and passed either way
+- [x] Cover A→B→A and Remove-then-switch, the two journeys the first req 7 fix got wrong
+- [x] Revert the absent-vs-undefined assertions: JSON omits both, so they guaranteed nothing
 - [x] Fix the existing hydration fixtures the session guard correctly broke
 - [x] `npm run typecheck` and `npm run lint:dev` clean
 - [x] Full `npm test` — 990 files, 17,365 tests, clean on a quiet box
 - [x] Independent review of the branch against the requirements
 - [x] Second review over the changes the first one prompted
-- [ ] Third review over the changes the second one prompted
+- [x] Third review over the changes the second one prompted
 - [ ] Verify in a real browser on the dogfood instance

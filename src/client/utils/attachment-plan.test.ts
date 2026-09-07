@@ -51,10 +51,8 @@ describe("buildAttachmentPlan — an ordinary message", () => {
     const plan = buildAttachmentPlan({
       text: "hello", uploadRefs: [], uploads: [], pendingFiles: [],
     });
-    // `toEqual({})` passes for a key set to `undefined`; the key must be absent,
-    // so the frame does not send the server down the attachment path for nothing.
-    expect(Object.keys(plan.frame)).toEqual([]);
-    expect(Object.keys(plan.bubble)).toEqual([]);
+    expect(plan.frame).toEqual({});
+    expect(plan.bubble).toEqual({});
     expect(plan.clearAttachments).toBe(true);
   });
 
@@ -131,8 +129,8 @@ describe("buildAttachmentPlan — /compact (docs/294 reqs 5-6)", () => {
       uploads: [upload({})],
       pendingFiles: [{ path: "src/index.ts" }],
     });
-    expect(Object.keys(plan.frame)).toEqual([]);
-    expect(Object.keys(plan.bubble)).toEqual([]);
+    expect(plan.frame).toEqual({});
+    expect(plan.bubble).toEqual({});
     // req 5 — the attachments stay in the composer for the next real message.
     expect(plan.clearAttachments).toBe(false);
   });

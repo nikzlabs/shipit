@@ -202,6 +202,38 @@ export function isUploadActive(id: string): boolean {
   return activeUploads.has(id);
 }
 
+/** Is any upload for this session mid-request right now? */
+export function hasActiveUploads(): boolean {
+  return activeUploads.size > 0;
+}
+
+/**
+ * Uploads the user explicitly dismissed while they were still in flight.
+ *
+ * docs/294 req 7 — the completion handler has to know WHY a chip is missing, and
+ * the chip list cannot tell it: `switchSession` clears every chip, so "gone"
+ * means both "the user removed it" and "the user went elsewhere". Inferring it
+ * from the current session id fails in both directions — A→B→A restores the
+ * session without restoring the chip (so a live upload was deleted), and
+ * Remove-then-switch loses the removal (so a dismissed attachment came back).
+ * Recording the intent against the upload's own id is the only thing that
+ * survives both journeys. NOT cleared on session switch, for exactly that
+ * reason.
+ */
+const dismissedUploads = new Set<string>();
+
+export function noteUploadDismissed(id: string): void {
+  dismissedUploads.add(id);
+}
+
+export function wasUploadDismissed(id: string): boolean {
+  return dismissedUploads.has(id);
+}
+
+export function forgetUploadDismissal(id: string): void {
+  dismissedUploads.delete(id);
+}
+
 /**
  * docs/294 — the two counters that tell `hydrateUploads` whether its answer is
  * still true by the time it arrives.
@@ -319,6 +351,12 @@ export const useFileStore = create<FileState>((set, get) => ({
     // is no longer current must not get that authority.
     const seq = ++hydrateSeq;
     const changeAtStart = uploadsChangeSeq.get(sessionId) ?? 0;
+    // docs/294 req 1 — a mutation that is still UNRESOLVED cannot have bumped
+    // the counter yet, so the counter alone cannot see this overlap. A listing
+    // taken across an open upload observed a file the client had not yet learned
+    // about (two rows for it once the POST landed) or a file the server was
+    // about to roll back (a ready row for something that no longer exists).
+    const mutatingAtStart = hasActiveUploads();
     try {
       const res = await fetch(`/api/sessions/${sessionId}/files/uploads`);
       if (!res.ok) return;
@@ -335,7 +373,11 @@ export const useFileStore = create<FileState>((set, get) => ({
       // know about it. Take a fresh one. Bounded (non-requirement: no retry
       // policy beyond this) so a session churning uploads cannot spin the
       // server; the existing triggers still cover the give-up case.
-      if ((uploadsChangeSeq.get(sessionId) ?? 0) !== changeAtStart) {
+      if (
+        (uploadsChangeSeq.get(sessionId) ?? 0) !== changeAtStart
+        || mutatingAtStart
+        || hasActiveUploads()
+      ) {
         if (attempt < MAX_HYDRATE_REFETCHES) {
           void get().hydrateUploads(sessionId, attempt + 1);
         }

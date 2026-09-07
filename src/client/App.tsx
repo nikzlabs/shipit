@@ -128,7 +128,7 @@ import type {
 
 import { useSessionStore } from "./stores/session-store.js";
 import { useGitStore } from "./stores/git-store.js";
-import { useFileStore, markUploadDeleted } from "./stores/file-store.js";
+import { useFileStore, markUploadDeleted, noteUploadDismissed } from "./stores/file-store.js";
 import { usePreviewStore } from "./stores/preview-store.js";
 import { usePresentStore } from "./stores/present-store.js";
 import { useTerminalStore } from "./stores/terminal-store.js";
@@ -2058,6 +2058,11 @@ export default function App() {
             uploads={sessionUploads}
             onDeleteUpload={(u) => {
               const sid = useSessionStore.getState().sessionId;
+              // docs/294 req 7 — the panel is the other explicit removal, so it
+              // records the same intent the composer's Remove does. Without it, a
+              // still-uploading row deleted here would be read as a session
+              // switch when its POST lands, and kept.
+              noteUploadDismissed(u.id);
               if (u.path) markUploadDeleted(u.path);
               if (sid && u.path) {
                 // docs/294 req 1 — the same brokered delete the composer's chips

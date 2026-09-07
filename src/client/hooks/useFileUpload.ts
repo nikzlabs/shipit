@@ -20,6 +20,9 @@ import {
   clearUploadTombstone,
   retainUploadBytes,
   getUploadBytes,
+  noteUploadDismissed,
+  wasUploadDismissed,
+  forgetUploadDismissal,
   pendingUploadBytes,
   releaseUploadBytes,
   markUploadActive,
@@ -28,7 +31,6 @@ import {
   noteUploadsChanged,
 } from "../stores/file-store.js";
 import { addDraftUpload, removeDraftUploads } from "../utils/local-storage.js";
-import { useSessionStore } from "../stores/session-store.js";
 
 export type { UploadItem, UploadStatus } from "../../server/shared/types.js";
 
@@ -98,31 +100,24 @@ export function useFileUpload(sessionId: string | undefined) {
       for (let i = 0; i < items.length; i++) {
         const uploaded = data.files[i];
         if (uploaded) {
-          // docs/293 req 7 — the chip may be gone: Remove is available while an
-          // upload is in flight, and the request goes on regardless. Recording a
-          // draft for it would have `hydrateUploads` restore the attachment the
-          // user explicitly dismissed, onto a later message. Delete the file the
-          // server did save rather than leaving it orphaned, and tombstone it so
-          // a listing already in flight cannot put it back.
-          //
-          // docs/294 — but "no chip" only means "dismissed" while we are still
-          // in the session that owns it. `switchSession` clears every chip
-          // (`useFileStore.reset()`), so without this check an upload started in
-          // A and completing after a switch to B was destroyed as though the
-          // user had removed it — and its path written into the GLOBAL tombstone
-          // set, from where it could filter a same-named file out of B. The user
-          // removed nothing; they changed session.
-          const chipGone = !st.sessionUploads.some((u) => u.id === items[i].id);
-          const stillInSession = useSessionStore.getState().sessionId === sid;
-          if (chipGone && stillInSession) {
+          // docs/293 req 7 / docs/294 req 7 — the chip may be gone for two very
+          // different reasons, and only one of them means "delete this file":
+          // the user dismissed it while it was uploading, or `switchSession`
+          // cleared every chip when they went elsewhere. The chip list cannot
+          // tell those apart, and neither can the current session id — A→B→A
+          // restores the session without restoring the chip, and a Remove
+          // followed by a switch loses the removal. So the dismissal is recorded
+          // against the upload's own id when it happens.
+          if (wasUploadDismissed(items[i].id)) {
             releaseUploadBytes(items[i].id);
+            forgetUploadDismissal(items[i].id);
             markUploadDeleted(uploaded.path);
             void deleteUploadFromServer(sid, uploaded.path);
             continue;
           }
-          if (chipGone) {
-            // Left the session mid-upload. Keep the file and record it as an
-            // unsent draft, so coming back shows the chip again (req 4).
+          if (!st.sessionUploads.some((u) => u.id === items[i].id)) {
+            // Gone without being dismissed: the user left the session. Keep the
+            // file and remember it as unsent, so coming back shows the chip.
             releaseUploadBytes(items[i].id);
             clearUploadTombstone(uploaded.path);
             addDraftUpload(sid, uploaded.path);
@@ -258,6 +253,9 @@ export function useFileUpload(sessionId: string | undefined) {
     const item = pendingUploads[index];
     if (!item) return;
     if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    // docs/294 req 7 — say so now, while we know it was the user. The upload may
+    // still be in flight, and its completion has no other way to find out.
+    noteUploadDismissed(item.id);
     if (item.path && sessionId) {
       markUploadDeleted(item.path);
       // The user dismissed the chip before sending — drop it from the draft set

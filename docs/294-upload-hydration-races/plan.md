@@ -41,6 +41,14 @@ non-pending chip. That is why a stale answer is destructive rather than merely
 useless — it pruned a just-uploaded file's draft path, and `pendingInMemory` kept
 the chip on screen so nothing looked wrong until the next reload.
 
+**A listing taken across an *unresolved* mutation is not trusted either.** The
+counter cannot see that overlap by construction: a request still in flight has
+not bumped anything yet. A listing taken then observed a file the client had not
+learned about — leaving two rows for it once the POST landed — or a file the
+server was about to roll back, leaving a ready row for something that no longer
+exists. Hydration now also asks whether any upload was mid-request at either end
+of its own request. Found by the third review, with both symptoms reproduced.
+
 **A write invalidates only when the server's set actually changed, or when
 nobody can tell.** A DELETE that is definitely *refused* changed nothing, so it
 must not spend a listing's refetch budget — four refusals in a row would exhaust
@@ -115,15 +123,23 @@ needs no carve-out: a brand-new session has no conversation to compact, so there
 was nothing for the command to do. Send greys out with *"There is nothing to
 compact in a new session"*, in the same shape as the docs/293 bars beside it.
 
-**Leaving a session is not removing an attachment.** docs/293 made a missing chip
-mean "the user dismissed this", which deletes the uploaded file. But
-`switchSession` clears *every* chip, so an upload started in A and completing
-after a switch to B was destroyed as though it had been dismissed — and its path
-written into the **global** tombstone set, from where it could filter a
-same-named file out of B. The rule now applies only while that session is still
-on screen; otherwise the file is kept and recorded as an unsent draft, so
-returning shows the chip again. This is a defect docs/293 introduced, found by
-review here.
+**Leaving a session is not removing an attachment — and the chip list cannot say
+which happened.** docs/293 made a missing chip mean "the user dismissed this",
+which deletes the uploaded file. But `switchSession` clears *every* chip, so an
+upload completing after a switch was destroyed as though it had been dismissed,
+and its path written into the **global** tombstone set where it could hide a
+same-named file in the session the user had moved to.
+
+The first fix asked *"am I still in the session that owns this?"* — and a third
+review showed that inference fails in **both** directions. A→B→A restores the
+session without restoring the chip, so a live upload was still deleted; and a
+Remove followed by a switch lost the removal, so a dismissed attachment came
+back. Neither journey is reconstructible from the current session id, because
+what is missing is not location but **intent**. The dismissal is now recorded
+against the upload's own id at the moment the user removes it — from the
+composer's Remove and the Uploads panel's — and deliberately survives a session
+switch, since surviving one is the whole point. The defect was introduced by
+docs/293; the first attempt at the fix was itself wrong.
 
 **The `/compact` parser moved to `shared/`.** The client needs the same answer as
 the server, and the failure mode of two regexes drifting is exactly the silent
@@ -205,6 +221,13 @@ notes on how the tests were arrived at, since both were wrong first:
   would have preserved it too. The listing no longer contains it.
 - **One plan fixture combined two rejection conditions** (not `ready` *and* no
   path), so removing either left the other rejecting it. Split in two.
+- **The refused-DELETE test could not fail either.** It completed the DELETE
+  before starting hydration, so a wrong bump landed before the listing captured
+  its baseline and the assertion passed either way. The listing is now held open
+  across the refused delete.
+- **The switch test only went one way.** It never returned to the original
+  session, which is exactly the journey the first fix got wrong. Both directions
+  are covered now.
 - **The bound's first test could not fail.** Its fetch stub reported a change on
   every call, so removing the bound produced an endless request loop that killed
   the worker instead of a red assertion. The stub now stops after ten, and the
