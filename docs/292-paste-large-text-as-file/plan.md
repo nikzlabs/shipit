@@ -39,16 +39,23 @@ rendering a composer, and it keeps the constant somewhere a reader can find it.
 the clipboard. The image branch is checked first and returns, so such a paste
 produces one image chip, not an image chip plus a `pasted-text.txt`.
 
-**The filename is a fixed base, not a timestamp.** `saveUploadedFile` already
+**The filename is a fixed base, not a timestamp.** `saveUploadedFile`
 deduplicates on write (`deduplicateFilename` in
-`orchestrator/services/files.ts`), so a second paste becomes `pasted-text-1.txt`.
-A predictable name reads better in chat and in the agent's prompt than a
-timestamp does.
+`orchestrator/services/files.ts`), so a second paste becomes `pasted-text-1.txt`
+— confirmed live in the dogfood instance. A predictable name reads better in
+chat and in the agent's prompt than a timestamp does. Note the deduplication is
+check-then-write with no serialization across requests, so two *simultaneous*
+uploads of the same name can still pick the same free name and overwrite each
+other. That race predates this feature and applies to any same-named upload; a
+fixed base name makes it easier to reach, not newly possible.
 
-**The paste is measured in characters, the file in bytes.** The threshold is a
-readability limit, so characters are the right unit; the resulting `File` sizes
-itself in UTF-8 bytes, which is the unit the 50 MB per-file limit and the session
-quota use.
+**The paste is measured in characters, the file in bytes.** Characters, not
+`String.length`: that counts UTF-16 code units, so 1,000 emoji would convert at
+half the characters req 1 names. `isLargePaste` short-circuits on `length` first
+(code points can never outnumber code units) and stops counting at the
+threshold, so a multi-megabyte paste costs a bounded scan. The resulting `File`
+sizes itself in UTF-8 bytes, which is the unit the 50 MB per-file limit and the
+session quota use.
 
 **Nothing is added for req 5.** "No way back to inline text" is the absence of an
 undo path, so the design is smaller for it, not larger.
@@ -71,9 +78,37 @@ undo path, so the design is smaller for it, not larger.
   its name, `preventDefault`, a sub-threshold paste left alone, a dead composer
   refusing the paste, and image-beats-text.
 
-Each of the five composer-level cases was confirmed to fail on its own against a
-mutation of the thing it guards (feature removed, threshold widened, branch order
-swapped, `inert` guard dropped). Note that "the text did not land in the input"
-is asserted through `defaultPrevented`, not by reading the textarea: jsdom never
-inserts pasted text, so an empty-textarea assertion would pass with the feature
-deleted.
+Each guard was confirmed to fail on its own against a mutation of the thing it
+guards (feature removed, threshold widened, branch order swapped, `inert` guard
+dropped, character count replaced by `String.length`). Two things worth knowing
+about what these tests can and cannot fail on:
+
+- "The text did not land in the input" is asserted through `defaultPrevented`,
+  not by reading the textarea. jsdom never inserts pasted text, so an
+  empty-textarea assertion would pass with the feature deleted.
+- Every other case is written against `LARGE_PASTE_THRESHOLD_CHARS`, so it would
+  stay green if the threshold were changed. One case pins the literal `2000` and
+  `"pasted-text.txt"` — the approved values, as opposed to the boundary
+  behaviour.
+
+Verified end-to-end in the dogfood inner instance rather than only in jsdom: a
+3,420-character paste into a live session composer left the textarea empty and
+produced a `pasted-text.txt` 3.3 KB chip; a second paste produced
+`pasted-text-1.txt`; both appear under **Uploads** in the file tree.
+
+## Known limits, not fixed here
+
+An independent review surfaced three defects in the **inherited** upload path
+that a converted paste is now exposed to. None is introduced by this change and
+each affects pasted images and drag-dropped files identically, but a pasted text
+block is the case where the clipboard is the user's only other copy:
+
+- **Sending while the upload is in flight drops it silently.** `getUploadRefs`
+  ships only `ready` uploads, while `markUploadsSent` clears *all* pending chips
+  — so a send in that window produces a message with no attachment and no chip.
+  Tracked as its own work item; the fix is a Send gate, which needs its own UX
+  decision about what a blocked Send says.
+- **"Retry" on a failed upload deletes it without retrying** — `retryUpload`
+  removes the item and keeps no copy of the bytes to re-POST.
+- **The overlay closes before its multipart send resolves**, so a failure there
+  restores neither the draft nor the files.

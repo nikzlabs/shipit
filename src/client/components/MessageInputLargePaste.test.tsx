@@ -6,24 +6,12 @@
  * locally instead of POSTing them, so these tests exercise the paste rule
  * without a fetch stub.
  */
-import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { MessageInput } from "./MessageInput.js";
 import { LARGE_PASTE_THRESHOLD_CHARS, PASTED_TEXT_FILENAME } from "./MessageInput/large-paste.js";
 
 afterEach(cleanup);
-
-beforeEach(() => {
-  Object.defineProperty(window, "matchMedia", {
-    writable: true,
-    value: vi.fn().mockImplementation((query: string) => ({
-      matches: false,
-      media: query,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    })),
-  });
-});
 
 /** Paste plain text into the composer's textarea. */
 function pasteText(text: string) {
