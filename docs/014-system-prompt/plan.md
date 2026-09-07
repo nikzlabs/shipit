@@ -1,21 +1,57 @@
-# Project-Level System Prompt
+# System Prompt
 
-Users can define a persistent system prompt sent to Claude with every message, encoding project conventions and style guidelines.
+Users can define a persistent system prompt appended to the agent's instructions
+on every turn, encoding project conventions and style guidelines.
+
+It is a **global** setting, not a per-project one: one prompt applies to every
+session. The original design (and this doc's earlier text) described it as
+project-level; that is no longer what the code does.
 
 ## Storage
 
-Stored at `/workspace/.shipit/system-prompt.md`. If the file doesn't exist, no system prompt is sent (Claude CLI uses its default behavior, still picking up any top-level `CLAUDE.md`).
+Stored at `<appWorkspaceDir>/.shipit/system-prompt.md` — `appWorkspaceDir` is the
+**orchestrator's own workspace root** (`/workspace` in production, the directory
+holding `sessions/`), never a session's git clone. Nothing ShipIt generates is
+written into a clone's `.shipit/` (`no-clone-writes.test.ts` enforces this).
+
+If the file is missing or blank, no user prompt is appended.
 
 ## How it works
 
-1. **Before each Claude spawn**: Server reads `/workspace/.shipit/system-prompt.md`. If non-empty, passes as `--system-prompt` argument to Claude CLI.
-2. **Writing**: `set_system_prompt` validates (string type, max 50KB), trims whitespace, creates `.shipit` directory if needed, writes file. Empty/whitespace-only content deletes the file.
-3. **UI**: Gear icon in header opens `SystemPromptEditor` modal. Icon is blue when prompt is set, gray when empty. Textarea with character count, save/cancel, Escape to close, Ctrl+Enter to save.
+1. **Reading**: `readGlobalSystemPrompt(appWorkspaceDir)` returns the trimmed
+   content, or `undefined` when the file is missing, unreadable, or blank.
+2. **Composing**: `session-agent-run-params.ts` joins ShipIt's own
+   `buildAgentSystemInstructions()` output and the user's prompt with a blank
+   line, and passes the result as the run's `systemPrompt`.
+3. **Delivering**: `ClaudeProcess.run()` writes that text to a temp file and
+   passes `--append-system-prompt-file` (plus
+   `--exclude-dynamic-system-prompt-sections`). It deliberately does **not** use
+   `--system-prompt`: appending preserves the CLI's default preamble, which
+   keeps the cross-user prompt cache warm.
+4. **Writing**: `writeGlobalSystemPrompt(appWorkspaceDir, content)` trims and
+   writes the file; blank content deletes it, so clearing the box means "no
+   prompt" rather than "an empty prompt". `saveGlobalSettings()` validates the
+   50,000-character maximum before calling it.
+5. **UI**: the Instructions tab of the Settings modal. Textarea with a character
+   count against the 50,000 limit and a Save button. `getGlobalSettings()`
+   returns the current content as `settings.systemPrompt`; the client saves via
+   `PUT /api/settings` with a `systemPrompt` body field.
+
+The WebSocket `get_system_prompt` / `set_system_prompt` handlers this doc used to
+name were removed — read and write both go through the global-settings HTTP
+route now.
 
 ## Key files
 
-- `src/server/claude.ts` — `run()` accepts optional `systemPrompt`, passes `--system-prompt` to CLI
-- `src/server/index.ts` — `readSystemPrompt()` helper, `get_system_prompt`/`set_system_prompt` handlers
-- `src/server/types.ts` — System prompt WS messages
-- `src/client/components/SystemPromptEditor.tsx` — Modal editor
-- `src/client/App.tsx` — State management, gear icon
+- `src/server/orchestrator/global-system-prompt.ts` — `globalSystemPromptPath()`,
+  `readGlobalSystemPrompt()`, `writeGlobalSystemPrompt()`
+- `src/server/orchestrator/services/settings.ts` — `getGlobalSettings()` exposes
+  `systemPrompt`; `saveGlobalSettings()` validates and persists it
+- `src/server/orchestrator/api-routes-bootstrap.ts` — `PUT /api/settings`
+- `src/server/orchestrator/session-agent-run-params.ts` — joins the agent
+  instructions and the user prompt into the run's `systemPrompt`
+- `src/server/session/agents/claude/process.ts` — passes
+  `--append-system-prompt-file` to the Claude CLI
+- `src/client/components/Settings/tabs/InstructionsTab.tsx` — the editor
+- `src/client/stores/settings-store.ts` — `systemPromptContent`,
+  `saveInstructions()`
