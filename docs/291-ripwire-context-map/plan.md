@@ -299,6 +299,61 @@ ShipIt's shape as it stands.
   that ripwire's retrieval is the weaker of the two *and* does not pay for itself
   against plain grep-and-read on this codebase.
 
+### The three-arm end-to-end result
+
+LemonCrow was then put through the *same* end-to-end A/B as ripwire — the test that
+overturned ripwire's retrieval-size advantage. Same six tasks, same read-only prompt,
+same `Sonnet` role, same no-op control. The baseline runs are reused unchanged, so all
+three arms are directly comparable. LemonCrow is reached through `lcsearch.py`, a thin
+wrapper over the spike's own MCP client, so that both tools are invoked through `Bash`
+in exactly the same way.
+
+| Task | baseline | ripwire | LemonCrow | ripwire % | LemonCrow % |
+|---|---:|---:|---:|---:|---:|
+| post-turn auto-push scheduler lease | 23,590 | 26,261 | 16,488 | **111.3%** | 69.9% |
+| preview subdomain proxy routing | 25,027 | 7,553 | 8,879 | 30.2% | 35.5% |
+| persist chat transcript card to history | 12,601 | 16,591 | 10,020 | **131.7%** | 79.5% |
+| shared git tree ownership uid drop | 16,373 | 10,415 | 7,478 | 63.6% | 45.7% |
+| message group boundaries at tool result | 2,286 | 6,610 | 5,037 | **289.2%** | **220.3%** |
+| turn executor commit and pr terminal paths | 12,940 | 10,116 | 19,670 | 78.2% | **152.0%** |
+| **Total context tokens** | **92,817** | **77,546** | **67,572** | **83.5%** | **72.8%** |
+| **Total cost (USD)** | **1.42** | **1.27** | **1.52** | **89.4%** | **107.0%** |
+| **Total wall-clock** | 144.6 s | 116.9 s | 199.9 s | 80.8% | 138.2% |
+| **Cache-read tokens** | 1,363,984 | 963,823 | 2,308,946 | 70.7% | 169.3% |
+
+Median ratio: ripwire **94.7%**, LemonCrow **74.7%**. LemonCrow beats ripwire on 4 of
+6 tasks and is worse than the baseline on 2, against ripwire's 3.
+
+**The two metrics disagree, and that is the result.** On context tokens LemonCrow
+clearly wins — it saves 27% where ripwire saves 17%. On money it is the **worst of
+the three arms**: it costs 7% *more* than doing nothing, while ripwire is the only
+arm that saves anything (10.6%).
+
+The mechanism is visible in the last two rows. LemonCrow ends each task with a
+*smaller* context but takes **38% longer** and reads **69% more cache tokens** than
+the baseline. Cache reads are billed per turn, so an arm that reaches a tighter answer
+over more turns re-reads its accumulated context more times. A smaller final context
+does not imply a cheaper run.
+
+Which number matters depends on the constraint. For context-window pressure — fitting
+more work into one session before compaction — LemonCrow is the better tool. For
+spend, it is the worst option measured, and plain grep-and-read beats it.
+
+**Limits.** The wrapper measures retrieval value, not the ergonomics of a model
+calling a native MCP tool, and it avoids the ~215 tokens of `SERVER_INSTRUCTIONS` a
+real Claude-backend install pays into the system prompt. This ran LemonCrow **0.7.1**;
+the spike's retrieval numbers used **0.7.2**. Six TypeScript tasks on one repository,
+one role, one run each — the per-task spread is wide enough that single-task figures
+should not be quoted on their own.
+
+**One operational cost worth naming:** LemonCrow's index is **888 MB**, written to
+`/workspace/.lemoncrow/workspace` inside the repo clone. It self-ignores — the
+directory ships a `.gitignore` containing `*`, and `git add -An` confirms nothing
+would be committed, which **corrects** planning#332's "no `.gitignore` handling"
+blocker for this shape. But it is large untracked output, so ShipIt would not restore
+it when reclaiming an idle checkout, and the first query on a cold session pays a
+multi-minute index build during which the database is locked. A warm query is 4.7 s.
+
 ## Key files
 
 - `docker/Dockerfile.session-worker.prod` — where a pinned binary would be installed,

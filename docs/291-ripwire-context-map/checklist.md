@@ -9,6 +9,7 @@
 - [x] Measure the token saving with a real tokenizer, without integrating anything (`measure.py`)
 - [x] Run the observed A/B against real agents, all six task pairs (`pair.sh`, `analyse.py`)
 - [x] Revise the recommendation to match what was measured (req 1 is **not met**)
+- [x] Run the same end-to-end A/B for LemonCrow as a third arm (`lcarm.sh`, `lcsearch.py`)
 - [ ] Decide the pinned version — **moot unless the verdict is overridden**; the recommendation is now not to adopt
 
 Only if the not-adopt verdict is overridden:
