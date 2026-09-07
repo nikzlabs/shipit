@@ -56,3 +56,10 @@
 - [x] Verified in a real browser on the dogfood instance
 - [x] Independent review; every finding verified before acting on it
 - [x] Strict `!onSend(...)`, with the ~130 composer doubles fixed to return the contract's boolean
+
+## Send-path test harness
+
+- [x] Move the send body out of `App` into `runSend`, verbatim — no behaviour change
+- [x] Cover the two branches this doc had listed as untestable
+- [x] Regression test for the cleanup-before-dispatch ordering the review found
+- [x] Six mutations, each proved red on its own
