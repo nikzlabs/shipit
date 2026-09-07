@@ -1,10 +1,10 @@
 ---
 issue: planning#520
-title: ripwire evaluation and the LemonCrow comparison
-description: Measured evaluation of ripwire on ShipIt's own source, why the narrow shape is the only one recommended, and how it compares to the LemonCrow runtime
+title: Retrieval tools for session agents — ripwire and LemonCrow, measured
+description: Three measurements of ripwire and LemonCrow against a grep-and-read baseline, why the cheap measurement inverted the real one, and why neither tool is adopted yet
 ---
 
-# ripwire evaluation and the LemonCrow comparison
+# Retrieval tools for session agents — ripwire and LemonCrow, measured
 
 Implements [requirements.md](requirements.md).
 
@@ -14,28 +14,63 @@ grammars for 21 languages, ranks symbols with Personalized PageRank, and prints 
 minified XML map. It needs no API key, no embeddings, no index server and no daemon.
 It also exposes an MCP server.
 
-**Recommendation: do not adopt it now.** This reverses an earlier draft of this doc,
-which recommended baking in a pinned binary and one skill. That recommendation rested
-on a token saving that measurement did not support.
+**Recommendation: adopt neither tool yet, for different reasons.**
 
-The retrieval is accurate — it returns the right symbols with exact line numbers in
-about 2.6 s. But accuracy was never the question; the question was whether it saves
-an agent work. Measured against real agents on six tasks, it costs **83.5%** of the
-baseline, saves about **5% on the median task**, and costs **more on half of them**.
-That is too small and too unreliable to justify adding a dependency on a six-week-old
-project with one author (req 6, and the project risk below).
+- **ripwire — do not adopt.** Retrieval is accurate, but it does not pay for itself:
+  83.5% of baseline context, a ~5% median saving, and *more* expensive than plain
+  grep-and-read on 3 of 6 tasks.
+- **LemonCrow — better tool, not yet adoptable.** Its retrieval advantage survives
+  end-to-end where ripwire's did not (72.8% of baseline context, beating ripwire on
+  4 of 6 tasks), but it is the most expensive arm measured — 7% dearer than using no
+  tool at all — and two integration blockers remain live. Detail in
+  `docs/294-lemoncrow-mcp-spike/` and on planning#521.
 
-What would change this verdict: evidence that the tool can be invoked
-*conditionally*, on diffuse multi-file questions only, where it did win clearly. The
-blanket "run it first" shape the vendor's skills teach is measurably wrong here.
+This reverses an earlier draft of this doc, which recommended baking in a pinned
+ripwire binary and one skill. That recommendation rested on a token saving that
+measurement did not support.
 
-If it is adopted anyway, the narrow shape still holds — a pinned binary and one
-skill, never the vendor's 19 skills, `--test-gate`, or `--doc-drift`.
+On ripwire specifically: accuracy was never the question. It returns the right symbols
+with exact line numbers in about 2.6 s. The question was whether it saves an agent
+work, and a ~5% median saving is too small and too unreliable to justify a dependency
+on a six-week-old project with one author (req 6, and the project risk below).
+
+What would change that verdict: evidence the tool can be invoked *conditionally*, on
+diffuse multi-file questions only, where it did win clearly. The blanket "run it first"
+shape the vendor's skills teach is measurably wrong here. If it is adopted anyway, the
+narrow shape still holds — a pinned binary and one skill, never the vendor's 19 skills,
+`--test-gate`, or `--doc-drift`.
+
+## How to read this doc — three measurements, three numbers
+
+This doc quotes ripwire at 16.8%, 83.5% and (for LemonCrow) 72.8% of a baseline.
+Those are not revisions of one another. They are **three different measurements**,
+and the disagreement between them is the main result.
+
+| # | What it measures | Answers | ripwire | LemonCrow |
+|---|---|---|---:|---:|
+| 1 | **Response size** — tokens the tool returns, against a scripted grep-and-read pass | "How compact is the answer?" | 16.8% | 3.4% |
+| 2 | **End-to-end context** — `contextTokens` a real sub-agent accumulates | "Does it save the agent work?" | 83.5% | 72.8% |
+| 3 | **End-to-end cost** — `costUsd` for the same runs | "Does it save money?" | 89.4% | **107.0%** |
+
+Two lessons sit behind that table, and both generalise beyond these tools.
+
+**Measurement 1 does not predict measurement 2.** Pricing a tool's output against a
+scripted baseline credits it with replacing reads the agent goes on to make anyway.
+For ripwire it was wrong by roughly a factor of five, and in the flattering direction.
+
+**Measurement 2 does not predict measurement 3.** LemonCrow ends each task with a
+*smaller* context and still costs more money, because `cacheReadTokens` bills per turn
+and it reaches its tighter answer over more turns. Context-window pressure and spend
+are different constraints with different winners.
+
+Measurement 1 is retained throughout rather than deleted. Keeping the measurement that
+turned out to mislead is what makes the correction legible.
 
 ## Measurements
 
-All numbers below come from release v0.4.0 (linux-x64, checksum verified) run
-against `/workspace` at commit `4e120fe5a` on 2026-09-07.
+All ripwire numbers come from release v0.4.0 (linux-x64, checksum verified) run
+against `/workspace` at commit `4e120fe5a` on 2026-09-07. LemonCrow numbers are
+version 0.7.1 unless stated.
 
 ### Retrieval is accurate and cheap (req 1, req 2, req 3)
 
@@ -77,7 +112,7 @@ the real definition sites rather than trusted:
 signatures, not bodies, so an agent still reads the bodies of the files it edits. The
 measurement covers the search phase that the map replaces, and nothing else.
 
-#### The observed baseline contradicts the floor
+#### Measurement 2 — end-to-end, and it contradicts measurement 1
 
 The number above prices an *artificial* baseline. To see what agents actually spend,
 the same tasks were given to real sub-agents twice — once with ripwire on PATH and
@@ -99,9 +134,9 @@ per-run overhead at 47,858 context tokens, which is subtracted.
 Aggregate saving **16.5%** of tokens and 10.6% of cost. Median ratio **94.7%**, so
 the typical task saves about 5%. **Ripwire cost more on 3 of the 6 tasks.**
 
-**This corrects the floor number above, and nearly inverts it.** The floor said
+**This corrects measurement 1 above, and nearly inverts it.** Response size said
 ripwire costs 16.8% of a grep-and-read pass. Measured against real agents it costs
-**83.5%**. The floor was not wrong about what it measured; it was wrong as a proxy
+**83.5%**. Measurement 1 was not wrong about what it measured; it was wrong as a proxy
 for what an agent spends, because it credited ripwire with replacing file reads that
 the agent goes on to make anyway.
 
@@ -127,15 +162,18 @@ half the tasks. Any adoption would have to fire *conditionally* — on diffuse,
 multi-file questions only — and nothing in a skill description reliably makes that
 distinction in advance.
 
-The floor measurement is retained above as the conservative bound. Where the two
-disagree, **the observed number governs**.
+Measurement 1 is retained above, deliberately. It is the measurement that misled, and
+keeping it beside the one that corrected it is what makes the correction legible.
+Where the two disagree, **the end-to-end number governs**.
 
 Three things bound how far the number can be pushed:
 
-- **The baseline is a floor.** It allows one grep with a well-chosen keyword, then
-  reads only the gold files. A real agent greps several times and reads files that
-  turn out to be irrelevant, so the true baseline is higher and the true saving
-  larger. That was not measured.
+- **The baseline is a reference point, not a floor.** An earlier draft called it a
+  floor; that was wrong, and the review on `docs/294-lemoncrow-mcp-spike/` caught it.
+  It is biased in **both** directions: it gets oracle file selection, which no agent
+  has, but it is charged whole-file reads, which an agent can avoid with a targeted
+  range. So it bounds nothing, and "the true saving is larger" does not follow from
+  it — the end-to-end runs below are what settle the question.
 - **Token counts use tiktoken `o200k_base`** as a proxy. Claude's tokenizer is not
   public, so the absolute figures carry that error; the ratio is less sensitive to it.
 - **Recall is 91.7%, not 100%.** The one partial is the auto-push task, where ripwire
@@ -354,14 +392,97 @@ blocker for this shape. But it is large untracked output, so ShipIt would not re
 it when reclaiming an idle checkout, and the first query on a cold session pays a
 multi-minute index build during which the database is locked. A warm query is 4.7 s.
 
+## A ShipIt gap this evaluation surfaced, independent of both tools
+
+The most consequential finding here is not about either tool. It was found while
+re-checking planning#332's blockers and verified independently at each site.
+
+**Any enabled user MCP server that exposes a shell-shaped tool bypasses the branch
+guard.** Three facts compose:
+
+1. `src/server/session/agents/claude/process.ts:448` maps every enabled MCP server to
+   a whole-namespace glob, `mcp__${name}__*`, and appends it to the tool grant. There
+   are **two** such call sites — the second at `:887` — so this is not one code path.
+2. `docker/agent-hooks/managed-settings.json:50` registers the PreToolUse hook with
+   `"matcher": "Bash"`, so the hook is never invoked for an MCP tool name.
+3. `docker/agent-hooks/block-branch-ops.mjs:70` independently exits on
+   `payload?.tool_name !== "Bash"`.
+
+So a `git reset --hard` issued through, say, `mcp__lc__bash` is unguarded — and the
+two mechanisms fail independently, so fixing one does not close it.
+
+Enabling a server grants its *whole* namespace, not the tools it happens to advertise.
+Reducing a server's advertised surface therefore does not constrain what it can be
+asked to run: a hidden tool still executes when called by name.
+
+The code shows this risk was considered on the adjacent path and not on this one —
+`process.ts:446` omits user MCP globs from `plan` mode precisely because
+"third-party MCP tools can't be assumed read-only". The branch guard got no equivalent
+treatment.
+
+**This is live today with no LemonCrow involved.** It is not a reason to reject either
+tool; it is a pre-existing gap that adopting *any* MCP retrieval server would walk
+into. Tracked as an open question on planning#521, which is the right place because
+the fix is a product and security judgement — whether ShipIt gains real per-server
+tool authorization — rather than anything tool-specific.
+
+## Reproducing this
+
+Every number here is re-derivable. The harnesses are committed beside this doc.
+
+| File | What it measures |
+|---|---|
+| `measure.py` | Measurement 1 — response size vs a scripted grep-and-read pass |
+| `pair.sh` | One task's baseline and ripwire arms, end-to-end |
+| `lcsearch.py` | `Bash`-callable wrapper over LemonCrow's `code_search` MCP tool |
+| `lcarm.sh` | One task's LemonCrow arm, reusing the existing baseline run |
+| `analyse.py` | Prints the table, subtracting the no-op control |
+
+Environment notes, all of which cost time to discover:
+
+- **Tokenizer.** The container has no tokenizer and `pip install` is refused under
+  PEP 668. Use `uv venv` plus `uv pip install tiktoken`. `o200k_base` is a proxy for
+  Claude's non-public tokenizer.
+- **ripwire.** Take the prebuilt release and verify the published `.sha256`. Do **not**
+  run the vendor's `scripts/install.sh`: it copies 19 skills into `~/.claude/skills`
+  whenever it finds `~/.claude`, which is right for a person and wrong for a scripted
+  run.
+- **LemonCrow.** Needs Python 3.12–3.13; the container's is 3.11, so `uv venv
+  --python 3.12`. Installing from source omits **`httpx`**, and without it
+  `lc mcp` dies in the MCP handshake rather than reporting a missing dependency —
+  the symptom is an `initialize` timeout, which looks like a slow index build.
+- **The index.** First query builds it and locks the database meanwhile; concurrent
+  calls fail with `database is locked`. Warm it once before measuring. It lands at
+  888 MB in `/workspace/.lemoncrow/workspace`, gitignored.
+- **Sub-agent spawns are capped at 3 per turn.** A 13-run experiment cannot execute in
+  one turn. A run that fails with "spawn cap reached" consumed nothing and must be
+  retried, never recorded as a result — the first attempt at this lost 12 of 13 runs
+  that way.
+- **Control run.** Take a no-op agent run and subtract its `contextTokens` (47,858
+  here) so fixed per-run overhead is not counted as task work.
+
 ## Key files
 
 - `docker/Dockerfile.session-worker.prod` — where a pinned binary would be installed,
   next to the existing `uv` and Gradle stanzas.
-- `docker/agent-hooks/block-branch-ops.mjs` — the branch guard that keys on the
-  literal `Bash` tool name.
-- `src/client/components/message-tools.tsx` — inline diff and command cards, keyed on
-  literal `Edit`, `Write` and `Bash`.
+- `docker/agent-hooks/block-branch-ops.mjs:70` — the branch guard, which exits unless
+  the tool name is literally `Bash`.
+- `docker/agent-hooks/managed-settings.json:50` — registers that hook with
+  `"matcher": "Bash"`, the second and independent reason an MCP tool name is never
+  seen by it.
+- `src/server/session/agents/claude/process.ts:448` and `:887` — the two sites that
+  grant an enabled MCP server its whole `mcp__<name>__*` namespace.
+- `src/client/components/message-tools.tsx:81`, `:99`, `:233` — inline diff and
+  command cards, keyed on literal `Edit`, `Write` and `Bash`.
 - `src/server/shared/agent-tool-names.ts` — the tool-name catalogue the UI maps.
-- `src/server/shipit-docs/` — agent-facing docs, which must be updated if the tool
+- `src/server/shipit-docs/` — agent-facing docs, which must be updated if a tool
   reaches session containers.
+
+## Related work
+
+- `docs/294-lemoncrow-mcp-spike/` (PR #2685) — the MCP-only spike planning#332 asked
+  for: what the installer really does in global mode, LemonCrow's retrieval measured
+  against ripwire's, and the two open questions that gate adoption.
+- planning#332 — the original LemonCrow evaluation. Its `docs/255-lemoncrow-runtime-evaluation/`
+  pointer resolves on no ref; the issue body is the only surviving record.
+- planning#520 (this doc), planning#521 (the spike).

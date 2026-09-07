@@ -37,8 +37,16 @@ for ShipIt, not how ripwire does it. The design and the measurements are in
 
 ## Open questions
 
-- Which version do we pin — v0.3.8 (published 2026-08-13, satisfies requirement 6)
-  or v0.4.0 (published 2026-09-07, needs a waiver)?
+- **Contingent, and unanswered.** If the not-adopt verdict is overridden, which
+  ripwire version do we pin — v0.3.8 (published 2026-08-13, satisfies requirement 6)
+  or v0.4.0 (published 2026-09-07, needs a waiver)? Measurement made this moot rather
+  than answering it, so it stays open rather than being closed by inference.
+- **Does ShipIt need per-server MCP tool authorization?** Enabling any MCP server
+  grants its whole `mcp__<name>__*` namespace, and the branch guard only matches the
+  literal `Bash`, so a server exposing a shell tool is unguarded. This is live today
+  and independent of either tool — see [plan.md](plan.md) § "A ShipIt gap this
+  evaluation surfaced". It gates adopting *any* MCP retrieval server, and it is a
+  product and security judgement. Tracked alongside planning#521.
 
 ## Resolved questions
 
