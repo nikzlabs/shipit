@@ -320,7 +320,8 @@ ShipIt's shape as it stands.
   consequences of the tool-replacement shape, and that shape is what the prior
   evaluation already rejected.
 - planning#332's recommendation — spike the MCP-only, opt-in shape behind a
-  measurement gate — **has since been built and measured** (PR #2685). Two of its
+  measurement gate — **has since been built and measured**, and that work is in this
+  PR too as `docs/294-lemoncrow-mcp-spike/`. Two of its
   findings bear directly on this doc.
 
   First, it corrected the premise stated here in an earlier draft. Project
@@ -482,7 +483,7 @@ Environment notes, all of which cost time to discover:
 
 ## Related work
 
-- `docs/294-lemoncrow-mcp-spike/` (PR #2685) — the MCP-only spike planning#332 asked
+- `docs/294-lemoncrow-mcp-spike/` (in this PR) — the MCP-only spike planning#332 asked
   for: what the installer really does in global mode, LemonCrow's retrieval measured
   against ripwire's, and what its installer really does in global mode. The two
   adoption-gating questions it raised now live in [requirements.md](requirements.md)

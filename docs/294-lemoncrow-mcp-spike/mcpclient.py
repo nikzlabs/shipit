@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal stdio JSON-RPC client for the LemonCrow MCP server.
-
-Vendored from `docs/294-lemoncrow-mcp-spike/mcpclient.py`, unchanged. `lcsearch.py`
-in this folder imports it by sibling path, so each doc folder's harness stays
-self-contained and runnable on its own. If you change one, change both — they are
-byte-identical on purpose and `diff` should stay silent.
-"""
+"""Minimal stdio JSON-RPC client for the LemonCrow MCP server."""
 import json, os, subprocess, sys, threading, queue, time
 
 LC = "/persist/lc/venv/bin/lc"
