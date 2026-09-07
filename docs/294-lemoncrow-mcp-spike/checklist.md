@@ -9,14 +9,42 @@
 - [x] Build the tokenizer cache offline so tiktoken works without egress.
 - [x] Port docs/291's six tasks, gold sets and keywords into a three-arm harness
       (req 4).
-- [x] Reproduce docs/291's ripwire totals as a check that the method matches.
-- [x] Fix the brace-notation recall bug and re-score both arms symmetrically.
-- [x] Charge LemonCrow for the follow-up read its pointers imply (req 4).
-- [x] Confirm the fresh-daemon numbers are stable across repeated runs.
+- [x] Reproduce docs/291's ripwire total as a check that the method matches.
 - [x] Measure process shape, memory, disk, latency, egress and telemetry (req 7).
 - [x] Re-check project age, contributors and licence.
 - [x] Write `requirements.md` before `plan.md`, and cite requirements from it.
 - [x] Cross-link planning#332 and create a tracker issue for this doc.
-- [ ] **Blocked on the open question in `requirements.md`** — decide whether
-      ShipIt gains a per-server MCP tool restriction. No implementation code is
-      written until that is answered (req 6, req 8).
+- [x] Get an independent review (`shipit agent run --role reviewer`).
+
+Fixes the review found, all applied and re-measured:
+
+- [x] Expand brace notation before scoring, on both arms.
+- [x] Score `positioned` from a line number rather than a marker position, so an
+      error string containing a gold filename cannot score.
+- [x] Stop drawing follow-up files from the gold set — draw only from what each
+      arm's own answer named, so no oracle knowledge enters.
+- [x] Charge ripwire the same follow-up policy instead of only LemonCrow.
+- [x] Measure each follow-up's success rather than asserting it.
+- [x] Narrow the headline denominator to response text, and show the
+      schema-inclusive figure alongside it.
+- [x] Drop the inherited "the baseline is a floor" claim; state both of its
+      biases instead.
+- [x] Record `SERVER_INSTRUCTIONS` — the MCP server steers toward substitution
+      with no plugin installed.
+- [x] Record that enabled MCP servers are account-wide, not per-session.
+- [x] Test `LEMONCROW_HIDE_TOOLS`, including whether it blocks a direct call.
+- [x] Correct four over-claims: `--print-only` does print the plugin install; the
+      default-agent write is conditional; PostHog needs a key; egress is
+      avoidable with a pre-seeded cache.
+- [x] Pin LemonCrow to an exact SHA rather than mutable `main`.
+
+Remaining:
+
+- [ ] **Blocked on the open questions in `requirements.md`** — whether
+      advertisement filtering is enough or ShipIt needs per-server tool
+      authorization, and what "must not change an existing session" requires.
+      No implementation code until those are answered (req 6, req 8).
+- [ ] An agent-in-the-loop trial. Everything measured here is tool responses;
+      whether a steered model actually keeps using native `Edit`/`Bash` — and so
+      whether inline diffs and the branch guard survive — cannot be settled
+      without running a real session and reading the transcript.

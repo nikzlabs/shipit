@@ -12,7 +12,7 @@ reject it if it does not clear that gate. Nobody built it. This is that spike.
 1. Establish whether LemonCrow can be added to a ShipIt session as an
    **additional** retrieval tool — added, never substituted — so that no tool
    ShipIt's guards, transcript, or product principles depend on is hidden,
-   renamed, or replaced.
+   renamed, replaced, or steered away from.
 2. Establish what the vendor's installer actually does in global mode (no
    `--project`), by reading and running the installer itself rather than its
    documentation. A premise that turns out to be false is a result: report it
@@ -24,8 +24,9 @@ reject it if it does not clear that gate. Nobody built it. This is that spike.
    the same tokenizer as `docs/291-ripwire-context-map/measure.py`, so LemonCrow
    and ripwire are comparable. Report **cost and recall together** — a cheap
    answer that misses is not a saving.
-5. Carry the same stated limits as that measurement: it covers the orientation
-   phase only, and tiktoken is a proxy for Claude's non-public tokenizer.
+5. State what the measurement does not establish, so a reader cannot mistake its
+   scope: which phase of the work it covers, what the tokenizer figure is a
+   proxy for, and what the recall check can and cannot fail on.
 6. Anything ShipIt adopts from this must be opt-in and off by default. Enabling
    it must not change a session that already exists.
 7. Report what a ShipIt session container pays to run LemonCrow at all —
@@ -35,19 +36,33 @@ reject it if it does not clear that gate. Nobody built it. This is that spike.
 
 ## Open questions
 
-- The measurement gate was **cleared** — LemonCrow reaches full parity on the
-  gold answers for 3,878 tokens against ripwire's 18,679 (`plan.md` § "The
-  measurement gate"). But adoption is not unblocked by that alone: LemonCrow's
-  MCP surface includes `bash` and `edit`, and ShipIt auto-allows every enabled
-  user MCP server's whole `mcp__<name>__*` namespace, so enabling it also adds
-  an unguarded second shell. Should ShipIt gain a way to restrict which tools an
-  individual MCP server may expose, so LemonCrow can be enabled retrieval-only —
-  and is that restriction LemonCrow-specific or general to all user MCP servers?
+- **Is advertisement filtering enough, or does ShipIt need real authorization?**
+  LemonCrow can be reduced to a retrieval-only advertised surface today, with no
+  ShipIt change (verified — `plan.md` § "Constraining the tool surface"). But a
+  hidden tool still executes when called by name, and ShipIt auto-allows an
+  enabled server's whole `mcp__<name>__*` namespace, so the branch guard remains
+  bypassable by a model that knows the name. Deciding whether ShipIt treats that
+  as acceptable, or gains a real per-server tool authorization boundary, is a
+  product and security judgement — and it is not LemonCrow-specific: it governs
+  every user MCP server.
+- **What does "must not change an existing session" require here?** Enabled MCP
+  servers are read from the account-wide credential store when a turn's run
+  parameters are built, not snapshotted at session creation
+  (`session-agent-run-params.ts:111`), so a session that already exists picks up
+  a newly enabled server on its next turn. Requirement 6 therefore cannot be met
+  by the existing settings surface alone. Whether requirement 6 means per-session
+  opt-in, or only "off until someone turns it on", is the human's call.
 
 ## Resolved questions
 
 - 2026-09-07 — *Does "build the spike" mean shipping an enabling change to
-  ShipIt?* No. Requirement 8 gates it: the spike measures first, and requirement
-  6 forbids changing existing sessions without a decision. This PR therefore
-  ships evidence, a verdict, and the open question above; it changes no ShipIt
+  ShipIt?* No. Nik's brief for this session said "opt-in and off by default;
+  confirm with the user before any change that would affect existing sessions",
+  and requirement 8 gates adoption on the evidence. This PR therefore ships
+  evidence, a verdict, and the open questions above; it changes no ShipIt
   behaviour.
+- 2026-09-07 — *Can LemonCrow's tool surface be narrowed without a ShipIt
+  change?* Partly, and this was answered by testing rather than by asking:
+  `LEMONCROW_HIDE_TOOLS` reduces the advertised surface to `code_search` and
+  `read`. It does not reject a direct call to a hidden tool, which is why the
+  remaining question above is about authorization and not about configuration.
