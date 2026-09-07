@@ -45,7 +45,7 @@ describe("Send never loses an attachment", () => {
   it("refuses while an attachment is still uploading, and says why", () => {
     // req 1. Today's behaviour was to send happily and drop the attachment.
     seedUpload({ status: "uploading" });
-    render(<MessageInput onSend={vi.fn()} disabled={false} />);
+    render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
     type("look at this");
     expect(sendButton()).toBeDisabled();
     expect(sendButton()).toHaveAttribute("title", expect.stringContaining("finish uploading"));
@@ -54,7 +54,7 @@ describe("Send never loses an attachment", () => {
   it("refuses on Enter too, not only on the button", () => {
     // The button and `handleSubmit` used to carry separate copies of the guard,
     // and Enter reaches only the second one.
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     seedUpload({ status: "uploading" });
     render(<MessageInput onSend={onSend} disabled={false} />);
     type("look at this");
@@ -66,7 +66,7 @@ describe("Send never loses an attachment", () => {
     // req 2 — the user's choice: a failed attachment holds the message rather
     // than being left behind.
     seedUpload({ status: "error", error: "Upload failed" });
-    render(<MessageInput onSend={vi.fn()} disabled={false} />);
+    render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
     type("look at this");
     expect(sendButton()).toBeDisabled();
     expect(sendButton()).toHaveAttribute("title", expect.stringContaining("retry or remove"));
@@ -74,7 +74,7 @@ describe("Send never loses an attachment", () => {
 
   it("sends once the attachment is ready", () => {
     // Non-vacuous control for the two refusals above.
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     seedUpload({ status: "ready" });
     render(<MessageInput onSend={onSend} disabled={false} />);
     type("look at this");
@@ -94,7 +94,7 @@ describe("Send carries attachments alone", () => {
   it("sends a ready attachment with no typed text", () => {
     // req 5. Before this, a large paste emptied the composer and Enter did
     // nothing at all.
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     seedUpload({ status: "ready" });
     render(<MessageInput onSend={onSend} disabled={false} />);
     expect(sendButton()).toBeEnabled();
@@ -109,7 +109,7 @@ describe("Send carries attachments alone", () => {
 
   it("sends an @-mentioned file with no typed text", () => {
     // req 5 covers every attachment kind, not just uploads.
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     render(
       <MessageInput
         onSend={onSend}
@@ -125,7 +125,7 @@ describe("Send carries attachments alone", () => {
 
   it("still refuses a message with neither text nor attachments", () => {
     // req 6 — the bound on req 5.
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     render(<MessageInput onSend={onSend} disabled={false} />);
     expect(sendButton()).toBeDisabled();
     fireEvent.keyDown(screen.getByPlaceholderText(PLACEHOLDER), { key: "Enter", shiftKey: false });
@@ -133,7 +133,7 @@ describe("Send carries attachments alone", () => {
   });
 
   it("still refuses whitespace-only text with no attachments", () => {
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     render(<MessageInput onSend={onSend} disabled={false} />);
     type("   \n  ");
     expect(sendButton()).toBeDisabled();
@@ -147,7 +147,7 @@ describe("The gate holds on the overlay surface too", () => {
     // The quick-capture overlay buffers Files locally instead of POSTing, so it
     // reaches `sendBlocked` through a different backend. req 5 has to hold here
     // as well — this is the surface whose server side rejected it.
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     render(<MessageInput surface="overlay" onSend={onSend} disabled={false} />);
     const textarea = screen.getByRole("textbox");
     const ev = new Event("paste", { bubbles: true, cancelable: true });
@@ -164,7 +164,7 @@ describe("The gate holds on the overlay surface too", () => {
   });
 
   it("still refuses an empty overlay composer", () => {
-    render(<MessageInput surface="overlay" onSend={vi.fn()} disabled={false} />);
+    render(<MessageInput surface="overlay" onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
     expect(screen.getByTestId("send-button")).toBeDisabled();
   });
 });
@@ -174,7 +174,7 @@ describe("/compact is a command, not a message (docs/294 reqs 5-6)", () => {
     // The mid-turn path discards attachments server-side, so they vanished with
     // no error. `/compact` asks the agent to summarise the conversation; it has
     // no use for a file.
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     seedUpload({ status: "ready" });
     render(<MessageInput onSend={onSend} disabled={false} />);
     type("/compact");
@@ -190,7 +190,7 @@ describe("/compact is a command, not a message (docs/294 reqs 5-6)", () => {
   it("keeps it for `/compact <instructions>` too", () => {
     // The arg form is the same command; a prefix-only check would treat it as
     // an ordinary message and clear the chips.
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     seedUpload({ status: "ready" });
     render(<MessageInput onSend={onSend} disabled={false} />);
     type("/compact keep the design decisions");
@@ -203,7 +203,7 @@ describe("/compact is a command, not a message (docs/294 reqs 5-6)", () => {
   it("does not mistake an ordinary message for the command", () => {
     // Non-vacuous control: `/compactfoo` is not `/compact`, and a real message
     // must still carry and clear its attachment.
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     seedUpload({ status: "ready" });
     render(<MessageInput onSend={onSend} disabled={false} />);
     type("/compactfoo");
@@ -224,7 +224,7 @@ describe("/compact on the quick-capture overlay (docs/294 reqs 5-6)", () => {
     // sent. This surface unmounts its composer on send, so a message that GOES
     // cannot satisfy both — and a brand-new session has nothing to compact.
     // Refusing the send is what makes both requirements true here.
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     render(<MessageInput surface="overlay" onSend={onSend} disabled={false} />);
     const textarea = screen.getByRole("textbox");
     const ev = new Event("paste", { bubbles: true, cancelable: true });
@@ -243,7 +243,7 @@ describe("/compact on the quick-capture overlay (docs/294 reqs 5-6)", () => {
 
   it("still sends an ordinary overlay message with its attachment", () => {
     // Non-vacuous control: the bar is for the command, not for the surface.
-    const onSend = vi.fn();
+    const onSend = vi.fn().mockReturnValue(true);
     render(<MessageInput surface="overlay" onSend={onSend} disabled={false} />);
     const textarea = screen.getByRole("textbox");
     const ev = new Event("paste", { bubbles: true, cancelable: true });

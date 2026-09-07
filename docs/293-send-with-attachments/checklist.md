@@ -55,3 +55,4 @@
 - [x] Each guard proved red on its own by mutating exactly what it guards
 - [x] Verified in a real browser on the dogfood instance
 - [x] Independent review; every finding verified before acting on it
+- [x] Strict `!onSend(...)`, with the ~130 composer doubles fixed to return the contract's boolean

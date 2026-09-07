@@ -99,7 +99,7 @@ afterEach(() => {
 function renderComposer(props: { disabled: boolean; sessionId?: string; isLoading?: boolean }) {
   render(
     <MessageInput
-      onSend={vi.fn()}
+      onSend={vi.fn().mockReturnValue(true)}
       disabled={props.disabled}
       isLoading={props.isLoading ?? false}
       agents={[claude]}

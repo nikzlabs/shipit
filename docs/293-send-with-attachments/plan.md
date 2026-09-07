@@ -243,11 +243,22 @@ message and their attachment, for a send that never went out.
 **`onSend` now answers.** It returns a **required** `boolean`, and `false` means
 refused: `handleSubmit` returns without clearing anything, and without the
 docs/218 optimistic reset-eligible clear, which would otherwise hide a control
-the user still needs (no turn ran, so nothing would recompute it). The runtime
-check is `=== false` rather than falsy — the type already makes every caller
-answer, so only an explicit refusal refuses, and the composer's many `vi.fn()`
-doubles keep meaning what they always meant instead of silently turning every
-test send into a refusal.
+the user still needs (no turn ran, so nothing would recompute it).
+
+Required, not optional, and that decision has a cost worth naming. A first pass
+made the check `=== false` so that the composer's ~130 `vi.fn()` doubles — which
+return `undefined`, and are `any`-typed, so TypeScript cannot see them — kept
+meaning "accepted". CI's `no-unnecessary-boolean-literal-compare` refused it, and
+was right: against a required `boolean` the comparison is redundant, and the
+leniency was there to protect the *fixtures*, not the code. With the strict check
+in, four tests went red — a saved draft cleared, the reset control hidden, the
+dictation flag reset, the chips cleared — every one of them a test that only
+means anything with an accepting parent. So the doubles were fixed rather than
+the check: nine files' doubles now say `vi.fn().mockReturnValue(true)`. A double
+that cannot express the contract is a fixture that quietly tests something else.
+(`mockReturnValue`, not `vi.fn(() => true)` — the arrow narrows the mock's
+argument tuple to `[]`, so every `onSend.mock.calls[0][0]` in those files stops
+type-checking.)
 
 The alternative was to decide the refusal inside `buildAttachmentPlan`, which
 already decides `clearAttachments`. It does not work: that function is called in

@@ -778,9 +778,8 @@ export function MessageInput({
     // running, or it has no target file, and shows a toast about that. The
     // composer used to clear regardless, so the message AND its attachments
     // were lost for a send that never happened — an attachment dropped without
-    // the user being told. `=== false`, not falsy: the prop type already makes
-    // every caller answer, so only an explicit refusal refuses.
-    if (onSend(payload) === false) return;
+    // the user being told.
+    if (!onSend(payload)) return;
     // docs/218 — when this send carries the reset intent, the branch is about to
     // be reset to the latest base, which makes the session no longer
     // reset-eligible. Optimistically clear the signal so the control disappears

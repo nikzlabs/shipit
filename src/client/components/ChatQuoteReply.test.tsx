@@ -93,7 +93,7 @@ function ChatHarness() {
         <p>This is a quotable passage.</p>
       </div>
       <ChatQuoteReply containerRef={ref} />
-      <MessageInput onSend={vi.fn()} disabled={false} focusKey="s1" />
+      <MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="s1" />
     </div>
   );
 }
