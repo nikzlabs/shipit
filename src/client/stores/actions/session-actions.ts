@@ -71,6 +71,40 @@ export function resetSessionState() {
 }
 
 /**
+ * docs/291-composer-before-claim — **give back a message the browser is still
+ * holding, when the session it was typed for stops being the one we are on.**
+ *
+ * `sendUserMessage`'s callers stash a frame rather than dropping it when the socket
+ * is not open yet — a message typed on `/{repo}/new` moments after the claim lands,
+ * or one caught by a reconnect. `useConnectionSync` then flushes it *addressed from
+ * the store*:
+ *
+ * ```ts
+ * if (send({ ...pending, sessionId } as WsClientMessage)) …
+ * ```
+ *
+ * So a stash the user has moved away from is not merely stranded — it is **sent
+ * into whatever session the store holds by then**. That is why this exists and why
+ * it is not simply `setPendingWsMessage(undefined)`: it undoes exactly what
+ * `sendUserMessage` did — the bubble (matched on the `requestId` the stash carries),
+ * the spinner, the stash itself — and says so, because a message that silently
+ * evaporates is half of the failure it is here to prevent.
+ *
+ * A no-op when nothing is held, so callers do not have to check first.
+ */
+export function discardHeldFirstMessage(reason: string) {
+  const session = useSessionStore.getState();
+  const held = session.pendingWsMessage;
+  if (!held) return;
+  const requestId = held.requestId;
+  session.setPendingWsMessage(undefined);
+  session.setMessages((prev) => prev.filter((m) => m.clientRequestId !== requestId));
+  session.setIsLoading(false);
+  session.setActivity(undefined);
+  useUiStore.getState().setToast({ message: reason });
+}
+
+/**
  * Internal session resume — resets state, fetches history via HTTP.
  * WS connects automatically via the per-session WS URL; no activate_session needed.
  */
@@ -97,6 +131,26 @@ export function resumeSessionInternal(sessionId: string) {
   // function resets is scoped to the session being resumed, which is the one
   // already loaded.
   if (outgoingSessionId === sessionId) return;
+  /*
+    docs/291-composer-before-claim req 5 — a stashed message belongs to the session
+    it was composed for, and after this line that session is not the one we are
+    connected to any more.
+
+    The flush addresses a stashed frame from the STORE (`useConnectionSync`), so
+    leaving one here does not merely strand it — it delivers it into the session
+    being resumed. That was already true of the stash the
+    already-claimed-but-still-connecting path writes, in a window a few hundred
+    milliseconds wide; `/{repo}/new` now holds a message for a whole cold clone, so
+    the window is as long as the user's patience and the switch is an ordinary thing
+    to do inside it.
+
+    Placed after the early return above on purpose: a session resuming ITSELF is not
+    a switch, and the URL graduation this feature performs for a held message
+    (`/{repo}/new` → `/session/{id}`) lands on exactly that case.
+  */
+  discardHeldFirstMessage(
+    "Your message wasn't sent — you switched sessions before it was ready.",
+  );
   const preview = usePreviewStore.getState();
   if (outgoingSessionId) preview.snapshotSession(outgoingSessionId);
 

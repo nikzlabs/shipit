@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { createHeadlessSession, handleSessionResume, resumeSessionInternal, startQuickSessionInBackground } from "./session-actions.js";
+import { createHeadlessSession, discardHeldFirstMessage, handleSessionResume, resumeSessionInternal, startQuickSessionInBackground } from "./session-actions.js";
 import { useSessionStore } from "../session-store.js";
 import { useUiStore } from "../ui-store.js";
 import { useIssuesStore } from "../issues-store.js";
@@ -278,5 +278,106 @@ describe("handleSessionResume", () => {
     expect(navigate).toHaveBeenCalledWith("/session/sandbox-b");
     expect(observedSessionIds).toEqual(["session-a"]);
     expect(useSessionStore.getState().sessionId).toBe("sandbox-b");
+  });
+});
+
+/**
+ * docs/291-composer-before-claim — a message stashed because the socket was not open
+ * yet is flushed *addressed from the store*, so one the user has moved away from is
+ * not merely stranded: it is sent into whatever session the store holds by then.
+ */
+describe("discardHeldFirstMessage", () => {
+  beforeEach(() => {
+    useSessionStore.setState({
+      messages: [
+        { role: "user", text: "an earlier message" },
+        { role: "user", text: "held", clientRequestId: "req-1" },
+      ],
+      isLoading: true,
+      activity: { label: "Starting session..." },
+      pendingWsMessage: { type: "send_message", text: "held", requestId: "req-1" },
+    } as never);
+    useUiStore.setState({ toast: null } as never);
+  });
+
+  afterEach(() => {
+    useSessionStore.setState({
+      messages: [],
+      isLoading: false,
+      activity: undefined,
+      pendingWsMessage: undefined,
+    } as never);
+  });
+
+  it("takes back the bubble, the spinner and the stash, and says so", () => {
+    discardHeldFirstMessage("Your message wasn't sent.");
+    const state = useSessionStore.getState();
+    expect(state.pendingWsMessage).toBeUndefined();
+    expect(state.messages.map((m) => m.text)).toEqual(["an earlier message"]);
+    expect(state.isLoading).toBe(false);
+    expect(state.activity).toBeUndefined();
+    expect(useUiStore.getState().toast?.message).toBe("Your message wasn't sent.");
+  });
+
+  it("leaves everything alone when nothing is held", () => {
+    // It runs on every session switch, so the common case is that there is nothing
+    // to give back. It must not clear a spinner belonging to a turn that is
+    // genuinely running.
+    useSessionStore.setState({ pendingWsMessage: undefined } as never);
+    discardHeldFirstMessage("Your message wasn't sent.");
+    const state = useSessionStore.getState();
+    expect(state.messages).toHaveLength(2);
+    expect(state.isLoading).toBe(true);
+    expect(useUiStore.getState().toast).toBeFalsy();
+  });
+});
+
+/**
+ * docs/291-composer-before-claim — switching sessions with a message still stashed.
+ * `resumeSessionInternal` cleared the transcript, the spinner and the queue but not
+ * `pendingWsMessage`, so the next socket to open sent the old prompt into the
+ * session the user had switched to.
+ */
+describe("resumeSessionInternal — a first message still held for delivery", () => {
+  beforeEach(() => {
+    useSessionStore.setState({
+      sessionId: undefined,
+      messages: [{ role: "user", text: "held", clientRequestId: "req-1" }],
+      isLoading: true,
+      pendingWsMessage: { type: "send_message", text: "held", requestId: "req-1" },
+    } as never);
+    useUiStore.setState({ toast: null } as never);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: async () => ({ messages: [], commits: [], agentRunning: false }),
+    }));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useSessionStore.setState({
+      sessionId: undefined,
+      messages: [],
+      isLoading: false,
+      pendingWsMessage: undefined,
+    } as never);
+  });
+
+  it("does not carry the message into the session being switched to", () => {
+    resumeSessionInternal("some-other-session");
+    expect(useSessionStore.getState().pendingWsMessage).toBeUndefined();
+    expect(useUiStore.getState().toast?.message).toMatch(/switched sessions/);
+  });
+
+  it("keeps the message when the session resumes ITSELF", () => {
+    // The URL graduation this feature performs (`/{repo}/new` → `/session/{id}`)
+    // lands on exactly this case, and discarding there would drop the message a
+    // moment before the flush sends it.
+    useSessionStore.setState({ sessionId: "s1" } as never);
+    resumeSessionInternal("s1");
+    expect(useSessionStore.getState().pendingWsMessage).toBeDefined();
+    expect(useUiStore.getState().toast).toBeFalsy();
   });
 });

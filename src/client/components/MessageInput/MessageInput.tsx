@@ -29,7 +29,7 @@ import { useKeybinding } from "../../keybindings/use-keybinding.js";
 import { ContextDialMount } from "./ContextDialMount.js";
 import { ComposerSettingsMenu } from "./ComposerSettingsMenu.js";
 import { RoleSelector, useRolePickerState } from "./RoleSelector.js";
-import { getSavedRoleName } from "../../utils/local-storage.js";
+import { getSavedRoleName, saveRoleName } from "../../utils/local-storage.js";
 import { applyRoleSeeds } from "../../utils/role-seed.js";
 import { useTextareaSizing } from "./hooks/useTextareaSizing.js";
 import { useMessageDraft } from "./hooks/useMessageDraft.js";
@@ -255,6 +255,27 @@ export function MessageInput({
     // reached by staying quiet instead. Barring Send is recoverable; the turn is
     // not.
     || (network ? !network.loaded : false);
+  /**
+   * docs/291-composer-before-claim reqs 1, 2 — **whether a settings pick can be
+   * DELIVERED**, which is not the same question as whether Send is open.
+   *
+   * With a session bound, a pick has to reach the server over that session's
+   * socket, so `disabled` (which carries `status !== "open"`) rightly closes the
+   * four selectors: nothing would receive the pick.
+   *
+   * With NO session bound there is no socket to miss. The role, harness, model
+   * and reasoning picks are written to the seed slots and applied by the server
+   * from the connect URL (`useSessionWebSocket`), so they are delivered *by*
+   * being chosen. That is the whole window this feature is about — `/{repo}/new`
+   * with no warm session waiting, where the claim is a cold clone and the four
+   * controls used to sit dead for its whole duration while the network control
+   * beside them (docs/285 req 8, which solved this one control at a time) stayed
+   * live. Quick Capture reaches the same state for the same reason.
+   *
+   * `isLoading` stays unconditional: a running turn pins the parameters whether
+   * or not a socket is involved.
+   */
+  const settingsLocked = isLoading || (disabled && !!sessionId);
   const [text, setText] = useState("");
   // ── docs/272-user-selectable-roles — the role control's three states ─────────────────────
   // 1. no roles configured → nothing at all, the row exactly as it is today (req 16)
@@ -301,8 +322,27 @@ export function MessageInput({
    * pending role. It errs toward *not* naming a role, which is the safe
    * direction: the alternative is a composer claiming a role the session it
    * creates will not be started on.
+   *
+   * docs/291-composer-before-claim req 4 — **and it has to clear the SEED, not
+   * only the display.**
+   *
+   * Dropping the React state alone made the composer say one thing and the next
+   * session do another. `saveRoleName`'s slot is what `useSessionWebSocket` puts
+   * in the connect URL, and the server applies `role=` LAST, over the harness,
+   * model and reasoning seeds — so choosing a role, adjusting its model, then
+   * starting the session ran the ROLE's model, silently discarding the pick the
+   * user had just made and was still looking at. Nothing came to correct it: the
+   * seed is normally cleared by the server's answer (`model-selection-changed`),
+   * and with no session there is no server to answer.
+   *
+   * Only in the session-less case. A bound session keeps the existing rule —
+   * there the server decides whether a parameter actually moved, and re-selecting
+   * the value a role already set is not a change (docs/272 req 15).
    */
-  const leavePendingRole = () => setPendingRole(undefined);
+  const leavePendingRole = () => {
+    setPendingRole(undefined);
+    if (!hasActiveSession) saveRoleName(undefined);
+  };
   const roleView = roles.find((r) => r.name === roleInForce);
   // The seed slots the three pickers DISPLAY have to hold the role's own
   // parameters, or the composer names a role beside a model that role will not
@@ -1129,7 +1169,7 @@ export function MessageInput({
                   // three pickers instead, so the mode stays changeable and the
                   // settings stay readable — matching the wide row exactly.
                   disabled={inert}
-                  pickersLocked={disabled || isLoading}
+                  pickersLocked={settingsLocked}
                 />
 
                 {surface === "chat" && (modelInfo ?? contextTokens > 0) && (
@@ -1342,7 +1382,7 @@ export function MessageInput({
                     ? { onAdjustParameters: revealRoleParameters }
                     : {})}
                   locked={roleLocked}
-                  disabled={disabled || isLoading || inert}
+                  disabled={settingsLocked || inert}
                 />
               </div>
             )}
@@ -1374,7 +1414,7 @@ export function MessageInput({
                   // unselectable and the model menu onto nothing at all. The
                   // compact row already read `inert` on its anchor, so the two
                   // layouts disagreed about the same fact.
-                  disabled={disabled || isLoading || inert}
+                  disabled={settingsLocked || inert}
                 />
               </div>
             )}
@@ -1387,7 +1427,7 @@ export function MessageInput({
                   modelInfo={modelInfo ?? null}
                   hasActiveSession={hasActiveSession}
                   seedFromHistory={!sessionId}
-                  disabled={disabled || isLoading || inert}
+                  disabled={settingsLocked || inert}
                 />
               </div>
             )}
@@ -1402,7 +1442,7 @@ export function MessageInput({
                   agent={agents.find((a) => a.id === activeAgentId)}
                   sessionReasoning={sessionReasoning}
                   onChange={(effort) => { leavePendingRole(); onReasoningChange(effort); }}
-                  disabled={disabled || isLoading || inert}
+                  disabled={settingsLocked || inert}
                   seedFromHistory={!hasActiveSession}
                 />
               </div>
