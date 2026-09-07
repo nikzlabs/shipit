@@ -19,11 +19,10 @@ flaws, which is the main reason to trust it. What is not ready is the
 integration: the MCP server steers the agent to route edits and shell through
 itself even with no plugin installed, ShipIt auto-allows an enabled server's
 entire tool namespace, and enabled servers are account-wide rather than
-per-session. The adoption-gating questions those raise are held in
-`docs/291-ripwire-context-map/requirements.md` § "Open questions", because they
-gate adopting any MCP retrieval server rather than this one;
-[requirements.md](requirements.md) points there and keeps the one question that
-has not reached the shared list yet.
+per-session. The two questions those raise gate adopting any MCP retrieval server
+rather than this one, so they are held in
+`docs/291-ripwire-context-map/requirements.md` § "Open questions" as questions 2
+and 3; [requirements.md](requirements.md) points there.
 
 Numbers come from LemonCrow 0.7.2 (checkout `403ea9ba`, 2026-09-07) and ripwire
 v0.4.0 (linux-x64, checksum verified) against `/workspace` at commit `1a51f23d`.
@@ -283,8 +282,7 @@ output. `mcp_server.py`'s dispatch resolves the registered handler without
 consulting visibility, and ShipIt's `mcp__lc__*` glob allows the call. So the
 branch-guard bypass survives for a model that knows the name — which the server's
 own instructions and any prior exposure supply. Whether that residual risk is
-acceptable is the per-server MCP tool authorization question in
-`docs/291-ripwire-context-map/requirements.md` § "Open questions".
+acceptable is `docs/291-ripwire-context-map/requirements.md` question 2.
 
 ## Opt-in and existing sessions (req 6)
 
@@ -294,8 +292,8 @@ Not satisfiable through the existing settings surface.
 turn's run parameters. The set is account-wide and read per turn, not snapshotted
 when a session is created — so enabling an `lc` server changes what an *existing*
 session's next turn is given. "Off by default" holds; "enabling it must not change
-a session that already exists" does not. This is the open question still held in
-[requirements.md](requirements.md).
+a session that already exists" does not. This is
+`docs/291-ripwire-context-map/requirements.md` question 3.
 
 ## What a session container pays to run it (req 7)
 

@@ -40,12 +40,11 @@ Fixes the review found, all applied and re-measured:
 
 Remaining:
 
-- [ ] **Blocked on two open questions.** Whether ShipIt needs per-server MCP tool
-      authorization is held in `docs/291-ripwire-context-map/requirements.md`
-      § "Open questions", with all of ShipIt's MCP adoption gates. What "must not
-      change an existing session" requires is still in
-      [requirements.md](requirements.md). No implementation code until both are
-      answered (req 6, req 8).
+- [ ] **Blocked on `docs/291-ripwire-context-map/requirements.md` questions 2 and
+      3** — per-server MCP tool authorization, and what "must not change an
+      existing session" requires. Both are held there with ShipIt's other MCP
+      adoption gates. No implementation code until they are answered (req 1,
+      req 6, req 8).
 - [ ] An agent-in-the-loop trial. Everything measured here is tool responses;
       whether a steered model actually keeps using native `Edit`/`Bash` — and so
       whether inline diffs and the branch guard survive — cannot be settled
