@@ -19,7 +19,11 @@ flaws, which is the main reason to trust it. What is not ready is the
 integration: the MCP server steers the agent to route edits and shell through
 itself even with no plugin installed, ShipIt auto-allows an enabled server's
 entire tool namespace, and enabled servers are account-wide rather than
-per-session. Those are the open questions in [requirements.md](requirements.md).
+per-session. The adoption-gating questions those raise are held in
+`docs/291-ripwire-context-map/requirements.md` § "Open questions", because they
+gate adopting any MCP retrieval server rather than this one;
+[requirements.md](requirements.md) points there and keeps the one question that
+has not reached the shared list yet.
 
 Numbers come from LemonCrow 0.7.2 (checkout `403ea9ba`, 2026-09-07) and ripwire
 v0.4.0 (linux-x64, checksum verified) against `/workspace` at commit `1a51f23d`.
@@ -83,12 +87,13 @@ const userMcpGlobs = (mcpServerNames ?? [])
   .join(",");
 ```
 
-and `:461` appends it to `--allowedTools`. LemonCrow's `core` profile advertises
-`bash`, `code_search`, `edit`, `read`, `tool`, `web_fetch`. So enabling an `lc`
-server auto-allows `mcp__lc__bash`.
+and `:461` appends it to `--allowedTools`. The resident-process path does the
+same at `:887` and `:889`, so both spawn paths are affected. LemonCrow's `core`
+profile advertises `bash`, `code_search`, `edit`, `read`, `tool`, `web_fetch`. So
+enabling an `lc` server auto-allows `mcp__lc__bash`.
 
 The guard cannot see it, for two independent reasons.
-`docker/agent-hooks/managed-settings.json` registers the PreToolUse hook with
+`docker/agent-hooks/managed-settings.json:50` registers the PreToolUse hook with
 `"matcher": "Bash"`, so it is never invoked for an MCP tool name; and
 `docker/agent-hooks/block-branch-ops.mjs:70` independently exits on
 `payload?.tool_name !== "Bash"`. A `git reset --hard` through `mcp__lc__bash` is
@@ -278,7 +283,8 @@ output. `mcp_server.py`'s dispatch resolves the registered handler without
 consulting visibility, and ShipIt's `mcp__lc__*` glob allows the call. So the
 branch-guard bypass survives for a model that knows the name — which the server's
 own instructions and any prior exposure supply. Whether that residual risk is
-acceptable is the first open question in [requirements.md](requirements.md).
+acceptable is the per-server MCP tool authorization question in
+`docs/291-ripwire-context-map/requirements.md` § "Open questions".
 
 ## Opt-in and existing sessions (req 6)
 
@@ -288,7 +294,8 @@ Not satisfiable through the existing settings surface.
 turn's run parameters. The set is account-wide and read per turn, not snapshotted
 when a session is created — so enabling an `lc` server changes what an *existing*
 session's next turn is given. "Off by default" holds; "enabling it must not change
-a session that already exists" does not. This is the second open question.
+a session that already exists" does not. This is the open question still held in
+[requirements.md](requirements.md).
 
 ## What a session container pays to run it (req 7)
 
@@ -358,8 +365,9 @@ the Python tokenizer used is the real one.
 
 ## Key files
 
-- `src/server/session/agents/claude/process.ts` — `:448` builds the
-  `mcp__<name>__*` allowlist glob that admits LemonCrow's whole tool namespace.
+- `src/server/session/agents/claude/process.ts` — `:448` and `:887` build the
+  `mcp__<name>__*` allowlist glob that admits LemonCrow's whole tool namespace,
+  once per spawn path.
 - `src/server/orchestrator/session-agent-run-params.ts` — `:111`, why enabling a
   server reaches sessions that already exist.
 - `docker/agent-hooks/managed-settings.json` — registers the branch-guard hook on

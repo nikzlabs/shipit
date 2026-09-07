@@ -36,22 +36,26 @@ reject it if it does not clear that gate. Nobody built it. This is that spike.
 
 ## Open questions
 
-- **Is advertisement filtering enough, or does ShipIt need real authorization?**
-  LemonCrow can be reduced to a retrieval-only advertised surface today, with no
-  ShipIt change (verified — `plan.md` § "Constraining the tool surface"). But a
-  hidden tool still executes when called by name, and ShipIt auto-allows an
-  enabled server's whole `mcp__<name>__*` namespace, so the branch guard remains
-  bypassable by a model that knows the name. Deciding whether ShipIt treats that
-  as acceptable, or gains a real per-server tool authorization boundary, is a
-  product and security judgement — and it is not LemonCrow-specific: it governs
-  every user MCP server.
+The adoption-gating questions are held in one place —
+`docs/291-ripwire-context-map/requirements.md` § "Open questions" — because they
+gate adopting *any* MCP retrieval server and are not specific to LemonCrow.
+**Whether ShipIt needs per-server MCP tool authorization** lives there. The
+evidence behind it stays here, in [plan.md](plan.md) § "Constraining the tool
+surface": LemonCrow can be reduced to a retrieval-only *advertised* surface today
+with no ShipIt change, but a hidden tool still executes when called by name.
+
+One question has not reached that shared list yet, so it is held here rather than
+dropped:
+
 - **What does "must not change an existing session" require here?** Enabled MCP
   servers are read from the account-wide credential store when a turn's run
   parameters are built, not snapshotted at session creation
   (`session-agent-run-params.ts:111`), so a session that already exists picks up
   a newly enabled server on its next turn. Requirement 6 therefore cannot be met
   by the existing settings surface alone. Whether requirement 6 means per-session
-  opt-in, or only "off until someone turns it on", is the human's call.
+  opt-in, or only "off until someone turns it on", is the human's call. Move this
+  to the shared list and replace it with a pointer once it is there — keeping it
+  in two places is what this consolidation exists to prevent.
 
 ## Resolved questions
 
@@ -59,10 +63,10 @@ reject it if it does not clear that gate. Nobody built it. This is that spike.
   ShipIt?* No. Nik's brief for this session said "opt-in and off by default;
   confirm with the user before any change that would affect existing sessions",
   and requirement 8 gates adoption on the evidence. This PR therefore ships
-  evidence, a verdict, and the open questions above; it changes no ShipIt
-  behaviour.
+  evidence, a verdict, and the open questions; it changes no ShipIt behaviour.
 - 2026-09-07 — *Can LemonCrow's tool surface be narrowed without a ShipIt
   change?* Partly, and this was answered by testing rather than by asking:
   `LEMONCROW_HIDE_TOOLS` reduces the advertised surface to `code_search` and
   `read`. It does not reject a direct call to a hidden tool, which is why the
-  remaining question above is about authorization and not about configuration.
+  authorization question in `docs/291-ripwire-context-map/requirements.md` is
+  about authorization and not about configuration.
