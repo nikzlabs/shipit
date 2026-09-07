@@ -129,7 +129,14 @@ export function MessageInput({
   surface = "chat",
   network,
 }: {
-  onSend: (payload: SendPayload) => void;
+  /**
+   * Dispatch this send, and say whether it happened. `false` means **refused**:
+   * nothing went out, so the composer keeps its text and its attachments
+   * instead of clearing them into a message that never existed (docs/293
+   * req 4). Required rather than optional on purpose — a handler that has to
+   * answer cannot forget to, which is exactly how the original loss happened.
+   */
+  onSend: (payload: SendPayload) => boolean;
   disabled: boolean;
   /**
    * docs/257 req 3 — when set, the composer is dead **as a whole** and this
@@ -766,17 +773,25 @@ export function MessageInput({
       // docs/144 — omitted entirely when the draft was typed.
       ...(draftDictated ? { dictated: true } : {}),
     };
+    // docs/293 req 4 — the parent may refuse a send it never dispatched:
+    // `/review` turns one away when there is no session, a turn is already
+    // running, or it has no target file, and shows a toast about that. The
+    // composer used to clear regardless, so the message AND its attachments
+    // were lost for a send that never happened — an attachment dropped without
+    // the user being told. `=== false`, not falsy: the prop type already makes
+    // every caller answer, so only an explicit refusal refuses.
+    if (onSend(payload) === false) return;
     // docs/218 — when this send carries the reset intent, the branch is about to
     // be reset to the latest base, which makes the session no longer
     // reset-eligible. Optimistically clear the signal so the control disappears
     // immediately instead of lingering through the turn until the post-turn
     // `reset_eligible: false` arrives. The server's post-turn recompute is
     // authoritative and reconciles (re-arming the control if the reset was
-    // unticked or didn't run).
+    // unticked or didn't run). After the refusal check, so a refused send does
+    // not hide a control the user still needs.
     if (showResetControl && resetChecked && sessionId) {
       usePrStore.getState().setResetEligible(sessionId, false);
     }
-    onSend(payload);
     setText("");
     setDraftDictated(false);
     // The transcript the cleanup notice referred to has now left the composer —

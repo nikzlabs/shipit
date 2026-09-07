@@ -118,6 +118,53 @@ describe("QuickCaptureOverlay", () => {
     useSessionStore.setState({ sessionId: undefined, sessions: [] });
   });
 
+  // docs/293 req 4 — `onSend` reports whether the send happened, so a composer
+  // never clears for a message that did not go out. This overlay's refusal is
+  // not reachable from the UI today (no ready repo disables the whole composer,
+  // so `sendBlocked` bars the send first); the test pins the ANSWER, not a
+  // demonstrated loss. It would still pass if `MessageInput` stopped reading it.
+  it("refuses a capture with no repo, and reports the refusal", () => {
+    openOverlay();
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+
+    let outcome: boolean | undefined;
+    act(() => {
+      outcome = lastMessageInputProps!.onSend({
+        text: "with file",
+        uploadRefs: [],
+        uploads: [],
+        deferredFiles: [new File(["hi"], "note.txt", { type: "text/plain" })],
+      });
+    });
+
+    expect(outcome).toBe(false);
+    expect(startQuickSessionMock).not.toHaveBeenCalled();
+    expect(screen.getByText("Add a repo first.")).toBeInTheDocument();
+  });
+
+  it("accepts one once a repo is there", () => {
+    // Non-vacuous control for the refusal above.
+    useRepoStore.setState({
+      repos: [repo("https://github.com/acme/a.git")],
+      activeRepoUrl: "https://github.com/acme/a.git",
+    });
+    openOverlay();
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+
+    let outcome: boolean | undefined;
+    act(() => {
+      outcome = lastMessageInputProps!.onSend({
+        text: "with file",
+        uploadRefs: [],
+        uploads: [],
+        deferredFiles: [new File(["hi"], "note.txt", { type: "text/plain" })],
+      });
+    });
+
+    expect(outcome).toBe(true);
+    expect(startQuickSessionMock).toHaveBeenCalled();
+  });
+
   it("renders MessageInput with the overlay surface and falls back to the active session repo when no quick session has run", () => {
     const activeUrl = "https://github.com/acme/active.git";
     useRepoStore.setState({

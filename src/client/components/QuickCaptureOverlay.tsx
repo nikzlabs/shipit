@@ -209,10 +209,14 @@ export function QuickCaptureOverlay({
   // broadcast; the server has already dispatched the first prompt by the time
   // the request returns. A failure surfaces as an error toast since the overlay
   // is already gone.
-  const handleSend = (payload: SendPayload) => {
+  const handleSend = (payload: SendPayload): boolean => {
     if (!selectedRepo) {
+      // docs/293 req 4 — refused, so the composer keeps the text and the
+      // deferred files rather than clearing them behind this error. Defensive:
+      // `disabled` above already bars the send while no repo is ready, so this
+      // is the contract being answered rather than a reachable loss.
       setError("Add a repo first.");
-      return;
+      return false;
     }
     // docs/217 — the explicit pick wins; otherwise the active agent's saved
     // seed (the ReasoningSelector persists every pick via `saveReasoning`), so
@@ -275,6 +279,7 @@ export function QuickCaptureOverlay({
     // `handleQuickSessionCreated` — a true background session won't match the
     // active session id and stays put.
     startQuickSessionInBackground(params, (created) => onSessionCreated?.(created));
+    return true;
   };
 
   return (
@@ -343,7 +348,7 @@ export function QuickCaptureOverlay({
         <div className="py-3">
           <MessageInput
             surface="overlay"
-            onSend={(payload) => handleSend(payload)}
+            onSend={handleSend}
             disabled={disabled}
             /* docs/257 req 3 — `disabledReason`, not just another clause in
                `disabled`. `disabled` guards submission only, so adding

@@ -43,3 +43,15 @@
 - [x] Out-of-scope defects recorded and filed as planning#519
 - [x] Full `npm test` after the second round of fixes
 - [x] Re-verify in a real browser on the dogfood instance
+
+## Req 4 follow-up — a refused send keeps what it would have sent
+
+- [x] `onSend` returns a required `boolean`; `false` means nothing was dispatched
+- [x] `handleSubmit` keeps the text, the chips and the reset-to-base control on a refusal
+- [x] The three `/review` refusals report it (`resolveReviewRequest`, out of `App` so they can be tested)
+- [x] A `/review` whose frame never left the browser reports it too
+- [x] The quick-capture overlay's no-repo refusal reports it (defensive — its composer is already disabled)
+- [x] `navigate` and `closePreview` moved below the delivery check, so a refused `/review` is retryable
+- [x] Each guard proved red on its own by mutating exactly what it guards
+- [x] Verified in a real browser on the dogfood instance
+- [x] Independent review; every finding verified before acting on it

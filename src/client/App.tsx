@@ -168,6 +168,7 @@ import { useGitHubGateLatch } from "./hooks/useGitHubGateLatch.js";
 import type { SendCommentsPayload } from "./components/FilePreviewModal.js";
 import { Spinner } from "./components/Spinner.js";
 import { buildAttachmentPlan } from "./utils/attachment-plan.js";
+import { isReviewCommand, resolveReviewRequest } from "./utils/review-command.js";
 import { deleteUploadFromServer } from "./hooks/useFileUpload.js";
 import { removeDraftUploads } from "./utils/local-storage.js";
 
@@ -574,8 +575,12 @@ export default function App() {
   });
 
   // ── Callback helpers ──
+  // docs/293 req 4 — returns `false` when this send was refused and nothing was
+  // dispatched, so the composer keeps the text and the attachments it would
+  // otherwise have cleared. Deliberately not `async`: the refusal has to reach
+  // `MessageInput` in the same tick it clears in, and nothing here awaits.
   const handleSend = useCallback(
-    async (payload: SendPayload) => {
+    (payload: SendPayload): boolean => {
       const {
         text,
         uploadRefs,
@@ -599,32 +604,22 @@ export default function App() {
         uploads: payloadUploads,
         pendingFiles: useSettingsStore.getState().pendingFiles,
       });
-      if (/^\/review(?:\s|$)/.test(trimmed)) {
+      if (isReviewCommand(trimmed)) {
         const reviewSettings = useSettingsStore.getState();
-        const argMatch = /^\/review\s+@?(\S+)/.exec(trimmed);
-        const targetFile =
-          argMatch?.[1] ?? useFileStore.getState().previewFile ?? undefined;
-        const sid = useSessionStore.getState().sessionId;
-        if (!sid) {
-          useUiStore
-            .getState()
-            .setToast({ message: "Start a session before running /review." });
-          return;
+        const request = resolveReviewRequest({
+          text: trimmed,
+          sessionId: useSessionStore.getState().sessionId,
+          turnRunning: useSessionStore.getState().isLoading,
+          previewFile: useFileStore.getState().previewFile,
+        });
+        // docs/293 req 4 — refused, so nothing is dispatched and the composer
+        // is told to keep what it has. The toast explains the refusal; the
+        // attachment is still there when the user has acted on it.
+        if (!request.ok) {
+          useUiStore.getState().setToast({ message: request.message });
+          return false;
         }
-        if (useSessionStore.getState().isLoading) {
-          useUiStore.getState().setToast({
-            message:
-              "Wait for the current turn to finish before running /review.",
-          });
-          return;
-        }
-        if (!targetFile) {
-          useUiStore.getState().setToast({
-            message:
-              "/review needs a file — open one in preview, or use /review @path/to/file.",
-          });
-          return;
-        }
+        const { sessionId: sid, targetFile } = request;
         const prompt = composeReviewMessage(
           targetFile,
           resolveReviewer({
@@ -632,17 +627,11 @@ export default function App() {
             activeAgentId: useUiStore.getState().activeAgentId,
           }),
         );
-        // On /{slug}/new route — graduate: transition URL to /session/{id}, so
-        // a /review sent from a fresh session doesn't leave the URL on .../new.
-        if (isNewSessionRoute) {
-          void navigate(`/session/${sid}`, { replace: true });
-        }
-        useFileStore.getState().closePreview();
         // docs/293 req 4 — carry the composer's attachments too. This path
         // composes its own prompt and used to dispatch it alone, while
         // `handleSubmit` cleared the chips regardless: an upload attached
         // alongside `/review` vanished with no message and no error.
-        sendUserMessage({
+        const reviewSent = sendUserMessage({
           bubble: { role: "user", text: prompt, ...plan.bubble },
           activity: "Reviewing...",
           dispatch: (requestId) =>
@@ -654,8 +643,27 @@ export default function App() {
               ...plan.frame,
             }),
         });
+        // docs/293 req 4 — the frame never left the browser. `sendUserMessage`
+        // has already rolled its optimistic bubble back and told the user to
+        // try again in a moment, which they cannot do if the composer emptied
+        // itself behind that toast. Unlike the ordinary send below, this
+        // dispatch does not stash the frame for reconnect, so this is reachable.
+        if (!reviewSent) return false;
+        // Everything below is what an ACCEPTED `/review` leaves behind, and each
+        // line is here rather than above the dispatch because a refused send has
+        // to be retryable. `closePreview` clears `previewFile`, which is the
+        // target a bare `/review` resolves from — closing it first means the
+        // retry the toast asks for fails with "needs a file". The graduation
+        // navigate is worse: it changes the composer's draft key, so the text
+        // the refusal just preserved is replaced by the new key's empty draft.
+        if (isNewSessionRoute) {
+          // On /{slug}/new route — graduate: transition URL to /session/{id}, so
+          // a /review sent from a fresh session doesn't leave the URL on .../new.
+          void navigate(`/session/${sid}`, { replace: true });
+        }
+        useFileStore.getState().closePreview();
         if (plan.clearAttachments) reviewSettings.clearPendingFiles();
-        return;
+        return true;
       }
 
       requestPermission();
@@ -730,6 +738,12 @@ export default function App() {
         // still carries it — `sendUserMessage` returns false only when nothing
         // reached the wire.
         if (issueRef && sent) useSessionStore.getState().setPendingIssueRef(undefined);
+        // docs/293 req 4 — nothing reached the wire, so the composer keeps what
+        // it would have sent. Not reachable today: the dispatch above stashes an
+        // undeliverable frame for reconnect and reports success. Read anyway, so
+        // that the clearing is tied to the send having happened rather than to
+        // which dispatch this branch happens to be given.
+        if (!sent) return false;
       } else {
         // No session — can't send without one (sessions are created via claim-session).
         // Still append the optimistic bubble so the user sees what they typed,
@@ -747,7 +761,9 @@ export default function App() {
         ]);
       }
       if (plan.clearAttachments) settings.clearPendingFiles();
-      // MessageInput has already cleared its own upload chips at this point.
+      // The send went out (or, with no session, became a bubble that shows the
+      // user exactly what it carried), so the composer may clear its chips.
+      return true;
     },
     [
       send,

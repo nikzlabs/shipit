@@ -8,6 +8,8 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { MessageInput } from "./MessageInput.js";
 import { useFileStore } from "../stores/file-store.js";
+import { usePrStore } from "../stores/pr-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 import type { UploadItem } from "../../server/shared/types.js";
 
 afterEach(cleanup);
@@ -256,5 +258,63 @@ describe("/compact on the quick-capture overlay (docs/294 reqs 5-6)", () => {
     expect(onSend).toHaveBeenCalledWith(
       expect.objectContaining({ deferredFiles: [expect.any(File)] }),
     );
+  });
+});
+
+describe("A refused send keeps what it would have sent (docs/293 req 4)", () => {
+  // `App.handleSend` turns a `/review` away on three paths — no session, a turn
+  // already running, no target file — and shows a toast about the refusal. The
+  // composer cleared regardless, so the text AND the attachment went with a
+  // message that was never sent, and the toast said nothing about that.
+  beforeEach(() => {
+    usePrStore.setState({ resetEligibleBySession: {} });
+    useSettingsStore.setState({ autoResetMergedBranch: true });
+  });
+
+  it("keeps the text and the attachment when the parent returns false", () => {
+    seedUpload({ status: "ready" });
+    render(<MessageInput onSend={() => false} disabled={false} />);
+    type("/review");
+    fireEvent.click(sendButton());
+
+    expect(screen.getByPlaceholderText(PLACEHOLDER)).toHaveValue("/review");
+    expect(useFileStore.getState().sessionUploads[0].pending).toBe(true);
+  });
+
+  it("clears them when the parent accepts", () => {
+    // Non-vacuous control for the refusal above.
+    seedUpload({ status: "ready" });
+    render(<MessageInput onSend={() => true} disabled={false} />);
+    type("/review");
+    fireEvent.click(sendButton());
+
+    expect(screen.getByPlaceholderText(PLACEHOLDER)).toHaveValue("");
+    expect(useFileStore.getState().sessionUploads[0].pending).toBe(false);
+  });
+
+  it("keeps the reset-to-base control up on a refused send", () => {
+    // The optimistic clear runs on the way out because the turn is about to
+    // reset the branch. A refused send starts no turn, so hiding the control
+    // would leave the user unable to opt in until the server recomputed —
+    // which, with no turn, it never would.
+    usePrStore.setState({ resetEligibleBySession: { s1: true } });
+    render(<MessageInput onSend={() => false} disabled={false} sessionId="s1" />);
+    expect(screen.getByTestId("reset-merged-branch-control")).toBeInTheDocument();
+    type("/review");
+    fireEvent.click(sendButton());
+
+    expect(screen.getByTestId("reset-merged-branch-control")).toBeInTheDocument();
+  });
+
+  it("still clears it once the send is accepted", () => {
+    // Non-vacuous control for the one above: the optimistic clear still runs,
+    // it just runs on the accepted path now. The store drops the key rather
+    // than storing `false` — absence is how it spells ineligible.
+    usePrStore.setState({ resetEligibleBySession: { s1: true } });
+    render(<MessageInput onSend={() => true} disabled={false} sessionId="s1" />);
+    type("/review");
+    fireEvent.click(sendButton());
+
+    expect(screen.queryByTestId("reset-merged-branch-control")).not.toBeInTheDocument();
   });
 });

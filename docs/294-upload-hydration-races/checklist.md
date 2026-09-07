@@ -58,4 +58,4 @@
 - [x] Independent review of the branch against the requirements
 - [x] Second review over the changes the first one prompted
 - [x] Third review over the changes the second one prompted
-- [ ] Verify in a real browser on the dogfood instance
+- [x] Verify in a real browser on the dogfood instance
