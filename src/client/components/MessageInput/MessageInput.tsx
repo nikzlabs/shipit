@@ -88,12 +88,7 @@ export interface SendPayload {
    * setting. Non-sticky.
    */
   resetMergedBranch?: boolean;
-  /**
-   * docs/295 — per-send intent for the "compact the context" control beside it.
-   * Same rules as its sibling: only set when the control was visible, non-sticky,
-   * and undefined means "follow the global setting". Read independently of
-   * `resetMergedBranch` (req 6).
-   */
+  /** docs/295 — the "compact the context" control beside it; same rules, read independently (req 6). */
   compactContext?: boolean;
   /**
    * docs/144 — some or all of `text` was dictated by voice rather than typed.
@@ -432,26 +427,13 @@ export function MessageInput({
   useEffect(() => {
     // Non-sticky: default back to checked whenever the control (re)appears.
     if (showResetControl) setResetChecked(true);
-    // `sessionId` is in the deps for a reason that is not visible from the
-    // boolean alone: the composer is not keyed by session, so switching between
-    // two ALREADY-eligible sessions leaves `showResetControl` true throughout
-    // and this effect would never re-run — carrying one session's untick into
-    // another session's send. Keying the re-check on the session as well as on
-    // visibility is what makes "applies to that one message" true across a
-    // switch (docs/218's control had the same hole; both are fixed here).
+    // `sessionId` too: the composer is not keyed by session, so a switch between
+    // two already-eligible sessions would otherwise carry an untick across.
   }, [showResetControl, sessionId]);
 
   // ── docs/295 — "compact the context" control ──────────────────────────────
-  // Offered every time the reset control is offered (req 1, req 3) — so it
-  // derives from `showResetControl`, which is what makes req 11's single
-  // setting govern both with no second gate to keep in sync. The one extra
-  // condition is the backend's own capability (req 10).
-  //
-  // Requirement 3 forbids any occupancy threshold, and this is where that
-  // shows: nothing here reads token counts or context usage. A percentage gate
-  // is model-dependent — on a 1M-token window even a low percentage is a very
-  // large absolute context — so it would be strictest exactly where compacting
-  // helps most.
+  // Offered whenever the reset control is (reqs 1, 3, 11), if the backend can
+  // compact (req 10). No occupancy threshold (req 3).
   const agentSupportsCompaction =
     agents.find((a) => a.id === activeAgentId)?.supportsCompaction ?? false;
   const showCompactControl = showResetControl && agentSupportsCompaction;
@@ -804,8 +786,7 @@ export function MessageInput({
       deferredFiles: isCompact || !isOverlay ? [] : localFiles,
       // docs/218 — only carry the intent when the control was actually shown.
       ...(showResetControl ? { resetMergedBranch: resetChecked } : {}),
-      // docs/295 — same rule, read independently (req 6): unticking either
-      // control changes only its own action.
+      // docs/295 — same rule, read independently (req 6).
       ...(showCompactControl ? { compactContext: compactChecked } : {}),
       // docs/144 — omitted entirely when the draft was typed.
       ...(draftDictated ? { dictated: true } : {}),
@@ -828,13 +809,8 @@ export function MessageInput({
     if (showResetControl && resetChecked && sessionId) {
       usePrStore.getState().setResetEligible(sessionId, false);
     }
-    // "The untick applies to that one message" — so the message going out is
-    // where both boxes go back to ticked, not the control's next appearance.
-    // The reset control usually gets this for free (the optimistic clear above
-    // hides it, and re-showing re-ticks it), but only on a send that was
-    // TICKED — an unticked send leaves the session eligible, so the control
-    // never goes away and the untick would ride the next message too. The
-    // compaction control has no optimistic clear at all and never got it.
+    // The untick applies to that one message: an unticked send leaves the
+    // session eligible, so the control stays and must re-tick itself here.
     setResetChecked(true);
     setCompactChecked(true);
     setText("");
@@ -1144,11 +1120,7 @@ export function MessageInput({
                   </span>
                 </span>
               </button>
-              {/* docs/295 — the compaction control is SUBORDINATE to the one
-                  above, not an equal-weight second row: this block appears at
-                  the exact moment the user wants to type, and two full-size
-                  rows would double the weight of an interruption. Indented to
-                  the first control's text column, one line, no description. */}
+              {/* docs/295 — subordinate to the row above: one line, no description. */}
               {showCompactControl && (
                 <button
                   type="button"

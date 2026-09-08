@@ -1,16 +1,10 @@
 /**
- * docs/295 req 13 — a continuation the user did NOT type compacts too, under the
- * same setting and in the same conditions in which its branch is reset.
- *
- * planning#333 is why this is tested on day one: docs/218 scoped its branch reset
- * to the interactive path, and every programmatic continue — an Agent Interface
- * SDK click, `shipit session message`, a notify-on-merge wake — then ran on a
- * branch sitting on already-merged commits.
+ * docs/295 req 13 — a continuation the user did NOT type compacts too (an Agent
+ * Interface SDK click, `shipit session message`, a notify-on-merge wake), in the
+ * same conditions in which its branch is reset (planning#333).
  *
  * These drive the REAL `SessionRunner.dispatch` → `runDispatchedTurn` path with
- * only the DECISION stubbed, so what is under test is the takeover itself: the
- * message goes back on the queue, a `/compact` turn runs, and the queue drains
- * into the message with everything it arrived carrying.
+ * only the decision stubbed.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { SessionRunner } from "./session-runner.js";
@@ -37,17 +31,16 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
   /** Wire the deps with the decision answering `yes`, and record the prompts. */
   function setup(over: { decide?: boolean; resetPrefix?: string } = {}) {
     const agents: FakeAgent[] = [];
-    const { deps } = makeDispatchTurnDeps(agents, []);
+    const appended: { role?: string; text?: string }[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, appended);
     const prompts: string[] = [];
     const compactFlags: (boolean | undefined)[] = [];
     const decisions: { sessionId: string; intent: boolean | undefined }[] = [];
 
     deps.shouldCompactBeforeTurn = async (_runner, _agentId, sessionId, _dir, intent) => {
       decisions.push({ sessionId, intent });
-      // The real decision's FIRST line, and the stub is worthless without it:
-      // `intent === false` is how the re-queued message says the compaction for
-      // it already happened. A stub that ignored it would answer "compact" for
-      // the drained message too, and could not fail on the loop that causes.
+      // The real decision's first gate; without it the stub could not fail on
+      // the compact-forever loop the re-queued `intent: false` prevents.
       if (intent === false) return false;
       return over.decide ?? true;
     };
@@ -59,11 +52,11 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
       compactFlags.push(opts?.compact);
       return { prompt, cwd: "/tmp/s1" } as never;
     });
-    return { agents, deps, prompts, compactFlags, decisions };
+    return { agents, deps, prompts, compactFlags, decisions, appended };
   }
 
   it("queues the message, runs a compaction turn, then runs the message", async () => {
-    const { agents, deps, prompts, compactFlags } = setup();
+    const { agents, deps, prompts, compactFlags, appended } = setup();
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);
 
@@ -91,13 +84,15 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
     // req 7 — and the merge prefix rides THAT turn, built after the summary was
     // written, so it cannot have been summarized away.
     expect(prompts[1]?.startsWith(MERGE_PREFIX)).toBe(true);
+
+    // Exactly one user row: the compaction turn is `silent`, nobody typed it.
+    const userRows = appended.filter((m) => m.role === "user");
+    expect(userRows.map((m) => m.text)).toEqual(["Retry the failed import"]);
   });
 
   it("compacts exactly once — the drained message does not decide again", async () => {
-    // The session is still merged and still eligible when the message drains, so
-    // nothing about the SESSION stops a second decision. `compactContext: false`
-    // on the re-queued entry is what does, and it says something true: the
-    // compaction for this message has already happened.
+    // The session is still eligible when the message drains; `compactContext:
+    // false` on the re-queued entry is what stops a second compaction.
     const { agents, deps, decisions, prompts } = setup();
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);
@@ -107,9 +102,7 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
     agents[0]?.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
     await flushTurn();
 
-    // The decision IS asked again when the entry drains — and is told the truth
-    // that stops the loop. Pinning both calls rather than the count says which
-    // mechanism does the stopping.
+    // Asked again on the drain, and told `false`.
     expect(decisions).toEqual([
       { sessionId: "s1", intent: undefined },
       { sessionId: "s1", intent: false },
@@ -118,8 +111,7 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
   });
 
   it("carries no per-send intent on this path (req 13)", async () => {
-    // There is no tick box on a dispatch, so the decision must be told nothing
-    // and fall through to the global setting — the rule the reset follows.
+    // No tick box on a dispatch: the decision is told nothing.
     const { deps, decisions } = setup();
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);
@@ -129,9 +121,7 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
   });
 
   it("settles the caller's handle from the DRAINED turn, not the compaction", async () => {
-    // The compaction is ShipIt's, not the caller's. A wake turn awaiting its
-    // settlement must hear about its own turn — settling on the compaction would
-    // report work delivered that has not run.
+    // A wake turn awaiting settlement must hear about its own turn.
     const { agents, deps } = setup();
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);
@@ -159,10 +149,8 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
   });
 
   it("never compacts a `postTurn: \"none\"` turn", async () => {
-    // docs/146's rebase-conflict resolution turn is a step inside a git
-    // operation the driver owns, not a continuation of the session's work.
-    // Compacting there would summarize away the conflict context the agent is
-    // holding precisely to finish the rebase.
+    // A rebase-resolution turn (docs/146) is a step inside a git operation, and
+    // compacting there would summarize away the conflict context.
     const { deps, decisions } = setup();
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);
@@ -172,8 +160,7 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
   });
 
   it("never compacts a queued `/compact` the user typed (req 12)", async () => {
-    // The send handler classifies an immediate `/compact`, but one that queued —
-    // behind a merge hold, or behind another turn — drains through here.
+    // A `/compact` that queued behind a merge hold or another turn drains here.
     const { deps, decisions, prompts } = setup();
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);

@@ -126,8 +126,6 @@ export async function handleSendMessage(
   // busy for the same reason: this turn would push behind a merge already in
   // flight. The executor clears the hold and calls `releaseQueuedTurn`, which is
   // what starts the message queued here.
-  // docs/295 — a pre-turn compaction holds the session the same way a merge
-  // does: not running, but not free to start a second turn either.
   const heldByMerge = runnerForQueue?.mergeHold === true;
   if (runnerForQueue?.running || runnerForQueue?.systemTurnInProgress || heldByMerge) {
     // Verify with the worker that an agent is actually running. The local
@@ -159,14 +157,6 @@ export async function handleSendMessage(
       // listeners. If there's no resident agent, fall through to the normal
       // queue path. compact() is a best-effort no-op when the resident process
       // can't compact (e.g. a one-shot PTY mid-turn).
-      // docs/295 req 12 — NOT under a pre-turn hold, though. That branch returns
-      // unconditionally, so a `/compact` arriving there is spent either way:
-      // early in the phase the slot is empty and the command evaporates with no
-      // compaction and nothing queued; once the automatic compaction's proxy is
-      // installed, it is handed to THAT process — a nested request against a
-      // maintenance spawn the user did not make. Falling through queues it, and
-      // the drain re-classifies it as the command (`dispatched-turn.ts`), so the
-      // user's one compaction happens once, after the phase, as its own turn.
       if (isCompactRequest) {
         const compactAgent = runnerForQueue.getAgent();
         if (compactAgent?.compact) {
@@ -277,7 +267,6 @@ export async function handleSendMessage(
             // docs/144 — a dictated message steered into a running turn needs
             // the transcription hint just as much as one that starts a turn.
             dictated: msg.dictated,
-
           });
           // docs/138 + docs/140 — the streaming CLI keeps its spawn-time
           // `--permission-mode` for life, so a steered message inherits plan
@@ -402,11 +391,8 @@ export async function handleSendMessage(
         deliveryId: undefined,
         // docs/144 — rides the queue so the hint survives the drain.
         dictated: msg.dictated,
-
-        // docs/218 + docs/295 — the composer's tick boxes ride the queue. Without
-        // this the user's untick is dropped at the queue boundary: the entry
-        // drains while the session is still eligible, the absent intent reads as
-        // "follow the global setting", and the action they had just declined runs.
+        // docs/218 + docs/295 — the composer's tick boxes ride the queue too, so
+        // an untick made while a turn was running still applies when it drains.
         resetMergedBranch: msg.resetMergedBranch,
         compactContext: msg.compactContext,
         silent: undefined,
@@ -629,16 +615,13 @@ export async function handleSendMessage(
   const turnRunner = resolveRunner(ctx);
   // docs/288 req 6 — re-asked here because the check at the top of this handler
   // is separated from this line by attachment resolution, session activation and
-  // filesystem reads. The hold can be taken inside that gap, and then this would
-  // start a turn on top of a merge already in flight. Same shape as the
-  // executor's own re-check under its hold, for the same reason.
+  // filesystem reads. The executor can take the hold inside that gap, and then
+  // this would start a turn on top of a merge already in flight. Same shape as
+  // the executor's own re-check under its hold, for the same reason.
   if (turnRunner?.mergeHold) {
     turnRunner.dispatch(prepareDispatch({
       text: userText,
       agentInterface: undefined,
-      // docs/218 + docs/295 — the same message, so the same per-send tick boxes.
-      // A merge hold is just another way for a send to wait, and waiting must
-      // not change what the user asked for.
       resetMergedBranch: msg.resetMergedBranch,
       compactContext: msg.compactContext,
       silent: undefined,
@@ -653,20 +636,13 @@ export async function handleSendMessage(
       onTurnComplete: undefined,
       deliveryId: undefined,
       dictated: msg.dictated,
-
     }));
     return;
   }
-  // docs/295 — a merged session compacts its context before this message runs.
-  //
-  // What that means is exactly what a user gets by hand today: the message goes
-  // on the queue and a `/compact` turn runs; the queue drains into the user's
-  // turn when it ends. No new lifecycle state — at every instant the session is
-  // running one ordinary turn, which is the only shape the rest of the
-  // orchestrator has to understand.
-  //
-  // Skipped for a `/compact` the user typed (req 12): they asked for exactly one
-  // compaction, and prefixing theirs with ours would make it two.
+  // docs/295 — a merged session compacts its context before this message runs,
+  // the way a user does it by hand: queue the message, run a `/compact` turn,
+  // and let that turn's drain start the message. Skipped for a `/compact` the
+  // user typed (req 12): they asked for exactly one compaction.
   if (
     turnRunner && activeId && activeDir && !isCompactRequest
     && await shouldCompactBeforeTurn({
@@ -689,14 +665,9 @@ export async function handleSendMessage(
       ...(msg.compactContext !== undefined ? { intent: msg.compactContext } : {}),
     })
   ) {
-    // The user's message goes back on the queue FIRST, so the compaction turn's
-    // own drain finds it there. `compactContext: false` states the fact: the
-    // compaction for this message has happened, so nothing may decide to run
-    // another one for it. On THIS path the WS drain re-enters
-    // `runAgentWithMessage`, which holds no such decision, so the flag is
-    // defence rather than the thing that stops a loop; it becomes load-bearing
-    // when the same entry is released through `releaseQueuedTurn`, which routes
-    // it onto the dispatched executor — where the decision does live.
+    // `compactContext: false` — the compaction for this message has happened,
+    // so a drain that decides again (`releaseQueuedTurn` → dispatched executor)
+    // does not run another one.
     const position = turnRunner.enqueue(toQueuedMessage(prepareDispatch({
       text: userText,
       agentInterface: undefined,
@@ -717,10 +688,7 @@ export async function handleSendMessage(
     })));
     turnRunner.emitMessage({ type: "message_queued", text: userText, position });
     turnRunner.running = true;
-    // The compaction turn itself: an ordinary turn with the docs/178 compaction
-    // flag. `silent` is the only thing that distinguishes it from a `/compact`
-    // the user typed — ShipIt started this one, so there is no user bubble and
-    // no echo for a message nobody sent.
+    // The same turn a typed `/compact` starts; `silent` because nobody typed it.
     await runAgentWithMessage(ctx, {
       userText: POST_MERGE_COMPACT_PROMPT,
       images: undefined,
@@ -745,7 +713,6 @@ export async function handleSendMessage(
     uploadPaths,
     ...(msg.userReview ? { userReview: msg.userReview } : {}),
     ...(msg.resetMergedBranch !== undefined ? { resetMergedBranch: msg.resetMergedBranch } : {}),
-    ...(msg.compactContext !== undefined ? { compactContext: msg.compactContext } : {}),
     ...(msg.dictated ? { dictated: true } : {}),
     compact: isCompactRequest,
     // Echo the message to every attached viewer. The sending tab dedupes on its
@@ -790,20 +757,17 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   const runnerEarly = resolveRunner(ctx);
   if (runnerEarly) runnerEarly.assertCanDispatch();
 
-  // docs/288 req 6 + docs/295 — a FOURTH turn-start path, and the one most
-  // easily missed: this handler does not go through `dispatch`, it sets
-  // `running = true` and calls `runAgentWithMessage` itself. An answer arriving
-  // while ShipIt is merging would start a turn that pushes behind a merge in
-  // flight; one arriving inside another send's pre-turn compaction would take
-  // the agent slot that compaction is using. Queue it through `dispatch`, which
-  // is what either hold makes enqueue; the executor's `releaseQueuedTurn`
-  // starts it when the hold clears.
+  // docs/288 req 6 — a FOURTH turn-start path, and the one most easily missed:
+  // this handler does not go through `dispatch`, it sets `running = true` and
+  // calls `runAgentWithMessage` itself. An answer arriving while ShipIt is
+  // merging would start a turn that pushes behind a merge in flight. Queue it
+  // through `dispatch`, which is what the hold makes enqueue; the executor's
+  // `releaseQueuedTurn` starts it when the merge is done.
   if (runnerEarly?.mergeHold) {
     runnerEarly.dispatch(prepareDispatch({
       text: answerText,
       agentInterface: undefined,
-      // An answer to AskUserQuestion is not a composer send — the tick boxes
-      // are not on screen for it, so there is no per-send intent to carry.
+      // An answer to AskUserQuestion is not a composer send: no tick boxes.
       resetMergedBranch: undefined,
       compactContext: undefined,
       silent: undefined,
@@ -821,7 +785,6 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
       onTurnComplete: undefined,
       deliveryId: undefined,
       dictated: msg.dictated,
-
     }));
     return;
   }

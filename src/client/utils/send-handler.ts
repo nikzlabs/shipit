@@ -109,10 +109,7 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
           sessionId: sid,
           ...plan.frame,
           // docs/218 + docs/295 — `/review` is still a composer send, so it
-          // carries the composer's per-send tick boxes. Omitted, an unticked box
-          // was silently ignored and the branch was reset (or the context
-          // compacted) anyway, on the one send where the user had just said not
-          // to. Carried separately so unticking one never changes the other.
+          // carries the per-send tick boxes.
           ...(resetMergedBranch !== undefined ? { resetMergedBranch } : {}),
           ...(compactContext !== undefined ? { compactContext } : {}),
         }),
@@ -176,8 +173,7 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
       })(),
       // docs/218 — per-send opt-out for the auto-reset-merged-branch control.
       ...(resetMergedBranch !== undefined ? { resetMergedBranch } : {}),
-      // docs/295 — and the compact-context control beside it. Carried
-      // separately so unticking one never changes the other (req 6).
+      // docs/295 — and the compact-context control beside it (req 6).
       ...(compactContext !== undefined ? { compactContext } : {}),
       // docs/144 — tell the agent this message was spoken, not typed, so it
       // reads STT artifacts as artifacts. The bubble above stays verbatim.

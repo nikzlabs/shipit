@@ -1,14 +1,8 @@
 /**
- * docs/295 — the decision: should this message be preceded by a compaction turn?
- *
- * Only the gates live here. What happens when the answer is yes is not this
- * file's subject and is not mockable into existence either — it is a `/compact`
- * turn and a queued message, which `integration_tests/pre-turn-compaction.test.ts`
- * exercises end to end against a real merged repository.
- *
- * The eligibility predicate itself belongs to `services/pre-turn-reset.test.ts`;
- * this asks the same `isResetEligible` on purpose, so re-testing its nine
- * clauses here would only duplicate them.
+ * docs/295 — the decision's gates. What happens on `yes` is a `/compact` turn
+ * and a queued message, covered end to end by
+ * `integration_tests/pre-turn-compaction.test.ts`. The eligibility predicate
+ * itself belongs to `services/pre-turn-reset.test.ts`.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { SessionInfo } from "../shared/types.js";
@@ -148,8 +142,6 @@ describe("shouldCompactBeforeTurn", () => {
   });
 
   it("says no when the shared setting is off (req 11)", async () => {
-    // Off means neither control is offered, so a stale `compactContext: true`
-    // from a client that has not seen the change still cannot compact.
     expect(await ask({ setting: false, intent: true })).toBe(false);
   });
 
@@ -169,26 +161,14 @@ describe("shouldCompactBeforeTurn", () => {
   });
 
   it("says no rather than displacing a resident that holds background work", async () => {
-    // docs/260 req 13 — a compaction turn spawns fresh, and the fresh spawn
-    // retires the resident. Losing one compaction is a far smaller harm than
-    // losing a running review.
     expect(await ask({ resident: true, backgroundWork: ["reviewing the diff"] })).toBe(false);
   });
 
   it("says no when a conversation replay is armed", async () => {
-    // A rewind, a fork, or a docs/153 recovery: the user's turn is about to
-    // start a fresh conversation seeded from ShipIt's transcript, and
-    // `buildAgentRunParams` consumes that seed read-and-clear — so a compaction
-    // turn would take it and summarize a conversation holding only the seed.
     expect(await ask({ conversationReplay: "…the transcript so far…" })).toBe(false);
   });
 
   it("says no when the merge recheck is unsettled, exactly as the reset does", async () => {
-    // docs/282's one outcome that is a decision: the merge landed but its
-    // bookkeeping did not finish, so the reset stands down. Compacting anyway
-    // strips the context AND leaves nothing telling the agent its work shipped —
-    // on Codex and OpenCode, which ignore the compaction instructions, that is
-    // req 7 gone.
     vi.useFakeTimers();
     try {
       const pending = ask({ unsettled: true });
@@ -200,8 +180,6 @@ describe("shouldCompactBeforeTurn", () => {
   });
 
   it("says no rather than throwing when the eligibility check blows up", async () => {
-    // Requirement 9 — a message must never be held up because this could not
-    // decide.
     expect(await ask({
       git: makeGit({ isClean: vi.fn().mockRejectedValue(new Error("git exploded")) }),
     })).toBe(false);

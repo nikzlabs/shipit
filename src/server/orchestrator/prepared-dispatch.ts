@@ -218,13 +218,11 @@ export function queuedMessageToDispatchOptions(next: QueuedMessage): PreparedDis
     // docs/144 — a message dictated while a turn was running still tells the
     // agent it was transcribed when it finally drains.
     dictated: next.dictated,
-    // docs/295 — a compaction turn ShipIt started is never queued, but the
-    // converter is total by construction, so this rides along.
-    silent: next.silent,
-    // docs/218 + docs/295 — and the two composer tick boxes, so the choice the
-    // user made at send time is the choice that runs when the entry drains.
+    // docs/218 + docs/295 — the composer tick boxes, and the compaction turn's
+    // `silent` marker.
     resetMergedBranch: next.resetMergedBranch,
     compactContext: next.compactContext,
+    silent: next.silent,
   });
 }
 

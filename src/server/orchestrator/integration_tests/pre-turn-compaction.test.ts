@@ -1,21 +1,8 @@
 /**
- * docs/295 end-to-end — real admission, a real compaction, and the user's turn
- * after it.
- *
- * This is the test that outlived the implementation. It was written against a
- * design where the compaction ran nested INSIDE the user's send, as a
- * slot-owning operation with its own admission hold; it passes unchanged against
- * the one that shipped, where the compaction is an ordinary `/compact` turn and
- * the user's message simply queues behind it. That is the point of asserting on
- * observable behaviour — two spawns in order, one user row, and a `GET /history`
- * read AFTER the user's turn finishes — rather than on the machinery.
- *
- * The history read is the load-bearing one. The nested design recorded the
- * compaction card against a turn that had not started, so the user's turn
- * deleted it at its first `replaceInProgress`: it rendered live and was gone on
- * reload. Every unit-level assertion about that card passed, because the unit
- * harness manufactured the state the design had assumed. Nothing is stubbed here
- * except the CLI itself.
+ * docs/295 end-to-end: a real merged repository, a real admission, a compaction
+ * turn, then the user's turn. Nothing is stubbed except the CLI. The `GET
+ * /history` read AFTER the user's turn is the load-bearing assertion: the
+ * compaction card and exactly one user row must survive that turn.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
@@ -122,7 +109,7 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
 
     client.send({ type: "send_message", text: "start the next slice", compactContext: true });
 
-    // 1 — the compaction spawn, driven by the real hook off a real merged repo.
+    // 1 — the compaction spawn, driven by the real decision off a real merged repo.
     const compaction = await waitForClaude(() => spawns.at(-1) ?? (null as never));
     expect(compaction.lastCompact).toBe(true);
     expect(compaction.lastPrompt.startsWith("/compact ")).toBe(true);
@@ -135,22 +122,19 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     compaction.emit("event", { type: "agent_result", status: "success", sessionId: "after-compaction" });
     compaction.emit("done", 0);
 
-    // 2 — the user's own turn, spawned only now, into the slot the operation
-    // handed back.
+    // 2 — the user's own turn, spawned only after the compaction ends.
     const userTurn = await waitForClaude(() => spawns.at(-1) ?? (null as never), compaction);
     expect(userTurn).not.toBe(compaction);
     expect(userTurn.lastPrompt).toContain("start the next slice");
     expect(userTurn.lastCompact).toBeFalsy();
 
-    // 3 — and the turn runs to completion, which is where its first
-    // `replaceInProgress` deletes every in-progress row the session has.
+    // 3 — and the turn runs to completion.
     userTurn.initSession("after-compaction");
     userTurn.emit("event", { type: "assistant", message: { content: [{ type: "text", text: "On it." }] } });
     userTurn.finish("after-compaction");
     await new Promise((r) => setTimeout(r, 200));
 
-    // THE assertion. A card recorded in-band would be gone by here — rendered
-    // live, absent on reload, which is what shipped through two review rounds.
+    // The compaction card survives the user's turn.
     const res = await app.inject({ method: "GET", url: `/api/sessions/${SESSION_ID}/history` });
     const history = res.json() as {
       messages: { role?: string; text?: string; compaction?: { preTokens?: number } }[];
@@ -159,17 +143,13 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     expect(cards).toHaveLength(1);
     expect(cards[0]?.compaction?.preTokens).toBe(19585);
 
-    // 4 — and there is exactly ONE user row: the message the user actually
-    // typed. ShipIt started the compaction, so a `/compact …` bubble for it
-    // would be a message nobody sent.
+    // 4 — exactly ONE user row: ShipIt started the compaction, so no bubble for it.
     const userRows = history.messages.filter((m) => m.role === "user");
     expect(userRows).toHaveLength(1);
     expect(userRows[0]?.text).toBe("start the next slice");
 
-    // 5 — and the compaction happened once. The user's message goes back on the
-    // queue carrying `compactContext: false`, which is what stops the drain
-    // deciding to compact for it all over again — an eligible session stays
-    // eligible, so without that the two would ping-pong forever.
+    // 5 — and the compaction happened once (the re-queued message carries
+    // `compactContext: false`; the session itself stays eligible).
     expect(spawns).toHaveLength(2);
 
     client.close();

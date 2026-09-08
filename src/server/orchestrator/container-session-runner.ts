@@ -3347,15 +3347,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // early on `!_isRunning`. See `runReconcileCheck`.
     const staleResidentOnly = !this._isRunning && this._isStreamingActive;
     if (!this._isRunning && !staleResidentOnly) return false;
-    // docs/295 — a turn's PRE-turn phase is in flight (the merged-session
-    // compaction). `running` is published for it and the worker legitimately has
-    // no agent yet, so this would read a divergence that is not one: it clears
-    // the agent slot and the delivery, emits `turn_abandoned`, and reports the
-    // session idle before the user's turn has run. The guard lives HERE rather
-    // than only in the periodic reconciler because the reconciler is not the only
-    // caller — `services/child-sessions.ts` calls this directly from
-    // `shipit session wait`, which is exactly the concurrent probe that would hit
-    // a session inside its pre-turn phase.
     // Captured before the await below, for the identity re-check after it.
     const wasRunning = this._isRunning;
     const turnEpochAtCheck = this.turnEpoch;

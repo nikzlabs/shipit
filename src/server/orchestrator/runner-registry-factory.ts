@@ -535,8 +535,7 @@ export function createRunnerRegistry(
             ...(turnRoute ? { turnRoute } : {}),
             sessionDir: runner.sessionDir,
             ...(session?.agentSessionId !== undefined ? { agentSessionId: session.agentSessionId } : {}),
-            // docs/295 — the pre-turn compaction turn runs on these deps, so
-            // this is the only place its `compact: true` can reach the adapter.
+            // docs/178 — a dispatched `/compact` turn.
             ...(runParamOpts?.compact ? { compact: true } : {}),
           });
         },
@@ -678,14 +677,9 @@ export function createRunnerRegistry(
             ...(intent !== undefined ? { intent } : {}),
           });
         },
-        // docs/295 — compact the context of a merged session before the turn's
-        // prompt is built, immediately ahead of the reset above. Wired on this
-        // transport for the same planning#333 reason the reset is: requirement 13
-        // puts a programmatic continuation under the same setting as a typed one.
-        //
-        // `credentialStore` is the same guard the reset uses — it owns the one
-        // setting that governs both actions (requirement 11), so without it
-        // there is nothing to consult and the answer is "do not compact".
+        // docs/295 req 13 — wired on this transport for the same planning#333
+        // reason the reset is. Same `credentialStore` guard: it owns the one
+        // setting that governs both (req 11).
         shouldCompactBeforeTurn: async (runner, agentId, sessionId, sessionDir, intent) => {
           if (!credentialStore) return false;
           const prStatusPoller = getPrStatusPoller?.();
@@ -696,9 +690,7 @@ export function createRunnerRegistry(
               getPrStatus: (id) => sessionManager.getPrStatus(id),
               createGitManager,
               getAutoResetMergedBranch: () => credentialStore.getAutoResetMergedBranch(),
-              // docs/282 — refresh the merge state before deciding. The probe
-              // RECORDS what it finds, so the reset on the user's turn reads it
-              // without a second round-trip.
+              // docs/282 — refresh the merge state before deciding.
               ...(prStatusPoller
                 ? {
                     mergeRecheckDeps: {

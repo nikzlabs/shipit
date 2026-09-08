@@ -294,17 +294,10 @@ export interface TurnInput {
    */
   adopt?: boolean;
   /**
-   * docs/178 / docs/295 — this turn IS a context-compaction request, so the
-   * adapter must map it to its own compaction trigger instead of running the
-   * prompt as ordinary work (Codex issues `thread/compact/start`; OpenCode
-   * spawns a transient `summarize` server; Claude and Grok honour the in-band
-   * `/compact` the prompt already carries).
-   *
-   * Threaded through `TurnInput` rather than baked into a caller's
-   * `buildRunParams` closure because both transports now start compaction turns:
-   * the WS path for a typed `/compact` (which sets it on its own closure) and
-   * `pre-turn-compact-hook.ts` for the docs/295 pre-turn compaction, which runs
-   * on the dispatch-shaped deps and has no closure of its own to set it on.
+   * docs/178 — this turn is a context-compaction request, so the adapter maps
+   * it to its own compaction trigger instead of running the prompt as work.
+   * Set by the dispatched path (`dispatched-turn.ts`); the WS path sets it on
+   * its own `buildRunParams` closure.
    */
   compact?: boolean;
 }

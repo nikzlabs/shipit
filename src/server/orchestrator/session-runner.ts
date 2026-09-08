@@ -265,26 +265,12 @@ export interface QueuedMessage {
   /** docs/144 — voice-dictated prompt (see `AgentDispatchOptions.dictated`). */
   dictated?: boolean;
   /**
-   * docs/218 + docs/295 — the composer's two per-send tick boxes, carried
-   * through the queue.
-   *
-   * A user who unticks "start from the latest base" (or "compact the context")
-   * and sends while a turn is running gets their message QUEUED, and the intent
-   * used to be dropped at that boundary: when the entry drained the session was
-   * still eligible, the absent intent read as "follow the global setting", and
-   * the action they had just declined ran anyway. Per-send means per-send,
-   * whether or not the send happened to land on a busy runner.
+   * docs/218 + docs/295 — the composer's per-send tick boxes, carried through
+   * the queue so an untick made while a turn was running still applies.
    */
   resetMergedBranch?: boolean;
   compactContext?: boolean;
-  /**
-   * docs/295 — ShipIt started this turn on the user's behalf (the merged-session
-   * compaction), so it gets no user bubble and no echo: nobody typed its prompt.
-   *
-   * A field rather than a special path because the executor already takes both
-   * halves as inputs — `emitUserEcho` and `persistUserMessage` — so "no user
-   * row" is a value, not a mechanism.
-   */
+  /** docs/295 — ShipIt started this turn (the compaction): no user bubble. */
   silent?: boolean;
 }
 
@@ -375,14 +361,9 @@ export interface AgentDispatchOptions {
    * composes has been through speech-to-text.
    */
   dictated?: boolean;
-  /**
-   * docs/218 + docs/295 — the composer's per-send tick boxes, so a user-typed
-   * message that had to queue still carries the choice the user made when they
-   * sent it. Absent on every server-originated dispatch: there is no box.
-   */
+  /** docs/218 + docs/295 — see {@link QueuedMessage}. Absent on server dispatches. */
   resetMergedBranch?: boolean;
   compactContext?: boolean;
-  /** docs/295 — see {@link QueuedMessage.silent}. */
   silent?: boolean;
 }
 
@@ -441,20 +422,6 @@ export function dispatchOnRunner(
     return settlement;
   };
 
-  // docs/288 req 6 + docs/295 — the session is held either side of a turn: a
-  // merge in flight before it, a pre-turn compaction inside it. Both mean
-  // "queue this, do not start it alongside", and BOTH have to be asked before
-  // the steer branch below, not after it. A pre-turn hold is taken with
-  // `running` already true (the caller publishes ownership before its pre-turn
-  // phase), so a dispatch arriving mid-compaction took the steer branch and
-  // injected the user's message into the COMPACTION process — a message
-  // delivered into a conversation that is about to be summarized away.
-  //
-  // `releaseQueuedTurn` routes through `dispatch`, so this one check covers the
-  // drain too — and the executor calls it when the hold clears, which is what
-  // starts the held turn.
-  if (runner.mergeHold) return enqueueAndReport();
-
   if (runner.running) {
     // docs/163 — honor live steering on the dispatch path too: when the running
     // turn is steerable+streaming and live steering is on, inject the message
@@ -488,6 +455,14 @@ export function dispatchOnRunner(
   if (runner.systemTurnInProgress && !(opts.systemTurn && opts.postTurn === "none")) {
     return enqueueAndReport();
   }
+
+  // docs/288 req 6 — ShipIt is merging this session's pull request right now.
+  // Unlike the flag above this has NO exception: the rebase driver's resolution
+  // turn is a step inside a git operation that driver owns, whereas any turn at
+  // all here would run against a branch a merge is landing. `releaseQueuedTurn`
+  // routes through `dispatch`, so this one check covers the drain too — and the
+  // executor calls it when the hold clears, which is what starts the held turn.
+  if (runner.mergeHold) return enqueueAndReport();
 
   // docs/260-turn-level-account-routing req 13 — a resident process holding background work (a sub-agent
   // review, agent-started background tasks) may not be displaced by a system
@@ -757,13 +732,7 @@ export interface SystemTurnDeps {
     prompt: string,
     /** docs/260 §1b — the turn's selected credential route, threaded as a value. */
     turnRoute?: { kind: ProviderRouteKind; id: string },
-    /**
-     * docs/295 — per-turn run-param overrides the CALLER of `executeAgentTurn`
-     * cannot express through its own closure. `compact` marks the spawn as a
-     * compaction request (docs/178): the WS path used to set it on its closure
-     * from the send handler's `isCompactRequest`, which the shared pre-turn
-     * compaction hook has no equivalent of — it runs on dispatch-shaped deps.
-     */
+    /** docs/178 — `compact` marks the spawn as a compaction request. */
     opts?: { compact?: boolean },
   ) => Promise<AgentRunParams>;
   /**
@@ -840,18 +809,12 @@ export interface SystemTurnDeps {
     runner: PreTurnResetRunner,
     sessionId: string,
     sessionDir: string,
-    /**
-     * docs/218 — the composer's tick box, when the entry that drained onto this
-     * transport carried one. Absent for every server-originated dispatch, which
-     * is nearly all of them; present so that this path and the interactive one
-     * read the same field rather than one of them silently ignoring it.
-     */
+    /** docs/218 — the composer's tick box, when the drained entry carried one. */
     intent?: boolean,
   ) => Promise<PreTurnResetHookResult>;
   /**
-   * docs/295 req 13 — should this dispatched message be preceded by a
-   * compaction turn? Decision only: the caller puts the message back on the
-   * queue and runs a `/compact` turn, which is what a user gets by hand.
+   * docs/295 req 13 — should a compaction turn run before this message?
+   * Decision only; `runDispatchedTurn` queues the message and runs `/compact`.
    */
   shouldCompactBeforeTurn?: (
     runner: SessionRunnerInterface,

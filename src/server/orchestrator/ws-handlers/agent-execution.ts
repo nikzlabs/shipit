@@ -109,6 +109,7 @@ export async function drainNextQueuedMessage(
   // Leave the queue alone: the flow's `finally` releases it when it settles.
   // This drain only ever runs off an interactive turn, which never owns the flag.
   if (runner.systemTurnInProgress) return;
+
   const messageQueue = runner.messageQueue;
   if (runner.wasInterrupted) {
     if (messageQueue.length > 0) {
@@ -135,17 +136,7 @@ export async function drainNextQueuedMessage(
   });
 }
 
-/**
- * docs/178 — is this queued text the ShipIt `/compact` command, for the agent
- * that will run it?
- *
- * The same two conditions `handleSendMessage` applies at send time: the text
- * parses as the command, and the active backend can actually compact. Asked
- * again at DRAIN time rather than carried on the entry, because the answer is
- * derived from the text (which the queue does carry) plus the live agent — and
- * re-deriving it is what keeps a queued `/compact` from being handled as
- * ordinary prose the moment it stops being the message at the front.
- */
+/** docs/178 — is this queued text the `/compact` command for the active agent? */
 function isCompactCommandFor(ctx: FullCtx, text: string): boolean {
   const capable =
     ctx.agentRegistry.get(ctx.getActiveAgentId())?.capabilities.supportsCompaction ?? false;
@@ -212,18 +203,10 @@ async function runQueuedInteractiveMessage(
       // docs/144 — the hint rode the queue with the message; keep it attached
       // now the message finally becomes a turn.
       ...(next.dictated ? { dictated: true } : {}),
-      // docs/218 + docs/295 — and so do the composer's two tick boxes. Without
-      // this the untick is dropped at the queue boundary: the entry drains while
-      // the session is still eligible, the absent intent reads as "follow the
-      // global setting", and the action the user just declined runs anyway.
+      // docs/218 — the per-send tick box rode the queue too.
       ...(next.resetMergedBranch !== undefined ? { resetMergedBranch: next.resetMergedBranch } : {}),
-      ...(next.compactContext !== undefined ? { compactContext: next.compactContext } : {}),
-      // docs/178 — a `/compact` that had to queue is still a `/compact` when it
-      // drains. Re-derived from the queued text rather than carried as a flag,
-      // because it IS derived: the same parse the send handler ran, against the
-      // agent that will actually run the turn. Without it the literal `/compact`
-      // reached the model AND the pre-turn steps ran on top of it, which is
-      // exactly the double-compaction req 12 forbids.
+      // docs/178 req 12 — a `/compact` that had to queue is still a `/compact`
+      // when it drains; re-derived from the text, as the send handler does.
       ...(isCompactCommandFor(ctx, next.text) ? { compact: true } : {}),
     });
   } catch (err) {
@@ -277,12 +260,10 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
    */
   resetMergedBranch?: boolean;
   /**
-   * docs/295 — per-send intent for the compact-context control that sits beside
-   * the reset one. `false` = user unticked it for this message (skip);
-   * `true`/undefined = follow the same global setting. Non-sticky, and read
-   * independently of `resetMergedBranch` (req 6).
+   * docs/295 — ShipIt started this turn (the merged-session compaction), so it
+   * gets no user bubble: nobody typed its prompt.
    */
-  compactContext?: boolean;
+  silent?: boolean;
   /**
    * docs/144 — the user dictated this message by voice, so `userText` is a
    * machine transcription. Adds the `<dictated_input>` context block to the
@@ -305,17 +286,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
    * turns the echo on.
    */
   userEcho?: { clientRequestId?: string };
-  /**
-   * docs/295 — ShipIt started this turn on the user's behalf, so it gets no user
-   * bubble and no echo: nobody typed its prompt. The only thing that separates
-   * the merged-session compaction turn from a `/compact` the user typed, which
-   * is otherwise the identical turn.
-   *
-   * A field rather than a special path because the executor already takes both
-   * halves as inputs — `emitUserEcho` and `persistUserMessage` — so "no user
-   * row" is a value, not a mechanism.
-   */
-  silent?: boolean;
 }): Promise<void> {
   const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths, userReview } = opts;
 
@@ -408,6 +378,10 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       desiredSpawnIdentity(ctx.sessionManager, capturedSessionId, agentId),
     );
   }
+  const existingAgent = useStreaming ? (runner?.getAgent() ?? null) : null;
+  const currentAgent = existingAgent ?? ctx.agentFactory(agentId);
+  if (!existingAgent && runner) runner.setAgent(currentAgent);
+
   // Broadcast to all viewers via the runner; fall back to the per-connection
   // socket when there's no registry-backed runner (workspace-less session).
   const emit = (m: WsServerMessage): void => {
@@ -416,9 +390,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   };
   // Session id the executor uses for run-params / persistence / SSE.
   const sessionId = capturedSessionId ?? runner?.sessionId ?? "";
-  // docs/295 — hoisted out of the prompt-assembly block below, which now runs
-  // AFTER the executor deps.
-  const activeDir = ctx.getActiveDir();
+  // docs/140 — drop the previous turn's per-turn listeners off a reused process
+  // before the executor re-wires its own, else they fire N times after N turns.
+  if (existingAgent) existingAgent.removeAllListeners();
 
   // Chat-history metadata for the persisted user row (inline base64 images +
   // path/preview for files).
@@ -432,7 +406,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       }))
     : undefined;
   const persistUserMessage = (sessionId: string): void => {
-    // See `opts.silent`: a turn ShipIt started has no user message to persist.
     if (opts.silent) return;
     ctx.chatHistoryManager.append(sessionId, {
       role: "user",
@@ -475,7 +448,126 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       }
     : undefined;
 
+  // docs/218 — pre-turn auto-reset of a MERGED session's branch to the latest
+  // base, BEFORE the turn runs. The decision, the git move, the "branch updated"
+  // card and the planning#297 skip notice all live in the shared hook, which the
+  // dispatch path calls too (planning#333) — so a message from the Agent Interface
+  // SDK, `shipit session message`, or a wake turn continues on the same fresh
+  // base a typed message would. Fully fail-safe: a skip/throw leaves the branch
+  // un-moved and the turn runs normally.
+  //
+  // Skip entirely for a `/compact` request (docs/178): compaction is a
+  // maintenance command, not a continuation of work, so it must NOT trigger the
+  // destructive branch move — and the `[System] …PR was merged…` prefix the
+  // reset prepends would derail the compaction (the agent reacts to the merge
+  // notice instead of compacting). The reset still runs on the user's next real
+  // turn, where it belongs.
+  let resetHook: PreTurnResetHookResult = { agentPrefix: "" };
+  if (capturedSessionId && capturedSessionDir && runner && !opts.compact) {
+    resetHook = await applyPreTurnReset({
+      deps: {
+        sessionManager: ctx.sessionManager,
+        prStatusPoller: ctx.prStatusPoller,
+        createGitManager: ctx.createGitManager,
+        sseBroadcast: ctx.sseBroadcast,
+        chatHistoryManager: ctx.chatHistoryManager,
+        getAutoResetMergedBranch: () => ctx.credentialStore.getAutoResetMergedBranch(),
+      },
+      runner,
+      sessionId: capturedSessionId,
+      sessionDir: capturedSessionDir,
+      // The per-send tick box (Phase 3): `false` = unticked for this message.
+      ...(opts.resetMergedBranch !== undefined ? { intent: opts.resetMergedBranch } : {}),
+    });
+  }
+  const resetAgentPrefix = resetHook.agentPrefix;
 
+  // docs/221 — drain the pending out-of-band notice. The docs/218 reset above
+  // both moves the branch and speaks to the agent in the same breath because it
+  // runs INSIDE the turn it describes; a manual "Sync with <base>" cannot — it
+  // runs from an HTTP route while no turn exists (`runRebaseFlow` refuses to
+  // start one), so it leaves the sentence here for the next turn to deliver.
+  // Consume-and-clear is transactional, so it is delivered exactly once.
+  //
+  // Skipped for `/compact` for the same reason the reset is (docs/178): a
+  // maintenance command must not be handed a "your branch moved" instruction to
+  // react to. Leaving the notice pending means the user's next real turn still
+  // gets it.
+  const pendingAgentNotice =
+    capturedSessionId && !opts.compact
+      ? ctx.sessionManager.consumePendingAgentNotice(capturedSessionId) ?? ""
+      : "";
+
+  // nikzlabs/shipit#2350 — how the user resolved a bug-report consent card. Same shape
+  // and the same reason as the notice above: the resolution happens outside any
+  // turn (a click on a card), and nothing wakes the session for it, because
+  // filing a bug is a side errand and interrupting the pair of them to announce
+  // what the card on screen already says would be the distraction. So it waits
+  // here and rides the next turn. Read-and-mark is transactional, so the agent
+  // is told exactly once; skipped for `/compact` for the same reason as above,
+  // which leaves the outcome pending for the next real turn.
+  const bugOutcomeNotice =
+    capturedSessionId && !opts.compact
+      ? buildBugOutcomeNotice(ctx.chatHistoryManager.consumeUnreportedBugOutcomes(capturedSessionId))
+      : "";
+
+  // Assemble the prompt from user text plus optional file/image context. Images
+  // are saved to the host uploads dir and referenced by path (avoids large
+  // base64 payloads over HTTP to the worker). The notices ride in front so the
+  // agent sees them this turn only (the pending one is already cleared; the
+  // reset prefix was never persisted). Chronological order: the out-of-band sync
+  // happened before this turn, the reset happened moments ago.
+  const activeDir = ctx.getActiveDir();
+  const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
+  const imageContext =
+    images && images.length > 0 && activeDir ? saveImagesToUploadsDir(images, activeDir) : "";
+  // nikzlabs/shipit#2429 — the unverified-dependency instruction, last because it is
+  // the consequence of whatever the reset above just did to the tree. Read LIVE
+  // off the runner rather than consumed from a slot: the gap stays set until an
+  // install clears it, so this repeats every turn until the session is actually
+  // fixed, and it cannot clobber (or be clobbered by) `pendingAgentNotice`.
+  //
+  // Skipped for `/compact` like the three above it, and for the same reason each
+  // of them is: a compaction is ShipIt asking for a summary, not a turn that
+  // touches the tree, so an instruction to run the install is at best noise in
+  // the summary and at worst something the turn tries to act on. Nothing is lost
+  // by waiting — unlike the consume-once notices, this one is re-derived from
+  // live state, so the next real turn carries it unchanged.
+  const dependencyPrefix = opts.compact ? "" : dependencyGapAgentPrefix(runner?.dependencyGap);
+  const agentPrefix = [
+    pendingAgentNotice,
+    bugOutcomeNotice,
+    resetAgentPrefix,
+    dependencyPrefix,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  // docs/272 req 2 — the standing instructions of the role this session was
+  // started on, on its FIRST turn only. The latch lives in the helper (keyed on
+  // `originRoleName`), so calling it unconditionally here is correct and the two
+  // turn entry points cannot disagree about when a role has spoken.
+  const roleContext = capturedSessionId
+    ? takeRoleStandingInstructions(capturedSessionId, {
+        sessionManager: ctx.sessionManager,
+        credentialStore: ctx.credentialStore,
+      })
+    : "";
+  const prompt =
+    (agentPrefix ? `${agentPrefix}\n\n` : "") +
+    assembleAgentPrompt({
+      userText,
+      fileContext,
+      imageContext,
+      dictated: opts.dictated,
+      ...(roleContext ? { roleContext } : {}),
+    });
+
+  // docs/218 — the persisted "branch updated" card (or the planning#297 skip notice)
+  // is emitted right after the resumed user row, from inside the executor via
+  // the `afterUserMessagePersisted` hook, so it lands in the FRESH turn (post
+  // `resetRunnerTurnState`) at its true transcript anchor. The closure comes
+  // back from `applyPreTurnReset`, which owns the durability + throw-guard.
+  const afterUserMessagePersisted = resetHook.afterUserMessagePersisted;
 
   // Listener deps — same shape the runner-registry builds for system turns.
   const listenerDeps: AgentListenerDeps = {
@@ -517,7 +609,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     // (which drives its own push via postTurnCommit → ctx.scheduleAutoPush).
     scheduleAutoPush: (sessionDir, sessionId) => ctx.scheduleAutoPush(ctx.createGitManager(sessionDir), sessionId),
     listenerDeps,
-    buildRunParams: async (sessionId, id, p, turnRoute, runParamOpts) => {
+    buildRunParams: async (sessionId, id, p, turnRoute) => {
       // Read agentSessionId fresh from the DB — env-prep's docs/153 leak repair
       // (run by the executor immediately before this) updates it there.
       const session = ctx.sessionManager.get(sessionId);
@@ -538,11 +630,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         sessionDir: activeDir,
         ...(session?.agentSessionId !== undefined ? { agentSessionId: session.agentSessionId } : {}),
         ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
-        // Either source marks a compaction spawn: `opts.compact` is the typed
-        // `/compact` this handler was called for, `runParamOpts.compact` the
-        // docs/295 pre-turn compaction turn, which runs through this same
-        // closure but is not the message the user sent.
-        ...(opts.compact || runParamOpts?.compact ? { compact: true } : {}),
+        ...(opts.compact ? { compact: true } : {}),
       });
     },
     prepareAgentEnv: async (sessionId, id, envOpts) => {
@@ -708,148 +796,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // the WS path's attachment handling.
   const drainNext = (): Promise<void> =>
     drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emit);
-
-  // The agent this turn runs on. Resolved before the docs/218 reset for no
-  // reason other than that the reset does not touch the slot; the ordering is
-  // free.
-  const existingAgent = useStreaming ? (runner?.getAgent() ?? null) : null;
-  const currentAgent = existingAgent ?? ctx.agentFactory(agentId);
-  if (!existingAgent && runner) runner.setAgent(currentAgent);
-  // docs/140 — drop the previous turn's per-turn listeners off a reused process
-  // before the executor re-wires its own, else they fire N times after N turns.
-  if (existingAgent) existingAgent.removeAllListeners();
-
-  // docs/218 — pre-turn auto-reset of a MERGED session's branch to the latest
-  // base, BEFORE the turn runs. The decision, the git move, the "branch updated"
-  // card and the planning#297 skip notice all live in the shared hook, which the
-  // dispatch path calls too (planning#333) — so a message from the Agent Interface
-  // SDK, `shipit session message`, or a wake turn continues on the same fresh
-  // base a typed message would. Fully fail-safe: a skip/throw leaves the branch
-  // un-moved and the turn runs normally.
-  //
-  // Skip entirely for a `/compact` request (docs/178): compaction is a
-  // maintenance command, not a continuation of work, so it must NOT trigger the
-  // destructive branch move — and the `[System] …PR was merged…` prefix the
-  // reset prepends would derail the compaction (the agent reacts to the merge
-  // notice instead of compacting). That covers the docs/295 compaction turn too,
-  // which is spawned with `compact: true`: the reset belongs to the USER's turn,
-  // which drains immediately after this one and carries the merge prefix into
-  // its own prompt — after the summary was written, so it cannot be summarized
-  // away (req 7).
-  let resetHook: PreTurnResetHookResult = { agentPrefix: "" };
-  if (capturedSessionId && capturedSessionDir && runner && !opts.compact) {
-    resetHook = await applyPreTurnReset({
-      deps: {
-        sessionManager: ctx.sessionManager,
-        prStatusPoller: ctx.prStatusPoller,
-        createGitManager: ctx.createGitManager,
-        sseBroadcast: ctx.sseBroadcast,
-        chatHistoryManager: ctx.chatHistoryManager,
-        getAutoResetMergedBranch: () => ctx.credentialStore.getAutoResetMergedBranch(),
-      },
-      runner,
-      sessionId: capturedSessionId,
-      sessionDir: capturedSessionDir,
-      // The per-send tick box (Phase 3): `false` = unticked for this message.
-      ...(opts.resetMergedBranch !== undefined ? { intent: opts.resetMergedBranch } : {}),
-    });
-  }
-  const resetAgentPrefix = resetHook.agentPrefix;
-
-  // docs/221 — drain the pending out-of-band notice. The docs/218 reset above
-  // both moves the branch and speaks to the agent in the same breath because it
-  // runs INSIDE the turn it describes; a manual "Sync with <base>" cannot — it
-  // runs from an HTTP route while no turn exists (`runRebaseFlow` refuses to
-  // start one), so it leaves the sentence here for the next turn to deliver.
-  // Consume-and-clear is transactional, so it is delivered exactly once.
-  //
-  // Skipped for `/compact` for the same reason the reset is (docs/178): a
-  // maintenance command must not be handed a "your branch moved" instruction to
-  // react to. Leaving the notice pending means the user's next real turn still
-  // gets it.
-  const pendingAgentNotice =
-    capturedSessionId && !opts.compact
-      ? ctx.sessionManager.consumePendingAgentNotice(capturedSessionId) ?? ""
-      : "";
-
-  // nikzlabs/shipit#2350 — how the user resolved a bug-report consent card. Same shape
-  // and the same reason as the notice above: the resolution happens outside any
-  // turn (a click on a card), and nothing wakes the session for it, because
-  // filing a bug is a side errand and interrupting the pair of them to announce
-  // what the card on screen already says would be the distraction. So it waits
-  // here and rides the next turn. Read-and-mark is transactional, so the agent
-  // is told exactly once; skipped for `/compact` for the same reason as above,
-  // which leaves the outcome pending for the next real turn.
-  const bugOutcomeNotice =
-    capturedSessionId && !opts.compact
-      ? buildBugOutcomeNotice(ctx.chatHistoryManager.consumeUnreportedBugOutcomes(capturedSessionId))
-      : "";
-
-  // Assemble the prompt from user text plus optional file/image context. Images
-  // are saved to the host uploads dir and referenced by path (avoids large
-  // base64 payloads over HTTP to the worker). The notices ride in front so the
-  // agent sees them this turn only (the pending one is already cleared; the
-  // reset prefix was never persisted). Chronological order: the out-of-band sync
-  // happened before this turn, the reset happened moments ago.
-  //
-  // docs/295 req 7 — and the merge prefix survives the compaction by
-  // CONSTRUCTION, not by luck: it is assembled here, after the compaction turn
-  // has already produced its summary, and it is handed to the agent only in this
-  // turn's own `agent.run`. The compaction spawn's prompt is `/compact …` and
-  // nothing else, so the notice cannot be absorbed into the summary — which
-  // matters most on Codex and OpenCode, where the compaction instructions are
-  // ignored and this prefix is the only thing telling the agent not to re-apply
-  // shipped work.
-  const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
-  const imageContext =
-    images && images.length > 0 && activeDir ? saveImagesToUploadsDir(images, activeDir) : "";
-  // nikzlabs/shipit#2429 — the unverified-dependency instruction, last because it is
-  // the consequence of whatever the reset above just did to the tree. Read LIVE
-  // off the runner rather than consumed from a slot: the gap stays set until an
-  // install clears it, so this repeats every turn until the session is actually
-  // fixed, and it cannot clobber (or be clobbered by) `pendingAgentNotice`.
-  //
-  // Skipped for `/compact` like the three above it, and for the same reason each
-  // of them is: a compaction is ShipIt asking for a summary, not a turn that
-  // touches the tree, so an instruction to run the install is at best noise in
-  // the summary and at worst something the turn tries to act on. Nothing is lost
-  // by waiting — unlike the consume-once notices, this one is re-derived from
-  // live state, so the next real turn carries it unchanged.
-  const dependencyPrefix = opts.compact ? "" : dependencyGapAgentPrefix(runner?.dependencyGap);
-  const agentPrefix = [
-    pendingAgentNotice,
-    bugOutcomeNotice,
-    resetAgentPrefix,
-    dependencyPrefix,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-  // docs/272 req 2 — the standing instructions of the role this session was
-  // started on, on its FIRST turn only. The latch lives in the helper (keyed on
-  // `originRoleName`), so calling it unconditionally here is correct and the two
-  // turn entry points cannot disagree about when a role has spoken.
-  const roleContext = capturedSessionId
-    ? takeRoleStandingInstructions(capturedSessionId, {
-        sessionManager: ctx.sessionManager,
-        credentialStore: ctx.credentialStore,
-      })
-    : "";
-  const prompt =
-    (agentPrefix ? `${agentPrefix}\n\n` : "") +
-    assembleAgentPrompt({
-      userText,
-      fileContext,
-      imageContext,
-      dictated: opts.dictated,
-      ...(roleContext ? { roleContext } : {}),
-    });
-
-  // docs/218 — the persisted "branch updated" card (or the planning#297 skip
-  // notice) is emitted right after the resumed user row from inside the
-  // executor, so it lands in the FRESH turn (post `resetRunnerTurnState`) at its
-  // true transcript anchor. The closure comes back from the hook, which owns
-  // durability + throw guards.
-  const afterUserMessagePersisted = resetHook.afterUserMessagePersisted;
 
   // docs/218 — a branch that moved must leave a record even if the turn dies
   // before it reaches the anchor (`afterUserMessagePersisted`). `ensureRecorded`
