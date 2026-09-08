@@ -2467,13 +2467,12 @@ export async function executeAgentTurn(
       // turn's own `executeAgentTurn` sets `running` again at entry, and the two
       // `running`-guarded steps here run after the drain and the commit — and
       // narrowing it further would need the adoption edge to be reported to the
-      // executor, which is more mechanism than the symptom is worth.
-      //
-      // A DISPATCHED successor is covered: `runDispatchedTurn` claims the turn
-      // identity with its reservation, so `turnIsCurrent()` is false here for
-      // the whole of its setup (which can hold a branch reset), not only after
-      // its `setAgent`.
-      const unlatched = runner?.getAgent() === null && runner.running && turnIsCurrent();
+      // executor, which is more mechanism than the symptom is worth. The same
+      // window exists for a DISPATCHED successor reserved by `runDispatchedTurn`
+      // whose setup (which can hold a branch reset) has not reached its spawn;
+      // it cannot be told from the docs/287 phantom above by state alone (a
+      // one-shot's rearm never re-captures the epoch), so it is accepted too.
+      const unlatched = runner?.getAgent() === null && runner.running;
       if (unlatched) runner.running = false;
 
       // Non-streaming: drain first (clears queued visual state before the slow

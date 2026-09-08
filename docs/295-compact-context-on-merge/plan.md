@@ -150,12 +150,14 @@ continuation ran reported it delivered.
 **The runner stays reserved through the handoff.** `tryDrain` clears `running`
 before the compaction's drain dequeues the continuation, whose own setup (the
 decision, attachments, the branch reset) then runs for a while. `runDispatchedTurn`
-publishes `running`, `systemTurnInProgress`, `activeDeliveryId` **and the turn
-identity (`turnEpoch`)** at entry — `dispatchOnRunner` already did the flags for
-a turn started from idle; the drains did not — and restores the flags on a setup
-throw. The identity is what makes the reservation hold against the predecessor:
-its late `done` reads `turnIsCurrent()` before clearing `running` or the
-system-turn flag, and the reservation has no agent in the slot yet. And `systemTurnInProgress` describes the
+publishes `running`, `systemTurnInProgress` and `activeDeliveryId` at entry —
+`dispatchOnRunner` already did for a turn started from idle; the drains did not
+— and restores them on a setup throw. One residual, of the class the executor
+already accepts for the WS drain: a one-shot predecessor's `done` landing while
+the reserved successor is still before its spawn finds an empty agent slot and
+reads `running` as its own stale flag. It cannot be told from the docs/287
+phantom adoption by state alone, and it self-heals at the successor's executor
+entry. And `systemTurnInProgress` describes the
 *current* turn: the executor assigns it for every turn at start, and a turn's
 `finishTurn` clears it only while that turn is still current. Before that, a
 one-shot compaction's `done` — landing while its drain awaited the commit, so
