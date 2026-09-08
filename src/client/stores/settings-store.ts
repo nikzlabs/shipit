@@ -3,6 +3,7 @@ import { create } from "zustand";
 import type { CredentialRoute, PermissionMode, FileContextRef } from "../../server/shared/types.js";
 import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
 import {
+  getSavedCompactConversation, saveCompactConversation,
   getSavedNotifyOnFinish, saveNotifyOnFinish,
   getSavedSoundOnFinish, saveSoundOnFinish,
   getSavedVoiceInputEnabled, saveVoiceInputEnabled,
@@ -195,6 +196,8 @@ interface SettingsState {
   memoryBudgetMb: number | null;
   agentSystemInstructionsEnabled: boolean;
   agentSystemInstructions: string;
+  compactConversation: boolean;
+  setCompactConversation: (enabled: boolean) => void;
   notifyOnFinish: boolean;
   soundOnFinish: boolean;
   /**
@@ -468,6 +471,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   memoryBudgetMb: null,
   agentSystemInstructionsEnabled: true,
   agentSystemInstructions: "",
+  compactConversation: getSavedCompactConversation(),
+  setCompactConversation: (enabled) => {
+    saveCompactConversation(enabled);
+    set({ compactConversation: enabled });
+  },
   notifyOnFinish: getSavedNotifyOnFinish(),
   soundOnFinish: getSavedSoundOnFinish(),
   keybindings: getSavedKeybindings(),

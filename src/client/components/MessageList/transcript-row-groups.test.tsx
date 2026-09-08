@@ -213,7 +213,7 @@ describe("MessageList — content-visibility sits on row groups", () => {
     expect(before.size).toBeGreaterThan(40);
     // Assert the setup actually put a subagent at the head of a group, or the
     // whole case is untested whatever the numbers say.
-    expect(groupEls(container)[1].firstElementChild?.getAttribute("data-testid")).toBe("agent-1");
+    expect(groupEls(container)[1].firstElementChild?.querySelector("[data-testid]")?.getAttribute("data-testid")).toBe("agent-1");
 
     // Drop one message from the middle — the `message_queued` shape.
     rerender(<MessageList messages={[...base.slice(0, 3), ...base.slice(4)]} isLoading={false} />);

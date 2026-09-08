@@ -2,7 +2,7 @@
  * Small on/off switch shared by the Settings tabs (Advanced toggles, Voice).
  * Extracted from the former monolithic `Settings.tsx` (P15 split).
  */
-export function ToggleSwitch({ enabled, onToggle, testId }: { enabled: boolean; onToggle: (v: boolean) => void; testId?: string }) {
+export function ToggleSwitch({ enabled, onToggle, testId, label }: { enabled: boolean; onToggle: (v: boolean) => void; testId?: string; label?: string }) {
   return (
     <button
       onClick={() => onToggle(!enabled)}
@@ -10,6 +10,7 @@ export function ToggleSwitch({ enabled, onToggle, testId }: { enabled: boolean; 
         enabled ? "bg-(--color-accent)" : "bg-(--color-bg-hover)"
       }`}
       role="switch"
+      aria-label={label}
       aria-checked={enabled}
       data-testid={testId}
     >

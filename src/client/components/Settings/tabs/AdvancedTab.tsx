@@ -29,6 +29,22 @@ interface UpdateStatusResult {
   };
 }
 
+export function ConversationSettings() {
+  const enabled = useSettingsStore((s) => s.compactConversation);
+  const setEnabled = useSettingsStore((s) => s.setCompactConversation);
+  return (
+    <section className="space-y-3" aria-label="Conversation">
+      <h3 className="text-sm font-medium text-(--color-text-primary)">Conversation</h3>
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm text-(--color-text-primary)">Compact completed turns</span>
+        <ToggleSwitch enabled={enabled} onToggle={setEnabled} label="Compact completed turns" testId="settings-compact-conversation" />
+      </div>
+      <p className="text-xs text-(--color-text-secondary)">Show the last agent message and all cards. Hide tool output and progress messages in finished turns.</p>
+      <p className="text-xs text-(--color-text-secondary)">Saved for this browser. Browser Find searches displayed content. In-app search can still find hidden message text.</p>
+    </section>
+  );
+}
+
 function NotificationSettings() {
   const notifyOnFinish = useSettingsStore((s) => s.notifyOnFinish);
   const soundOnFinish = useSettingsStore((s) => s.soundOnFinish);
@@ -533,6 +549,10 @@ export function AdvancedTab({
       <div className="border-t border-(--color-border-secondary)" />
 
       <MultiAgentSettings />
+
+      <div className="border-t border-(--color-border-secondary)" />
+
+      <ConversationSettings />
 
       <div className="border-t border-(--color-border-secondary)" />
 

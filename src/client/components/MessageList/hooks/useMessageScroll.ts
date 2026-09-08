@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect/useLayoutEffect: DOM scroll sync, window keydown listener, xterm auto-scroll
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import type { SearchMatch } from "../../../hooks/useSearch.js";
 import type { ChatMessage } from "../types.js";
 
@@ -128,6 +128,7 @@ export function useMessageScroll(
   containerRef: React.RefObject<HTMLDivElement | null>;
   contentRef: React.RefObject<HTMLDivElement | null>;
   currentMatchRef: React.RefObject<HTMLElement | null>;
+  canRestoreReadingAnchor: () => boolean;
 } {
   const containerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -327,5 +328,9 @@ export function useMessageScroll(
     return () => { cancelled = true; };
   }, [currentMatch]);
 
-  return { containerRef, contentRef, currentMatchRef };
+  // Compact-layout changes share the same user-control guards as auto-scroll.
+  const canRestoreReadingAnchor = useCallback(() => !autoScrollRef.current
+    && !hasActiveSelectionInside(containerRef.current)
+    && !userIsDriving(touchDraggingRef, lastGestureAtRef), []);
+  return { containerRef, contentRef, currentMatchRef, canRestoreReadingAnchor };
 }

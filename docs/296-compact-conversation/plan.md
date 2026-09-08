@@ -1,0 +1,87 @@
+---
+title: Compact conversation view — design
+description: A display preference that hides finished-turn detail and keeps cards in place.
+---
+
+# Design
+
+See [requirements](./requirements.md) and [interactive mockup](./mockup.html). The client implementation follows this design.
+
+## Experience
+
+Add **Conversation** under Settings → Advanced, next to other local preferences. Label: **Compact completed turns**. Help: “Show the last agent message and all cards. Hide tool output and progress messages in finished turns.” Default off. Add a short note: “Saved for this browser. In-app search includes hidden messages. Browser Find searches displayed content in compact mode.” Reuse the existing toggle. A new settings tab for one switch is unnecessary.
+
+Each eligible turn gets a quiet “Show full turn” control before its content; when expanded it reads “Show compact turn”. Only show it when something can be hidden. The control is a real button with aria-expanded and aria-controls. Expansion is local to that session visit. Use the current row anchor; reset expansion when history is replaced or rewound so an index cannot transfer expansion to unrelated content. All user content stays in place, including messages sent while the agent was working. An active or uncertain turn has no collapse control.
+
+Keep the last non-empty ordinary assistant message, with its complete markdown, code, images, and attachments. Retain any message with images or files whole, including its prose. Preserve all cards and errors/notices. Apply visibility at the existing visual-element boundary, where native standalone tools can be retained even when ordinary tools are hidden. Card carrier rows already render separately; do not add sub-row attachment filtering or invent a mixed-card data format. Questions and native sub-agent tools render as standalone elements today and must not pass through an ordinary-tool filter. Do not truncate card contents beyond their existing renderer behavior.
+
+Final means the last ordinary agent prose in a settled turn, not the last array entry and not an assumption that the adapter supplies a final channel. A stopped or failed turn keeps its existing status/error plus that last prose. Without prose, show “Turn ended without an agent reply” alongside the actual outcome if known. An unclassified legacy turn remains full; do not invent a success label.
+
+Late review, child-session, or action cards stay wherever the existing history inserts them. Post-turn cards can be appended after later user messages. The session PR panel remains outside the transcript, as rendered in App.tsx; only release cards are inline. They do not reopen hidden prose or become the final agent reply. Cards outside a turn stay visible. Existing card renderers own current action state, including resolved or cancelled state; folding a turn must not reset a form or repeat an action.
+
+## Data and implementation boundaries
+
+Verified at `src/client/components/visual-elements.ts`: standalone tools and the card registry already distinguish special content from ordinary tools. Verified at `MessageList/types.ts:ChatMessage`: inProgress differs from streaming, and there is no general turnId field. Verified at `MessageList/cards/MessageCards.tsx:renderMessageCard`: card rendering includes both child sessions and brokered consults. Verified at `Settings/tabs/AdvancedTab.tsx:NotificationSettings` and `hooks/useTheme.ts`: local display preferences already have an established location and storage pattern.
+
+Use conservative client-only assistant runs, following the existing Play-button grouping in MessageList.tsx, but do not reuse its streaming-only completion test. A user message may split one real turn: accepting two retained prose messages is safer than hiding content across that boundary. Only fold runs proved settled; inProgress and streaming always prevent folding. Verified at agent-event.ts: ordinary live message groups are not all marked inProgress. The hook therefore keeps every row added since the observed active-turn start visible. On attach during a running turn, leave uncertain runs full until settlement. No server migration or new persistent turn identity is part of this feature.
+
+Keep hidden rows mounted and counted in the existing ROWS_PER_GROUP buckets; hide their content without changing anchor counts or DOM parents. Verified at MessageList.tsx:rows.forEach, these counts define content-visibility groups. This prevents toggling an old turn from remounting later cards. Retain all card state. Preserve the assistant-side rewind gap independently of the first prose bubble: TranscriptRow places that gap inside the row that compact mode would otherwise hide. Its placement must remain before the response, even when the first prose is hidden.
+
+Keep original message references and history unchanged for speech, copy/export, reply, and rollback. Verified at useSearch.ts, in-app search matches msg.text, not tool output or card bodies. While a search query is active, reveal runs with message-text matches before existing scroll/highlight behavior. No persistent per-match reveal state is needed. The user approved displayed-content scope for browser Find/select-all on 2026-09-08. Disabling compact mode restores full scope. In-app search retains its current message-text scope.
+
+Preserve the visible reading anchor on toggle or settlement; only follow the bottom when the reader was already there. Explicit collapse returns focus to its disclosure. Automatic settlement must not remove focused or selected content: defer that run's collapse until focus/selection leaves. This small guard remains because selection during a live turn is an established supported behavior.
+
+
+## Implementation files
+
+- `src/client/stores/settings-store.ts`: local preference, safe default and storage failure handling.
+- `src/client/components/Settings/tabs/AdvancedTab.tsx`: setting and help text.
+- `src/client/components/visual-elements.ts`: explicit visibility classification, keep unknown cards visible.
+- `src/client/components/MessageList/MessageList.tsx` and `TranscriptRow.tsx`: projection, disclosure, scroll/focus handling.
+- `src/client/components/MessageList/compact-turns.ts`: conservative assistant runs and ordinary-detail classification.
+- `src/client/components/MessageList/hooks/useCompactConversation.ts`: live boundary, disclosure state, selection/focus protection, and linear-time visibility classification.
+- `src/client/components/MessageList/CompactLayout.tsx`: pre-mutation reading-anchor snapshots; React owns hidden attributes and retains all row/group parents.
+- `src/client/components/MessageList/hooks/useMessageScroll.ts`: shared gesture/selection guard used by the layout boundary.
+- `src/client/components/MessageList/types.ts` and live turn handlers: existing signals inspected; no persistence or handler changes.
+- `src/client/hooks/useSearch.ts`: unchanged; its message-text matches reveal matching runs in the view hook.
+- Existing card rendering and transcript round-trip tests: card preservation and identity.
+
+## Verification
+
+Cover off-by-default persistence; completed/active/error/no-prose turns; two turns without commits; steered and queued input; mixed text/tool/card rows; native Agent/Task tools; pending/resolved questions and actions; late cards; reload/reconnect/session switch; hidden prose search matches; preserved rewind controls and row-group parents; keyboard disclosure; selection and scroll stability; narrow and wide screens; all registered themes, with visual checks in representative light and dark themes. Guard unknown cards so adding a type cannot silently hide it. Use affected component tests, lint:dev, typecheck, and browser checks when implementation begins.
+
+## Simpler alternatives
+
+A single global toggle with no per-turn reveal saves one control but makes inspection costly. Filtering only ordinary prose is insufficient because native sub-agent and question tools have their own visual elements. Moving all cards after the reply changes chronology. AI relevance scoring adds delay and unpredictable omissions. Keep visibility flags on existing elements and existing card renderers.
+
+## Mockup scope
+
+The self-contained mockup uses sample data. It demonstrates the setting (initially off), per-turn expansion, retained cards, a live turn, an interrupted turn, a turn without prose, and Claude Light. Controls change only this mockup; they do not change actual settings or dispatch actions. Cards follow the current source layouts: answered questions keep both options visible; compaction is a fixed notice; native sub-agents show the final report with separate prompt/work disclosures; brokered reviews open a read-only report window; actions show their description and buttons. The session PR panel has a fixed face. Sample action buttons explain their production behavior without dispatching it. The stylesheet uses the actual claude-light.css theme tokens.
+
+## Review resolution
+
+ShipIt reviewer run 9c666920-e3e7-4841-a9f3-5b287ce504cb reviewed the initial draft. Accepted: make browser Find/select-all an explicit decision (since resolved); remove persistence work; retain rewind gaps and fixed row-group anchors; keep attachment rows whole; place the PR panel outside the transcript; correct search scope and card timing; simplify search reveal; fix mockup labels/contrast and add a no-prose example. The reviewer saw the initial mockup before its browser checks and aria-controls correction; both were completed.
+
+Not accepted as stated: a user-message boundary plus absent streaming flags is not proof of settlement for steered input; conservative active-row guards remain. Mounted hidden rows do not preserve native browser search/select-all, so that required a user choice, now resolved in favor of displayed content. The focus/selection guard remains for automatic collapse, while explicit collapse uses normal disclosure focus. Keeping all cards is the proposed safe default; no relevance classifier or extra card-scope setting is added.
+
+Initial design validation: desktop dark and mobile light mockup checks passed. Production validation is below.
+
+## Mockup fidelity update — 2026-09-08
+
+The user rejected generic expandable cards. Rebuilt the sample faces from CompactionCard.tsx, AskUserQuestion.tsx, SubagentCall.tsx / SubagentReport.tsx, MessageList/cards/SubAgentCards.tsx, and ActionChecklistCard.tsx. Only native prompt/work sections have disclosure controls; the brokered review opens a modal. These are static HTML replicas with sample data, not live React components. Claude Light is the fixed mockup theme. No production setting or card code changes.
+
+## Production validation
+
+- Final affected tests and smoke tests passed (237 tests), plus transcript memo/group guards. Added further checks for late cards, session switching, and row parents across 30 runs.
+- Typecheck and lint:dev passed after implementation.
+- Browser verification used the actual MessageList and ConversationSettings components through the dev service, in Claude Light. Compact mode hid 40 ordinary detail rows in a 100-row fixture. Cards stayed visible. Switching mode at a mid-transcript reading position measured a 0px anchor shift. Active rows stayed visible through steered input and folded only after completion. The 390px mobile transcript had no horizontal overflow.
+- Browser Find/select-all scope changes only while compact mode is on. In-app search still matches message text and reveals hidden matching runs.
+- Conservative limitations: attaching during a running turn leaves uncertain history full until settlement. A steered user message splits an assistant run, so an extra last reply may remain visible. This is deliberate under-compaction; no history is removed.
+
+## Implementation review resolution
+
+ShipIt reviewer run 2675947e-b82f-423e-9c0b-08c00abce6aa reviewed the production changes. All correctness findings were addressed: no compact scroll work in the untouched full view; no independent bottom pin; shared gesture/selection guards; linear per-run selection/search classification; range-bounded selection handling; no misleading no-reply label beside error/notice text; task-list progress prose can hide; collapse clears only an intersecting selection; search disclosure explains why it stays open; accessible names use the user prompt; dead state and storage naming were cleaned up.
+
+Accepted the simpler React-owned hidden attributes. A small class boundary is required only for getSnapshotBeforeUpdate: useLayoutEffect observes already-mutated disclosure heights and cannot capture the old reading position. The boundary restores the anchor through a short, guarded settling period for content-visibility groups. Tests prove the full-view append path performs no layout measurement and selected-text appends do not scroll-pin. Browser verification after the review fixes measured a 0px reading-anchor shift.
+
+Kept stable wrappers even when the feature is off. Conditionally adding them would remount stateful question/action/review cards on each mode switch, contrary to the retained-state requirement. No changes to card renderers, agent lifecycle, transport, or history persistence were needed.
