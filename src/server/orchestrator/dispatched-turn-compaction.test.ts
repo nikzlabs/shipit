@@ -135,6 +135,99 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
     expect(runner.systemTurnInProgress).toBe(true);
   });
 
+  it("keeps the runner reserved while the drained wake sets up after the compaction", async () => {
+    // `tryDrain` cleared `running` before the compaction's drain dequeued the
+    // wake; its branch reset then runs for a while. A send in that window must
+    // see a turn in flight, and a system one.
+    const { agents, deps } = setup();
+    let releaseReset: (() => void) | undefined;
+    deps.preTurnReset = () => new Promise((r) => { releaseReset = () => r({ agentPrefix: MERGE_PREFIX }); });
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "wake up", systemTurn: true, deliveryId: "watch-3:1" }));
+    await flushTurn();
+    agents[0]?.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    await flushTurn();
+    // Mid-setup of the wake.
+    expect(releaseReset).toBeDefined();
+    expect(runner.running).toBe(true);
+    expect(runner.systemTurnInProgress).toBe(true);
+    expect(runner.activeDeliveryId).toBe("watch-3:1");
+    releaseReset?.();
+    await flushTurn();
+    expect(agents).toHaveLength(2);
+  });
+
+  it("does not let the one-shot compaction's late `done` clear the wake's system-turn flag", async () => {
+    // `done` lands while the compaction's drain is still awaiting the local
+    // commit, so the done handler empties the agent slot first and the wake's
+    // spawn supersedes nothing — the compaction's `finishTurn` then runs AFTER
+    // the wake published its flag, and used to clear it regardless of owner.
+    const { agents, deps } = setup();
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "wake up", systemTurn: true, deliveryId: "watch-4:1" }));
+    await flushTurn();
+    agents[0]?.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    agents[0]?.emit("done", 0);
+    // The teardown is a chain of awaits; give it real time.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(agents).toHaveLength(2);
+    expect(runner.systemTurnInProgress).toBe(true);
+    // …and a non-system successor lowers it itself.
+    agents[1]?.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    agents[1]?.emit("done", 0);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(runner.systemTurnInProgress).toBe(false);
+  });
+
+  it("lowers the flag for a non-system continuation even when the compaction's `done` is late", async () => {
+    const { agents, deps } = setup();
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "keep going" }));
+    await flushTurn();
+    agents[0]?.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    agents[0]?.emit("done", 0);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(agents).toHaveLength(2);
+    expect(runner.systemTurnInProgress).toBe(false);
+  });
+
+  it("a non-system entry drained behind ANY system turn lowers the flag itself", async () => {
+    // The pairing guard for the ownership check above: once a predecessor's
+    // `finishTurn` stands down for a successor, the successor must set the flag
+    // to its own value at start, or a system turn draining into a user turn
+    // would leave it stuck.
+    const { agents, deps } = setup({ decide: false });
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.enqueue({ text: "B, a user's message", execution: "dispatched" } as QueuedMessage);
+    runner.dispatch(testDispatch({ text: "a CI fix", systemTurn: true }));
+    await flushTurn();
+    expect(runner.systemTurnInProgress).toBe(true);
+    agents[0]?.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    agents[0]?.emit("done", 0);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(agents).toHaveLength(2);
+    expect(runner.systemTurnInProgress).toBe(false);
+  });
+
+  it("does not let the compaction's result count for an ID-less dispatch either", async () => {
+    const { agents, deps } = setup();
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    const outcomes: { status: string }[] = [];
+    runner.dispatch(testDispatch({ text: "fix the build", onTurnComplete: (o) => outcomes.push(o) }));
+    await flushTurn();
+    agents[0]?.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    agents[0]?.emit("done", 0);
+    await flushTurn();
+    runner.dispose({ force: true });
+    await flushTurn();
+    expect(outcomes.map((o) => o.status)).toEqual(["dropped"]);
+  });
+
   it("does not let the compaction's result count as the wake's result", async () => {
     // The wake's dispatch latches `turn_result` to tell `interrupted` (ran, then
     // cut short — do not redeliver) from `dropped` (never ran — redeliver). The

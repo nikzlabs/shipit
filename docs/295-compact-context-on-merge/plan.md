@@ -130,21 +130,40 @@ each:
 
 - **Stop during the compaction** stops the compaction; the message it ran ahead
   of still runs. The WS drain normally clears the queue after an interrupt (the
-  user stopped *their* turn); after the compaction turn it does not.
+  user stopped *their* turn); after the compaction turn it does not. This rides
+  the turn's terminal event; a streaming CLI that answers a stop with neither a
+  result nor an exit leaves the session as it leaves any stopped streaming turn
+  today — nothing drains until the process ends.
 - **A compaction turn that ends with no compaction card** — stopped before any
   output, or a backend that accepted the trigger, exited 0 and compacted
   nothing — gets a persisted `warn` notice from the turn's drain,
   `noteMissedCompaction`, so the failure is never silent on reload either.
 
-**A wake's settlement is its own.** A notify-on-merge wake dispatched onto an
+**A dispatch's settlement is its own.** A continuation dispatched onto an
 eligible session has the compaction run inside its dispatch's lifetime, so the
 dispatch's `turn_result` latch (which tells *interrupted* — do not redeliver —
-from *dropped* — redeliver) only counts a result emitted while
-`activeDeliveryId` is the wake's own. Without that, a runner disposed after the
-compaction but before the wake ran reported the wake delivered.
+from *dropped* — redeliver) ignores a compaction's result unless the dispatch
+asked for one, and for a delivery counts a result only while `activeDeliveryId`
+is its own. Without that, a runner disposed after the compaction but before the
+continuation ran reported it delivered.
 
-**Known trades.** The queued message lives in the in-memory queue for the length
-of the compaction, as any queued message does; an orchestrator restart in that
+**The runner stays reserved through the handoff.** `tryDrain` clears `running`
+before the compaction's drain dequeues the continuation, whose own setup (the
+decision, attachments, the branch reset) then runs for a while. `runDispatchedTurn`
+publishes `running`, `systemTurnInProgress` and `activeDeliveryId` at entry —
+`dispatchOnRunner` already did for a turn started from idle; the drains did not
+— and restores them on a setup throw. And `systemTurnInProgress` describes the
+*current* turn: the executor assigns it for every turn at start, and a turn's
+`finishTurn` clears it only while that turn is still current. Before that, a
+one-shot compaction's `done` — landing while its drain awaited the commit, so
+the successor's spawn superseded nothing — cleared the flag a queued wake had
+just published.
+
+**Known trades.** The takeover queues the send's raw inputs (the drain resolves
+uploads, so queuing the resolved copies too handed the file to the agent twice —
+main's merge-hold re-check did the same and is fixed alongside). The queued
+message lives in the in-memory queue for the length of the compaction, as any
+queued message does; an orchestrator restart in that
 window loses it — the same window a user who presses compact and then sends has
 today. And the queue has never carried `userReview` (review-card metadata), so
 a review submitted on an eligible session runs as its prompt but persists

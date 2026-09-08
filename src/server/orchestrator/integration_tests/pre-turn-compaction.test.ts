@@ -342,6 +342,33 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     client.close();
   });
 
+  it("carries an upload to the user's turn exactly once", async () => {
+    // The takeover queues the RAW send; the drain resolves the upload. Queuing
+    // the resolved copies as well would hand the file to the agent twice.
+    const uploadsDir = path.join(path.dirname(sessionDir), "uploads");
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    fs.writeFileSync(path.join(uploadsDir, "notes.txt"), "UPLOAD-MARKER-7f3a\n");
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive(); // preview_status
+
+    client.send({
+      type: "send_message",
+      text: "start the next slice",
+      compactContext: true,
+      uploads: [{ path: "/uploads/notes.txt", type: "upload" }],
+    });
+    const compaction = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    expect(compaction.lastPrompt).not.toContain("UPLOAD-MARKER-7f3a");
+    compaction.emit("event", { type: "agent_compacted", preTokens: 100, postTokens: 50 });
+    compaction.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    compaction.emit("done", 0);
+
+    const userTurn = await waitForClaude(() => spawns.at(-1) ?? (null as never), compaction);
+    expect(userTurn.lastPrompt.split("UPLOAD-MARKER-7f3a")).toHaveLength(2);
+
+    client.close();
+  });
+
   it("does not compact when the message is the user's own `/compact` (req 12)", async () => {
     // They asked for exactly one compaction. Prefixing theirs with ours would
     // make it two, and the second would summarize the summary.

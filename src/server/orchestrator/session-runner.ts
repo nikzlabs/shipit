@@ -6,6 +6,7 @@
  * enforces resource limits.
  */
 
+import { isCompactCommand } from "../shared/compact-command.js";
 import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 import type { BillingMode } from "../shared/catalogue/types.js";
 import { EventEmitter } from "node:events";
@@ -552,9 +553,12 @@ export function dispatchOnRunner(
   // the two nets and torn down with them.
   let sawTurnResult = false;
   // docs/295 — a compaction turn can run inside this dispatch's lifetime ahead
-  // of its own turn; its result is not this delivery's. `activeDeliveryId` is
-  // still the emitting turn's at `turn_result`.
-  const onTurnResult = (): void => {
+  // of its own turn, and its result is not this turn's: a compaction result
+  // counts only when this dispatch asked for one, and a delivery's only while
+  // `activeDeliveryId` is its own (still the emitting turn's at `turn_result`).
+  const ownIsCompact = isCompactCommand(opts.text);
+  const onTurnResult = ({ compact }: { compact: boolean }): void => {
+    if (compact && !ownIsCompact) return;
     if (runner.activeDeliveryId === opts.deliveryId) sawTurnResult = true;
   };
   const settleAsDropped = (reason: string): void => {
@@ -1179,7 +1183,7 @@ export interface SessionRunnerEvents {
    * (precisely the bug) while an event each dispatch latches for itself gives
    * both turns the right answer.
    */
-  turn_result: [];
+  turn_result: [{ compact: boolean }];
   /**
    * planning#246 — this runner's `backgroundWorkDescriptions` changed: a background
    * task appeared or drained, a consult started or finished, or the resident

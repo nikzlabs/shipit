@@ -75,8 +75,8 @@ export async function shouldCompactBeforeTurn(args: CompactBeforeTurnArgs): Prom
   // summarize a conversation holding only that.
   if (deps.getSessionRow(sessionId)?.conversationReplay) return false;
 
-  // docs/260 req 13 — a compaction turn spawns fresh, which retires a resident
-  // holding background work. Losing one compaction is the smaller harm.
+  // docs/260 req 13 — a dispatched compaction turn spawns fresh, which retires
+  // a resident holding background work. Losing one compaction is the smaller harm.
   if (runner.getAgent() !== null && runner.backgroundWorkDescriptions.length > 0) {
     console.log(
       `[compact-before-turn] skipping for ${sessionId}: the resident process holds `

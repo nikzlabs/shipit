@@ -628,8 +628,10 @@ export async function handleSendMessage(
       compactContext: msg.compactContext,
       silent: undefined,
       execution: "interactive",
-      images: allImages,
-      files: validatedFiles,
+      // The RAW inputs, as the queue path above carries them: the drain
+      // resolves `uploads` again, so the resolved copies would be duplicated.
+      images: msg.images,
+      files: msg.files,
       uploads: msg.uploads,
       permissionMode: msg.permissionMode,
       activity: undefined,
@@ -657,8 +659,10 @@ export async function handleSendMessage(
       compactContext: msg.compactContext,
       silent: undefined,
       execution: "interactive",
-      images: allImages,
-      files: validatedFiles,
+      // The RAW inputs, as the queue path above carries them: the drain
+      // resolves `uploads` again, so the resolved copies would be duplicated.
+      images: msg.images,
+      files: msg.files,
       uploads: msg.uploads,
       permissionMode: msg.permissionMode,
       activity: undefined,

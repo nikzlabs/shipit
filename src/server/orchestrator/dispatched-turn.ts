@@ -113,7 +113,37 @@ async function decideWithSystemHold(
   return compact;
 }
 
+/**
+ * planning#266 — reserve the runner for the setup that precedes the executor
+ * (the compaction decision, attachment resolution, the branch reset). The
+ * drains reach here with `running` already cleared by `tryDrain`, and an
+ * unreserved setup lets a second send — or the rebase driver — start against
+ * it. Idempotent on the start-now path (`dispatchOnRunner` set the same
+ * values); restored on a setup throw, which the executor's `finally` never sees.
+ */
 export async function runDispatchedTurn(
+  runner: SessionRunnerInterface,
+  deps: SystemTurnDeps,
+  agentId: AgentId,
+  opts: PreparedDispatch,
+  createAgent: (agentId: AgentId) => AgentProcess,
+): Promise<void> {
+  runner.running = true;
+  if (opts.systemTurn) runner.systemTurnInProgress = true;
+  runner.activeDeliveryId = opts.deliveryId;
+  try {
+    await runDispatchedTurnInner(runner, deps, agentId, opts, createAgent);
+  } catch (err) {
+    runner.running = false;
+    if (opts.systemTurn) runner.systemTurnInProgress = false;
+    if (opts.deliveryId !== undefined && runner.activeDeliveryId === opts.deliveryId) {
+      runner.activeDeliveryId = undefined;
+    }
+    throw err;
+  }
+}
+
+async function runDispatchedTurnInner(
   runner: SessionRunnerInterface,
   deps: SystemTurnDeps,
   agentId: AgentId,

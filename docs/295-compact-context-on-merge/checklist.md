@@ -21,7 +21,11 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
       in `runner-registry-factory.ts`.
 - [x] A stop during the compaction still runs the message; a compaction turn
       with no card leaves a `warn` notice (req 9).
-- [x] A wake's `turn_result` latch ignores the compaction's result.
+- [x] A dispatch's `turn_result` latch ignores the compaction's result.
+- [x] `runDispatchedTurn` reserves the runner at entry; `systemTurnInProgress`
+      describes the current turn (assigned at every start, cleared only while
+      current).
+- [x] The takeovers queue the raw send, so an upload reaches the agent once.
 - [x] `silent` on the dispatch shape: no user row, no echo, on both transports.
 - [x] The reset runs on the user's turn, after the compaction, so its merge
       prefix cannot be summarised away (req 7).
