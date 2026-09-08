@@ -270,6 +270,8 @@ export interface QueuedMessage {
    */
   resetMergedBranch?: boolean;
   compactContext?: boolean;
+  /** docs/295 — see {@link AgentDispatchOptions.silent}; carried so the queue narrows nothing (planning#257). */
+  silent?: boolean;
 }
 
 /**
@@ -669,6 +671,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.dictated !== undefined) queued.dictated = opts.dictated;
   if (opts.resetMergedBranch !== undefined) queued.resetMergedBranch = opts.resetMergedBranch;
   if (opts.compactContext !== undefined) queued.compactContext = opts.compactContext;
+  if (opts.silent !== undefined) queued.silent = opts.silent;
   return queued;
 }
 

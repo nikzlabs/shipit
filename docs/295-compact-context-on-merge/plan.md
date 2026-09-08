@@ -65,9 +65,10 @@ checkbox and follows the global setting, exactly as the reset does.
   `postTurn: "none"` for the reset's reason: a rebase-resolution turn is a step
   inside a git operation, and compacting there would summarise away the
   conflict context.
-- **`silent`** — the one new field on the dispatch shape (never queued: only
-  the compaction turn carries it). ShipIt started that turn, so it gets no user
-  bubble and no user row; the compaction card is the record. A value, not a mechanism: the executor already
+- **`silent`** — the one new field on the dispatch shape (and, because the
+  queue narrows nothing, on the queue shape). ShipIt started the compaction
+  turn, so it gets no user bubble and no user row; the compaction card is the
+  record. A value, not a mechanism: the executor already
   takes `emitUserEcho` and `persistUserMessage` as inputs.
 
 ## Ordering, and why the merge notice survives (req 4, req 7)
