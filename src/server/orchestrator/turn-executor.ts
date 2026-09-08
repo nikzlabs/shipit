@@ -2468,7 +2468,12 @@ export async function executeAgentTurn(
       // `running`-guarded steps here run after the drain and the commit — and
       // narrowing it further would need the adoption edge to be reported to the
       // executor, which is more mechanism than the symptom is worth.
-      const unlatched = runner?.getAgent() === null && runner.running;
+      //
+      // A DISPATCHED successor is covered: `runDispatchedTurn` claims the turn
+      // identity with its reservation, so `turnIsCurrent()` is false here for
+      // the whole of its setup (which can hold a branch reset), not only after
+      // its `setAgent`.
+      const unlatched = runner?.getAgent() === null && runner.running && turnIsCurrent();
       if (unlatched) runner.running = false;
 
       // Non-streaming: drain first (clears queued visual state before the slow

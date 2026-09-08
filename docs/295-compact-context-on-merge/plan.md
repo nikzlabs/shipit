@@ -150,16 +150,25 @@ continuation ran reported it delivered.
 **The runner stays reserved through the handoff.** `tryDrain` clears `running`
 before the compaction's drain dequeues the continuation, whose own setup (the
 decision, attachments, the branch reset) then runs for a while. `runDispatchedTurn`
-publishes `running`, `systemTurnInProgress` and `activeDeliveryId` at entry —
-`dispatchOnRunner` already did for a turn started from idle; the drains did not
-— and restores them on a setup throw. And `systemTurnInProgress` describes the
+publishes `running`, `systemTurnInProgress`, `activeDeliveryId` **and the turn
+identity (`turnEpoch`)** at entry — `dispatchOnRunner` already did the flags for
+a turn started from idle; the drains did not — and restores the flags on a setup
+throw. The identity is what makes the reservation hold against the predecessor:
+its late `done` reads `turnIsCurrent()` before clearing `running` or the
+system-turn flag, and the reservation has no agent in the slot yet. And `systemTurnInProgress` describes the
 *current* turn: the executor assigns it for every turn at start, and a turn's
 `finishTurn` clears it only while that turn is still current. Before that, a
 one-shot compaction's `done` — landing while its drain awaited the commit, so
 the successor's spawn superseded nothing — cleared the flag a queued wake had
 just published.
 
-**Known trades.** The takeover queues the send's raw inputs (the drain resolves
+**Known trades.** A worker probe (`verifyRunningState`, run when a second send
+arrives) that finds no agent on the worker while a turn is still in its pre-spawn
+setup reads that turn as stuck and abandons it; the setup window has always
+included the branch reset, and the decision adds to it — a general property of
+the probe, not of this feature. An orchestrator restart mid-compaction adopts
+the surviving compaction process without its system-turn marker, as adoption
+does for every turn. The takeover queues the send's raw inputs (the drain resolves
 uploads, so queuing the resolved copies too handed the file to the agent twice —
 main's merge-hold re-check did the same and is fixed alongside). The queued
 message lives in the in-memory queue for the length of the compaction, as any

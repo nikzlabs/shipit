@@ -188,7 +188,6 @@ export async function decideCompactBeforeTurn(
     return shouldCompactBeforeTurn({
     deps: {
       getSession: (id) => ctx.sessionManager.get(id),
-      getSessionRow: (id) => ctx.sessionManager.get(id),
       getPrStatus: (id) => ctx.sessionManager.getPrStatus(id),
       createGitManager: ctx.createGitManager,
       getAutoResetMergedBranch: () => ctx.credentialStore.getAutoResetMergedBranch(),

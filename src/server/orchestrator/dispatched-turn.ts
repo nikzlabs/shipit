@@ -131,6 +131,11 @@ export async function runDispatchedTurn(
   runner.running = true;
   if (opts.systemTurn) runner.systemTurnInProgress = true;
   runner.activeDeliveryId = opts.deliveryId;
+  // The identity too: a predecessor's late `done` (a one-shot that exited while
+  // its drain awaited the commit) reads `turnIsCurrent()` to decide whether
+  // the flags above are still its own to clear. The executor bumps it again at
+  // start; consumers compare for equality only.
+  runner.turnEpoch = (runner.turnEpoch ?? 0) + 1;
   try {
     await runDispatchedTurnInner(runner, deps, agentId, opts, createAgent);
   } catch (err) {

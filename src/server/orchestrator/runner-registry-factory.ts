@@ -686,7 +686,6 @@ export function createRunnerRegistry(
           return await shouldCompactBeforeTurn({
             deps: {
               getSession: (id) => sessionManager.get(id),
-              getSessionRow: (id) => sessionManager.get(id),
               getPrStatus: (id) => sessionManager.getPrStatus(id),
               createGitManager,
               getAutoResetMergedBranch: () => credentialStore.getAutoResetMergedBranch(),

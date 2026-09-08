@@ -10,7 +10,7 @@
  * summary exists and cannot be summarized away (req 7).
  */
 
-import type { AgentId, SessionInfo } from "../shared/types.js";
+import type { AgentId } from "../shared/types.js";
 import { isResetEligible, type ResetEligibleSignalDeps } from "./services/pre-turn-reset.js";
 import {
   recheckMergeBeforeTurn,
@@ -42,8 +42,6 @@ export interface CompactBeforeTurnDeps extends ResetEligibleSignalDeps {
   mergeRecheckDeps?: Pick<PreTurnMergeRecheckDeps, "verifyPrState" | "awaitMergeHandling">;
   /** The shared docs/218 setting (req 11). */
   getAutoResetMergedBranch: () => boolean;
-  /** Reads `conversationReplay`. */
-  getSessionRow: (sessionId: string) => SessionInfo | undefined;
 }
 
 export interface CompactBeforeTurnArgs {
@@ -73,7 +71,7 @@ export async function shouldCompactBeforeTurn(args: CompactBeforeTurnArgs): Prom
   // An armed conversation replay (rewind, fork, docs/153 recovery) is consumed
   // read-and-clear by the next spawn; a compaction turn would take the seed and
   // summarize a conversation holding only that.
-  if (deps.getSessionRow(sessionId)?.conversationReplay) return false;
+  if (deps.getSession(sessionId)?.conversationReplay) return false;
 
   // docs/260 req 13 — a dispatched compaction turn spawns fresh, which retires
   // a resident holding background work. Losing one compaction is the smaller harm.

@@ -92,8 +92,7 @@ function ask(over: {
 
   return shouldCompactBeforeTurn({
     deps: {
-      getSession: () => sessionRef.value,
-      getSessionRow: () => (over.conversationReplay
+      getSession: () => (over.conversationReplay
         ? { ...sessionRef.value, conversationReplay: over.conversationReplay } as SessionInfo
         : sessionRef.value),
       getPrStatus: () => (unsettled ? makePrStatus({ prState: "open" }) : makePrStatus()),

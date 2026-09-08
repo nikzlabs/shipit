@@ -158,6 +158,30 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
     expect(agents).toHaveLength(2);
   });
 
+  it("keeps the reservation when the compaction's `done` lands while the wake awaits its reset", async () => {
+    // The wake is reserved but has no agent yet (the reset runs before the
+    // spawn). The compaction's `done` finds an empty slot and used to read that
+    // as its own stale `running`.
+    const { agents, deps } = setup();
+    let releaseReset: (() => void) | undefined;
+    deps.preTurnReset = () => new Promise((r) => { releaseReset = () => r({ agentPrefix: MERGE_PREFIX }); });
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "wake up", systemTurn: true, deliveryId: "watch-5:1" }));
+    await flushTurn();
+    agents[0]?.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    await flushTurn();
+    expect(releaseReset).toBeDefined(); // the wake is mid-setup
+    agents[0]?.emit("done", 0);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(runner.running).toBe(true);
+    expect(runner.systemTurnInProgress).toBe(true);
+    expect(runner.activeDeliveryId).toBe("watch-5:1");
+    releaseReset?.();
+    await flushTurn();
+    expect(agents).toHaveLength(2);
+  });
+
   it("does not let the one-shot compaction's late `done` clear the wake's system-turn flag", async () => {
     // `done` lands while the compaction's drain is still awaiting the local
     // commit, so the done handler empties the agent slot first and the wake's
