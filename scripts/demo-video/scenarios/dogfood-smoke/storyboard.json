@@ -1,0 +1,38 @@
+{
+  "$comment": "docs/296 phase 1 (req 13): three beats against the dogfood inner instance, which has no preview and no GitHub merge. Build the repo first: scripts/demo-video/make-demo-repo.sh /workspace/.inner-shipit/demo-video/demo-repo.git [proxyUrl]. The URL carries an explicit `localhost` host on purpose: with `file:///` the client's repo label starts with `/`, React Router collapses the `/repo//…/new` route it builds, the slug no longer matches, and the new-session view bounces to the home screen.`proxyUrl` is the address that reaches the agent container (where proxy.mjs runs) from the `dev` service container: the agent container's IP on the session's Compose network, i.e. the one in the same /24 as the inner instance URL from `shipit service list` (`hostname -I`). `model` pins the take off the instance's default (an Anthropic subscription route that fails every turn there, planning#358) onto a route the dogfood install can actually run; pick one with quota left (the DeepSeek key answered 402 Insufficient Balance on 2026-09-08).",
+  "repo": {
+    "url": "file://localhost/workspace/.inner-shipit/demo-video/demo-repo.git",
+    "commit": "214dd22abfea992775adbba46a1d961169ef479b"
+  },
+  "proxyUrl": "http://172.16.37.3:8787",
+  "model": { "agent": "claude", "serviceId": "zai", "billingMode": "sub", "model": "glm-5.3[1m]" },
+  "viewport": { "width": 1440, "height": 900 },
+  "pace": { "textCharsPerSecond": 120, "typingCharsPerSecond": 30 },
+  "cursor": true,
+  "beats": [
+    {
+      "id": "new-session",
+      "click": "new-session",
+      "pane": "transcript",
+      "wait": [{ "composer": "ready" }],
+      "lead": 0,
+      "hold": 1
+    },
+    {
+      "id": "create",
+      "type": "Create a file named hello.txt at the repository root containing the single line: Hello from ShipIt",
+      "pane": "files",
+      "wait": [{ "turn": "finished" }, { "file_tree": "hello.txt" }],
+      "lead": 8,
+      "hold": 2
+    },
+    {
+      "id": "edit",
+      "type": "In hello.txt, replace the word ShipIt with the words: the demo. Then reply with the file's new line, quoted.",
+      "pane": "files",
+      "wait": [{ "turn": "finished" }, { "transcript_text": "Hello from the demo" }],
+      "lead": 7,
+      "hold": 3
+    }
+  ]
+}

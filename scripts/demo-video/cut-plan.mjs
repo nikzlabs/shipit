@@ -101,27 +101,52 @@ export function keptSeconds(slices) {
   return Number(slices.reduce((sum, s) => sum + (s.end - s.start), 0).toFixed(3));
 }
 
-export function buildPlan(beatLog, storyboard) {
-  const slices = planSlices(beatLog, storyboard).map((s) => ({
-    start: Number(s.start.toFixed(3)),
-    end: Number(s.end.toFixed(3)),
-  }));
+/**
+ * Re-anchor the beat log onto the video's own clock.
+ *
+ * The driver stamps beats from the moment it opened the page, but Playwright's
+ * first frame lands later — ~2 s, measured on the dogfood runs, not the
+ * sub-100 ms the plan first assumed — so every stamp is late by the gap. The
+ * video ends when the context closes, so the gap is exactly
+ * `wallDuration − videoDuration`, and shifting every stamp by it lands the
+ * last hold inside the file instead of past its end.
+ */
+export function anchorBeats(beatLog, { wallDuration, videoDuration } = {}) {
+  if (!Number.isFinite(wallDuration) || !Number.isFinite(videoDuration)) return beatLog;
+  const offset = wallDuration - videoDuration;
+  if (offset < 0) throw new Error(`video (${videoDuration}s) is longer than the wall clock (${wallDuration}s)`);
+  const shift = (t) => (t === null || t === undefined ? t : Math.max(0, t - offset));
+  return beatLog.map((b) => ({ ...b, actionAt: shift(b.actionAt), readyAt: shift(b.readyAt) }));
+}
+
+export function buildPlan(beatLog, storyboard, anchor = {}) {
+  const clampTo = Number.isFinite(anchor.videoDuration) ? anchor.videoDuration : Infinity;
+  const slices = planSlices(anchorBeats(beatLog, anchor), storyboard)
+    .map((s) => ({ start: Number(s.start.toFixed(3)), end: Number(Math.min(s.end, clampTo).toFixed(3)) }))
+    .filter((s) => s.end > s.start);
+  if (slices.length === 0) throw new Error("the plan keeps nothing inside the video");
   return { slices, keptSeconds: keptSeconds(slices), filter: buildFilter(slices) };
 }
 
 function main(argv) {
-  const positional = argv.filter((a) => !a.startsWith("--"));
-  const printIdx = argv.indexOf("--print");
-  const print = printIdx >= 0 ? argv[printIdx + 1] : null;
-  if (print) positional.splice(positional.indexOf(print), 1);
+  const flag = (name) => {
+    const i = argv.indexOf(name);
+    return i >= 0 ? argv[i + 1] : undefined;
+  };
+  const print = flag("--print");
+  const wallDuration = flag("--wall-duration");
+  const videoDuration = flag("--video-duration");
+  const consumed = new Set([print, wallDuration, videoDuration].filter((v) => v !== undefined));
+  const positional = argv.filter((a) => !a.startsWith("--") && !consumed.has(a));
   if (positional.length !== 2) {
-    process.stderr.write("usage: cut-plan.mjs <beats.json> <storyboard.json> [--print filter|kept]\n");
+    process.stderr.write("usage: cut-plan.mjs <beats.json> <storyboard.json> [--print filter|kept] [--wall-duration <s> --video-duration <s>]\n");
     process.exit(2);
   }
   const [beatsFile, storyboardFile] = positional;
   const plan = buildPlan(
     JSON.parse(fs.readFileSync(beatsFile, "utf8")),
     JSON.parse(fs.readFileSync(storyboardFile, "utf8")),
+    { wallDuration: Number(wallDuration), videoDuration: Number(videoDuration) },
   );
   if (print === "filter") process.stdout.write(plan.filter + "\n");
   else if (print === "kept") process.stdout.write(String(plan.keptSeconds) + "\n");

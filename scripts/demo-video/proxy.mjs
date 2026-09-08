@@ -422,10 +422,14 @@ function createReplayer(opts) {
         finish(401);
         return;
       }
-      json(res, 500, {
-        error: { type: "api_error", message: `demo-proxy: cassette exhausted (${lane} lane has no request ${n})` },
+      // 400, not 500: the Claude CLI retries a 5xx (measured: 16 attempts over
+      // ~90 s), which would hang the driver instead of ending the turn with a
+      // visible error. An invalid_request_error is final on the first answer.
+      json(res, 400, {
+        type: "error",
+        error: { type: "invalid_request_error", message: `demo-proxy: cassette exhausted (${lane} lane has no request ${n})` },
       });
-      finish(500);
+      finish(400);
       return;
     }
 

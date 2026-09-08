@@ -51,9 +51,25 @@ if [ ${#missing[@]} -gt 0 ]; then
   exit 1
 fi
 
+# ── Anchor ───────────────────────────────────────────────────────────────────
+# The driver's stamps run from before Playwright's first frame; the file's
+# duration against the driver's wall clock (run.json) gives the gap. Without
+# run.json (or ffprobe) the plan is used as stamped.
+ANCHOR=()
+RUN_JSON=$(dirname "$BEATS")/run.json
+FFPROBE=${FFPROBE:-$(dirname "$(command -v "$FFMPEG")")/ffprobe}
+if [ -f "$RUN_JSON" ] && command -v "$FFPROBE" >/dev/null 2>&1; then
+  WALL=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(Number.isFinite(r.wallDuration))process.stdout.write(String(r.wallDuration))' "$RUN_JSON")
+  VIDEO=$("$FFPROBE" -v error -show_entries format=duration -of csv=p=0 "$RECORDING" 2>/dev/null || true)
+  if [ -n "$WALL" ] && [ -n "$VIDEO" ]; then
+    ANCHOR=(--wall-duration "$WALL" --video-duration "$VIDEO")
+    echo "cut: re-anchoring beats: wall ${WALL}s, video ${VIDEO}s" >&2
+  fi
+fi
+
 # ── Plan ─────────────────────────────────────────────────────────────────────
-FILTER=$(node "$HERE/cut-plan.mjs" "$BEATS" "$STORYBOARD" --print filter)
-KEPT=$(node "$HERE/cut-plan.mjs" "$BEATS" "$STORYBOARD" --print kept)
+FILTER=$(node "$HERE/cut-plan.mjs" "$BEATS" "$STORYBOARD" --print filter "${ANCHOR[@]}")
+KEPT=$(node "$HERE/cut-plan.mjs" "$BEATS" "$STORYBOARD" --print kept "${ANCHOR[@]}")
 echo "cut: keeping ${KEPT}s of $RECORDING" >&2
 
 # ── Exports ──────────────────────────────────────────────────────────────────

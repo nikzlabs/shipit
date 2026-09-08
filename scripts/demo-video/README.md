@@ -47,7 +47,7 @@ Lane request *n* is answered with `<lane>/NNN.sse`. `content_block_delta` text
 is paced at the given characters per second, tool-input JSON deltas at four
 times that, every other event immediately. A request whose fingerprint differs
 from the recorded one is logged as `cassette drift` and answered anyway. Once a
-lane runs out the proxy answers 500; a lane the cassette never recorded gets
+lane runs out the proxy answers 400 (a 5xx would be retried by the CLI); a lane the cassette never recorded gets
 401. `HEAD /api/hello` is 200 and any other path is 404 JSON.
 
 Both modes take `--port` (default 8787) and `--host` (default 0.0.0.0), print
