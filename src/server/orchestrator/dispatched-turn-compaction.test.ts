@@ -109,6 +109,21 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
     expect(decisions.at(-1)).toEqual({ sessionId: "s1", intent: false });
   });
 
+  it("holds the system-turn flag while the decision runs, and releases it on `no`", async () => {
+    let resolveDecision: ((v: boolean) => void) | undefined;
+    const { deps } = setup();
+    deps.shouldCompactBeforeTurn = () => new Promise<boolean>((r) => { resolveDecision = r; });
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "keep going" }));
+    await flushTurn();
+    // Mid-decision: a send arriving now queues rather than steers.
+    expect(runner.systemTurnInProgress).toBe(true);
+    resolveDecision?.(false);
+    await flushTurn();
+    expect(runner.systemTurnInProgress).toBe(false);
+  });
+
   it("runs the compaction as ShipIt's own turn, so a send meanwhile queues behind it", async () => {
     // An SDK click is not a system turn; the compaction ahead of it is.
     const { deps } = setup();

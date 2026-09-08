@@ -59,8 +59,13 @@ checkbox and follows the global setting, exactly as the reset does.
   *session* stays eligible. Then it runs the `/compact` turn as a **system
   turn**: a send arriving meanwhile queues behind it instead of being steered
   into the compaction process (which would run it before the message it
-  overtook, without that message's reset). The compaction's own drain is the one
-  interactive drain allowed to run under `systemTurnInProgress`. The dispatched
+  overtook, without that message's reset). `systemTurnInProgress` is held from
+  the moment the decision starts — an idle resident streaming process would
+  otherwise take a send arriving mid-decision — and released if the answer is
+  no. The compaction's own drain is the one interactive drain allowed to run
+  under the flag, and it is also what **clears** it: a streaming compaction
+  reuses the resident process, and the turn that follows strips its listeners
+  before the `done` that would have cleared it in `finishTurn`. The dispatched
   takeover runs before attachment resolution (the drain redoes it) and excludes
   `postTurn: "none"` for the reset's reason: a rebase-resolution turn is a step
   inside a git operation, and compacting there would summarise away the
@@ -126,10 +131,10 @@ each:
 - **Stop during the compaction** stops the compaction; the message it ran ahead
   of still runs. The WS drain normally clears the queue after an interrupt (the
   user stopped *their* turn); after the compaction turn it does not.
-- **A compaction turn that ends with no compaction card** (a backend that
-  accepted the trigger, exited 0 and compacted nothing) gets a persisted `warn`
-  notice from the turn's drain, `noteMissedCompaction`, so the failure is never
-  silent. An interrupted or errored turn already shows why.
+- **A compaction turn that ends with no compaction card** — stopped before any
+  output, or a backend that accepted the trigger, exited 0 and compacted
+  nothing — gets a persisted `warn` notice from the turn's drain,
+  `noteMissedCompaction`, so the failure is never silent on reload either.
 
 **A wake's settlement is its own.** A notify-on-merge wake dispatched onto an
 eligible session has the compaction run inside its dispatch's lifetime, so the
@@ -138,10 +143,12 @@ from *dropped* — redeliver) only counts a result emitted while
 `activeDeliveryId` is the wake's own. Without that, a runner disposed after the
 compaction but before the wake ran reported the wake delivered.
 
-**Known trade:** the queued message lives in the in-memory queue for the length
-of the compaction, as any queued message does. An orchestrator restart in that
+**Known trades.** The queued message lives in the in-memory queue for the length
+of the compaction, as any queued message does; an orchestrator restart in that
 window loses it — the same window a user who presses compact and then sends has
-today.
+today. And the queue has never carried `userReview` (review-card metadata), so
+a review submitted on an eligible session runs as its prompt but persists
+without the card — the same loss a review queued behind a merge hold has today.
 
 ## The composer control (req 1, req 2, req 3, req 10)
 

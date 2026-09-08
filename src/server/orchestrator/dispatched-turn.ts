@@ -92,6 +92,27 @@ function supersedeRetiredTurn(outgoing: AgentProcess): void {
   outgoing.emit("superseded");
 }
 
+/**
+ * docs/295 — hold `systemTurnInProgress` while the compaction decision runs, so
+ * a send arriving in the window queues instead of being steered into the idle
+ * resident process ahead of this message. Released on `no`; on `yes` the
+ * compaction turn owns it.
+ */
+async function decideWithSystemHold(
+  runner: SessionRunnerInterface,
+  decide: () => Promise<boolean>,
+): Promise<boolean> {
+  const held = !runner.systemTurnInProgress;
+  if (held) runner.systemTurnInProgress = true;
+  let compact = false;
+  try {
+    compact = await decide();
+  } finally {
+    if (held && !compact) runner.systemTurnInProgress = false;
+  }
+  return compact;
+}
+
 export async function runDispatchedTurn(
   runner: SessionRunnerInterface,
   deps: SystemTurnDeps,
@@ -150,7 +171,8 @@ export async function runDispatchedTurn(
   // the reset's reason below.
   if (
     sessionDir && opts.postTurn !== "none" && !isCompactRequest
-    && await deps.shouldCompactBeforeTurn?.(runner, agentId, runner.sessionId, sessionDir, opts.compactContext)
+    && await decideWithSystemHold(runner, () =>
+      deps.shouldCompactBeforeTurn?.(runner, agentId, runner.sessionId, sessionDir, opts.compactContext) ?? Promise.resolve(false))
   ) {
     runner.messageQueue.unshift({ ...toQueuedMessage(opts), compactContext: false });
     runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
@@ -406,7 +428,12 @@ export async function runDispatchedTurn(
     // and the flow can't have grabbed the hold mid-turn (`runRebaseFlow`
     // refuses while the flag is up).
     if (runner.systemTurnInProgress && !opts.systemTurn) return;
-    if (opts.silent) noteMissedCompaction(runner, deps.listenerDeps.chatHistoryManager, runner.sessionId);
+    if (opts.silent) {
+      // The compaction's result arrived, so its turn is over — see the WS
+      // drain for why this is not left to `finishTurn`.
+      runner.systemTurnInProgress = false;
+      noteMissedCompaction(runner, deps.listenerDeps.chatHistoryManager, runner.sessionId);
+    }
     if (runner.queueLength === 0) return;
     const next = runner.dequeue();
     if (!next) return;

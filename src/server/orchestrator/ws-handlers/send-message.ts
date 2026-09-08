@@ -667,7 +667,7 @@ export async function handleSendMessage(
       onTurnComplete: undefined,
       deliveryId: undefined,
       dictated: msg.dictated,
-    })), agentSessionId, msg.permissionMode);
+    })), msg.permissionMode);
     return;
   }
 

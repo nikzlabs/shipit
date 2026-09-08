@@ -106,17 +106,16 @@ export async function shouldCompactBeforeTurn(args: CompactBeforeTurnArgs): Prom
 }
 
 /**
- * req 9 — a compaction turn that ended with no compaction card. An error turn
- * already shows its error; this covers a backend that accepted the trigger,
- * exited 0 and compacted nothing. Called from the turn's own drain, after its
- * rows are final, so the notice lands after them.
+ * req 9 — a compaction turn that ended with no compaction card: stopped, or a
+ * backend that accepted the trigger, exited 0 and compacted nothing. Called
+ * from the turn's own drain, after its rows are final, so the notice lands
+ * after them.
  */
 export function noteMissedCompaction(
-  runner: Pick<SessionRunnerInterface, "recordedCards" | "wasInterrupted" | "emitMessage">,
+  runner: Pick<SessionRunnerInterface, "recordedCards" | "emitMessage">,
   chatHistory: { append(sessionId: string, message: PersistedMessage): unknown },
   sessionId: string,
 ): void {
-  if (runner.wasInterrupted) return;
   if (runner.recordedCards.some((c) => c.message.compaction !== undefined)) return;
   emitNoticePostTurn(
     (m) => runner.emitMessage(m),

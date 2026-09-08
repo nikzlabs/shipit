@@ -218,6 +218,77 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     client.close();
   });
 
+  /** Poll until the resident process has been handed `text` via stdin. */
+  async function stdinHas(p: FakeClaudeProcess, text: string, timeoutMs = 2000): Promise<void> {
+    const start = Date.now();
+    while (!p.stdinData.some((d) => d.includes(text))) {
+      if (Date.now() - start > timeoutMs) throw new Error(`"${text}" never reached stdin`);
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+
+  it("with live steering: a streaming compaction reuses the resident process and releases the system-turn flag", async () => {
+    // The compaction turn strips no listeners of its own, but the turn that
+    // follows it reuses the same resident process and removes the compaction's
+    // listeners — including the `done` that would have cleared
+    // `systemTurnInProgress`. Observable: a send during the user's turn must
+    // still be STEERED (the flag is down), not queued forever.
+    credentialStore.setLiveSteering(true);
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive(); // preview_status
+
+    // Turn 0 leaves a resident streaming process behind.
+    client.send({ type: "send_message", text: "warm up", compactContext: false, resetMergedBranch: false });
+    const resident = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    expect(resident.lastUseStreaming).toBe(true);
+    resident.initSession("agent-a");
+    resident.emit("event", { type: "result", subtype: "success", session_id: "agent-a" });
+    await client.receiveType("session_status");
+
+    // The compaction rides the resident.
+    client.send({ type: "send_message", text: "start the next slice", compactContext: true });
+    await stdinHas(resident, "/compact ");
+    expect(spawns).toHaveLength(1);
+    resident.emit("event", { type: "agent_compacted", preTokens: 100, postTokens: 50 });
+    resident.emit("event", { type: "result", subtype: "success", session_id: "agent-a" });
+
+    // …and so does the user's turn.
+    await stdinHas(resident, "start the next slice");
+
+    // A send during the user's turn is steered into it: the flag is down.
+    client.send({ type: "send_message", text: "and also this" });
+    await client.receiveType("message_steered");
+    await stdinHas(resident, "and also this");
+
+    client.close();
+  });
+
+  it("with live steering: a send during the decision queues, it is not steered into the idle resident", async () => {
+    credentialStore.setLiveSteering(true);
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "warm up", compactContext: false, resetMergedBranch: false });
+    const resident = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    resident.initSession("agent-a");
+    resident.emit("event", { type: "result", subtype: "success", session_id: "agent-a" });
+    await client.receiveType("session_status");
+
+    client.send({ type: "send_message", text: "first", compactContext: true });
+    client.send({ type: "send_message", text: "second", compactContext: false });
+    await client.receiveType("message_queued");
+    await stdinHas(resident, "/compact ");
+    // Nothing of the second message reached the process ahead of the first.
+    expect(resident.stdinData.some((d) => d.includes("second"))).toBe(false);
+
+    resident.emit("event", { type: "agent_compacted", preTokens: 100, postTokens: 50 });
+    resident.emit("event", { type: "result", subtype: "success", session_id: "agent-a" });
+    await stdinHas(resident, "first");
+    expect(resident.stdinData.some((d) => d.includes("second"))).toBe(false);
+
+    client.close();
+  });
+
   it("still runs the message when the user STOPS the compaction (req 9)", async () => {
     const client = await TestClient.connect(port, SESSION_ID);
     await client.receive(); // preview_status
@@ -232,6 +303,14 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     const userTurn = await waitForClaude(() => spawns.at(-1) ?? (null as never), compaction);
     expect(userTurn.lastPrompt).toContain("start the next slice");
     expect(userTurn.lastCompact).toBeFalsy();
+    userTurn.initSession("after");
+    userTurn.finish("after");
+    await new Promise((r) => setTimeout(r, 200));
+
+    // The stop left no card and no error; the transcript still says so.
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${SESSION_ID}/history` });
+    const history = res.json() as { messages: { notice?: boolean; text?: string }[] };
+    expect(history.messages.filter((m) => m.notice && m.text?.includes("not compacted"))).toHaveLength(1);
 
     client.close();
   });

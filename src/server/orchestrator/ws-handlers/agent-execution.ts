@@ -119,8 +119,12 @@ export async function drainNextQueuedMessage(
   if (runner.systemTurnInProgress && !compactionTurn) return;
 
   const messageQueue = runner.messageQueue;
-  if (compactionTurn && capturedSessionId) {
-    noteMissedCompaction(runner, ctx.chatHistoryManager, capturedSessionId);
+  if (compactionTurn) {
+    // The compaction's result arrived, so its turn is over. Cleared HERE, not
+    // only in its `finishTurn`: a streaming compaction reuses the resident
+    // process, and the next turn strips its listeners before `done` runs.
+    runner.systemTurnInProgress = false;
+    if (capturedSessionId) noteMissedCompaction(runner, ctx.chatHistoryManager, capturedSessionId);
   }
   // A stop during the compaction stops the compaction; the message it ran
   // ahead of still runs (req 9).
@@ -156,15 +160,32 @@ function isCompactCommandFor(ctx: FullCtx, text: string): boolean {
   return capable && parseCompactCommand(text).match;
 }
 
-/** docs/295 — the decision, on the WS transport's deps. */
-export function decideCompactBeforeTurn(
+/**
+ * docs/295 — the decision, on the WS transport's deps. `systemTurnInProgress`
+ * is held while it runs (the caller has `running` up): a send arriving in the
+ * window would otherwise be steered into the idle resident process and run
+ * ahead of this message, with neither compaction nor reset. Released on `no`;
+ * on `yes` the compaction turn owns it.
+ */
+export async function decideCompactBeforeTurn(
   ctx: FullCtx,
   runner: SessionRunnerInterface,
   sessionId: string,
   sessionDir: string,
   intent: boolean | undefined,
 ): Promise<boolean> {
-  return shouldCompactBeforeTurn({
+  const held = !runner.systemTurnInProgress;
+  if (held) runner.systemTurnInProgress = true;
+  let compact = false;
+  try {
+    compact = await decide();
+  } finally {
+    if (held && !compact) runner.systemTurnInProgress = false;
+  }
+  return compact;
+
+  function decide(): Promise<boolean> {
+    return shouldCompactBeforeTurn({
     deps: {
       getSession: (id) => ctx.sessionManager.get(id),
       getSessionRow: (id) => ctx.sessionManager.get(id),
@@ -177,12 +198,13 @@ export function decideCompactBeforeTurn(
         awaitMergeHandling: (id) => ctx.prStatusPoller.awaitMergeHandling(id),
       },
     },
-    runner,
-    agentId: ctx.getActiveAgentId(),
-    sessionId,
-    sessionDir,
-    ...(intent !== undefined ? { intent } : {}),
-  });
+      runner,
+      agentId: ctx.getActiveAgentId(),
+      sessionId,
+      sessionDir,
+      ...(intent !== undefined ? { intent } : {}),
+    });
+  }
 }
 
 /**
@@ -196,7 +218,6 @@ export async function runCompactionAhead(
   ctx: FullCtx,
   runner: SessionRunnerInterface,
   queued: QueuedMessage,
-  agentSessionId: string | undefined,
   permissionMode: PermissionMode | undefined,
 ): Promise<void> {
   runner.messageQueue.unshift({ ...queued, compactContext: false });
@@ -207,7 +228,7 @@ export async function runCompactionAhead(
     userText: POST_MERGE_COMPACT_PROMPT,
     images: undefined,
     validatedFiles: [],
-    agentSessionId,
+    agentSessionId: undefined,
     permissionMode,
     isNewSession: false,
     compact: true,
@@ -230,15 +251,12 @@ async function runQueuedInteractiveMessage(
   emit: (msg: WsServerMessage) => void,
   next: QueuedMessage,
 ): Promise<void> {
-  const nextSession = capturedSessionId
-    ? ctx.sessionManager.get(capturedSessionId)
-    : undefined;
   // docs/295 — a message that queued behind another turn compacts too (req 4).
   if (
     capturedSessionId && capturedSessionDir && !isCompactCommandFor(ctx, next.text)
     && await decideCompactBeforeTurn(ctx, runner, capturedSessionId, capturedSessionDir, next.compactContext)
   ) {
-    await runCompactionAhead(ctx, runner, next, nextSession?.agentSessionId, next.permissionMode);
+    await runCompactionAhead(ctx, runner, next, next.permissionMode);
     return;
   }
   const nextImages = next.images && next.images.length > 0 ? next.images : undefined;
@@ -272,6 +290,9 @@ async function runQueuedInteractiveMessage(
       // which is what makes hydrateUploads work correctly.
     }
   }
+  const nextSession = capturedSessionId
+    ? ctx.sessionManager.get(capturedSessionId)
+    : undefined;
   try {
     await runAgentWithMessage(ctx, {
       userText: next.text,
