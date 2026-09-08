@@ -361,6 +361,38 @@ describe("record mode", () => {
     }
   });
 
+  it("forwards a chunked request with a content-length and no transfer-encoding", async () => {
+    const dir = mkdtempSync(join(os.tmpdir(), "demo-proxy-rec-"));
+    let p: RunningProxy | undefined;
+    try {
+      p = await startProxy(["--record", dir, "--upstream", upstreamUrl], { DEMO_PROXY_ANTHROPIC_API_KEY: "sk-ant-real" });
+      seen.length = 0;
+      const body = JSON.stringify({ model: "claude-opus-5", messages: [{ role: "user", content: "hi" }], stream: true });
+      // node:http with no content-length and a streamed body sends Transfer-Encoding: chunked.
+      const status = await new Promise<number>((resolve, reject) => {
+        const req = http.request(
+          { host: "127.0.0.1", port: p!.port, method: "POST", path: "/v1/messages", headers: { "content-type": "application/json", ...DUMMY } },
+          (res) => {
+            res.resume();
+            res.on("end", () => resolve(res.statusCode ?? 0));
+          },
+        );
+        req.on("error", reject);
+        req.write(body.slice(0, 10));
+        req.write(body.slice(10));
+        req.end();
+      });
+      expect(status).toBe(200);
+      expect(seen).toHaveLength(1);
+      expect(seen[0].headers["transfer-encoding"]).toBeUndefined();
+      expect(seen[0].headers["content-length"]).toBe(String(Buffer.byteLength(body)));
+      expect(seen[0].body).toBe(body);
+    } finally {
+      await stopProxy(p);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses to record over an existing take", async () => {
     const { code, stderr } = await runUntilExit(["--record", FIXTURE_CASSETTE, "--upstream", upstreamUrl], {
       DEMO_PROXY_ANTHROPIC_API_KEY: "sk-ant-real",
