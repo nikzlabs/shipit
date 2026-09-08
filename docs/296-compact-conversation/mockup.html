@@ -1,0 +1,183 @@
+<!doctype html><html lang="en" class="dark"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><title>Compact conversation — design mockup</title><style>/* Light theme — :root provides defaults, .light is used by the theme picker */
+:root,
+.light {
+  /* Surfaces */
+  --color-bg-primary: #ffffff;
+  --color-bg-secondary: #f9fafb;
+  --color-bg-tertiary: #f3f4f6;
+  --color-bg-elevated: #ffffff;
+  --color-bg-overlay: rgba(0, 0, 0, 0.5);
+  --color-bg-hover: rgba(0, 0, 0, 0.04);
+  --color-bg-active: rgba(0, 0, 0, 0.08);
+
+  /* Text */
+  --color-text-primary: #111827;
+  --color-text-secondary: #4b5563;
+  --color-text-tertiary: #9ca3af;
+  --color-text-inverse: #ffffff;
+  --color-text-link: #2563eb;
+
+  /* Borders */
+  --color-border-primary: #dfe1e6;
+  --color-border-secondary: #d1d5db;
+  --color-border-focus: #3b82f6;
+
+  /* Accent */
+  --color-accent: #2563eb;
+  --color-accent-hover: #1d4ed8;
+  --color-accent-text: #ffffff;
+  --color-accent-subtle: rgba(37, 99, 235, 0.1);
+
+  /* Status */
+  --color-success: #16a34a;
+  --color-success-subtle: rgba(22, 163, 74, 0.1);
+  --color-success-border: rgba(22, 163, 74, 0.3);
+  --color-error: #dc2626;
+  --color-error-subtle: rgba(220, 38, 38, 0.1);
+  --color-warning: #d97706;
+  --color-warning-subtle: rgba(217, 119, 6, 0.1);
+  --color-info: #2563eb;
+  --color-info-subtle: rgba(37, 99, 235, 0.1);
+
+  /* Domain-specific */
+  --color-pr: #7c3aed;
+  --color-pr-subtle: rgba(124, 58, 237, 0.1);
+  --color-pr-border: rgba(124, 58, 237, 0.3);
+  /* docs/211 — sandbox accent for light surfaces: teal-800 for text contrast on
+     light tints (the bright :root-era teal-400 read too pale). This is also the
+     base default; dark themes override to teal-400 in index.css. See the cascade
+     note there — the override MUST live on the dark-theme classes, not :root. */
+  --color-sandbox: #115e59;
+  --color-sandbox-subtle: rgba(45, 212, 191, 0.15);
+  --color-sandbox-border: rgba(45, 212, 191, 0.3);
+  --color-folder: #eab308;
+  --color-autofix: #f97316;
+  --color-attention: #d97706;
+  /* docs/260 — the attention amber as TEXT/glyph colour. `--color-attention` is a
+     3px marker on a row: at 12px and below it measures 2.35–2.89:1 on the light
+     themes' surfaces, under the 4.5:1 AA asks of small text. This is the lightest
+     shade of the same amber ramp that clears 4.5:1 on each theme, so the sidebar's
+     "Needs you" switch stays legible without touching the marker's colour. */
+  --color-attention-text: #b45309;
+
+  /* Context meter */
+  --color-context-ok: #22c55e;
+  --color-context-mid: #eab308;
+  --color-context-high: #f97316;
+  --color-context-full: #ef4444;
+
+  /* Scrollbar */
+  --color-scrollbar-thumb: rgba(156, 163, 175, 0.4);
+  --color-scrollbar-thumb-hover: rgba(107, 114, 128, 0.6);
+
+  /* Syntax highlighting (GitHub Light) */
+  --color-syntax-base: #24292e;
+  --color-syntax-bg: #ffffff;
+  --color-syntax-keyword: #d73a49;
+  --color-syntax-title: #6f42c1;
+  --color-syntax-attr: #005cc5;
+  --color-syntax-string: #032f62;
+  --color-syntax-string-regexp: #032f62;
+  --color-syntax-builtin: #e36209;
+  --color-syntax-comment: #6a737d;
+  --color-syntax-tag: #22863a;
+  --color-syntax-section: #005cc5;
+  --color-syntax-bullet: #735c0f;
+  --color-syntax-addition: #22863a;
+  --color-syntax-addition-bg: #f0fff4;
+  --color-syntax-deletion: #b31d28;
+  --color-syntax-deletion-bg: #ffeef0;
+
+  /* Typography */
+  --font-size-code: 13px;
+}
+/* Dark theme — applied via .dark class on <html> */
+.dark {
+  /* Surfaces */
+  --color-bg-primary: #030712;
+  --color-bg-secondary: #111827;
+  --color-bg-tertiary: #1f2937;
+  --color-bg-elevated: #1f2937;
+  --color-bg-overlay: rgba(0, 0, 0, 0.7);
+  --color-bg-hover: rgba(255, 255, 255, 0.05);
+  --color-bg-active: rgba(255, 255, 255, 0.1);
+
+  /* Text */
+  --color-text-primary: #f3f4f6;
+  --color-text-secondary: #9ca3af;
+  --color-text-tertiary: #6b7280;
+  --color-text-inverse: #030712;
+  --color-text-link: #60a5fa;
+
+  /* Borders */
+  --color-border-primary: #212c3b;
+  --color-border-secondary: #374151;
+  --color-border-focus: #3b82f6;
+
+  /* Accent */
+  --color-accent: #3b82f6;
+  --color-accent-hover: #2563eb;
+  --color-accent-text: #ffffff;
+  --color-accent-subtle: rgba(59, 130, 246, 0.15);
+
+  /* Status */
+  --color-success: #22c55e;
+  --color-success-subtle: rgba(34, 197, 94, 0.15);
+  --color-success-border: rgba(34, 197, 94, 0.3);
+  --color-error: #ef4444;
+  --color-error-subtle: rgba(239, 68, 68, 0.15);
+  --color-warning: #f59e0b;
+  --color-warning-subtle: rgba(245, 158, 11, 0.15);
+  --color-info: #60a5fa;
+  --color-info-subtle: rgba(96, 165, 250, 0.15);
+
+  /* Domain-specific */
+  --color-pr: #a78bfa;
+  --color-pr-subtle: rgba(167, 139, 250, 0.15);
+  --color-pr-border: rgba(167, 139, 250, 0.3);
+  --color-folder: #eab308;
+  --color-autofix: #fb923c;
+  --color-attention: #f59e0b;
+  --color-attention-text: #f59e0b;
+
+  /* Context meter */
+  --color-context-ok: #22c55e;
+  --color-context-mid: #eab308;
+  --color-context-high: #f97316;
+  --color-context-full: #ef4444;
+
+  /* Scrollbar */
+  --color-scrollbar-thumb: rgba(75, 85, 99, 0.5);
+  --color-scrollbar-thumb-hover: rgba(107, 114, 128, 0.7);
+
+  /* Syntax highlighting (GitHub Dark) */
+  --color-syntax-base: #c9d1d9;
+  --color-syntax-bg: #0d1117;
+  --color-syntax-keyword: #ff7b72;
+  --color-syntax-title: #d2a8ff;
+  --color-syntax-attr: #79c0ff;
+  --color-syntax-string: #a5d6ff;
+  --color-syntax-string-regexp: #a5d6ff;
+  --color-syntax-builtin: #ffa657;
+  --color-syntax-comment: #8b949e;
+  --color-syntax-tag: #7ee787;
+  --color-syntax-section: #1f6feb;
+  --color-syntax-bullet: #f2cc60;
+  --color-syntax-addition: #aff5b4;
+  --color-syntax-addition-bg: #033a16;
+  --color-syntax-deletion: #ffdcd7;
+  --color-syntax-deletion-bg: #67060c;
+
+  /* Typography */
+  --font-size-code: 13px;
+}
+
+*{box-sizing:border-box}body{margin:0;background:var(--color-bg-primary);color:var(--color-text-primary);font:14px/1.6 system-ui,sans-serif}button,input{font:inherit}button{cursor:pointer;border:1px solid var(--color-border-primary);background:var(--color-bg-tertiary);color:var(--color-text-primary);border-radius:7px;padding:6px 12px}button:hover{background:var(--color-bg-hover)}:focus-visible{outline:2px solid var(--color-border-focus);outline-offset:4px}header{padding:22px 30px;border-bottom:1px solid var(--color-border-primary);display:flex;justify-content:space-between;align-items:center;gap:18px}h1{font-size:20px;margin:2px 0}h2{font-size:15px;margin:0 0 12px}p{margin:8px 0}.eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--color-text-secondary)}.muted,small{color:var(--color-text-secondary)}main{display:grid;grid-template-columns:290px minmax(0,760px);gap:28px;max-width:1160px;margin:auto;padding:28px}.settings{align-self:start;background:var(--color-bg-secondary);padding:20px;border:1px solid var(--color-border-primary);border-radius:10px;position:sticky;top:20px}.path{font-size:12px;color:var(--color-text-secondary);margin-bottom:24px}.switchline{display:flex;gap:15px;align-items:center;justify-content:space-between}.switch{appearance:none;width:38px;height:22px;border-radius:20px;background:var(--color-border-secondary);flex-shrink:0;position:relative;cursor:pointer;margin:0}.switch:after{content:'';position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--color-text-primary)}.switch:checked{background:var(--color-accent)}.switch:checked:after{left:19px;background:var(--color-accent-text)}.help{font-size:12px;margin-top:12px}.rule{border-top:1px solid var(--color-border-primary);margin-top:22px;padding-top:16px}.sample-head{display:flex;align-items:center;justify-content:space-between;padding-bottom:14px;border-bottom:1px solid var(--color-border-primary)}.badge{font-size:11px;padding:2px 8px;border-radius:5px;background:var(--color-bg-tertiary);color:var(--color-text-secondary)}.badge.live{color:var(--color-info);background:var(--color-info-subtle)}article{padding:22px 0;border-bottom:1px solid var(--color-border-primary)}.user{background:var(--color-bg-secondary);border:1px solid var(--color-border-primary);border-radius:10px;padding:12px 16px;margin-bottom:16px}.meta{font-size:11px;color:var(--color-text-secondary);margin-bottom:6px;display:flex;justify-content:space-between}.disclosure{border:0;background:transparent;padding:3px 0;color:var(--color-text-link);font-size:12px;margin-bottom:12px}.detail{border-left:2px solid var(--color-border-primary);padding:0 14px;margin:0 0 14px;color:var(--color-text-secondary);font-size:13px}.tool{font:12px/1.8 ui-monospace,monospace;padding:5px 8px;margin:6px 0;background:var(--color-bg-secondary);border-radius:5px}.card{border:1px solid var(--color-border-primary);border-radius:8px;margin:10px 0;background:var(--color-bg-secondary);overflow:hidden}.card summary{padding:10px 13px;cursor:pointer;font-size:13px}.card .body{padding:0 14px 12px;font-size:12px;color:var(--color-text-secondary)}.status{float:right;font-size:11px;color:var(--color-text-primary)}.final{margin:17px 0 10px}.notice{font-size:12px;color:var(--color-attention-text);border-left:2px solid var(--color-warning);padding-left:12px;margin-top:12px}.composer{border:1px solid var(--color-border-secondary);border-radius:10px;padding:15px;color:var(--color-text-secondary);margin:20px 0 10px}.legend{font-size:12px;color:var(--color-text-secondary)}[hidden]{display:none!important}@media(max-width:760px){header{padding:16px}main{grid-template-columns:1fr;padding:16px;gap:20px}.settings{position:static}.path{margin-bottom:12px}h1{font-size:18px}.status{float:none;margin-left:10px}}@media(forced-colors:active){.switch{appearance:auto;width:22px;height:22px}.switch:after{display:none}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+</style><header><div><div class="eyebrow">ShipIt / Design study</div><h1>Less scrolling. Keep the results.</h1><div class="muted">Compact conversation view · Interactive mockup</div></div><button id="theme">Use light theme</button></header><main><aside class="settings"><div class="path">Settings / Advanced / Conversation</div><h2>Conversation</h2><div class="switchline"><label for="compact">Compact completed turns</label><input type="checkbox" class="switch" id="compact" aria-describedby="setting-help"></div><p id="setting-help" class="help muted">Show the last agent message and all cards. Hide tool output and progress messages in finished turns.</p><p class="help muted">Off by default. Saved for this browser in the proposed feature.</p><p class="help muted">In-app search includes hidden messages. Browser Find behavior needs a design decision.</p><div class="rule"><h2>Try the design</h2><p class="help">Enable the setting. Then select “Show full turn” in the conversation.</p><p class="help muted">The live turn stays open. Cards stay in order. Expand a sample card to inspect its result.</p></div><div class="rule help muted">Sample data only. These controls do not change ShipIt settings or run actions.</div></aside><section aria-label="Sample conversation"><div class="sample-head"><div><strong>Improve the file search</strong><div class="legend">Sample session · 4 turns</div></div><span class="badge" id="mode" aria-live="polite">Full view</span></div>
+<details class="card"><summary>Session PR · Improve file search <span class="status">Checks passed</span></summary><div class="body">This panel stays above the transcript in both modes. Production review and merge controls stay here. This sample performs no merge.</div></details><article data-finished="true"><div class="user"><div class="meta">You <span>10:42</span></div>Add file-name search and check the empty state.</div><button class="disclosure" hidden aria-expanded="false" aria-controls="detail1 detail1-extra" aria-label="Show full turn: file search" data-target="detail1">Show full turn</button><div class="detail" id="detail1"><p>I will check the current search and empty-state layout.</p><div class="tool">Read · FileSearch.tsx</div><div class="tool">Read · FileSearch.test.tsx</div></div><details class="card"><summary>Question · Match file names or full paths? <span class="status">Answered</span></summary><div class="body">You chose file names. The full path remains visible under each result.</div></details><details class="card"><summary>Native sub-agent · Check empty states <span class="status">Complete</span></summary><div class="body">The no-results view needs a clear search-reset hint. This report stays available after the turn ends.</div></details><details class="card"><summary>Context compacted <span class="status">Complete</span></summary><div class="body">The agent reduced its working context. This is separate from the compact conversation display setting.</div></details><div class="detail extra" id="detail1-extra" data-owner="detail1"><p>I added file-name matching and an empty-state hint.</p><div class="tool">Edit · FileSearch.tsx</div><div class="tool">Bash · affected tests · 12 passed</div></div><details class="card"><summary>ShipIt review · File search <span class="status">Complete</span></summary><div class="body">No blocking findings in this sample review. Review details open here, inside ShipIt.</div></details><div class="final"><div class="meta">Agent <span>10:46 · Finished</span></div><p>File search now matches file names. When no files match, the view explains how to clear the search.</p><p>The 12 affected tests passed.</p></div><details class="card"><summary>Proposed action · Add keyboard navigation <span class="badge">Optional</span></summary><div class="body">Add arrow-key selection to file search. The production action card remains usable in compact view; this is a sample only.</div></details></article>
+<article data-finished="true"><div class="user"><div class="meta">You <span>10:48</span></div>Also check the build.</div><button class="disclosure" hidden aria-expanded="false" aria-controls="detail2" aria-label="Show full turn: build check" data-target="detail2">Show full turn</button><div class="detail" id="detail2"><div class="tool">Bash · npm run build</div></div><div class="notice">Interrupted · The build check did not finish.</div><div class="final"><div class="meta">Agent <span>10:49 · Interrupted</span></div>I started the build check.</div><p class="legend">Last available message. No final result was received.</p></article>
+<article><div class="user"><div class="meta">You <span>10:49</span></div>Inspect the build error.</div><div class="notice">Failed · The agent stopped before it sent a reply.</div><p>Turn ended without an agent reply.</p><p class="legend">No success is implied. The failure stays visible.</p></article><article><div class="user"><div class="meta">You <span>10:50</span></div>Check the build again.</div><div class="meta">Agent <span class="badge live">Working · Full detail</span></div><p>I will run the build and inspect any errors.</p><div class="tool">Bash · npm run build · running</div><p class="legend">Active turns stay fully visible in both modes.</p></article><div class="composer">Sample composer · Continue the conversation in ShipIt chat</div><p class="legend">Display changes only. The full conversation remains saved.</p></section></main><script>
+const compact=document.getElementById('compact');
+function render(){document.getElementById('mode').textContent=compact.checked?'Compact view':'Full view';document.querySelectorAll('.disclosure').forEach(button=>{button.hidden=!compact.checked;const expanded=button.dataset.expanded==='true';button.setAttribute('aria-expanded',String(expanded));button.textContent=expanded?'Show compact turn':'Show full turn';button.setAttribute('aria-label',button.textContent+': '+(button.dataset.target==='detail1'?'file search':'build check')); const hidden=compact.checked&&!expanded;document.getElementById(button.dataset.target).hidden=hidden;document.querySelectorAll('[data-owner="'+button.dataset.target+'"]').forEach(el=>el.hidden=hidden);});}
+compact.addEventListener('change',render);document.querySelectorAll('.disclosure').forEach(button=>button.addEventListener('click',()=>{button.dataset.expanded=String(button.dataset.expanded!=='true');render();}));document.getElementById('theme').addEventListener('click',event=>{const dark=document.documentElement.classList.toggle('dark');event.target.textContent=dark?'Use light theme':'Use dark theme';});render();
+</script></html>
