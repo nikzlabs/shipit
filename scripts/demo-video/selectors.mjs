@@ -36,13 +36,38 @@ export const SELECTORS = {
   fileTreeEntry: (name) => `button[title="${name}"], button[title$="/${name}"]`,
   fileTreeRefresh: 'button[title="Refresh file tree"]',
 
-  /** Assistant message bodies — `message-markdown.tsx`. */
-  assistantMarkdown: '[data-testid="markdown-content"]',
+  /**
+   * The transcript's scroll container — `MessageList.tsx`, the one
+   * `overflow-y-auto` child of the chat pane's `isolate` wrapper (`App.tsx`,
+   * the only element with that class outside the mobile voice overlay; a
+   * sibling of the PR card header below). No testid of its own.
+   */
+  transcript: "div.isolate > div.overflow-y-auto",
+  /**
+   * One assistant message group — `TranscriptRow.tsx`: the assistant bubble is
+   * `div.group.justify-start > div` with `MarkdownContent` as a direct child
+   * (`message-markdown.tsx`, `data-testid="markdown-content"`). User bubbles
+   * are `justify-end` and not markdown; transcript cards (`MessageCards.tsx`)
+   * wrap in `flex justify-start` without `group`, and their markdown (a PR body)
+   * is nested deeper, so neither matches.
+   */
+  assistantMessage: 'div.group.justify-start > div > [data-testid="markdown-content"]',
 
-  /** PR lifecycle card state — `PrStateBadge.tsx` puts the state in `title`. */
-  prBadgeOpen: '[title^="PR #"]:not([title$="merged"]):not([title$="closed"]), [title="PR open"]',
-  prBadgeMerged: '[title$="merged"]',
-  /** Merge button — `PrStatusControls.tsx`, visible text per merge method. */
+  /**
+   * The active session's PR card header — `PrLifecycleCard.tsx`, the bar above
+   * the transcript, identified by its "Search conversation" button (nowhere
+   * else in the client). Scoping to it matters: the sidebar's `SessionItem.tsx`
+   * renders the same `PrStateBadge` for every session.
+   */
+  prCardHeader: 'div:has(> div > button[aria-label="Search conversation"])',
+  /** The card's actions row (status chips + merge controls), the header's next sibling. */
+  prCardActions: 'div:has(> div > button[aria-label="Search conversation"]) + div',
+  /** PR lifecycle card state — `PrStateBadge.tsx` puts the state in `title`; scoped to the header above. */
+  prBadgeOpen:
+    'div:has(> div > button[aria-label="Search conversation"]) [title^="PR #"]:not([title$="merged"]):not([title$="closed"]), ' +
+    'div:has(> div > button[aria-label="Search conversation"]) [title="PR open"]',
+  prBadgeMerged: 'div:has(> div > button[aria-label="Search conversation"]) [title$="merged"]',
+  /** Merge button — `PrStatusControls.tsx`, visible text per merge method; found inside `prCardActions`. */
   mergeButtonNames: ["Squash and merge", "Create a merge commit", "Rebase and merge"],
 
   /** Preview iframe — `PreviewFrame.tsx`. Absent entirely in local mode. */

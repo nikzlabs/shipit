@@ -14,10 +14,16 @@
 // instant case (req 12): the frame after the click is the frame where the
 // result is ready.
 //
+// The stamps are on the driver's clock; `--anchor-wall <s> --anchor-video <s>`
+// (one moment seen on both clocks, see `anchorOffset`) moves the slices onto
+// the video's, and `--video-duration <s>` clips them to the file. Without an
+// anchor the stamps are used as they are.
+//
 // Usage:
 //   node cut-plan.mjs <beats.json> <storyboard.json>            # full plan as JSON
 //   node cut-plan.mjs <beats.json> <storyboard.json> --print filter
 //   node cut-plan.mjs <beats.json> <storyboard.json> --print kept
+//   … [--anchor-wall <s> --anchor-video <s>] [--wall-duration <s>] [--video-duration <s>]
 
 import fs from "node:fs";
 import path from "node:path";
@@ -102,31 +108,56 @@ export function keptSeconds(slices) {
 }
 
 /**
- * Re-anchor the beat log onto the video's own clock.
+ * How far the driver's clock runs ahead of the video's, in seconds.
  *
- * The driver stamps beats from the moment it opened the page, but Playwright's
- * first frame lands later — ~2 s, measured on the dogfood runs, not the
- * sub-100 ms the plan first assumed — so every stamp is late by the gap. The
- * video ends when the context closes, so the gap is exactly
- * `wallDuration − videoDuration`, and shifting every stamp by it lands the
- * last hold inside the file instead of past its end.
+ * The driver stamps beats on its own wall clock, which starts before
+ * Playwright's first frame; the video has its own zero. The anchor is one
+ * moment seen on both clocks: the driver shows a black splash, notes
+ * `anchorWall` immediately before navigating to the instance, and the first
+ * non-black frame after the splash (`anchorVideo`, from ffmpeg's blackdetect)
+ * is the same moment on the video's clock. `wallDuration − videoDuration` is
+ * the fallback only: Playwright ends the file `max(time since the last frame,
+ * 1 s)` after the last frame (`videoRecorder.ts` `_stop()`), so a blinking
+ * caret makes the tail up to a second long and the difference off by as much.
  */
-export function anchorBeats(beatLog, { wallDuration, videoDuration } = {}) {
-  if (!Number.isFinite(wallDuration) || !Number.isFinite(videoDuration)) return beatLog;
-  const offset = wallDuration - videoDuration;
-  if (offset < 0) throw new Error(`video (${videoDuration}s) is longer than the wall clock (${wallDuration}s)`);
-  const shift = (t) => (t === null || t === undefined ? t : Math.max(0, t - offset));
-  return beatLog.map((b) => ({ ...b, actionAt: shift(b.actionAt), readyAt: shift(b.readyAt) }));
+export function anchorOffset({ anchorWall, anchorVideo, wallDuration, videoDuration } = {}) {
+  if (Number.isFinite(anchorWall) && Number.isFinite(anchorVideo)) {
+    if (anchorVideo < 0) throw new Error(`anchor in the video (${anchorVideo}s) is negative`);
+    return { offset: anchorWall - anchorVideo, method: "blackdetect" };
+  }
+  if (Number.isFinite(wallDuration) && Number.isFinite(videoDuration)) {
+    const offset = wallDuration - videoDuration;
+    if (offset < 0) throw new Error(`video (${videoDuration}s) is longer than the wall clock (${wallDuration}s)`);
+    return { offset, method: "wall-duration" };
+  }
+  return { offset: 0, method: "none" };
+}
+
+/**
+ * Move the slices — computed on the raw stamps — onto the video's clock, then
+ * keep only what lies inside the file. Shifting the slices rather than the
+ * stamps is deliberate: a stamp clamped at 0 before slicing would stretch or
+ * shrink a slice, while a slice clamped after shifting just loses the part
+ * that was never recorded.
+ */
+export function anchorSlices(slices, offset, videoDuration) {
+  const clampTo = Number.isFinite(videoDuration) ? videoDuration : Infinity;
+  const clamp = (t) => Math.min(Math.max(t - offset, 0), clampTo);
+  return slices
+    .map((s) => ({ start: Number(clamp(s.start).toFixed(3)), end: Number(clamp(s.end).toFixed(3)) }))
+    .filter((s) => s.end - s.start > EPSILON);
 }
 
 export function buildPlan(beatLog, storyboard, anchor = {}) {
-  const clampTo = Number.isFinite(anchor.videoDuration) ? anchor.videoDuration : Infinity;
-  const slices = planSlices(anchorBeats(beatLog, anchor), storyboard)
-    .map((s) => ({ start: Number(s.start.toFixed(3)), end: Number(Math.min(s.end, clampTo).toFixed(3)) }))
-    .filter((s) => s.end > s.start);
+  const { offset, method } = anchorOffset(anchor);
+  const slices = anchorSlices(planSlices(beatLog, storyboard), offset, anchor.videoDuration);
   if (slices.length === 0) throw new Error("the plan keeps nothing inside the video");
-  return { slices, keptSeconds: keptSeconds(slices), filter: buildFilter(slices) };
+  return { anchor: { method, offset: Number(offset.toFixed(3)) }, slices, keptSeconds: keptSeconds(slices), filter: buildFilter(slices) };
 }
+
+const USAGE =
+  "usage: cut-plan.mjs <beats.json> <storyboard.json> [--print filter|kept]\n" +
+  "       [--anchor-wall <s> --anchor-video <s>] [--wall-duration <s>] [--video-duration <s>]\n";
 
 function main(argv) {
   const flag = (name) => {
@@ -134,19 +165,37 @@ function main(argv) {
     return i >= 0 ? argv[i + 1] : undefined;
   };
   const print = flag("--print");
-  const wallDuration = flag("--wall-duration");
-  const videoDuration = flag("--video-duration");
-  const consumed = new Set([print, wallDuration, videoDuration].filter((v) => v !== undefined));
-  const positional = argv.filter((a) => !a.startsWith("--") && !consumed.has(a));
+  const numeric = (name) => {
+    const v = flag(name);
+    if (v === undefined) return undefined;
+    if (!Number.isFinite(Number(v))) throw new Error(`${name} must be a number, got ${JSON.stringify(v)}`);
+    return Number(v);
+  };
+  const anchor = {
+    anchorWall: numeric("--anchor-wall"),
+    anchorVideo: numeric("--anchor-video"),
+    wallDuration: numeric("--wall-duration"),
+    videoDuration: numeric("--video-duration"),
+  };
+  if ((anchor.anchorWall === undefined) !== (anchor.anchorVideo === undefined)) {
+    throw new Error("--anchor-wall and --anchor-video go together");
+  }
+  const flagNames = new Set(["--print", "--anchor-wall", "--anchor-video", "--wall-duration", "--video-duration"]);
+  const positional = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (flagNames.has(argv[i])) { i++; continue; }
+    if (argv[i].startsWith("--")) throw new Error(`unknown flag: ${argv[i]}`);
+    positional.push(argv[i]);
+  }
   if (positional.length !== 2) {
-    process.stderr.write("usage: cut-plan.mjs <beats.json> <storyboard.json> [--print filter|kept] [--wall-duration <s> --video-duration <s>]\n");
+    process.stderr.write(USAGE);
     process.exit(2);
   }
   const [beatsFile, storyboardFile] = positional;
   const plan = buildPlan(
     JSON.parse(fs.readFileSync(beatsFile, "utf8")),
     JSON.parse(fs.readFileSync(storyboardFile, "utf8")),
-    { wallDuration: Number(wallDuration), videoDuration: Number(videoDuration) },
+    anchor,
   );
   if (print === "filter") process.stdout.write(plan.filter + "\n");
   else if (print === "kept") process.stdout.write(String(plan.keptSeconds) + "\n");

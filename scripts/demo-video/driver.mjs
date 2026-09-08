@@ -12,8 +12,17 @@
 //   node driver.mjs --instance <url> --scenario <dir> --out <dir>
 //                   [--mode record|replay] [--wait-ceiling <seconds>] [--headed]
 //
-// Reads <scenario>/storyboard.json (plan §3). Writes <out>/recording.webm and
-// <out>/beats.json ([{ id, actionAt, readyAt }], seconds from recording start).
+// Reads <scenario>/storyboard.json (plan §3). Writes <out>/recording.webm,
+// <out>/beats.json ([{ id, actionAt, readyAt }], seconds on the driver's clock)
+// and <out>/run.json (mode, viewport, `anchor.wallAt` — the moment the cut
+// step finds in the footage to map that clock onto the video's, plan §4).
+//
+// Before anything is recorded, both modes verify the demo repo pin (`git
+// ls-remote <repo.url> HEAD` must equal `repo.commit`); replay mode also
+// requires `proxyUrl` in the storyboard and a 200 from `HEAD <proxyUrl>/api/hello`
+// — a replay against a proxy that is not there would be a live take by
+// accident. Which side of the proxy a take lands on is otherwise the proxy's
+// business (plan §2); `--mode` is written to run.json.
 //
 // Environment:
 //   PLAYWRIGHT_BROWSERS_PATH  where `npx playwright install chromium` put the
@@ -23,21 +32,27 @@
 //                             pinned `playwright` package will not launch).
 //   DEMO_CHROMIUM             optional executablePath override, for a host with
 //                             a Chromium of its own.
-//
-// `--mode` is recorded into beats.json for the cut step's benefit; the driver
-// itself behaves identically in both — which side of the proxy the take lands
-// on is the proxy's business (plan §2).
 
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { chromium } from "playwright";
 import { SELECTORS as S } from "./selectors.mjs";
+import { beatSlices } from "./cut-plan.mjs";
 
 const POLL_MS = 250;
 const DEFAULT_WAIT_CEILING_S = 600;
 const DEFAULT_TYPING_CPS = 30;
 /** Steps for a pointer glide; more steps = smoother, slower. */
 const GLIDE_STEPS = 24;
+/**
+ * How long the black splash is on screen before the driver navigates to the
+ * instance. The cut step finds the splash with blackdetect (`d=0.08`), so it
+ * needs to be at least a few frames long at 25 fps; a quarter second is
+ * comfortably that and costs nothing, since nothing before the first beat's
+ * action is kept.
+ */
+const SPLASH_MS = 250;
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -85,8 +100,11 @@ export function readStoryboard(scenarioDir) {
   const file = path.join(scenarioDir, "storyboard.json");
   const sb = JSON.parse(fs.readFileSync(file, "utf8"));
   if (!sb.repo?.url) throw new Error(`${file}: repo.url is required`);
+  if (!/^[0-9a-f]{40}$/.test(sb.repo.commit ?? "")) throw new Error(`${file}: repo.commit must be a full 40-hex SHA (the pin the driver verifies)`);
   if (!sb.viewport?.width || !sb.viewport?.height) throw new Error(`${file}: viewport {width,height} is required`);
   if (!Array.isArray(sb.beats) || sb.beats.length === 0) throw new Error(`${file}: beats[] is required`);
+  const cps = sb.pace?.typingCharsPerSecond;
+  if (cps !== undefined && (typeof cps !== "number" || !(cps > 0))) throw new Error(`${file}: pace.typingCharsPerSecond must be a positive number`);
   const ids = new Set();
   for (const b of sb.beats) {
     if (!b.id) throw new Error(`${file}: every beat needs an id`);
@@ -94,8 +112,33 @@ export function readStoryboard(scenarioDir) {
     ids.add(b.id);
     if (b.type !== undefined && b.click !== undefined) throw new Error(`${file}: beat ${b.id} has both type and click`);
     if (!Array.isArray(b.wait ?? [])) throw new Error(`${file}: beat ${b.id}: wait must be a list`);
+    for (const k of ["lead", "hold"]) {
+      if (typeof b[k] !== "number" || !(b[k] >= 0)) throw new Error(`${file}: beat ${b.id}: ${k} must be a non-negative number of seconds`);
+    }
   }
   return sb;
+}
+
+/**
+ * The driver-clock moment the footage of the beat just completed ends: the
+ * later of its lead (`actionAt + lead`; for a beat with no action, from where
+ * the previous hold ended) and its hold (`readyAt + hold`). The driver keeps
+ * recording until then before it acts again or closes the context, so both
+ * slices the cut keeps (plan §5) exist as footage — the hold is the result
+ * held still, not the next beat's typing. The same slice math as the cut
+ * (`beatSlices`), so the two cannot disagree about where a slice ends.
+ *
+ * Consequence: whenever a turn outlasts its `lead` (`readyAt ≥ actionAt +
+ * lead`), the lead and hold slices are disjoint, and since the next action
+ * starts at or after this moment no slice of one beat overlaps another — so
+ * the cut keeps exactly Σ(lead + hold) seconds.
+ */
+export function beatFootageEnd(beatLog, storyboardBeats) {
+  if (!Array.isArray(beatLog) || beatLog.length === 0) throw new Error("beat log is empty");
+  const last = beatLog[beatLog.length - 1];
+  return beatSlices(beatLog, storyboardBeats)
+    .filter((s) => s.beat === last.id)
+    .reduce((end, s) => Math.max(end, s.end), 0);
 }
 
 const log = (msg) => { process.stderr.write(`[driver] ${msg}\n`); };
@@ -159,9 +202,45 @@ function repoDisplayName(url) {
   return i >= 0 ? label.slice(i + 1) : label;
 }
 
+/**
+ * `git ls-remote <url> HEAD` on the driver host (git is there; `file://` URLs
+ * work). The pin is what makes a take repeatable (req 3): a demo repo that
+ * drifted from `repo.commit` would replay a cassette against different files.
+ */
+export function verifyRepoPin(repo) {
+  let out;
+  try {
+    out = execFileSync("git", ["ls-remote", repo.url, "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch (err) {
+    throw new Error(`git ls-remote ${repo.url} failed: ${(err.stderr ?? err.message).toString().trim()}`);
+  }
+  const head = out.split(/\s+/)[0];
+  if (!/^[0-9a-f]{40}$/.test(head ?? "")) throw new Error(`git ls-remote ${repo.url} returned no HEAD`);
+  if (head !== repo.commit) {
+    throw new Error(`demo repo ${repo.url} is at ${head}, storyboard pins ${repo.commit} — rebuild it (make-demo-repo.sh) or update the pin`);
+  }
+  return head;
+}
+
+/** Replay needs the proxy answering before anything is recorded (plan §2: `HEAD /api/hello` → 200). */
+async function verifyProxy(sb) {
+  if (!sb.proxyUrl) throw new Error("--mode replay needs proxyUrl in the storyboard: the address the session's Claude CLI reaches the proxy at");
+  const url = `${sb.proxyUrl.replace(/\/+$/, "")}/api/hello`;
+  let res;
+  try {
+    res = await fetch(url, { method: "HEAD" });
+  } catch (err) {
+    throw new Error(`replay proxy not reachable: HEAD ${url}: ${err.cause?.message ?? err.message}`);
+  }
+  if (res.status !== 200) throw new Error(`replay proxy at ${url} answered ${res.status}, expected 200`);
+  log(`replay proxy answering at ${sb.proxyUrl}`);
+}
+
 async function setup(opts, sb) {
   const base = opts.instance;
   const ceilingMs = opts.waitCeilingS * 1000;
+  log(`demo repo pinned at ${verifyRepoPin(sb.repo)}`);
+  if (opts.mode === "replay") await verifyProxy(sb);
   log(`waiting for ${base}/api/bootstrap`);
   await until(async () => (await api(base, "GET", "/api/bootstrap")).ok, { ceilingMs, what: "GET /api/bootstrap" });
 
@@ -273,11 +352,21 @@ class Driver {
     this.claimed = false;
     this.beats = [];
     this.ceilingMs = opts.waitCeilingS * 1000;
-    this.sawRunning = false;
+    /** Assistant message groups in the transcript when the last prompt was sent; null before any send. */
+    this.assistantGroupsAtSend = null;
     this.panesClicked = new Set();
   }
 
   t() { return (Date.now() - this.recordingStart) / 1000; }
+
+  /**
+   * Wall-clock wait until the driver's clock reads `target` — deliberately, and
+   * only here: this is footage (the hold the cut keeps), not a state wait.
+   */
+  async recordUntil(target) {
+    const ms = (target - this.t()) * 1000;
+    if (ms > 0) await this.page.waitForTimeout(ms);
+  }
 
   /** Glide the pointer to the element's centre, then click it (req 11). */
   async click(locator) {
@@ -351,16 +440,29 @@ class Driver {
     return claim;
   }
 
-  async clickMerge() {
+  /** The merge button on the active session's card, or null; `enabled` says whether it can be clicked. */
+  async mergeButton() {
+    const actions = this.page.locator(S.prCardActions).first();
+    if (await actions.count() === 0) return null;
     for (const name of S.mergeButtonNames) {
-      const btn = this.page.getByRole("button", { name, exact: true });
-      if (await btn.count() > 0 && await btn.first().isEnabled()) { await this.click(btn.first()); return; }
+      const btn = actions.getByRole("button", { name, exact: true });
+      if (await btn.count() > 0 && await btn.first().isVisible()) return { locator: btn.first(), enabled: await btn.first().isEnabled() };
     }
-    throw new Error("no enabled merge button on the PR card");
+    return null;
+  }
+
+  async clickMerge() {
+    const btn = await this.mergeButton();
+    if (!btn?.enabled) throw new Error("no enabled merge button on the PR card");
+    await this.click(btn.locator);
   }
 
   async clickTrust() {
     await this.click(this.page.locator(S.trustAccept).first());
+  }
+
+  assistantGroups() {
+    return this.page.locator(S.transcript).first().locator(S.assistantMessage).count();
   }
 
   async typeAndSend(text) {
@@ -370,7 +472,11 @@ class Driver {
     await input.pressSequentially(text, { delay: 1000 / cps });
     const send = this.page.locator(S.sendButton).first();
     await until(() => send.isEnabled(), { ceilingMs: this.ceilingMs, what: "send button enabled" });
-    this.sawRunning = false;
+    // The baseline `turn: finished` compares against: the reply to this send
+    // is a new assistant group. Counted before the click so a fast turn that
+    // is over before the first poll still reads as finished — the transient
+    // running state is never required to be observed.
+    this.assistantGroupsAtSend = await this.assistantGroups();
     await this.click(send);
   }
 
@@ -398,10 +504,15 @@ class Driver {
       case "turn": {
         const stopVisible = await p.locator(S.stopButton).first().isVisible().catch(() => false);
         const st = await this.status();
-        const running = stopVisible || st?.running === true;
-        if (running) this.sawRunning = true;
-        if (value === "running") return running;
-        if (value === "finished") return this.sawRunning && !running && st?.running === false;
+        if (value === "running") return stopVisible || st?.running === true;
+        if (value === "finished") {
+          // A new assistant group since the send, no stop button, and /status
+          // idle — three facts about the present, none about a transition the
+          // poll might have missed.
+          if (this.assistantGroupsAtSend === null) throw new Error("turn: finished waited before any prompt was sent");
+          if (stopVisible || st?.running !== false) return false;
+          return (await this.assistantGroups()) > this.assistantGroupsAtSend;
+        }
         throw new Error(`turn: ${value}?`);
       }
       case "composer": {
@@ -415,20 +526,25 @@ class Driver {
         return this.claimed;
       }
       case "transcript_text":
-        return (await p.getByText(value, { exact: false }).count()) > 0;
+        // Scoped to the transcript: the same words in the composer, the file
+        // tree or a PR title must not satisfy a wait on the agent's reply.
+        return (await p.locator(S.transcript).first().getByText(value, { exact: false }).count()) > 0;
       case "file_tree":
         return (await p.locator(S.fileTreeEntry(value)).count()) > 0;
       case "pr_card": {
+        // Badge selectors are scoped to the active session's card; the sidebar
+        // shows the same badge for every session.
         if (value === "open") return (await p.locator(S.prBadgeOpen).count()) > 0;
         if (value === "merged") return (await p.locator(S.prBadgeMerged).count()) > 0;
         throw new Error(`pr_card: ${value}?`);
       }
       case "merge_button": {
-        for (const name of S.mergeButtonNames) {
-          const b = p.getByRole("button", { name, exact: true });
-          if (await b.count() > 0 && await b.first().isVisible()) return true;
-        }
-        return false;
+        if (value !== "visible") throw new Error(`merge_button: ${value}?`);
+        // "visible" means clickable: the button is rendered disabled while the
+        // branch is unsynced or the agent runs, and a hold on that is a hold on
+        // nothing the next beat can act on.
+        const btn = await this.mergeButton();
+        return btn !== null && btn.enabled;
       }
       case "preview_text": {
         // Not satisfiable on a local-mode instance: there is no preview there (req 13).
@@ -478,6 +594,12 @@ class Driver {
     const readyAt = this.t();
     this.beats.push({ id: beat.id, actionAt, ...(sentAt !== undefined ? { sentAt } : {}), readyAt });
     log(`beat ${beat.id}: ready at ${readyAt.toFixed(2)}s`);
+    // The hold is footage: keep recording, still, until every slice the cut
+    // will keep of this beat exists (`beatFootageEnd`). Nothing acts on the
+    // page until then — the next beat's pane switch and typing come after.
+    const footageEnd = beatFootageEnd(this.beats, this.sb.beats);
+    if (footageEnd > this.t()) log(`beat ${beat.id}: holding until ${footageEnd.toFixed(2)}s`);
+    await this.recordUntil(footageEnd);
   }
 }
 
@@ -503,16 +625,25 @@ export async function run(opts) {
   const driver = new Driver(opts, sb, page, recordingStart);
   let video = null;
   let failure = null;
+  let anchorWallAt = null;
+  let wallDuration = null;
   try {
-    await page.goto(opts.instance, { waitUntil: "domcontentloaded" });
+    // The anchor (plan §4): a black splash, painted and held, then the
+    // navigation — the first non-black frame in the recording is the first
+    // paint after `anchorWallAt`, so the cut step can put the driver's clock
+    // and the video's side by side. Stamped immediately before the goto, and
+    // the goto returns on commit, not on load: nothing runs between the stamp
+    // and the paint that would widen the gap.
+    await page.setContent('<body style="margin:0;background:#000"></body>');
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    await page.waitForTimeout(SPLASH_MS);
+    anchorWallAt = driver.t();
+    await page.goto(opts.instance, { waitUntil: "commit" });
     if (sb.cursor !== false) await page.mouse.move(driver.pointer.x, driver.pointer.y);
+    // Each beat records through its own hold (`runBeat`), so the last beat's
+    // hold is on film by the time the loop ends.
     for (const beat of sb.beats) await driver.runBeat(beat);
     await page.screenshot({ path: path.join(opts.out, "final.png") });
-    // The cut keeps `[readyAt, readyAt + hold]` of the last beat (plan §5), so
-    // the recording has to outlive its ready moment by that much — the one
-    // wall-clock wait in the driver, and it is footage, not a state wait.
-    const last = sb.beats[sb.beats.length - 1];
-    if (last?.hold > 0) await page.waitForTimeout(last.hold * 1000);
   } catch (err) {
     failure = err;
     const beatId = driver.beats.length < sb.beats.length ? sb.beats[driver.beats.length].id : "end";
@@ -521,12 +652,12 @@ export async function run(opts) {
     log(`ABORT at beat ${beatId}: ${err.message} — screenshot ${shot}`);
   } finally {
     video = page.video();
+    // Measured before the close, not after it: the fallback anchor is
+    // `wallDuration − videoDuration`, and shutdown time is not in the file.
+    wallDuration = driver.t();
     await context.close();
     await browser.close();
   }
-  // The video's last frame is the context close, so this minus the file's own
-  // duration is how late the first frame was — the cut step re-anchors on it.
-  const wallDuration = (Date.now() - recordingStart) / 1000;
 
   // beats.json is the bare array the cut step reads (plan §5); the run's
   // metadata sits beside it so the contract stays exactly [{ id, actionAt, readyAt }].
@@ -537,6 +668,7 @@ export async function run(opts) {
     mode: opts.mode,
     viewport: sb.viewport,
     recordedAt: new Date(recordingStart).toISOString(),
+    ...(anchorWallAt === null ? {} : { anchor: { wallAt: Number(anchorWallAt.toFixed(3)) } }),
     wallDuration: Number(wallDuration.toFixed(3)),
     completed: driver.beats.length === sb.beats.length,
   }, null, 2) + "\n");

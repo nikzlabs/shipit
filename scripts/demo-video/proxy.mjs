@@ -310,10 +310,14 @@ function createRecorder(opts) {
     // Headers verbatim except: the dummy key becomes the proxy's own; hop-by-hop
     // and host are the transport's; accept-encoding is forced to identity so the
     // saved stream is plain SSE the replay can pace (a gzipped body has no frames).
+    // The body was read whole, so it goes out with a content-length — and a
+    // chunked request's transfer-encoding must go, or the upstream sees both
+    // framings on one message and rejects it (RFC 9112 §6.3).
     const headers = { ...req.headers };
     delete headers.host;
     delete headers.connection;
     delete headers["accept-encoding"];
+    delete headers["transfer-encoding"];
     headers["accept-encoding"] = "identity";
     headers["content-length"] = String(raw.length);
     if (lane === LANE_API_KEY) headers["x-api-key"] = key;
