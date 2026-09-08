@@ -319,4 +319,71 @@ worker, whose catch returns the same value the guard does.
 
 - [x] Full suite after this round: 999 files, 17,475 tests.
 
+### Fifth review round — a COLD review, and the ownership is still incomplete
+
+Given the requirements and the diff with no mention of the earlier rounds and no
+findings to confirm. It found five defects, four P1, three reproduced in memory
+by the reviewer — and, more usefully, named the shape of the remaining problem:
+
+> *"Incomplete ownership: the new hold governs selected admission checks, while
+> cancellation, readiness, teardown, and transcript persistence still use
+> different signals. Keeping compaction separate from the turn executor is
+> reasonable, but the phase needs coherent ownership across those consumers. A
+> compaction-specific persistence bypass cannot provide that."*
+
+That is right, and it is the same shape as round 2's finding: the pre-turn phase
+has been extended to one consumer family at a time, per review round, while the
+others still read `running` or the turn accumulators. All five verified at source
+before being recorded. **None are fixed.**
+
+- [ ] **[P1] Any OTHER side-channel card written during the phase is deleted by
+      the user's turn.** `emitChatCard` branches on `runner.running`, which is
+      true throughout; the card lands in the PREVIOUS turn's accumulators, which
+      `resetRunnerTurnState` then clears and `replaceInProgress` deletes. There
+      are ~20 such call sites (bug reports, issue cards, sub-agent consult cards,
+      session title, self-merge-watch, propose-actions, egress). Before docs/295
+      this window was milliseconds; the compaction makes it minutes. **The
+      direct-append fix protects the compaction card only** — the bypass the
+      reviewer names. The real fix is that `emitChatCard` should branch on
+      "is a turn ACCUMULATING", not on `running`.
+- [ ] **[P1] The WS steer gate reads a STALE hold.** `send-message.ts:129`
+      captures `heldByMerge` before `await verifyRunningState()`; the outer
+      re-check at :149 correctly re-reads `preTurnHold`, but the steer gate at
+      :213 still uses the captured value. A send whose verify round-trip overlaps
+      another send entering its pre-turn phase is therefore steered into the
+      resident process the compaction is about to retire and kill — delivered
+      nowhere, with no queued copy. Exactly the defect fixed in
+      `dispatchOnRunner`, missed on the WS path.
+- [ ] **[P1] A predecessor's late `done` clears the pending turn's `running`.**
+      `turn-executor.ts` documents this window as *"deliberately accepted"*
+      because *"it is self-healing — the queued turn's own `executeAgentTurn`
+      sets `running` again at entry"*. docs/295 invalidates that argument: it
+      widens the window from a few awaits to a merge probe plus a 300 s
+      compaction plus a branch reset, and nothing in the phase re-sets `running`.
+      The session then reads idle for minutes — `shipit session wait` reports
+      ready — and once the predecessor's post-turn lease ends nothing protects it
+      from idle disposal. **This falsifies the reasoning for leaving `preTurnHold`
+      out of `agentBusy` and `dispose()`**, which was "redundant with `running`".
+- [ ] **[P1] The timeout cancels nothing in the worker.** `agent.run()` enqueues
+      onto the container runner's serialized `_startInFlight` with an unbounded
+      `/agent/start`; the hook's 300 s timer kills the proxy and returns, but the
+      start stays pending and the user's spawn queues behind it. If it later
+      resumes it can still start the abandoned compaction — the ownership check
+      is before `run()`, not inside the proxy's async start. Round 4 recorded the
+      serialization as pre-existing and out of scope; that was too generous, as
+      the abandoned-start half is this feature's own.
+- [ ] **[P2] A failed reset now removes the req-7 guarantee.** Compaction
+      succeeds, the reset's `git fetch` throws → `NOT_MOVED`, empty prefix. On
+      Codex and OpenCode, which ignore the compaction instructions, the turn then
+      carries NO statement that the PR merged. Before this feature a failed reset
+      was survivable because the agent's own context still held that knowledge;
+      the compaction is what removes the fallback.
+
+**Blind tests named by the review**, all confirmed: the req-7 test stubs the
+reset so it cannot see a real `NOT_MOVED`; the integration test asserts only on
+the compaction card, so it cannot see any other card being deleted; the timeout
+tests defer credential prep or count a fake `kill()` and never exercise the
+serialized worker start; and the drained-delivery test never delivers the
+predecessor's late `done`.
+
 - [x] Comment the outcome on `planning#522`.
