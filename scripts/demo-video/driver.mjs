@@ -52,7 +52,7 @@ const GLIDE_STEPS = 24;
  * comfortably that and costs nothing, since nothing before the first beat's
  * action is kept.
  */
-const SPLASH_MS = 250;
+const SPLASH_MS = 500;
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
