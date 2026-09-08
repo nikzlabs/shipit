@@ -472,4 +472,45 @@ describe("rebase flow: API + WS events", () => {
     postAbortClaude.emit("event", { type: "system", subtype: "init", session_id: "test-session-post-abort" });
     postAbortClaude.finish("test-session-post-abort");
   });
+
+  /**
+   * The 2026-09-07 incident, end to end through the real route: a manual sync
+   * over a workspace that still holds uncommitted work must SAVE that work
+   * through `postTurnCommit` and then rebase, rather than handing the user
+   * git's `cannot rebase: Your index contains uncommitted changes`.
+   *
+   * The route-level half matters on its own — the driver only refuses when
+   * `commitPendingWork` is absent, so a dropped wiring would turn every sync
+   * over a dirty tree into a refusal with no test to notice.
+   */
+  it("dirty workspace — the sync saves the work, then rebases", { timeout: 20_000 }, async () => {
+    await githubAuth.setToken("test-token");
+    const { sessionId, sessionDir } = await createSession();
+    setupDivergence(sessionDir, { conflicting: false });
+    const env = { ...process.env, HOME: tmpDir };
+
+    // What the previous turn left behind: one edit unstaged, one already
+    // staged — the exact state git refuses to rebase over.
+    fs.writeFileSync(path.join(sessionDir, "unstaged.txt"), "left behind\n");
+    fs.writeFileSync(path.join(sessionDir, "staged.txt"), "already added\n");
+    execSync("git add staged.txt", { cwd: sessionDir, env });
+
+    const res = await postRebase(sessionId, "main");
+    expect(res.status).toBe(200);
+
+    const completeMsg = await waitForMessage("rebase_complete", 10_000);
+    expect(completeMsg).toMatchObject({ type: "rebase_complete" });
+
+    // Saved, not stashed and not discarded: both files are on the branch, and
+    // the branch now contains origin/main.
+    const log = execSync("git log --oneline", { cwd: sessionDir, env, encoding: "utf-8" });
+    expect(log).toContain("Save work before syncing with main");
+    expect(log).toContain("Upstream commit");
+    expect(fs.readFileSync(path.join(sessionDir, "unstaged.txt"), "utf-8")).toBe("left behind\n");
+    expect(fs.readFileSync(path.join(sessionDir, "staged.txt"), "utf-8")).toBe("already added\n");
+    const tracked = execSync("git ls-files", { cwd: sessionDir, env, encoding: "utf-8" });
+    expect(tracked).toContain("unstaged.txt");
+    expect(tracked).toContain("staged.txt");
+    expect(execSync("git status --porcelain", { cwd: sessionDir, env, encoding: "utf-8" }).trim()).toBe("");
+  });
 });

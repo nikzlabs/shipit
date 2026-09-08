@@ -14,6 +14,7 @@ import {
   buildBranchSyncAgentNotice,
   MAX_REBASE_ITERATIONS,
 } from "./rebase-driver.js";
+import { withWorkspaceLock } from "./marketplace.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
 import { testDispatch } from "../integration_tests/dispatch-test-helpers.js";
@@ -2115,5 +2116,290 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
     await handle.settled;
     await ciHandle.settled;
     expect(runner.queueLength).toBe(0);
+  });
+});
+
+/**
+ * The 2026-09-07 incident (session 43c732e1, branch
+ * `shipit/git-lfs-content-optimization-45hjy1`): a manual "Sync with `main`"
+ * ran `git rebase origin/main` against a workspace whose index was not empty
+ * and git refused — `cannot rebase: Your index contains uncommitted changes`.
+ *
+ * The flow's guards cannot see that state. `runner.running` and
+ * `runner.systemTurnInProgress` describe a TURN, and the post-turn commit runs
+ * with both already false (`tryDrain` clears `running` at `agent_result`;
+ * `runCommitAndPr` runs several awaits later). The automatic conflict-resolve
+ * path has always pre-flighted a dirty tree; the manual path had nothing.
+ *
+ * `prepareWorkspaceForRebase` closes both halves: it takes the per-workspace
+ * mutex `postTurnCommit` holds for its whole `git add -A` + `git commit`, and
+ * it refuses — durably, in the transcript — when the tree cannot be made clean.
+ */
+describe("rebase-driver: pre-rebase workspace preparation", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    vi.mocked(handWorkspaceBackToWorker).mockClear();
+    vi.mocked(restoreLfsAfterTreeRewrite).mockClear();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-prepare-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const makeRunner = (workDir: string): SessionRunner =>
+    new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+  /**
+   * THE regression test. A post-turn commit is mid-flight on the same
+   * workspace — staged, not yet committed, holding the workspace mutex — when
+   * the user clicks Sync. Before the fix the flow read the turn flags (both
+   * already false), fetched, and ran `git rebase` straight into that index.
+   *
+   * Asserted on ORDER, not on a timeout: the commit must land before
+   * `git.rebase` is invoked at all.
+   */
+  it("waits out an in-flight post-turn commit instead of rebasing into its index", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    const runner = makeRunner(workDir);
+
+    // The previous turn's edit, not yet committed.
+    fs.writeFileSync(path.join(workDir, "from-last-turn.txt"), "work\n");
+
+    const order: string[] = [];
+    const realRebase = git.rebase.bind(git);
+    vi.spyOn(git, "rebase").mockImplementation(async (ref: string) => {
+      order.push("rebase");
+      return realRebase(ref);
+    });
+
+    // `postTurnCommit` runs its whole `git add -A` + `git commit` inside this
+    // mutex; we reproduce that shape rather than the whole pipeline.
+    const commitInFlight = withWorkspaceLock(workDir, async () => {
+      execSync("git add -A", { cwd: workDir, stdio: "pipe" });
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      execSync("git commit -m 'Previous turn'", { cwd: workDir, stdio: "pipe" });
+      order.push("commit");
+    });
+
+    const flow = runFlow({
+      git,
+      githubAuthManager: makeStubAuth(false),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+      recordSyncCard: true,
+    }, "main");
+
+    const [result] = await Promise.all([flow, commitInFlight]);
+
+    expect(order).toEqual(["commit", "rebase"]);
+    expect(result.status).toBe("rebased");
+    // The turn's work survived the rebase and is on the branch.
+    expect(fs.readFileSync(path.join(workDir, "from-last-turn.txt"), "utf8")).toBe("work\n");
+    expect(execSync("git log --oneline -3", { cwd: workDir }).toString()).toContain("Previous turn");
+  });
+
+  /**
+   * A tree nobody is coming back for — an agent killed mid-turn, an edit made
+   * in the terminal panel. An explicit sync SAVES it through the established
+   * pipeline; it never stashes and never discards.
+   */
+  it("saves an otherwise-orphaned dirty tree through the commit pipeline, then rebases", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = makeRunner(workDir);
+
+    fs.writeFileSync(path.join(workDir, "unsaved.txt"), "precious\n");
+    const armPush = vi.fn();
+    const commitPendingWork = vi.fn(async () => {
+      execSync("git add -A && git commit -m 'Save work before syncing with main'", {
+        cwd: workDir,
+        stdio: "pipe",
+      });
+      return { commitHash: execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim(), armPush };
+    });
+
+    const result = await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+      recordSyncCard: true,
+      commitPendingWork,
+    }, "main");
+
+    expect(commitPendingWork).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("rebased");
+    expect(result).toHaveProperty("forcePushed", true);
+    expect(fs.readFileSync(path.join(workDir, "unsaved.txt"), "utf8")).toBe("precious\n");
+    // The flow's own force-push published that commit, so the deferred plain
+    // push must NOT also fire — a debounced push racing a force-push is
+    // rejected non-fast-forward and reported as a divergence that never was.
+    expect(armPush).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The save pipeline refusing is its job (a likely secret in the diff,
+   * unresolved conflict markers). The sync must then stop with the tree
+   * untouched, explain itself durably, and hand back the auto-push for
+   * whatever the pipeline did manage to commit.
+   */
+  it("refuses the sync when the pipeline cannot clean the tree, and says so durably", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    const runner = makeRunner(workDir);
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (m: WsServerMessage) => messages.push(m));
+
+    fs.writeFileSync(path.join(workDir, "has-a-secret.txt"), "sk-live-xxx\n");
+    const headBefore = execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim();
+
+    const armPush = vi.fn();
+    const captured: { role: string; text: string }[] = [];
+    await expect(runFlow({
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory(captured),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+      recordSyncCard: true,
+      // The shape `postTurnCommit` returns on a secret block: no commit, tree
+      // left exactly as the user left it.
+      commitPendingWork: async () => ({ commitHash: null, armPush }),
+    }, "main")).rejects.toMatchObject({ statusCode: 409 });
+
+    // Nothing was rebased, nothing was stashed, nothing was discarded.
+    expect(execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim()).toBe(headBefore);
+    expect(fs.readFileSync(path.join(workDir, "has-a-secret.txt"), "utf8")).toBe("sk-live-xxx\n");
+    expect(messages.find((m) => m.type === "rebase_started")).toBeUndefined();
+
+    // Durable, not just a transient `rebase_aborted`: the explanation is in the
+    // transcript the user still has after a reload.
+    const notice = captured.find((m) => m.text.includes("did not start"));
+    expect(notice).toBeDefined();
+    expect(notice?.text).toContain("could not save this session's uncommitted changes");
+    expect(notice?.text).toContain("your work is untouched");
+    // A commit the pipeline DID make would be left local and unpushed
+    // otherwise; the arm comes back to us because no force-push will run.
+    expect(armPush).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The automatic conflict-resolve path wires no save pipeline on purpose — it
+   * must never commit work the user did not ask it to commit. It refuses with
+   * the same 409 the wrapper reads as "defer, no budget burned", and stays
+   * SILENT: a persisted notice per poll would be noise.
+   */
+  it("refuses a dirty tree with no save pipeline, and leaves no notice on the automatic path", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    const runner = makeRunner(workDir);
+
+    fs.writeFileSync(path.join(workDir, "dirty.txt"), "mine\n");
+    const headBefore = execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim();
+
+    const captured: { role: string; text: string }[] = [];
+    await expect(runFlow({
+      git,
+      githubAuthManager: makeStubAuth(false),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory(captured),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+      // recordSyncCard unset ⇒ the automatic path.
+    }, "main")).rejects.toMatchObject({ statusCode: 409 });
+
+    expect(execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim()).toBe(headBefore);
+    expect(fs.existsSync(path.join(workDir, "dirty.txt"))).toBe(true);
+    expect(captured).toHaveLength(0);
+  });
+
+  /**
+   * A workspace already mid-rebase is named for what it is. Letting the
+   * dirty-tree branch report it would blame the tree for a state `autoCommit`
+   * refuses to clean by design, and the user would be told to commit work that
+   * cannot be committed.
+   */
+  it("names an already-in-progress rebase instead of blaming the working tree", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    const runner = makeRunner(workDir);
+
+    // Strand the workspace mid-rebase, exactly as an interrupted one would.
+    execSync("git fetch origin", { cwd: workDir, stdio: "pipe" });
+    try {
+      execSync("git rebase origin/main", { cwd: workDir, stdio: "pipe" });
+    } catch { /* expected: conflicts */ }
+    expect(await git.isRebaseInProgress()).toBe(true);
+
+    const captured: { role: string; text: string }[] = [];
+    await expect(runFlow({
+      git,
+      githubAuthManager: makeStubAuth(false),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory(captured),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+      recordSyncCard: true,
+    }, "main")).rejects.toMatchObject({ statusCode: 409 });
+
+    const notice = captured.find((m) => m.text.includes("did not start"));
+    expect(notice?.text).toContain("rebase is already in progress");
+    expect(notice?.text).toContain("git rebase --abort");
+  });
+
+  /**
+   * The flow must not have taken the hold it releases in its `finally` and
+   * then left it set on a refusal — a stranded `systemTurnInProgress`
+   * suppresses live steering for the rest of the session (planning#338).
+   */
+  it("releases the session hold when preparation refuses", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    const runner = makeRunner(workDir);
+    fs.writeFileSync(path.join(workDir, "dirty.txt"), "mine\n");
+
+    await expect(runFlow({
+      git,
+      githubAuthManager: makeStubAuth(false),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    }, "main")).rejects.toBeDefined();
+
+    expect(runner.systemTurnInProgress).toBe(false);
+    expect(runner.running).toBe(false);
   });
 });

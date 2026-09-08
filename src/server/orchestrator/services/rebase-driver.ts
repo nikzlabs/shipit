@@ -32,6 +32,7 @@ import { agentLogAppend } from "../log-emit.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
 import { classifyPushFailure, isNonFastForwardError } from "./git.js";
+import { withWorkspaceLock } from "./marketplace.js";
 import { getErrorMessage } from "../validation.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
@@ -146,6 +147,25 @@ export interface RebaseDriverDeps {
    * them, and a future caller cannot forget.
    */
   prStatusPoller?: RebasePrStatusPoller | null;
+  /**
+   * Save whatever the session still has in its working tree, through the
+   * ESTABLISHED post-turn commit pipeline (`postTurnCommit`): the same
+   * `git add -A`, the same secret scan, the same conflict / rebase-in-progress
+   * refusals, the same transcript bookkeeping. Never a stash, never a discard.
+   *
+   * Wired ONLY by the manual "Sync with `<base>`" route. The automatic
+   * conflict-resolve path deliberately leaves it unset — `runAutoResolveAttempt`
+   * turns a dirty tree into a DEFERRAL, because it must never commit work the
+   * user did not ask it to commit — so there it has nothing to save and
+   * `prepareWorkspaceForRebase` refuses instead.
+   *
+   * Returns the commit hash (null when the tree was already clean, or when the
+   * pipeline REFUSED — a likely secret in the diff, unresolved conflict markers)
+   * and the auto-push that pipeline deferred. `runRebaseFlow` fires that arm
+   * only when it never got as far as a force-push of its own; see
+   * `pendingPushArm` there.
+   */
+  commitPendingWork?: () => Promise<{ commitHash: string | null; armPush: (() => void) | null }>;
 }
 
 /**
@@ -373,6 +393,160 @@ async function restoreLfsForSync(deps: RebaseDriverDeps, baseBranch: string): Pr
 }
 
 /**
+ * Refuse a sync before it touches git, and leave a record the user still has
+ * tomorrow.
+ *
+ * `POST /git/rebase` answers `{ status: "started" }` the moment the flow is
+ * kicked off and reports every later failure through a **transient**
+ * `rebase_aborted` event — so before this, a sync that could not start cleared
+ * the banner and left nothing in the transcript to say why. That is the
+ * emit-only-card class `CLAUDE.md` names: it renders live, survives a
+ * reconnect, and vanishes on reload.
+ *
+ * The notice is persisted only for a MANUAL sync (`recordSyncCard`). The
+ * automatic conflict-resolve path already treats every pre-flight refusal as a
+ * silent deferral it will retry, and a notice per poll would be pure noise.
+ *
+ * `409` is deliberate: `runAutoResolveAttempt` maps that status onto
+ * "deferred, no budget burned", which is exactly right for a workspace that is
+ * momentarily not in a state to be rebased.
+ */
+function refuseSync(deps: RebaseDriverDeps, baseBranch: string, reason: string): ServiceError {
+  const message = `Sync with \`${baseBranch}\` did not start — ${reason}`;
+  if (deps.recordSyncCard) {
+    try {
+      emitNoticePostTurn(
+        (m) => deps.runner.emitMessage(m),
+        deps.chatHistoryManager,
+        deps.runner.sessionId,
+        message,
+        "warn",
+      );
+    } catch (err) {
+      console.error("[rebase] sync-refusal notice failed:", getErrorMessage(err));
+    }
+  }
+  return new ServiceError(409, message);
+}
+
+/** The user-facing half of an unreadable-workspace refusal. */
+function unreadableReason(detail: string): string {
+  return (
+    `git cannot read \`${detail}\` in this workspace, so a rebase would rewrite the `
+    + "working tree over content it cannot see. Fix the permissions on that path, then sync again."
+  );
+}
+
+/**
+ * Bring the workspace into the state `git rebase` requires, or refuse the sync
+ * with something the user can act on. Runs before the fetch, i.e. before
+ * anything in the flow has written to `.git` or the worktree.
+ *
+ * **The production failure this closes** (2026-09-07, session 43c732e1): a
+ * manual "Sync with `<base>`" ran `git rebase origin/main` against a workspace
+ * whose index was not empty, and git refused — `cannot rebase: Your index
+ * contains uncommitted changes`. The flow's own guards cannot see that state.
+ * `runner.running` and `runner.systemTurnInProgress` describe a TURN, and the
+ * post-turn commit runs after both are false: `tryDrain` clears `running` at
+ * `agent_result`, and `runCommitAndPr` — `git add -A` then `git commit` — runs
+ * several awaits later (`turn-executor.ts`). A sync clicked in that window
+ * passed both guards and started a rebase alongside a live `git add -A` on the
+ * same workspace. The automatic path has always pre-flighted a dirty tree
+ * (`runAutoResolveAttempt`); the manual path had no equivalent at all.
+ *
+ * Three steps, in this order, and each closes a different half:
+ *
+ *  1. **A rebase already in progress** is named on its own. `autoCommit`
+ *     refuses to commit into one by design, so letting step 3 report it would
+ *     blame the tree for a state it was never allowed to clean.
+ *  2. **Take the per-workspace mutex `postTurnCommit` holds** for the whole of
+ *     its `git add -A` + `git commit` (`withWorkspaceLock`, shared with the
+ *     plugin-install path). Queueing behind it IS the synchronisation the guards
+ *     could not provide: by the time this inspection runs, an in-flight commit
+ *     has finished and the tree it left behind is the one we read. Nothing NEW
+ *     can start behind it either — `runRebaseFlow` has already taken the
+ *     `systemTurnInProgress` hold every user-turn entry path respects, so there
+ *     is no next turn to have a post-turn commit.
+ *  3. **A still-dirty tree is SAVED, never stashed or discarded**, through the
+ *     established pipeline (`commitPendingWork` → `postTurnCommit`), so the
+ *     secret scan and the conflict refusals all still apply. If the pipeline
+ *     refuses — that is its job — the sync stops with the tree untouched and
+ *     says so; `postTurnCommit` has already persisted its own notice naming the
+ *     specific reason, and ours points at it.
+ *
+ * Deliberately NOT a stash: `git stash pop` on top of a rebase is a hazard, and
+ * a sync that silently moves the user's uncommitted work somewhere they did not
+ * put it is the failure this whole area keeps re-learning.
+ */
+async function prepareWorkspaceForRebase(
+  deps: RebaseDriverDeps,
+  baseBranch: string,
+): Promise<{ armPush: (() => void) | null }> {
+  const { git, runner } = deps;
+  const inWorkspace = <T>(fn: () => Promise<T>): Promise<T> =>
+    withWorkspaceLock(runner.sessionDir, fn);
+
+  if (await inWorkspace(() => git.isRebaseInProgress())) {
+    throw refuseSync(
+      deps,
+      baseBranch,
+      "a rebase is already in progress in this workspace. Finish or abort it "
+      + "(the Abort button on the rebase banner, or `git rebase --abort` in the terminal), then sync again.",
+    );
+  }
+
+  let state = await inWorkspace(() => git.inspectWorkingTree());
+  if (state.unreadable) throw refuseSync(deps, baseBranch, unreadableReason(state.unreadable.detail));
+  if (state.clean) return { armPush: null };
+
+  // The tree carries work that no post-turn commit is going to collect — an
+  // agent killed mid-turn, an edit made in the terminal panel, a `git add` the
+  // agent ran and never committed.
+  if (!deps.commitPendingWork) {
+    throw refuseSync(
+      deps,
+      baseBranch,
+      "this session has uncommitted changes. Nothing was changed; commit or revert them, then sync again.",
+    );
+  }
+
+  const saved = await deps.commitPendingWork();
+  state = await inWorkspace(() => git.inspectWorkingTree());
+  if (state.unreadable || !state.clean) {
+    // The save may still have produced a commit (a partial `add -A`, or a
+    // second refusal on a later step). It is local and unpushed, and the
+    // force-push that would have published it is not going to happen, so hand
+    // the arm straight back rather than dropping it.
+    firePendingPushArm(saved.armPush);
+    throw refuseSync(
+      deps,
+      baseBranch,
+      state.unreadable
+        ? unreadableReason(state.unreadable.detail)
+        : "ShipIt could not save this session's uncommitted changes, so the rebase was never "
+          + "started and your work is untouched. The notice just above says what the commit was "
+          + "refused for — a likely secret in the diff, or unresolved conflict markers. Fix that, then sync again.",
+    );
+  }
+  return { armPush: saved.armPush };
+}
+
+/**
+ * Fire an auto-push arm the settling commit handed over, on a path where the
+ * flow's own force-push never ran. Best-effort and loud on failure, for the
+ * reason `services/auto-push-scheduler.ts` exists: a commit that never reaches
+ * the remote with nothing said is the failure mode, not the push itself.
+ */
+function firePendingPushArm(arm: (() => void) | null): void {
+  if (!arm) return;
+  try {
+    arm();
+  } catch (err) {
+    console.error("[rebase] arming the auto-push for the pre-sync commit failed:", getErrorMessage(err));
+  }
+}
+
+/**
  * Run the full rebase flow. Emits WS events through the runner so the client
  * can update its UI as the flow progresses.
  *
@@ -420,7 +594,26 @@ export async function runRebaseFlow(
   // synchronously, so there is no observable gap.
   runner.systemTurnInProgress = true;
 
+  /**
+   * The auto-push the pre-sync commit deferred (`prepareWorkspaceForRebase`),
+   * held until we know whether this flow published anything itself.
+   *
+   * A debounced plain push racing the flow's own force-push is rejected
+   * non-fast-forward and reports a branch divergence that never happened —
+   * the same reason `turn-executor.ts` defers its arm past the PR flow. So the
+   * arm fires from the `finally` and ONLY when no force-push landed; on every
+   * path that pushed, the rebase has already published the commit.
+   */
+  let pendingPushArm: (() => void) | null = null;
+  let published = false;
+
   try {
+    // 0. Settle the workspace first: wait out an in-flight post-turn commit,
+    //    save anything it was never going to collect, and refuse with an
+    //    actionable, persisted explanation if the tree cannot be made clean.
+    //    Runs before the fetch, so a refusal has written nothing at all.
+    pendingPushArm = (await prepareWorkspaceForRebase(deps, baseBranch)).armPush;
+
     // 1. Fetch latest from origin.
     await git.fetch("origin");
 
@@ -447,6 +640,7 @@ export async function runRebaseFlow(
       // every further click on "Resolve conflicts" repeated the same no-op.
       // Publish the commits the remote is missing; that is the whole fix.
       const forcePushed = await pushIfAheadOfRemote(deps, baseBranch);
+      published = forcePushed;
       // Manual syncs always leave a durable confirmation card, including the
       // already-current case. Automatic conflict resolution remains cardless.
       const cardEmitted = recordSync
@@ -463,12 +657,18 @@ export async function runRebaseFlow(
     // `rebase_aborted` carrying the error message. Don't emit here too — before
     // this dedupe the user got two aborts for one failure.
     worktreeRewritten = true;
-    let result = await git.rebase(baseRef);
+    // Under the workspace mutex for the same reason the preparation inspection
+    // was: `git rebase` writes the index, and so does the post-turn commit's
+    // `git add -A`. Holding it here is what makes "the tree was clean when we
+    // checked" still true when git actually reads it — the check alone is a
+    // TOCTOU, and the window between them is the one the incident landed in.
+    let result = await withWorkspaceLock(runner.sessionDir, () => git.rebase(baseRef));
 
     // 5. Clean rebase — go straight to force push.
     if (result.status === "clean") {
       reevaluateSessionAfterRewrite(runner);
       const forcePushed = await tryForcePush(deps);
+      published = forcePushed;
       // The card is unconditional here: the branch WAS rewritten, on whichever
       // trigger, and the transcript is the only surface that still says so
       // tomorrow. Only the agent-facing notice stays gated on `recordSync` —
@@ -553,11 +753,15 @@ export async function runRebaseFlow(
         throw err;
       }
 
-      // The agent may have left files unmodified or staged. `add -A` covers both.
-      await git.stageAll();
-
       try {
-        result = await git.rebaseContinue();
+        // The agent may have left files unmodified or staged. `add -A` covers
+        // both. Staged and continued as ONE locked step, so the index this
+        // rebase step commits is the one the agent's resolution produced and
+        // not one a concurrent post-turn `git add -A` widened underneath it.
+        result = await withWorkspaceLock(runner.sessionDir, async () => {
+          await git.stageAll();
+          return git.rebaseContinue();
+        });
       } catch (err) {
         // Continue can fail if there is nothing staged (agent didn't actually
         // resolve anything). Abort to leave the tree clean. The route's
@@ -570,6 +774,7 @@ export async function runRebaseFlow(
     // 7. Force push after successful resolution.
     reevaluateSessionAfterRewrite(runner);
     const forcePushed = await tryForcePush(deps);
+    published = forcePushed;
     // Unconditional for the same reason as the clean path — and with more force.
     // An automatic rebase that resolved conflicts and force-pushed is exactly the
     // sequence the user never asked for: they saw the conflict prompt scroll past
@@ -603,6 +808,12 @@ export async function runRebaseFlow(
     // would otherwise start against the stubs, which is the exact failure this
     // closes. Non-LFS repos pay one `git grep` for that ordering.
     if (worktreeRewritten) await restoreLfsForSync(deps, baseBranch);
+    // The pre-sync commit is published by whichever push actually happened. On
+    // a flow that never reached one — a refusal, an abort, a failed rebase —
+    // that commit would otherwise sit local and unpushed with nothing said,
+    // which is the one outcome `CLAUDE.md` invariant 5 forbids. Ahead of the
+    // queue release so the arm is taken before a queued turn starts.
+    if (!published) firePendingPushArm(pendingPushArm);
     // planning#146 / docs/150 §7: every orchestrator git op above (fetch,
     // rebase, rebaseContinue, stageAll, forcePush, rebaseAbort) rewrites BOTH
     // `.git` and worktree files. Unlike a normal turn, the rebase driver
