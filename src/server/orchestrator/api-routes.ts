@@ -180,6 +180,16 @@ export interface ApiDeps {
    * push, never a lost one).
    */
   cancelAutoPush?: (sessionId: string) => void;
+  /**
+   * Arm a session's debounced auto-push (`services/auto-push-scheduler.ts`) —
+   * the same app-lived scheduler the post-turn path uses, never a timer on a
+   * runner. Wired for the "Sync with `<base>`" route, whose pre-rebase commit
+   * has to reach the remote when the sync itself never gets as far as a
+   * force-push. Optional so tests and local runtimes can omit it; a missing
+   * hook leaves that commit local until the next turn's own push, which is the
+   * safe direction.
+   */
+  scheduleAutoPush?: (git: GitManager, sessionId?: string) => void;
   chatHistoryManager: ChatHistoryManager;
   authManager: AuthManager;
   codexAuthManager: CodexAuthManager;

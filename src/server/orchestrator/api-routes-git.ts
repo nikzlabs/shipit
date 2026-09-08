@@ -8,7 +8,8 @@ import type { FastifyInstance } from "fastify";
 import type { BranchAutoResetCard, PrStatusSummary, WsServerMessage } from "../shared/types.js";
 import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
-import { emitChatCard } from "./chat-card-persistence.js";
+import { emitChatCard, emitNoticePostTurn } from "./chat-card-persistence.js";
+import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { gitRemoteCredentialResolver } from "./services/github.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
@@ -27,6 +28,7 @@ import {
   mergeSession,
   rebaseAbort,
   runRebaseFlow,
+  syncFailureAlreadyExplained,
   repoDefaultBranch,
   ServiceError,
 } from "./services/index.js";
@@ -97,6 +99,62 @@ export function recordManualResetAgentNotice(deps: {
   } catch (err) {
     console.error("[reset-to-base] recording the agent notice failed:", getErrorMessage(err));
   }
+}
+
+/**
+ * Save whatever the session still has in its working tree, so an explicit
+ * "Sync with `<base>`" is not refused by git over the previous turn's leftovers
+ * (`cannot rebase: Your index contains uncommitted changes` — the 2026-09-07
+ * incident).
+ *
+ * Runs the ESTABLISHED pipeline, `postTurnCommit`, rather than a bare
+ * `git add -A`: that is what keeps the secret scan, the unresolved-conflict and
+ * in-progress-rebase refusals, the ops/sandbox auto-commit gate, and the
+ * commit↔chat-row linkage on this path. A refusal comes back as
+ * `commitHash: null` with its own persisted notice already written, and the
+ * rebase driver then stops the sync with the tree untouched.
+ *
+ * The auto-push is DEFERRED, not armed here, and the same reason applies as in
+ * `turn-executor.ts`: the sync's own force-push follows within seconds, and a
+ * debounced plain push racing it is rejected non-fast-forward and reported as a
+ * branch divergence that never happened. The driver fires the arm only if it
+ * neither pushed nor is forbidden from pushing.
+ *
+ * `deferPushArm` is passed STRAIGHT THROUGH to the driver rather than captured
+ * and returned. `postTurnCommit` produces the arm mid-flight and can then throw
+ * — the chat-history bookkeeping that links the commit to a message runs after
+ * it — so an arm that travels on the return value is an arm dropped on exactly
+ * the path where the commit is already made. The driver owns it from the
+ * instant it exists.
+ */
+async function savePendingWorkForSync(
+  args: {
+    deps: ApiDeps;
+    runner: SessionRunnerInterface;
+    sessionDir: string;
+    sessionId: string;
+    baseBranch: string;
+  },
+  deferPushArm: (arm: () => void) => void,
+): Promise<{ commitHash: string | null }> {
+  const { deps, runner, sessionDir, sessionId, baseBranch } = args;
+  const commitHash = await postTurnCommit(
+    {
+      createGitManager: deps.createGitManager,
+      chatHistoryManager: deps.chatHistoryManager,
+      sessionManager: deps.sessionManager,
+      scheduleAutoPush: (git, sid) => deps.scheduleAutoPush?.(git, sid),
+    },
+    {
+      sessionDir,
+      sessionId,
+      emit: (msg) => runner.emitMessage(msg),
+      turnSummary: `Save work before syncing with ${baseBranch}`,
+      runner,
+      deferPushArm,
+    },
+  );
+  return { commitHash };
 }
 
 /**
@@ -503,6 +561,23 @@ export async function registerGitRoutes(
             // instead of surviving up to a slow tick (or forever, with the
             // polling gate closed). See `RebaseDriverDeps.prStatusPoller`.
             prStatusPoller: deps.prStatusPoller,
+            // An explicit sync is allowed to SAVE what the session still has in
+            // its working tree, so a rebase is not refused by git over work the
+            // previous turn left behind. Through `postTurnCommit`, so the secret
+            // scan and the conflict refusals still decide — never a stash, never
+            // a discard. Only this route wires it; the automatic
+            // conflict-resolve path defers on a dirty tree instead.
+            // `runner.sessionDir`, not the route's `dir`: `postTurnCommit` and
+            // the driver's own inspection serialize on the per-workspace mutex
+            // keyed by that exact string, and two spellings of one path are two
+            // mutexes.
+            commitPendingWork: (deferPushArm) => savePendingWorkForSync({
+              deps,
+              runner,
+              sessionDir: runner.sessionDir,
+              sessionId,
+              baseBranch,
+            }, deferPushArm),
           },
           baseBranch,
         );
@@ -515,6 +590,26 @@ export async function registerGitRoutes(
           // silently bounced the banner from "in_progress" back to "idle" and
           // the user had no way to tell what went wrong.
           runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId, reason: getErrorMessage(err) });
+          // …and persist it. `rebase_aborted` is transient: the route already
+          // answered `{ status: "started" }`, so this event is the ONLY thing
+          // the user gets, and it is gone on reload. That was the reporting
+          // half of the 2026-09-07 incident — the rebase failed and the
+          // transcript said nothing. Skipped where the driver already wrote a
+          // specific explanation (`syncFailureAlreadyExplained`), so one
+          // failure never produces two rows saying different amounts.
+          if (syncFailureAlreadyExplained(err)) return;
+          try {
+            emitNoticePostTurn(
+              (msg) => runner.emitMessage(msg),
+              deps.chatHistoryManager,
+              sessionId,
+              `Sync with \`${baseBranch}\` failed: ${getErrorMessage(err)}. Your branch was not `
+              + "changed by ShipIt; check the workspace state and try again.",
+              "warn",
+            );
+          } catch (noticeErr) {
+            console.error("[rebase] sync-failure notice failed:", getErrorMessage(noticeErr));
+          }
         });
 
         return { status: "started" };

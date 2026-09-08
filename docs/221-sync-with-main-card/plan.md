@@ -139,6 +139,82 @@ The drain is skipped for `/compact` for the docs/178 reason the reset is: a
 maintenance command must not be handed a "your branch moved" instruction to react
 to. The notice stays pending and the user's next real turn gets it.
 
+### Pre-rebase workspace preparation (2026-09-07 incident)
+
+A manual sync on session 43c732e1 ran `git rebase origin/main` against a
+workspace whose index was not empty, and git refused: `cannot rebase: Your index
+contains uncommitted changes`. The route answers `{ status: "started" }` and
+reports later failures only through a **transient** `rebase_aborted`, so the
+banner cleared and nothing in the transcript said why.
+
+The flow's guards could not see that state. `runner.running` and
+`runner.systemTurnInProgress` describe a **turn**, and the post-turn commit runs
+with both already false — `tryDrain` clears `running` at `agent_result`, and
+`runCommitAndPr` (`git add -A` + `git commit`) runs several awaits later
+(`turn-executor.ts`). A sync clicked in that window passed both guards and ran a
+rebase alongside a live `git add -A` on the same workspace. The **automatic**
+path had pre-flighted a dirty tree since docs/146; the manual path had nothing.
+
+`prepareWorkspaceForRebase` runs first, before the fetch, so a refusal has
+written nothing:
+
+1. **An in-progress rebase is named on its own** — `autoCommit` refuses to commit
+   into one by design, so reporting it as a dirty tree would tell the user to
+   commit work that cannot be committed.
+2. **The per-workspace mutex is taken** (`withWorkspaceLock`, the same one
+   `postTurnCommit` holds for its whole `add`+`commit`, shared with the
+   plugin-install path). Queueing behind it *is* the synchronisation the turn
+   flags could not provide. The index-writing git ops — `git.rebase`, and
+   `stageAll` + `rebaseContinue` as one step — are held under the same mutex.
+   The **final** inspection sits *inside the same critical section as*
+   `git.rebase`, not merely before it: preparation releases the mutex between
+   its steps and the fetch takes seconds, and `systemTurnInProgress` does not
+   exclude every writer — a file save from the editor (`api-routes-files.ts`)
+   writes before taking the commit mutex and guards only on `running`. Two
+   separately-locked operations do not preserve the condition the first
+   established; a late writer is now refused with an explanation instead of
+   surfacing as git's raw "index contains uncommitted changes".
+3. **A still-dirty tree is SAVED, never stashed and never discarded**, through
+   the established pipeline (`RebaseDriverDeps.commitPendingWork` →
+   `savePendingWorkForSync` → `postTurnCommit`), so the secret scan, the
+   conflict refusals and the ops/sandbox auto-commit gate all still decide. A
+   refusal stops the sync with the tree untouched and persists an explanation
+   pointing at the notice `postTurnCommit` already wrote.
+
+`commitPendingWork` is wired by the **manual** route only. The automatic path
+must never commit work the user did not ask it to commit, so it keeps deferring;
+the refusal is a `ServiceError(409)`, which `runAutoResolveAttempt` already reads
+as "defer, no budget burned". The refusal notice is persisted only when
+`recordSyncCard` is set, for the same reason — a notice per poll would be noise.
+
+The pre-sync commit's auto-push is **deferred**, not armed inline (the
+`turn-executor.ts` reason: a debounced plain push racing the sync's own
+force-push is rejected non-fast-forward and reported as a divergence that never
+happened). Two properties of that deferral are load-bearing:
+
+- **The flow owns the arm from the instant it exists**, handed over through a
+  `deferPushArm` callback rather than returned. `postTurnCommit` produces the arm
+  mid-flight and can then throw (its chat-history bookkeeping runs after the
+  commit), and so can the post-save inspection — an arm travelling on a return
+  value is an arm dropped on exactly the paths where the commit is already made.
+- **"Prohibited" is not "not yet".** `pushIfAheadOfRemote` answers a three-way
+  outcome, because clause 1 — the session is checked out on `<base>` — must be
+  distinguishable from the ordinary "nothing to push". The deferred arm is a
+  plain `git push origin <branch>`, so firing it on a `main` checkout would land
+  the commit straight on `main` and bypass the pull request, which is precisely
+  what that clause exists to prevent. There the commit stays local and a manual
+  sync is told why.
+
+Otherwise the arm fires from `runRebaseFlow`'s `finally`, so the commit never
+sits local and unpushed in silence.
+
+Finally, the route's `flowPromise.catch` **persists** the failure as well as
+emitting `rebase_aborted`. That event is transient — the route already answered
+`{ status: "started" }`, so it is the only thing the user gets and it is gone on
+reload, which was the reporting half of the incident. Failures the driver has
+already explained are tagged (`syncFailureAlreadyExplained`) so one failure never
+produces two rows saying different amounts.
+
 ## Key files
 
 | Layer | File |
@@ -146,6 +222,8 @@ to. The notice stays pending and the user's next real turn gets it.
 | Local base move + card emit | `src/server/orchestrator/services/rebase-driver.ts` (`syncLocalBaseRef`, `emitSyncCard`, `recordSyncCard` dep) |
 | Ref-move + ref-read helpers | `src/server/shared/git.ts` (`forceUpdateBranchRef`, `getRefHash`) |
 | Manual-route flag | `src/server/orchestrator/api-routes-git.ts` (`recordSyncCard: true`) |
+| Pre-rebase preparation | `src/server/orchestrator/services/rebase-driver.ts` (`prepareWorkspaceForRebase`, `refuseSync`, `commitPendingWork` dep) |
+| Pre-sync save (manual route) | `src/server/orchestrator/api-routes-git.ts` (`savePendingWorkForSync` → `ws-handlers/post-turn.ts`), `api-routes.ts` + `route-registry.ts` (`ApiDeps.scheduleAutoPush`) |
 | Agent notice — rebase | `src/server/orchestrator/services/rebase-driver.ts` (`buildBranchSyncAgentNotice`, `recordAgentNotice`) |
 | Agent notice — merged reset | `src/server/orchestrator/api-routes-git.ts` (`recordManualResetAgentNotice`), `services/pre-turn-reset.ts` (`buildManualResetAgentNotice`) |
 | Notice slot | `shared/types/domain-types/session.ts` (`pendingAgentNotice`), `orchestrator/sessions.ts` (`set`/`consumePendingAgentNotice`), `shared/database.ts` (migration) |
@@ -176,6 +254,24 @@ to. The notice stays pending and the user's next real turn gets it.
 - `sessions.test.ts` — round-trip, consume-exactly-once, last-write-wins.
 - `integration_tests/rebase-flow.test.ts` — after a clean sync the next turn's
   prompt carries the notice, and the turn after that does not.
+- `rebase-driver.test.ts` (preparation block) — a sync started while a post-turn
+  commit holds the workspace mutex waits for that commit before `git.rebase` is
+  invoked at all (asserted on order, and it reproduces the incident's exact
+  `cannot rebase: Your index contains uncommitted changes` without the fix); an
+  orphaned dirty tree is saved through the pipeline and then rebased, without
+  double-pushing; a refused save stops the sync with the tree untouched, persists
+  an actionable notice and hands the auto-push back; the automatic path (no save
+  pipeline) refuses silently with a 409; an in-progress rebase is named rather
+  than blamed on the tree; and a refusal still releases the session hold.
+- `rebase-driver.test.ts` (pre-sync save block) — the pre-sync commit is never
+  published when the session is checked out on the base branch (it stays local
+  and the user is told why); the deferred push is still armed when preparation
+  throws *after* the save; a tree dirtied between preparation and the rebase is
+  refused with an explanation rather than surfacing as git's raw error; and only
+  the failures the driver explained carry the already-explained tag.
+- `integration_tests/rebase-flow.test.ts` — end to end through the real route: a
+  sync over a workspace with one unstaged and one staged file commits both and
+  rebases, leaving `git status` clean.
 
 ## Out of scope
 
