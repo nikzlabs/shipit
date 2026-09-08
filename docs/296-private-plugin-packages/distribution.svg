@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="680" viewBox="0 0 1120 680" role="img" aria-labelledby="title desc">
+  <title id="title">Private plugin packages — proposed distribution</title>
+  <desc id="desc">Development uses a full private Git repository. Release CI publishes selected files to a private registry. ShipIt downloads and verifies the release, then activates it in consuming sessions. Read credentials stay in ShipIt's server.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10" fill="none" stroke="#677689" stroke-width="1.5"/></marker>
+    <style>
+      text { font-family: system-ui, sans-serif; fill: #182a3b; }
+      .title { font-size: 28px; font-weight: 700; }
+      .label { font-size: 19px; font-weight: 650; }
+      .body { font-size: 16px; }
+      .small { font-size: 14px; fill: #526477; }
+      .box { fill: white; stroke: #c7d3df; stroke-width: 1.5; }
+      .arrow { fill: none; stroke: #677689; stroke-width: 2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1120" height="680" rx="18" fill="#f3f6fa"/>
+  <text x="38" y="51" class="title">Release files for consumers. Full source for development.</text>
+  <text x="38" y="82" class="small">PROPOSED DESIGN · PRIVATE NPM-COMPATIBLE PACKAGE SOURCES</text>
+  <rect class="box" x="38" y="127" width="300" height="137" rx="12"/>
+  <text x="58" y="161" class="label">Private Git repository</text>
+  <text x="58" y="194" class="body">Source, tests, and debug files</text>
+  <text x="58" y="220" class="body">Examples stored in Git LFS</text>
+  <rect class="box" x="405" y="127" width="274" height="137" rx="12"/>
+  <text x="425" y="161" class="label">Release CI</text>
+  <text x="425" y="194" class="body">Build → pack → test → publish</text>
+  <text x="425" y="220" class="body">Author selects release files</text>
+  <rect class="box" x="746" y="127" width="336" height="137" rx="12"/>
+  <text x="766" y="161" class="label">Private package registry</text>
+  <text x="766" y="194" class="body">Versioned release archive</text>
+  <text x="766" y="220" class="body">No omitted examples or Git history</text>
+  <path class="arrow" d="M338 196H393"/>
+  <path class="arrow" d="M679 196H734"/>
+  <path class="arrow" d="M188 264V359"/>
+  <text x="58" y="313" class="small">Normal Git and LFS</text>
+  <rect class="box" x="38" y="374" width="300" height="172" rx="12"/>
+  <text x="58" y="411" class="label">Development session</text>
+  <text x="58" y="449" class="body">Full repository and example assets</text>
+  <text x="58" y="479" class="body">Live self-development</text>
+  <text x="58" y="509" class="body">No publish step for each edit</text>
+  <rect x="405" y="333" width="677" height="226" rx="14" fill="#e8f3f0" stroke="#8cb8aa" stroke-width="1.5"/>
+  <text x="425" y="366" class="label">ShipIt server</text>
+  <text x="425" y="395" class="small">Registry read token stays here · no token in plugin containers</text>
+  <path class="arrow" d="M914 264V420"/>
+  <rect class="box" x="766" y="435" width="290" height="98" rx="10"/>
+  <text x="785" y="467" class="label">Download and verify</text>
+  <text x="785" y="496" class="body">Exact version + SHA-512</text>
+  <rect class="box" x="427" y="435" width="272" height="98" rx="10"/>
+  <text x="446" y="467" class="label">Stage and activate</text>
+  <text x="446" y="496" class="body">Reuse plugin generation flow</text>
+  <path class="arrow" d="M766 484H711"/>
+  <path class="arrow" d="M563 559V588"/>
+  <rect class="box" x="405" y="602" width="677" height="54" rx="10"/>
+  <text x="425" y="636" class="body">Consumer session: services · previews · CLI · skills · project data</text>
+</svg>
