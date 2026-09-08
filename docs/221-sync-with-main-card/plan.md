@@ -164,11 +164,16 @@ written nothing:
 2. **The per-workspace mutex is taken** (`withWorkspaceLock`, the same one
    `postTurnCommit` holds for its whole `add`+`commit`, shared with the
    plugin-install path). Queueing behind it *is* the synchronisation the turn
-   flags could not provide. Nothing new can start behind it either: the flow has
-   already taken the planning#338 `systemTurnInProgress` hold every user-turn
-   entry path respects. The index-writing git ops — `git.rebase`, and
-   `stageAll` + `rebaseContinue` as one step — are held under the same mutex, so
-   "the tree was clean when we checked" is still true when git reads it.
+   flags could not provide. The index-writing git ops — `git.rebase`, and
+   `stageAll` + `rebaseContinue` as one step — are held under the same mutex.
+   The **final** inspection sits *inside the same critical section as*
+   `git.rebase`, not merely before it: preparation releases the mutex between
+   its steps and the fetch takes seconds, and `systemTurnInProgress` does not
+   exclude every writer — a file save from the editor (`api-routes-files.ts`)
+   writes before taking the commit mutex and guards only on `running`. Two
+   separately-locked operations do not preserve the condition the first
+   established; a late writer is now refused with an explanation instead of
+   surfacing as git's raw "index contains uncommitted changes".
 3. **A still-dirty tree is SAVED, never stashed and never discarded**, through
    the established pipeline (`RebaseDriverDeps.commitPendingWork` →
    `savePendingWorkForSync` → `postTurnCommit`), so the secret scan, the
@@ -185,8 +190,30 @@ as "defer, no budget burned". The refusal notice is persisted only when
 The pre-sync commit's auto-push is **deferred**, not armed inline (the
 `turn-executor.ts` reason: a debounced plain push racing the sync's own
 force-push is rejected non-fast-forward and reported as a divergence that never
-happened). `runRebaseFlow` fires that arm from its `finally` only when no
-force-push landed, so the commit never sits local and unpushed in silence.
+happened). Two properties of that deferral are load-bearing:
+
+- **The flow owns the arm from the instant it exists**, handed over through a
+  `deferPushArm` callback rather than returned. `postTurnCommit` produces the arm
+  mid-flight and can then throw (its chat-history bookkeeping runs after the
+  commit), and so can the post-save inspection — an arm travelling on a return
+  value is an arm dropped on exactly the paths where the commit is already made.
+- **"Prohibited" is not "not yet".** `pushIfAheadOfRemote` answers a three-way
+  outcome, because clause 1 — the session is checked out on `<base>` — must be
+  distinguishable from the ordinary "nothing to push". The deferred arm is a
+  plain `git push origin <branch>`, so firing it on a `main` checkout would land
+  the commit straight on `main` and bypass the pull request, which is precisely
+  what that clause exists to prevent. There the commit stays local and a manual
+  sync is told why.
+
+Otherwise the arm fires from `runRebaseFlow`'s `finally`, so the commit never
+sits local and unpushed in silence.
+
+Finally, the route's `flowPromise.catch` **persists** the failure as well as
+emitting `rebase_aborted`. That event is transient — the route already answered
+`{ status: "started" }`, so it is the only thing the user gets and it is gone on
+reload, which was the reporting half of the incident. Failures the driver has
+already explained are tagged (`syncFailureAlreadyExplained`) so one failure never
+produces two rows saying different amounts.
 
 ## Key files
 
@@ -236,6 +263,12 @@ force-push landed, so the commit never sits local and unpushed in silence.
   an actionable notice and hands the auto-push back; the automatic path (no save
   pipeline) refuses silently with a 409; an in-progress rebase is named rather
   than blamed on the tree; and a refusal still releases the session hold.
+- `rebase-driver.test.ts` (pre-sync save block) — the pre-sync commit is never
+  published when the session is checked out on the base branch (it stays local
+  and the user is told why); the deferred push is still armed when preparation
+  throws *after* the save; a tree dirtied between preparation and the rebase is
+  refused with an explanation rather than surfacing as git's raw error; and only
+  the failures the driver explained carry the already-explained tag.
 - `integration_tests/rebase-flow.test.ts` — end to end through the real route: a
   sync over a workspace with one unstaged and one staged file commits both and
   rebases, leaving `git status` clean.

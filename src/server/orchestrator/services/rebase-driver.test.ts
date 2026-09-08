@@ -13,6 +13,7 @@ import {
   buildRebaseConflictPrompt,
   buildBranchSyncAgentNotice,
   MAX_REBASE_ITERATIONS,
+  syncFailureAlreadyExplained,
 } from "./rebase-driver.js";
 import { withWorkspaceLock } from "./marketplace.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
@@ -2229,12 +2230,14 @@ describe("rebase-driver: pre-rebase workspace preparation", () => {
 
     fs.writeFileSync(path.join(workDir, "unsaved.txt"), "precious\n");
     const armPush = vi.fn();
-    const commitPendingWork = vi.fn(async () => {
+    const commitPendingWork = vi.fn(async (deferPushArm: (arm: () => void) => void) => {
       execSync("git add -A && git commit -m 'Save work before syncing with main'", {
         cwd: workDir,
         stdio: "pipe",
       });
-      return { commitHash: execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim(), armPush };
+      // Handed over the instant it exists, exactly as `postTurnCommit` does.
+      deferPushArm(armPush);
+      return { commitHash: execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim() };
     });
 
     const result = await runFlow({
@@ -2290,7 +2293,10 @@ describe("rebase-driver: pre-rebase workspace preparation", () => {
       recordSyncCard: true,
       // The shape `postTurnCommit` returns on a secret block: no commit, tree
       // left exactly as the user left it.
-      commitPendingWork: async () => ({ commitHash: null, armPush }),
+      commitPendingWork: async (deferPushArm: (arm: () => void) => void) => {
+        deferPushArm(armPush);
+        return { commitHash: null };
+      },
     }, "main")).rejects.toMatchObject({ statusCode: 409 });
 
     // Nothing was rebased, nothing was stashed, nothing was discarded.
@@ -2401,5 +2407,205 @@ describe("rebase-driver: pre-rebase workspace preparation", () => {
 
     expect(runner.systemTurnInProgress).toBe(false);
     expect(runner.running).toBe(false);
+  });
+});
+
+/**
+ * Review findings against the first cut of the preparation step. Each is a
+ * distinct way the SAVE could go wrong once the sync was allowed to make one.
+ */
+describe("rebase-driver: pre-sync save — publication and handoff", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    vi.mocked(handWorkspaceBackToWorker).mockClear();
+    vi.mocked(restoreLfsAfterTreeRewrite).mockClear();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-save-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const makeRunner = (workDir: string): SessionRunner =>
+    new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+  /**
+   * `pushIfAheadOfRemote` refuses to push a session checked out on the base
+   * branch, because that would land commits on `main` and bypass the pull
+   * request. The pre-sync commit's deferred arm is a plain `git push origin
+   * <branch>` — so firing it whenever "we did not force-push" would do the very
+   * thing that refusal exists to prevent. "Prohibited" and "not yet" are
+   * different answers.
+   */
+  it("never publishes the pre-sync commit when the session is on the base branch", async () => {
+    const { workDir, git } = setupRepoWithRemote(tmpDir);
+    // On `main`, up to date with origin, but carrying uncommitted work.
+    const runner = makeRunner(workDir);
+    const captured: { role: string; text: string }[] = [];
+    fs.writeFileSync(path.join(workDir, "dirty-on-main.txt"), "local\n");
+
+    const armPush = vi.fn();
+    const result = await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory(captured),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+      recordSyncCard: true,
+      commitPendingWork: async (deferPushArm: (arm: () => void) => void) => {
+        execSync("git add -A && git commit -m 'Save work before syncing with main'", {
+          cwd: workDir,
+          stdio: "pipe",
+        });
+        deferPushArm(armPush);
+        return { commitHash: execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim() };
+      },
+    }, "main");
+
+    expect(result.status).toBe("up_to_date");
+    expect(result).toHaveProperty("forcePushed", false);
+    // The commit exists locally and the remote never saw it.
+    expect(execSync("git log --oneline -1", { cwd: workDir }).toString()).toContain("Save work");
+    expect(armPush).not.toHaveBeenCalled();
+    // And the user is told why, rather than left to notice.
+    const notice = captured.find((m) => m.text.includes("NOT pushed"));
+    expect(notice?.text).toContain("checked out on `main`");
+  });
+
+  /**
+   * Everything after the save can throw — the second inspection here,
+   * `postTurnCommit`'s own chat bookkeeping. An arm that travelled on the
+   * return value was dropped on exactly those paths, leaving the commit local,
+   * unpushed and unexplained. The flow owns it from the instant it exists.
+   */
+  it("still arms the pre-sync commit's push when preparation throws after the save", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    const runner = makeRunner(workDir);
+
+    fs.writeFileSync(path.join(workDir, "unsaved.txt"), "precious\n");
+    const armPush = vi.fn();
+
+    // The post-save inspection fails. `inspectWorkingTree` is called once
+    // before the save and once after; fail only the second.
+    const realInspect = git.inspectWorkingTree.bind(git);
+    let inspections = 0;
+    vi.spyOn(git, "inspectWorkingTree").mockImplementation(async () => {
+      inspections++;
+      if (inspections >= 2) throw new Error("status failed");
+      return realInspect();
+    });
+
+    await expect(runFlow({
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+      recordSyncCard: true,
+      commitPendingWork: async (deferPushArm: (arm: () => void) => void) => {
+        execSync("git add -A && git commit -m 'Save work before syncing with main'", {
+          cwd: workDir,
+          stdio: "pipe",
+        });
+        // Handed over BEFORE anything that can throw, which is the contract.
+        deferPushArm(armPush);
+        return { commitHash: execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim() };
+      },
+    }, "main")).rejects.toBeDefined();
+
+    expect(armPush).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * `systemTurnInProgress` does not exclude every writer: a file save from the
+   * editor writes to disk before it takes the commit mutex, and its own commit
+   * guard consults only `running`. So the tree can be dirtied again between
+   * preparation and `git rebase` — which is why the final inspection has to sit
+   * inside the same critical section as the rebase, not merely before it.
+   */
+  it("refuses a tree dirtied after preparation, rather than letting git report it", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    const runner = makeRunner(workDir);
+    const captured: { role: string; text: string }[] = [];
+
+    // A late writer that lands while the flow is fetching — after preparation
+    // read a clean tree.
+    const realFetch = git.fetch.bind(git);
+    vi.spyOn(git, "fetch").mockImplementation(async (remote?: string) => {
+      await realFetch(remote);
+      fs.writeFileSync(path.join(workDir, "late-edit.txt"), "typed while syncing\n");
+      execSync("git add -A", { cwd: workDir, stdio: "pipe" });
+    });
+
+    await expect(runFlow({
+      git,
+      githubAuthManager: makeStubAuth(false),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory(captured),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+      recordSyncCard: true,
+    }, "main")).rejects.toMatchObject({ statusCode: 409 });
+
+    // Refused with an explanation of our own, not git's raw
+    // "index contains uncommitted changes"...
+    const notice = captured.find((m) => m.text.includes("did not start"));
+    expect(notice?.text).toContain("changed while the sync was preparing");
+    // ...and the late edit is still there, uncommitted and unrebased.
+    expect(fs.readFileSync(path.join(workDir, "late-edit.txt"), "utf8")).toBe("typed while syncing\n");
+    // No LFS restore is owed: nothing rewrote the worktree.
+    expect(vi.mocked(restoreLfsAfterTreeRewrite)).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A failure the driver already explained must not also collect the route's
+   * generic notice, and one it did not explain must collect it — the sync's
+   * only other report is a transient `rebase_aborted`.
+   */
+  it("tags the failures it already explained, and only those", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    const runner = makeRunner(workDir);
+    fs.writeFileSync(path.join(workDir, "dirty.txt"), "mine\n");
+
+    const explained = await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(false),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "x") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+      recordSyncCard: true,
+    }, "main").catch((err: unknown) => err);
+    expect(syncFailureAlreadyExplained(explained)).toBe(true);
+
+    // The automatic path persists nothing, so it is not "already explained"
+    // either — and a plain failure never is.
+    expect(syncFailureAlreadyExplained(new Error("fetch died"))).toBe(false);
+    expect(syncFailureAlreadyExplained(null)).toBe(false);
   });
 });
