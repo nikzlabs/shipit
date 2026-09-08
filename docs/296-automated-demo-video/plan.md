@@ -74,7 +74,8 @@ Playwright (library) against the demo instance at `http://localhost:<port>`. Loc
 1. **Reset** — `reset-demo-repo.sh` (§6) and a fresh state dir: `rm -rf state/ && mkdir` before `docker compose up` (the `onboarding` service's reset, `dogfooding-shipit` skill), so every run is a first boot (req 4). The Compose file gives the instance `SHIPIT_STATE_DIR` on that dir, `ANTHROPIC_API_KEY` (adopted into a stored credential at boot, docs/252 req 20 — this is what enables the composer; it is spent only on session naming), `GITHUB_TOKEN`, `SESSION_EGRESS_ENFORCE=0`, `DOCKER_NETWORK` shared with `demo-proxy`.
 2. **Setup, over HTTP, unrecorded** — not part of the picture, so the headless endpoints are the honest tool: wait for `GET /api/bootstrap`; `POST /api/repos` + `POST /api/repos/trust` (the calls `scripts/seed-inner-sessions.js:169-177` already makes); `PUT /api/settings { autoCreatePr: true }`. Then open the browser, collapse the sidebar (§6), start `recordVideo` at the storyboard viewport.
 3. **Beats** — everything on camera is a user gesture (req 5): a new session is started from the repo bar, the prompt is typed with `pressSequentially` at a per-character delay and sent with the composer's send button, panes are switched by clicking their tabs, the merge is the card's own button. Waits resolve against the UI (`data-testid` where one exists — ~446 in the client; role/name selectors for the merge button, which has none) or against `GET /api/sessions/:id/status` for `turn: finished`. The driver never sleeps: container boot, `npm ci`, and GitHub round-trips vary between runs, which is the reason waits are on state.
-4. **Beat log** — `beats.json` beside the video: per beat, `actionAt` and `readyAt` as seconds from recording start (wall clock minus the context's creation time; a sub-100 ms anchor error is invisible at hero-loop precision).
+4. **Cursor** (req 11) — headless Chromium draws no pointer, so `page.addInitScript` injects a fixed-position dot that follows `mousemove` and pulses on `mousedown`; every click is preceded by `page.mouse.move(x, y, { steps })` along a short path, so the pointer glides rather than teleports. It lives in the DOM, so `recordVideo` captures it with no post step; a scenario can switch it off with `"cursor": false`.
+5. **Beat log** — `beats.json` beside the video: per beat, `actionAt` and `readyAt` as seconds from recording start (wall clock minus the context's creation time; a sub-100 ms anchor error is invisible at hero-loop precision).
 
 Fails loudly: a wait that exceeds a generous ceiling (minutes, not seconds) aborts the run with the beat id and the last screenshot, and the proxy log names any cassette drift.
 
@@ -82,7 +83,9 @@ Fails loudly: a wait that exceeds a generous ceiling (minutes, not seconds) abor
 
 Runs **ffmpeg on the demo host** (`apt install ffmpeg`, or a throwaway ffmpeg container with the recording dir mounted). No ShipIt image ships a usable one: the session-worker image has Playwright's `/opt/playwright-browsers/ffmpeg-1011`, but it is built with `libvpx` only (measured) — it can write the webm Playwright records and nothing else.
 
-From the beat log and storyboard it keeps, per beat, `[actionAt, actionAt + lead]` then `[readyAt, readyAt + hold]` (merged when they overlap; a beat with no action starts where the previous hold ends), drops everything before the first beat's action, concatenates, and exports:
+From the beat log and storyboard it keeps, per beat, `[actionAt, actionAt + lead]` then `[readyAt, readyAt + hold]` (merged when they overlap; a beat with no action starts where the previous hold ends), drops everything before the first beat's action, concatenates, and exports. Everything outside those slices is gone — that is how loading and waiting disappear (req 12). `lead: 0` is the **instant** case: the frame after the click is the frame where the result is ready, so opening a session with its preview takes no time on camera whatever it took on the host. `lead` is only ever non-zero where the work in progress *is* the picture (beat 2's agent-at-work footage).
+
+Exports:
 - `hero.mp4` — h264, `yuv420p`, even dimensions, `-movflags +faststart`, no audio track (req 9);
 - `hero.webm` — VP9, same cut, no audio.
 
@@ -94,12 +97,13 @@ Silent, looping, ≤ 40 s. Four beats; the app is a habit tracker, chosen becaus
 
 | # | Action | Pane | Ready when | lead | hold |
 |---|---|---|---|---|---|
+| 0 | Click **New session** on the demo repo | transcript | `composer: ready` | 0 | 1 |
 | 1 | Type + send: *"Build a habit tracker: a list of daily habits, a check button on each, and a streak counter that goes up when you check one."* | transcript | `turn: running` | 4 | 1 |
 | 2 | (none — the agent works) | preview | `preview_text: "streak"` **and** `pr_card: open` | 6 | 6 |
 | 3 | Type + send: *"Switch it to dark mode with a violet accent, and retitle the page 'Streaks'."* | preview | `turn: finished` **and** `preview_text: "Streaks"` | 5 | 6 |
 | 4 | Click **Merge** on the PR card | pr-card | `pr_card: merged` | 3 | 4 |
 
-Kept time: 5 + 12 + 11 + 7 = **35 s**. Beat 2's `lead` is the agent-at-work footage (files appearing, transcript streaming); the jump-cut to the rendered preview is the compression that fits a real turn into the budget. Sidebar collapsed throughout: more room for transcript + preview, and it hides the one thing that varies between runs — the AI-generated session title. The same live naming also picks the branch name shown on the PR card. Both are words, not sequence or timings (req 3); replaying naming would need an orchestrator-level redirect that a key-mode spawn overwrites (§2), and the alternative — an OAuth account, connected by a human once and refreshed across on-demand runs weeks apart — trades a cosmetic variance for a fragile one.
+Kept time: 1 + 5 + 12 + 11 + 7 = **36 s**. Beat 0 is the instant case (req 12): the container boot and `npm ci` between the click and a ready composer are cut to nothing, so a session opens the moment it is clicked. Beat 2's `lead` is the agent-at-work footage (files appearing, transcript streaming); the jump-cut to the rendered preview is the compression that fits a real turn into the budget. Sidebar collapsed throughout: more room for transcript + preview, and it hides the one thing that varies between runs — the AI-generated session title. The same live naming also picks the branch name shown on the PR card. Both are words, not sequence or timings (req 3); replaying naming would need an orchestrator-level redirect that a key-mode spawn overwrites (§2), and the alternative — an OAuth account, connected by a human once and refreshed across on-demand runs weeks apart — trades a cosmetic variance for a fragile one.
 
 **Why `autoCreatePr` is on and beat 4 is one click.** With auto-create, turn 1's post-turn flow creates the PR (docs/099); its description is generated through the proxy and the card shows the PR number only after that request has completed, which is what beat 2's second wait pins. Turn 2 auto-pushes onto the PR. The merge button appears when the poller reports mergeability and CI is terminal: a repo with **no workflow files** short-circuits the 20 s "no checks" grace (`ci-grace-tracker.ts`, exit 1), so the button is there on the first poll after the PR opens.
 
@@ -108,7 +112,6 @@ Kept time: 5 + 12 + 11 + 7 = **35 s**. Beat 2's `lead` is the agent-at-work foot
 ## 7. Open questions (from `requirements.md`, not answered here)
 
 - **Where the demo instance is hosted.** Depends on it: the Compose file's bind address and published ports; where Playwright's Chromium and ffmpeg are installed (the driver must run on that host, §4); whether the prod images (`shipit:prod`, `shipit-session-worker:prod`, built by `deploy.sh`) exist there or the file builds them. The proxy hostname does not depend on it.
-- **Cursor / click-highlight overlay.** Depends on it: only the driver's click helper — if wanted, `page.addInitScript` injects a cursor element that follows `mousemove`, and each click is preceded by `page.mouse.move` in steps along a short path. The storyboard, proxy, and cut step are unaffected either way.
 
 ## Key files (planned)
 

@@ -1,6 +1,6 @@
 # 296 — Automated demo video checklist
 
-- [ ] Resolve the two open questions in `requirements.md` (demo-instance host; cursor overlay) — implementation code waits on them
+- [ ] Resolve the open question in `requirements.md` (demo-instance host) — implementation code waits on it
 - [ ] Create the `shipit-demo-app` repo on the demo GitHub account: Vite + React scaffold, `docker-compose.yml` with the `x-shipit-preview: auto` dev service, `shipit.yaml` with `agent.install: npm ci`, `.claude/settings.json` (`ANTHROPIC_BASE_URL` → `http://demo-proxy:8787`, dummy `ANTHROPIC_API_KEY`), no `.github/workflows`, no branch protection; record the snapshot SHA
 - [ ] Add `playwright` as an exact-pinned `devDependency` (≥ 7 days old, `npm run check-deps` green) — with user sign-off if a younger release is needed
 - [ ] `scripts/demo-video/compose.yml` — `shipit` (prod image, bind-mounted fresh `SHIPIT_STATE_DIR`, `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `SESSION_EGRESS_ENFORCE=0`, `DOCKER_NETWORK`) + `demo-proxy` on the same network

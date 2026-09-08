@@ -31,10 +31,13 @@ No design yet; `plan.md` follows once the open questions below are answered.
 
 10. The video is produced on demand — someone triggers a run — not on every release.
 
+11. The video shows a cursor with a click highlight, so a pane switch or a button click reads as a user action, not as a cut.
+
+12. The final video cuts what is boring or slow. Loading and waiting are removed, and an action that should look instant — for example, opening a new session with its preview — is instant in the video, whatever it took in the recording. This is marketing footage, not a benchmark.
+
 ## Open questions
 
 - Where the dedicated demo instance is hosted.
-- Whether a cursor / click-highlight overlay is wanted. A silent, looping video has no narrator to say "look here", so this matters more for scenario 1 than it would for a narrated cut.
 
 ## Resolved questions
 
@@ -44,3 +47,5 @@ No design yet; `plan.md` follows once the open questions below are answered.
 - 2026-09-08 — Which agent harness? Nik asked whether Codex or OpenCode would be more flexible. A probe (recorded on planning#524) measured the opposite: Claude Code 2.1.252 takes an API redirect from a two-line `.claude/settings.json` in the demo repo; Codex 0.153.2 rejects a project-local redirect; OpenCode 1.18.25 accepts one standalone but is shadowed inside a ShipIt session. Nik chose Claude Code. Requirement 6.
 - 2026-09-08 — Which features, in what order, and how long? Nik: "We need to support multiple scenarios. First use case: auto-playing video on the website. Come up with feature set and length." The multi-scenario rule is requirement 7; the first scenario is requirement 8, with the feature set and length delegated to the agent and recorded there as the agent's proposal.
 - 2026-09-08 — Narration and cadence? Nik chose no narration, produced on demand. Requirements 9 and 10.
+- 2026-09-08 — Cursor / click-highlight overlay? Nik: yes, as the agent suggested — a small overlay injected into the page by the driver. Requirement 11.
+- 2026-09-08 — Nik added, unprompted: the final video may need cuts — boring loading, and anything that should look instant but is not (his example: opening a new session with its preview). Requirement 12.
