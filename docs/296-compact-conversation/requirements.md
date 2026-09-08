@@ -25,11 +25,15 @@ Provide a setting, off by default, that shows only the last agent message and re
 - Keep all existing transcript cards in version one. Do not guess relevance from text or use an LLM filter.
 - Store the preference for this browser, across sessions, like other display preferences. No repository or agent setting is changed.
 - Preserve the existing in-app search scope: message text, including hidden progress prose. Tool inputs/results and card bodies are not newly searchable.
-- Browser Find and select-all behavior is an open question below, not an approved exception.
+- Browser Find and select-all cover displayed content while compact mode is enabled. The user approved this scope on 2026-09-08. Switching compact mode off restores the full scope.
 - Keep chronological order, including cards before the final reply. Do not collect cards into a new end-of-turn tray.
+
+## Resolved decisions
+
+2026-09-08: The user chose “Allow displayed content only” in response to the browser Find/select-all question. The opt-in compact view may limit these to displayed content; full view retains its existing contract. In-app search retains its existing message-text scope, including hidden progress prose.
+
+The user also requested realistic card layouts based on existing components, and the Claude Light theme for the mockup. Generic expandable card shells are not part of the design.
 
 ## Open questions
 
-Before production implementation, decide whether compact mode may limit browser Find and select-all to displayed content. [The existing contract](../265-transcript-render-cost/requirements.md) records a user decision to keep both complete. The proposed exception would apply only while this optional view is enabled; disabling it restores full scope, and in-app search still finds hidden message text. Keeping nodes mounted but hidden does **not** by itself preserve browser Find or select-all. If the existing contract must also hold in compact mode, prototype and verify a browser-compatible reveal/copy design before implementing it.
-
-The other proposed defaults above are conservative design recommendations for review, not additional requests attributed to the user.
+None for this design.
