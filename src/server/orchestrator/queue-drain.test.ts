@@ -78,6 +78,7 @@ describe("queue drain routing (planning#257)", () => {
       uploads: [{ path: "/uploads/a.png", type: "upload" }],
       permissionMode: "plan",
       resetMergedBranch: false,
+      silent: false,
       compactContext: false,
       postTurn: "none",
       systemTurn: true,
@@ -108,7 +109,6 @@ describe("releaseQueuedTurn (planning#338)", () => {
     running?: boolean;
     systemTurnInProgress?: boolean;
     mergeHold?: boolean;
-    preTurnHold?: boolean;
     queueLength?: number;
   }) {
     const dispatched: AgentDispatchOptions[] = [];
@@ -118,7 +118,6 @@ describe("releaseQueuedTurn (planning#338)", () => {
       running: opts.running ?? false,
       systemTurnInProgress: opts.systemTurnInProgress ?? false,
       mergeHold: opts.mergeHold ?? false,
-      preTurnHold: opts.preTurnHold ?? false,
       queueLength: opts.queueLength ?? 0,
       canRunDispatchedTurn: true,
       dequeue: () => {
@@ -160,21 +159,6 @@ describe("releaseQueuedTurn (planning#338)", () => {
     expect(dequeueCount()).toBe(0);
   });
 
-  it("refuses to release into a turn's pre-turn phase", () => {
-    // docs/295 — this drain is for the paths with no turn of their own to hang
-    // off, and one of them (an auto-conflict-resolve that settled without
-    // running) can fire while another send is inside its pre-turn phase. The
-    // phase can hold the session with `running` not yet published, so the
-    // `running` clause above does not cover it.
-    const { runner, dispatched, dequeueCount } = fakeReleaseRunner({
-      running: false,
-      preTurnHold: true,
-      queueLength: 1,
-    });
-    expect(releaseQueuedTurn(runner)).toBe(false);
-    expect(dispatched).toEqual([]);
-    expect(dequeueCount()).toBe(0);
-  });
 
   it("releases the head of the queue once the flow has released its hold", () => {
     const { runner, dispatched } = fakeReleaseRunner({

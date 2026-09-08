@@ -386,4 +386,73 @@ tests defer credential prep or count a fake `kill()` and never exercise the
 serialized worker start; and the drained-delivery test never delivers the
 predecessor's late `done`.
 
+### The rewrite — sequencing instead of nesting
+
+Nik's observation ended five rounds of this: *"if I now do a compaction manually,
+so I press compact, and then I send a turn, everything already works."* It does.
+The whole cost of rounds 1–5 came from running the compaction NESTED inside the
+user's send, and none of it came from the compaction. So ShipIt now does what the
+user does by hand — queue the message, run a `/compact` turn, let the queue drain
+— and the five open defects are gone because the state they lived in does not
+exist.
+
+- [x] **Deleted:** `pre-turn-compact-hook.ts` (the slot-owning operation, its
+      settle latch, its 300 s timeout, its ownership re-checks, its credential
+      teardown, its persistence bypass, its outcome/notice machinery),
+      `pre-turn-hold.ts`, `missing-conversation.ts`,
+      `SessionRunnerInterface.preTurnHold` and its six admission checks, the
+      `mergeRecheck` hand-off through `preTurnReset`, and the ownership
+      publication `runDispatchedTurn` needed to make a pre-turn phase legible.
+      **The suite shrank**, which is the honest signal for a removal: 999 files /
+      17,475 tests → 998 / 17,435, with more behaviour covered than before.
+- [x] **Added:** `compact-before-turn.ts` (a decision, ~60 lines of logic), two
+      four-line takeovers, and one new field — `silent`, which suppresses the
+      user row and echo for a turn ShipIt started. That field is a value, not a
+      mechanism: the executor already took both halves as inputs.
+- [x] **Every one of the fifth round's five defects is answered by construction,
+      not patched.** The card-deletion class (its P1 #1) cannot occur because no
+      card is ever written outside a turn. The stale-hold steer (#2) and the
+      predecessor's-late-`done` (#3) cannot occur because there is no hold and no
+      phase. The uncancellable worker start (#4) is an ordinary turn's start. And
+      #5 — a failed reset stripping the req-7 guarantee — is unchanged in kind
+      but no longer specific to this feature: the reset runs on the user's turn
+      exactly as docs/218 shipped it.
+- [x] **Requirement 9 became structural.** No timeout, no fail-safe outcome, no
+      notice: the message is in the queue before the compaction starts, and every
+      terminal path of a turn drains it (CLAUDE.md post-turn invariant 2).
+- [ ] **One deliberate trade, recorded rather than hidden:** a backend that
+      accepts the trigger, exits 0 and compacts nothing now shows as a turn with
+      no compaction card, where the nested design emitted a sentence saying so.
+      The requirement is that a failure is never silent; an absent card beside a
+      completed turn is not a claim of success. Revisit if it reads badly.
+
+**Guards for the rewrite**
+
+- [x] `compact-before-turn.test.ts` — 11 tests over the gates, including the
+      `"unsettled"` race driven through the REAL `recheckMergeBeforeTurn`.
+- [x] `dispatched-turn-compaction.test.ts` — 8 tests over the takeover through
+      the real `SessionRunner.dispatch` → `runDispatchedTurn` path, with only the
+      decision stubbed.
+- [x] `integration_tests/pre-turn-compaction.test.ts` — **unchanged from the
+      previous design and still passing.** It was written against the nested
+      slot-owning operation and passes against sequencing, because it asserts on
+      observable behaviour: two spawns in order, one user row, and a
+      `GET /history` read after the user's turn finishes. That is the clearest
+      evidence available that it tests the requirement rather than the mechanism.
+- [x] Four mutations proved red: dropping the `systemTurn` inheritance (the
+      compaction declines to start the message it made room for), dropping
+      `compactContext: false` on the dispatched re-queue (the compaction loop),
+      and dropping `silent` (a `/compact` bubble nobody typed).
+- [x] **One mutation was BLIND and is recorded as such:** dropping
+      `compactContext: false` on the *interactive* re-queue changes nothing,
+      because the WS drain re-enters `runAgentWithMessage`, which holds no
+      decision. That flag earns its keep on the `releaseQueuedTurn` path, which
+      routes the same entry onto the dispatched executor — where the dispatched
+      test's mutation does go red.
+- [x] Two bugs in the rewrite were found by its own tests before review: the
+      `systemTurn` inheritance above, and a stub that ignored `intent` and so
+      could not have failed on the loop it existed to guard.
+- [x] Full suite: 998 files, 17,435 tests. `npm run typecheck` and
+      `npm run lint:dev` clean.
+
 - [x] Comment the outcome on `planning#522`.

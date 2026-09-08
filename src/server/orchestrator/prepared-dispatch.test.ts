@@ -38,6 +38,7 @@ const FULL_INIT: AgentDispatchInit = {
   dictated: true,
   resetMergedBranch: false,
   compactContext: false,
+  silent: undefined,
 };
 
 function newRunner(): SessionRunner {

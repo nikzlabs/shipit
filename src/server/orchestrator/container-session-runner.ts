@@ -161,7 +161,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _systemTurnInProgress = false;
   /** docs/288 — ShipIt is merging this session's PR; no turn may start. */
   private _mergeHold = false;
-  private _preTurnHold = false;
   private _wasInterrupted = false;
   /** See `SessionRunnerInterface.turnEpoch`. */
   turnEpoch = 0;
@@ -481,9 +480,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   set systemTurnInProgress(v: boolean) { this._systemTurnInProgress = v; }
   get mergeHold(): boolean { return this._mergeHold; }
   set mergeHold(v: boolean) { this._mergeHold = v; }
-  /** docs/295 — see `SessionRunnerInterface.preTurnHold`. */
-  get preTurnHold(): boolean { return this._preTurnHold; }
-  set preTurnHold(v: boolean) { this._preTurnHold = v; }
 
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
@@ -1155,17 +1151,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       return;
     }
     if ((!this._isRunning && !this._isStreamingActive) || this._viewerCount === 0) {
-      this._reconcileDivergenceCount = 0;
-      return;
-    }
-    // docs/295 — a turn's PRE-turn phase is in flight (the merged-session
-    // compaction). `running` is published for it, but the worker legitimately
-    // reports no agent for as long as the merge probe, the eligibility check and
-    // the compaction's own env-prep take — all of which can exceed two ticks.
-    // The divergence is expected here, so counting it would let this net reset a
-    // turn that is merely still starting, and take the compaction's agent slot
-    // with it.
-    if (this._preTurnHold) {
       this._reconcileDivergenceCount = 0;
       return;
     }
@@ -3371,7 +3356,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // caller — `services/child-sessions.ts` calls this directly from
     // `shipit session wait`, which is exactly the concurrent probe that would hit
     // a session inside its pre-turn phase.
-    if (this._preTurnHold) return this._isRunning;
     // Captured before the await below, for the identity re-check after it.
     const wasRunning = this._isRunning;
     const turnEpochAtCheck = this.turnEpoch;

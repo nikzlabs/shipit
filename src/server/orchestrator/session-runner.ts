@@ -22,8 +22,6 @@ import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from 
 import { runAgentToCompletion, buildSubAgentRunParams } from "../shared/sub-agent-run.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import type { PreTurnResetHookResult, PreTurnResetRunner } from "./pre-turn-reset-hook.js";
-import type { PreTurnCompactHookResult } from "./pre-turn-compact-hook.js";
-import type { MergeRecheckOutcome } from "./services/pre-turn-merge-recheck.js";
 
 // `runDispatchedTurn` lives in a separate module because it depends on
 // `wireAgentListeners` at runtime, which would otherwise create an import
@@ -279,6 +277,15 @@ export interface QueuedMessage {
    */
   resetMergedBranch?: boolean;
   compactContext?: boolean;
+  /**
+   * docs/295 — ShipIt started this turn on the user's behalf (the merged-session
+   * compaction), so it gets no user bubble and no echo: nobody typed its prompt.
+   *
+   * A field rather than a special path because the executor already takes both
+   * halves as inputs — `emitUserEcho` and `persistUserMessage` — so "no user
+   * row" is a value, not a mechanism.
+   */
+  silent?: boolean;
 }
 
 /**
@@ -375,6 +382,8 @@ export interface AgentDispatchOptions {
    */
   resetMergedBranch?: boolean;
   compactContext?: boolean;
+  /** docs/295 — see {@link QueuedMessage.silent}. */
+  silent?: boolean;
 }
 
 export const REPOSITORY_UNTRUSTED_CODE = "repository_untrusted" as const;
@@ -444,7 +453,7 @@ export function dispatchOnRunner(
   // `releaseQueuedTurn` routes through `dispatch`, so this one check covers the
   // drain too — and the executor calls it when the hold clears, which is what
   // starts the held turn.
-  if (runner.mergeHold || runner.preTurnHold) return enqueueAndReport();
+  if (runner.mergeHold) return enqueueAndReport();
 
   if (runner.running) {
     // docs/163 — honor live steering on the dispatch path too: when the running
@@ -681,6 +690,7 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.dictated !== undefined) queued.dictated = opts.dictated;
   if (opts.resetMergedBranch !== undefined) queued.resetMergedBranch = opts.resetMergedBranch;
   if (opts.compactContext !== undefined) queued.compactContext = opts.compactContext;
+  if (opts.silent !== undefined) queued.silent = opts.silent;
   return queued;
 }
 
@@ -831,13 +841,6 @@ export interface SystemTurnDeps {
     sessionId: string,
     sessionDir: string,
     /**
-     * docs/295 — the docs/282 merge probe's answer, when the pre-turn
-     * compaction that runs ahead of this already paid for it. Sharing it is
-     * what stops the two gates reading different snapshots inside the poll
-     * window, and keeps the probe at one per turn.
-     */
-    mergeRecheck?: MergeRecheckOutcome,
-    /**
      * docs/218 — the composer's tick box, when the entry that drained onto this
      * transport carried one. Absent for every server-originated dispatch, which
      * is nearly all of them; present so that this path and the interactive one
@@ -846,29 +849,17 @@ export interface SystemTurnDeps {
     intent?: boolean,
   ) => Promise<PreTurnResetHookResult>;
   /**
-   * docs/295 — compact the agent's context before this turn's prompt is built,
-   * for a session whose pull request merged.
-   *
-   * Sits immediately in front of {@link preTurnReset} and is wired on both
-   * transports for the same reason that one is (planning#333): requirement 13 puts a
-   * continuation the user did not type — a merge wake, a `shipit session
-   * message`, a click inside an agent-built page — under the same setting as a
-   * typed one, so scoping it to the interactive path would rebuild the hole
-   * docs/218 had to be retrofitted to close.
-   *
-   * `createAgent` is threaded in rather than taken from `agentFactory` on the
-   * deps because the compaction runs as a real turn and the two transports
-   * construct their agents differently (the WS path may hold a resident
-   * streaming process). Optional so minimal test setups can omit it.
+   * docs/295 req 13 — should this dispatched message be preceded by a
+   * compaction turn? Decision only: the caller puts the message back on the
+   * queue and runs a `/compact` turn, which is what a user gets by hand.
    */
-  preTurnCompact?: (
+  shouldCompactBeforeTurn?: (
     runner: SessionRunnerInterface,
     agentId: AgentId,
     sessionId: string,
     sessionDir: string,
-    createAgent: (agentId: AgentId) => AgentProcess,
     intent?: boolean,
-  ) => Promise<PreTurnCompactHookResult>;
+  ) => Promise<boolean>;
   /**
    * docs/221 — read-and-clear the out-of-band "your working tree was rewritten"
    * notice a manual sync parked on the session, so a DISPATCHED turn delivers it
@@ -1278,23 +1269,6 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * `releaseQueuedTurn()` that lets the held-back turn start.
    */
   mergeHold: boolean;
-  /**
-   * docs/295 — the session is inside a turn's PRE-turn phase (today: the
-   * merged-session context compaction) and must not admit another turn.
-   *
-   * Separate from `running` on purpose. The pre-turn work is not a turn: it
-   * publishes no delivery, announces no completion, and its transcript rows are
-   * final rather than in-progress — so borrowing `running` for it would make
-   * every "did a turn just finish?" consumer answer for work the user never
-   * sent. What it DOES need is the one thing `running` also buys: arrivals get
-   * queued rather than started alongside it. This is that, and nothing else.
-   *
-   * Same shape and the same three admission points as {@link mergeHold}, which
-   * exists for the same reason on the other side of a turn. No release callback:
-   * the user's own turn starts the moment the hold clears and drains the queue
-   * when it ends.
-   */
-  preTurnHold: boolean;
   wasInterrupted: boolean;
   /**
    * planning#318 follow-up — monotonic per-runner TURN identity, bumped by
@@ -1887,7 +1861,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _systemTurnInProgress = false;
   /** docs/288 — ShipIt is merging this session's PR; no turn may start. */
   private _mergeHold = false;
-  private _preTurnHold = false;
   private _wasInterrupted = false;
   /** See `SessionRunnerInterface.turnEpoch`. */
   turnEpoch = 0;
@@ -1963,8 +1936,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set systemTurnInProgress(v: boolean) { this._systemTurnInProgress = v; }
   get mergeHold(): boolean { return this._mergeHold; }
   set mergeHold(v: boolean) { this._mergeHold = v; }
-  get preTurnHold(): boolean { return this._preTurnHold; }
-  set preTurnHold(v: boolean) { this._preTurnHold = v; }
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
   get lastTurnErrored(): boolean { return this._lastTurnErrored; }

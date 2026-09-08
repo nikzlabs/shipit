@@ -110,6 +110,7 @@ export interface AgentDispatchInit {
   dictated: boolean | undefined;
   resetMergedBranch: boolean | undefined;
   compactContext: boolean | undefined;
+  silent: boolean | undefined;
 }
 
 /** Compile-time `T extends never` assertion — the error message names the offender. */
@@ -151,6 +152,7 @@ const DISPATCH_FIELDS: Record<keyof AgentDispatchOptions, true> = {
   dictated: true,
   resetMergedBranch: true,
   compactContext: true,
+  silent: true,
 };
 
 const DISPATCH_FIELD_KEYS = Object.keys(DISPATCH_FIELDS) as (keyof AgentDispatchOptions)[];
@@ -216,6 +218,9 @@ export function queuedMessageToDispatchOptions(next: QueuedMessage): PreparedDis
     // docs/144 — a message dictated while a turn was running still tells the
     // agent it was transcribed when it finally drains.
     dictated: next.dictated,
+    // docs/295 — a compaction turn ShipIt started is never queued, but the
+    // converter is total by construction, so this rides along.
+    silent: next.silent,
     // docs/218 + docs/295 — and the two composer tick boxes, so the choice the
     // user made at send time is the choice that runs when the entry drains.
     resetMergedBranch: next.resetMergedBranch,

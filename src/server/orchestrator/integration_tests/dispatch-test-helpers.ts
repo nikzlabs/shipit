@@ -40,6 +40,7 @@ export function testDispatch(
     onTurnComplete: opts.onTurnComplete,
     resetMergedBranch: opts.resetMergedBranch,
     compactContext: opts.compactContext,
+    silent: opts.silent,
     deliveryId: opts.deliveryId,
     dictated: opts.dictated,
   });

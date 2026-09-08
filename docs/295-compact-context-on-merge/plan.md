@@ -15,16 +15,21 @@ harnesses.
 
 ## Shape
 
-A **shared pre-turn compaction step**, sitting immediately in front of the
-docs/218 reset and called from the same two places the reset is called from:
+**Two ordinary turns, in order** — what a user already gets by pressing compact
+and then sending their message:
 
 ```
-compaction  →  branch reset  →  prompt assembly (with the merge prefix)  →  spawn
+message arrives  →  message QUEUED  →  `/compact` turn  →  drain  →  the user's turn
+                                                                     (reset + merge prefix)
 ```
 
-Both transports call both hooks (req 13). The composer checkbox is the per-send
-intent for the typed path only; a programmatic continuation has no checkbox and
-follows the global setting, exactly as it already does for the reset.
+No new lifecycle state: at every instant the session is running exactly one
+ordinary turn, and the message is in the queue.
+
+Both transports make the same decision (req 13). The composer checkbox is the
+per-send intent for the typed path only; a programmatic continuation has no
+checkbox and follows the global setting, exactly as it already does for the
+reset.
 
 **This shape is chosen because of planning#333.** docs/218 scoped its reset to the
 interactive path and wrote the wiring inline in `agent-execution.ts`, with "if
@@ -66,130 +71,82 @@ conversation and throw the whole compaction away. This is safe here, verified at
 **fresh from the database** at spawn time rather than reusing the id captured
 when the handler started.
 
-## What the step actually does — settled in code, twice
+## What the step actually does — settled in code, three times
 
-The open question this plan named — *can a compaction spawn run in a turn's
-pre-spawn phase without the executor treating its completion as the user's turn
-finishing?* — took two answers to get right, and the second one is the design.
+The open question this plan named — *can a compaction run in a turn's pre-spawn
+phase without the executor treating its completion as the user's turn
+finishing?* — was the wrong question, and it took three answers to see that.
 
-**A process spawned BESIDE the turn's agent cannot work.** In container mode the
-SSE relay resolves every worker event against the proxy currently installed in
-the runner's single `_agent` slot and drops the rest
+**First: a process spawned BESIDE the turn's agent cannot work.** In container
+mode the SSE relay resolves every worker event against the proxy currently
+installed in the runner's single `_agent` slot and drops the rest
 (`container-session-runner.ts`, `isStaleSpawnEvent` and the `(no _agent)` drop).
 Such a process would receive no `agent_compacted`, no `done` and no `error`, and
 would hang until a timeout — in production, every time, while passing any
-in-process test. So the compaction must OWN the slot.
+in-process test.
 
-**But owning the slot does not mean being a turn**, and conflating those two was
-the mistake. The first implementation ran the compaction through
-`executeAgentTurn` with `postTurn: "none"` + `systemTurn: true`, on the grounds
-that this is the mode the docs/146 rebase driver uses for "a step inside a larger
-operation the driver owns". Those flags do suppress the commit, the push, the PR
-flow and the queue drain. They do **not** stop the turn giving up the rest of the
-turn lifecycle, and every remaining piece of it is wrong for a maintenance step
-nested inside someone else's send:
+**Second: it was run as a nested TURN**, through `executeAgentTurn` with
+`postTurn: "none"` + `systemTurn: true`, and then as a nested slot-owning
+OPERATION when that proved to carry the whole turn lifecycle into a place none of
+it belonged. Five review rounds went into the consequences and they were all one
+consequence: **a session mid-phase is in a state nothing else in the orchestrator
+has a name for.** `running` is true but no turn is accumulating, so every
+side-channel card written during it was recorded against the *previous* turn and
+deleted by the next one — a bug fixed narrowly for the compaction's own card and
+still open for the other twenty call sites. The session read busy to some
+consumers and idle to others, so a predecessor's late `done` could clear
+`running` and `shipit session wait` could report ready mid-compaction. Nothing
+owned cancellation, so a timeout could not stop a spawn that was still starting.
+Each was patchable; each patch taught one more consumer about a phase only this
+feature knew existed.
 
-- it publishes and then clears `activeDeliveryId`, so a dispatched
-  continuation's delivery reads as **not in flight** for the compaction's whole
-  duration — which is what a redelivery supervisor consults;
-- it clears `running`, announces `turn_result`, broadcasts
-  `session_agent_finished` and fires the runner's idle event, so `shipit session
-  wait` reports the session **ready** and a supervisor reports the work
-  **delivered**, before the user's message has run at all;
-- it bumps the turn epoch and resets the transcript accumulators, so the
-  compaction's own card lands as in-progress rows that the user's turn then
-  replaces (the docs/236 failure).
+**Third, and what ships: there is no phase.** ShipIt does what a user already
+does by hand — press compact, then send the message:
 
-Each of those was found by review and patched individually, and each patch was
-another borrow-and-restore of state the executor owns and this step has no
-business touching. That is the signal the shape was wrong.
+```
+user's message arrives on an eligible merged session
+   → the message goes on the QUEUE
+   → a `/compact` turn runs                        (an ordinary turn)
+   → its post-turn drain starts the user's message (an ordinary turn)
+      → which runs the docs/218 reset and carries the merge prefix
+```
 
-**So the step owns the SLOT and nothing else.** Everything it genuinely needs is
-already factored: `prepareAgentEnv` for credentials, `buildRunParams` (with
-`compact: true`) for the spawn shape, the adapter's own compaction mapping, and
-`emitChatCard` for the docs/178 card. What it does not need — commit, push,
-drain, settlement, readiness, delivery identity, transcript accumulation — it now
-cannot do **by construction** rather than by a flag someone has to remember.
+Both are ordinary turns, so `executeAgentTurn` owns their `running`, their
+delivery, their readiness, their cancellation, their transcript accumulators and
+their persistence — as it owns every other turn's. At every instant the session
+is running exactly one turn and the user's message is in the queue, which is a
+place the whole system already understands. `preTurnHold` and the admission
+checks that read it, the slot-owning operation, its settle latch, its ownership
+re-checks, its credential teardown and its persistence bypass are **deleted, not
+fixed**: the executor was already doing every one of those jobs correctly.
 
-Two consequences are load-bearing:
+What is left is a decision (`compact-before-turn.ts`) and two takeovers of four
+lines each. Three things are worth naming because they are not free:
 
-- **The step never clears `running`, and its card is written as final.** The
-  caller has ALREADY published `running` when this step is reached — both
-  transports do, one line before — so the guarantee is not "the session reads
-  idle" but "this step announces no completion for a turn that has not run": it
-  clears no flag, settles no delivery, and fires no idle event. Because
-  `running` is true, `emitChatCard` would take its **in-progress** branch and the
-  user's turn would delete the card at its first `replaceInProgress` — rendered
-  live, gone on reload, the docs/236 failure. So the card is emitted and appended
-  DIRECTLY, the route `emitNoticePostTurn` takes, on the rule that a record
-  created outside a turn has to be final when written because no turn boundary is
-  coming to finalize it. (An earlier revision of this plan asserted `running`
-  stays false. It does not, and the test harness that manufactured `false` made
-  every card assertion blind for two review rounds.)
-- **Admission is held by `preTurnHold` for the WHOLE pre-turn phase** — a runner
-  flag mirroring docs/288's `mergeHold`, taken by the transports via
-  `withPreTurnHold` (`pre-turn-hold.ts`) rather than by either hook, because no
-  single hook spans the phase. `running` already stops another turn STARTING;
-  the hold is what additionally stops one being **steered** into the process the
-  phase is using, and what tells the drains (`releaseQueuedTurn`,
-  `dispatchOnRunner`, the two `send-message.ts` re-checks) and the container
-  reconciler that the runner is claimed. The window that needed closing is wider
-  than the compaction: the merge probe is a network round-trip and the
-  eligibility check reads git, and — the reason the hold moved out of the hook —
-  the branch reset that follows is the destructive half. It is asked at every
-  place a turn can start or be steered, which is more than three: both
-  transports' admission checks, both of their post-turn drains,
-  `releaseQueuedTurn`, the `answer_question` path, the `/compact` shortcut, and
-  `verifyRunningState` (whose direct caller is `shipit session wait`, not the
-  reconciler).
+- **`silent`** — the one genuinely new field. ShipIt started the compaction turn,
+  so it gets no user bubble and no echo. It is a value, not a mechanism: the
+  executor already takes `emitUserEcho` and `persistUserMessage` as inputs.
+- **`compactContext: false` on the re-queued message** — what stops a loop. The
+  session is still merged and still eligible when the message drains, so nothing
+  about the *session* would stop a second decision; the flag says the true thing
+  instead, that the compaction for this message has already happened.
+- **`systemTurn` is inherited by the compaction turn** — mechanically necessary,
+  not cosmetic. The outer dispatch has already set `systemTurnInProgress`, and
+  `drainNext` refuses to drain while that flag is up unless its own turn is a
+  system turn. A compaction that did not inherit the marker ran, ended, and then
+  declined to start the very message it was making room for.
 
-`compactAgentOnWorker` (`container-session-runner.ts:1669`) is still **not** the
+`compactAgentOnWorker` (`container-session-runner.ts`) is still **not** the
 mechanism: it asks a *resident* agent to compact, which is the mid-turn
 `/compact` case, and a session continuing after a merge has nothing resident to
 ask.
 
-**A compaction ends at `agent_result`, not at `done`.** Two of the four backends
-have no process to exit: OpenCode's `runCompaction` and Codex's compact-spawn
-mode each settle with a synthetic `agent_result` and never emit `done`. Waiting
-for `done` held the user's message for the full timeout on every OpenCode
-compaction and then reported a failure that had not happened. Settling on the
-result is safe for the other two as well, because Claude and Grok both emit
-`agent_compacted` from a stream event that precedes their result — so an early
-settle can never mistake a real compaction for `no-compaction`.
-
-**It reports an outcome, never completion.** `agent_compacted` is observed
-directly, so a backend that accepts the trigger and does nothing is reported as
-`no-compaction` rather than success — docs/276 req 2's standard, applied in both
-directions: a compaction that happened counts even if the process then died or
-timed out, because the history really was replaced.
-
-**The spawn is raced against the settle latch, not awaited ahead of it.**
-`prepareAgentEnv` and `buildRunParams` are awaits the timer cannot interrupt, so
-sequencing them first would park the user's message forever on a hung credential
-round-trip while the timeout fired into a promise nobody was waiting on. The
-other half of that race is an ownership check after those awaits: a credential
-round-trip that resolves LATE must not call `run()` into a slot the user's turn
-now owns, which in container mode retries a conflicting start and can kill the
-worker's resident process — the user's actual turn.
-
-**What the step writes back, and what it must not.** The compaction can leave the
-backend on a new agent session id, and a stale id would resume the
-pre-compaction conversation and throw the whole compaction away — so the id is
-written back. Two exceptions, both learned from shipped mechanisms this step
-bypasses by not being a turn:
-
-- a spawn that reported the docs/153 `--resume` failure emits a fresh, useless id
-  before exiting, and taking it turns one failed resume into a permanent one;
-  `missing-conversation.ts` is that signature, shared with the turn listeners;
-- a session with a **conversation replay armed** (a rewind, a fork, a docs/153
-  recovery) is not compacted at all. `buildAgentRunParams` consumes the replay
-  read-and-clear, so this spawn would take the seed, `/compact` a conversation
-  holding only that seed, and hand the user's turn a summary of nothing.
-
-And `finalizeAgentEnv` runs on the way out, for the same reason a turn's executor
-calls it: a CLI that rotated its OAuth token just before exiting has written it
-into the session's credential subtree, and only that call publishes it back for
-sibling sessions.
+**Requirement 9 is now structural.** "The turn is never lost because the
+compaction did not complete" needs no timeout, no fail-safe outcome and no
+notice machinery: the user's message is in the queue, and every terminal path of
+the compaction turn drains it — including the ones where the agent process dies
+(CLAUDE.md post-turn invariant 2). A compaction that fails is a turn that failed,
+and shows its error in the transcript like any other.
 
 ## Custom compaction instructions — Claude and Grok
 
@@ -317,26 +274,29 @@ the live answer after a model or agent change.
 
 ## Visibility and failure (req 8, req 9)
 
-Visibility is inherited. The compaction spawn emits `agent_compaction_started`
-and the persisted compaction card (docs/178), so the user sees it start and sees
-the before/after result in the transcript — no new card type, no new persistence
-work.
+Both are inherited rather than built, which is the clearest measure of the
+sequencing being right.
 
-Failure must be **visible**, not merely survivable, or a user who ticked the box
-cannot tell a compaction that worked from one that did nothing. The step reports
-its outcome rather than its completion, and two shapes have to be
-distinguished:
+**Visibility (req 8).** The compaction turn emits `agent_compaction_started` and
+the persisted compaction card (docs/178) through the ordinary turn listeners, so
+the user sees it start and sees the before/after result — the same thing they see
+for a `/compact` they typed. Their own message shows as queued while it runs,
+which is the existing "queued behind a running turn" experience.
 
-- the compaction **errored** — say so;
-- the compaction produced **no compaction event at all** — a backend that
-  accepted the trigger and did nothing. docs/276 req 2 is the precedent: a
-  command that exits successfully while doing nothing does not count as a
-  compaction and must not be reported as one.
+**Failure (req 9).** "The user's message still runs; the turn is never lost" is
+now structural: the message is in the queue before the compaction starts, and
+every terminal path of a turn drains the queue — including the ones where the
+agent process dies (CLAUDE.md post-turn invariant 2). There is no timeout to
+tune, no fail-safe outcome type, and no notice machinery, because there is no
+way for a failed compaction to strand the message.
 
-Either way the user's turn still runs (req 9). The notice reuses the docs/218
-skip-notice path (`emitNoticeInTurn` / `emitNoticePostTurn` in
-`chat-card-persistence.ts`), which already anchors a one-line explanation at its
-true transcript position.
+"The transcript says that the compaction did not succeed" is likewise inherited:
+a compaction turn that errors persists its error like any other turn. The one
+case that is weaker than the nested design's bespoke notice is a backend that
+accepts the trigger, exits 0 and compacts nothing (docs/276 req 2's shape): that
+now shows as a turn with no compaction card rather than a sentence saying so.
+Recorded as a deliberate trade — the requirement is that a failure is never
+silent, and an absent card next to a completed turn is not a *claim* of success.
 
 ## The step must not fake a user message
 
@@ -347,22 +307,24 @@ bubble is not.
 
 ## Key files
 
-| File | Change |
+| File | Role |
 |---|---|
-| `orchestrator/pre-turn-compact-hook.ts` | **New.** The shared step: gate on `isResetEligible`, run ONE compaction as a SLOT-OWNING OPERATION (never a turn), report its outcome, and carry a failure notice. Sibling of `pre-turn-reset-hook.ts`. |
-| `orchestrator/pre-turn-hold.ts` | **New.** `withPreTurnHold` — the admission hold around the WHOLE pre-turn phase (compaction, agent-slot resolution, branch reset). Owned by the transports, because no single hook spans the phase. |
-| `orchestrator/missing-conversation.ts` | **New.** The docs/153 `--resume` failure signature, shared by the turn listeners and this operation, so a doomed spawn's fresh session id is never written back. |
-| `orchestrator/ws-handlers/agent-execution.ts` | Call the step before `applyPreTurnReset`; pass the per-send intent. The pre-turn steps and the agent resolution move BELOW the executor deps — the compaction spawns on them, and it owns the agent slot the turn's own proxy used to occupy by then — and the three run inside one `withPreTurnHold`. |
-| `orchestrator/dispatched-turn.ts` | Call the step before `deps.preTurnReset`, once per message, with the same `postTurn: "none"` exclusion (req 13); both under one `withPreTurnHold`. Publishes `running` + `activeDeliveryId` at entry, so a queue DRAIN owns its turn for the pre-turn phase rather than from `executeAgentTurn`. |
-| `orchestrator/runner-registry-factory.ts` | Wire the step into `SystemTurnDeps` beside `preTurnReset`. |
-| `orchestrator/session-runner.ts` | `SessionRunnerInterface.preTurnHold` (the admission hold, mirroring `mergeHold`), `SystemTurnDeps.preTurnCompact`, a `{ compact }` options argument on `buildRunParams` (the pre-turn compaction runs on dispatch-shaped deps and has no closure of its own to set the flag on), and `resetMergedBranch` / `compactContext` on `AgentDispatchOptions` + `QueuedMessage` so the composer's per-send intent survives the queue. |
-| `orchestrator/turn-executor.ts` | `TurnInput.compact`, forwarded to `buildRunParams`. |
-| `orchestrator/pre-turn-reset-hook.ts` | Accepts the merge recheck's answer instead of always probing for itself, so both gates read one snapshot. |
-| `orchestrator/prepared-dispatch.ts` | The two new per-send fields, carried through the exhaustively-guarded dispatch shape. |
+| `orchestrator/compact-before-turn.ts` | **New.** The whole of docs/295's own logic: should this message be preceded by a compaction turn? Gates on the setting, the per-send untick, the harness capability, an armed conversation replay, background work, the docs/282 `unsettled` answer and `isResetEligible`. Fail-safe false. |
+| `orchestrator/ws-handlers/send-message.ts` | The interactive takeover: enqueue the user's message with `compactContext: false`, run the `/compact` turn, return. |
+| `orchestrator/dispatched-turn.ts` | The same takeover for a continuation the user did not type (req 13), inheriting `systemTurn`. |
+| `orchestrator/ws-handlers/agent-execution.ts` | `silent` — no user row, no echo, for a turn ShipIt started. The docs/218 reset stays where it was and now runs on the user's turn, which is what carries the merge prefix (req 7). |
+| `orchestrator/session-runner.ts` | `SystemTurnDeps.shouldCompactBeforeTurn` (decision only) and `silent` on the dispatch/queue shape. |
+| `orchestrator/prepared-dispatch.ts` | `silent` through the exhaustively-guarded dispatch shape. |
 | `shared/types/ws-client-messages.ts` | `compactContext?: boolean` on `WsSendMessage`. |
 | `client/components/MessageInput/MessageInput.tsx` | `showCompactControl`, non-sticky checked state, the subordinate control line, the payload flag. |
-| `client/utils/send-handler.ts` | Carry `compactContext` (and `resetMergedBranch`) from the composer payload onto the WS message — on the `/review` frame as well as the ordinary one. |
+| `client/utils/send-handler.ts` | Carry `compactContext` (and `resetMergedBranch`) onto the WS message — on the `/review` frame as well as the ordinary one. |
 | `client/components/Settings/tabs/AdvancedTab.tsx` | Description of the existing toggle names both actions. |
+
+**Deleted with the nested design**, and worth listing because the deletion is the
+point: `pre-turn-compact-hook.ts`, `pre-turn-hold.ts`, `missing-conversation.ts`,
+`SessionRunnerInterface.preTurnHold` and its six admission checks, the
+`mergeRecheck` hand-off through `SystemTurnDeps.preTurnReset`, and the ownership
+publication `runDispatchedTurn` needed to make a pre-turn phase legible.
 
 ## Risks
 

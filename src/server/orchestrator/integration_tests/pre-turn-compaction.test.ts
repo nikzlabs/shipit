@@ -1,22 +1,21 @@
 /**
- * docs/295 end-to-end — the test the previous three review rounds did not have.
+ * docs/295 end-to-end — real admission, a real compaction, and the user's turn
+ * after it.
  *
- * Every other guard for this feature splits the system at the boundary that was
- * actually failing: the hook's own tests drive `applyPreTurnCompaction` with a
- * hand-built runner, and the transport tests replace the hook with a stub. So
- * nothing joined REAL admission (a `send_message` through the WS handler), the
- * REAL operation (a compaction spawn that takes the agent slot), and the user's
- * turn REPLACING the session's in-progress chat rows afterwards.
+ * This is the test that outlived the implementation. It was written against a
+ * design where the compaction ran nested INSIDE the user's send, as a
+ * slot-owning operation with its own admission hold; it passes unchanged against
+ * the one that shipped, where the compaction is an ordinary `/compact` turn and
+ * the user's message simply queues behind it. That is the point of asserting on
+ * observable behaviour — two spawns in order, one user row, and a `GET /history`
+ * read AFTER the user's turn finishes — rather than on the machinery.
  *
- * That is exactly where the worst defect lived. The design assumed `running` is
- * false while the compaction runs; it is not — the handler publishes it one line
- * earlier — so the compaction card was recorded as an in-progress row and the
- * user's turn deleted it at its first `replaceInProgress`. It rendered live and
- * was gone on reload, and every unit-level assertion about it passed, because
- * the hook harness manufactured the `running: false` the design had assumed.
- *
- * Hence the shape here: nothing is stubbed except the CLI itself, and the final
- * assertion is a `GET /history` read AFTER the user's turn has finished.
+ * The history read is the load-bearing one. The nested design recorded the
+ * compaction card against a turn that had not started, so the user's turn
+ * deleted it at its first `replaceInProgress`: it rendered live and was gone on
+ * reload. Every unit-level assertion about that card passed, because the unit
+ * harness manufactured the state the design had assumed. Nothing is stubbed here
+ * except the CLI itself.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
@@ -153,10 +152,41 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     // THE assertion. A card recorded in-band would be gone by here — rendered
     // live, absent on reload, which is what shipped through two review rounds.
     const res = await app.inject({ method: "GET", url: `/api/sessions/${SESSION_ID}/history` });
-    const history = res.json() as { messages: { compaction?: { preTokens?: number } }[] };
+    const history = res.json() as {
+      messages: { role?: string; text?: string; compaction?: { preTokens?: number } }[];
+    };
     const cards = history.messages.filter((m) => m.compaction !== undefined);
     expect(cards).toHaveLength(1);
     expect(cards[0]?.compaction?.preTokens).toBe(19585);
+
+    // 4 — and there is exactly ONE user row: the message the user actually
+    // typed. ShipIt started the compaction, so a `/compact …` bubble for it
+    // would be a message nobody sent.
+    const userRows = history.messages.filter((m) => m.role === "user");
+    expect(userRows).toHaveLength(1);
+    expect(userRows[0]?.text).toBe("start the next slice");
+
+    // 5 — and the compaction happened once. The user's message goes back on the
+    // queue carrying `compactContext: false`, which is what stops the drain
+    // deciding to compact for it all over again — an eligible session stays
+    // eligible, so without that the two would ping-pong forever.
+    expect(spawns).toHaveLength(2);
+
+    client.close();
+  });
+
+  it("does not compact when the message is the user's own `/compact` (req 12)", async () => {
+    // They asked for exactly one compaction. Prefixing theirs with ours would
+    // make it two, and the second would summarize the summary.
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "/compact" });
+
+    const only = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    expect(only.lastCompact).toBe(true);
+    expect(only.lastPrompt).toBe("/compact");
+    expect(spawns).toHaveLength(1);
 
     client.close();
   });

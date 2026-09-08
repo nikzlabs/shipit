@@ -219,6 +219,7 @@ export async function wakeSessionWithTurn(
     // No composer involved — a server-originated dispatch has no tick boxes.
     resetMergedBranch: undefined,
     compactContext: undefined,
+    silent: undefined,
     execution: undefined,
     images: undefined,
     files: undefined,

@@ -534,6 +534,7 @@ export async function createHeadlessSession(
     // No composer involved — a server-originated dispatch has no tick boxes.
     resetMergedBranch: undefined,
     compactContext: undefined,
+    silent: undefined,
   }));
 
   // graduate-session.ts owns the warm → active transition (docs/156).

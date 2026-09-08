@@ -39,7 +39,7 @@ import {
 import { emitPrLifecycleAfterCommit } from "./services/pr-lifecycle.js";
 import { detectAndReArmMergedSession, detectAndReArmResetSession } from "./services/pr-rearm.js";
 import { applyPreTurnReset } from "./pre-turn-reset-hook.js";
-import { applyPreTurnCompaction } from "./pre-turn-compact-hook.js";
+import { shouldCompactBeforeTurn } from "./compact-before-turn.js";
 import { emitResetEligible } from "./services/pre-turn-reset.js";
 import { wireResetEligibleOnFileChange } from "./reset-eligible-watch.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
@@ -660,7 +660,7 @@ export function createRunnerRegistry(
         // Same lazy poller resolution as `postTurnReArmReset` below. Skipped
         // when the poller or credential store is absent (minimal test wiring) —
         // the reset needs the merged PR's base branch and the global setting.
-        preTurnReset: async (runner, sessionId, sessionDir, mergeRecheck, intent) => {
+        preTurnReset: async (runner, sessionId, sessionDir, intent) => {
           const prStatusPoller = getPrStatusPoller?.();
           if (!prStatusPoller || !credentialStore) return { agentPrefix: "" };
           return await applyPreTurnReset({
@@ -675,7 +675,6 @@ export function createRunnerRegistry(
             runner,
             sessionId,
             sessionDir,
-            ...(mergeRecheck !== undefined ? { mergeRecheck } : {}),
             ...(intent !== undefined ? { intent } : {}),
           });
         },
@@ -687,18 +686,19 @@ export function createRunnerRegistry(
         // `credentialStore` is the same guard the reset uses — it owns the one
         // setting that governs both actions (requirement 11), so without it
         // there is nothing to consult and the answer is "do not compact".
-        preTurnCompact: async (runner, agentId, sessionId, sessionDir, createAgent, intent) => {
-          if (!credentialStore) return { outcome: { kind: "not-applicable" } };
+        shouldCompactBeforeTurn: async (runner, agentId, sessionId, sessionDir, intent) => {
+          if (!credentialStore) return false;
           const prStatusPoller = getPrStatusPoller?.();
-          return await applyPreTurnCompaction({
+          return await shouldCompactBeforeTurn({
             deps: {
               getSession: (id) => sessionManager.get(id),
+              getSessionRow: (id) => sessionManager.get(id),
               getPrStatus: (id) => sessionManager.getPrStatus(id),
               createGitManager,
-              chatHistoryManager,
               getAutoResetMergedBranch: () => credentialStore.getAutoResetMergedBranch(),
-              // docs/282 + docs/295 — one merge probe per turn, paid for here
-              // and handed to the reset, so both gates read the same snapshot.
+              // docs/282 — refresh the merge state before deciding. The probe
+              // RECORDS what it finds, so the reset on the user's turn reads it
+              // without a second round-trip.
               ...(prStatusPoller
                 ? {
                     mergeRecheckDeps: {
@@ -709,12 +709,10 @@ export function createRunnerRegistry(
                   }
                 : {}),
             },
-            turnDeps: systemTurnDeps,
             runner,
             agentId,
             sessionId,
             sessionDir,
-            createAgent,
             ...(intent !== undefined ? { intent } : {}),
           });
         },

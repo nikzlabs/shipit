@@ -1475,6 +1475,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
         // No composer involved — a server-originated dispatch has no tick boxes.
         resetMergedBranch: undefined,
         compactContext: undefined,
+        silent: undefined,
       }));
       expect(runner.running).toBe(true);
       expect(runner.hasDelivery("delivery-running")).toBe(true);

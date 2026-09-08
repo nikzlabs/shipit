@@ -37,12 +37,14 @@ import type {
 } from "./session-runner.js";
 import type { PreparedDispatch } from "./prepared-dispatch.js";
 import { queuedMessageToDispatchOptions } from "./queue-drain.js";
+import { prepareDispatch } from "./prepared-dispatch.js";
+import { toQueuedMessage } from "./session-runner.js";
+import { POST_MERGE_COMPACT_PROMPT } from "./compact-before-turn.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protocol.js";
 import { formatSessionMessagePrompt } from "./session-message-origin.js";
 import { dependencyGapAgentPrefix } from "./dependency-staleness.js";
 import { isCompactCommand } from "../shared/compact-command.js";
-import { withPreTurnHold } from "./pre-turn-hold.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 
 /**
@@ -194,6 +196,62 @@ async function runDispatchedTurnInner(
   // prompt. `uploadPaths` is persisted on the user row so the bubble rehydrates
   // with its image/file chips and `hydrateUploads` sees the upload as sent.
   const sessionDir = runner.sessionDir;
+
+  // docs/295 req 13 — a continuation the user did not type compacts too, under
+  // the same setting and in the same conditions in which its branch is reset. It
+  // carries no tick box, so the global setting alone decides.
+  //
+  // The takeover, and it is the same one the interactive path makes: put this
+  // message BACK on the queue and run a `/compact` turn instead. The compaction
+  // turn's own drain then starts this message, with everything it arrived with —
+  // its settlement, its delivery id, its `systemTurn` marker — because the queue
+  // carries the full option set (planning#257) and the entry keeps its chained
+  // `onTurnComplete`. `compactContext: false` states the fact that stops it
+  // looping: the compaction for this message has already happened.
+  //
+  // Before the attachments are resolved, because that work would be redone on
+  // the drain. `postTurn: "none"` is excluded for the same reason the reset is —
+  // a rebase-resolution turn is a step inside a git operation the driver owns,
+  // and compacting there would summarize away the conflict context the agent is
+  // holding precisely to finish the rebase.
+  if (
+    sessionDir && opts.postTurn !== "none" && !isCompactRequest && !opts.silent
+    && await deps.shouldCompactBeforeTurn?.(runner, agentId, runner.sessionId, sessionDir, opts.compactContext)
+  ) {
+    runner.enqueue({ ...toQueuedMessage(opts), compactContext: false });
+    runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+    await runDispatchedTurn(runner, deps, agentId, prepareDispatch({
+      text: POST_MERGE_COMPACT_PROMPT,
+      agentInterface: undefined,
+      messageOrigin: undefined,
+      execution: undefined,
+      activity: "Compacting context…",
+      images: undefined,
+      files: undefined,
+      uploads: undefined,
+      permissionMode: opts.permissionMode,
+      postTurn: undefined,
+      // Mirrored, and load-bearing rather than cosmetic. `systemTurn` is "ShipIt
+      // talking to itself", which this turn is exactly as much as the message it
+      // runs ahead of. Mechanically: the outer dispatch already set
+      // `systemTurnInProgress`, and `drainNext` refuses to drain while that flag
+      // is up unless ITS turn is a system turn too — so a compaction that did not
+      // inherit the marker ran, ended, and then declined to start the very
+      // message it was making room for. Inheriting it also means this turn's
+      // `finishTurn` clears the flag, and the drained entry sets it again.
+      systemTurn: opts.systemTurn,
+      onTurnComplete: undefined,
+      deliveryId: undefined,
+      dictated: undefined,
+      resetMergedBranch: undefined,
+      compactContext: undefined,
+      // ShipIt started it, so no user bubble and no echo for a prompt nobody
+      // typed. Also what keeps this from re-entering the gate above.
+      silent: true,
+    }), createAgent);
+    return;
+  }
+
   let validatedFiles: FileAttachment[] = [];
   let images: ImageAttachment[] | undefined =
     opts.images && opts.images.length > 0 ? opts.images : undefined;
@@ -304,55 +362,13 @@ async function runDispatchedTurnInner(
   // would report is `dirty-tree`, NOT `rebase-in-progress`: `computeResetBlocker`
   // checks `isClean()` first, and a conflicted rebase has an unclean tree. So
   // the exclusion is load-bearing, not belt-and-braces.
-  // docs/295 req 13 — and compact the context first, for the same sessions and
-  // under the same setting. A continuation the user did not type carries no tick
-  // box, so no intent is passed and the global setting alone decides — exactly
-  // as for the reset below.
-  //
-  // Before the reset, and both before the prompt is assembled. Running it here
-  // is what keeps the eligibility predicate answerable: the reset moves HEAD to
-  // the base, after which the session is eligible for nothing, so a compaction
-  // sequenced after it could only ever be gated on the reset's own outcome —
-  // and requirement 6 forbids that (the two controls are independent, so
-  // unticking one must not disable the other).
-  //
-  // Same `postTurn: "none"` exclusion, for the same reason, and it is not
-  // belt-and-braces here either: a rebase-resolution turn is a step inside a git
-  // operation the driver owns, and compacting there would summarize away the
-  // conflict context the agent is holding precisely to finish the rebase.
-  //
-  // Outside `runOnce` like the reset, so a no-result retry re-runs the agent but
-  // not the compaction. A retried turn must not compact twice.
-  // Both under one hold, for the whole phase — see `pre-turn-hold.ts`. Paired
-  // with the ownership publication at the top of this function: `running` stops
-  // another turn STARTING, the hold stops one being STEERED into the
-  // compaction's process or admitted while the branch is being moved.
-  const { compaction, reset } = await withPreTurnHold(runner, async () => {
-    const compaction = sessionDir && opts.postTurn !== "none" && !isCompactRequest
-      ? await deps.preTurnCompact?.(
-          runner, agentId, runner.sessionId, sessionDir, createAgent, opts.compactContext,
-        )
-      : undefined;
+  const reset = sessionDir && opts.postTurn !== "none" && !isCompactRequest
+    ? await deps.preTurnReset?.(
+        runner, runner.sessionId, sessionDir, opts.resetMergedBranch,
+      )
+    : undefined;
 
-    const reset = sessionDir && opts.postTurn !== "none" && !isCompactRequest
-      ? await deps.preTurnReset?.(
-          runner, runner.sessionId, sessionDir, compaction?.mergeRecheck, opts.resetMergedBranch,
-        )
-      : undefined;
-    return { compaction, reset };
-  });
-
-  // docs/218 + docs/295 — both hooks anchor their transcript record right after
-  // the user row, and the executor has one slot for that. Compose them in the
-  // order the actions ran, so a turn that both compacted and moved its branch
-  // reads back the way it happened.
-  const afterUserMessagePersisted =
-    compaction?.afterUserMessagePersisted ?? reset?.afterUserMessagePersisted
-      ? (sid: string): void => {
-          compaction?.afterUserMessagePersisted?.(sid);
-          reset?.afterUserMessagePersisted?.(sid);
-        }
-      : undefined;
+  const afterUserMessagePersisted = reset?.afterUserMessagePersisted;
 
   // docs/221 / nikzlabs/shipit#2349 — drain the out-of-band sync notice on this
   // transport too. A manual "Sync with <base>" parks it because it runs with no
@@ -469,15 +485,6 @@ async function runDispatchedTurnInner(
     // and the flow can't have grabbed the hold mid-turn (`runRebaseFlow`
     // refuses while the flag is up).
     if (runner.systemTurnInProgress && !opts.systemTurn) return;
-    // docs/295 — and the same shape one step later in the turn's life: THIS
-    // turn's post-turn window overlaps another send's PRE-turn phase. The
-    // sequence is real — turn A clears `running` and awaits its local commit, a
-    // message B arrives and enters its pre-turn phase, A's commit finishes and
-    // gets here. Dequeuing now starts C alongside B, and B has not bumped the
-    // turn epoch yet (that happens in `executeAgentTurn`), so no later guard
-    // catches it: C can displace B's compaction proxy or reset the same tree
-    // underneath it. The queue is not lost — B's own turn drains it.
-    if (runner.preTurnHold) return;
     if (runner.queueLength === 0) return;
     const next = runner.dequeue();
     if (!next) return;
@@ -766,7 +773,6 @@ async function runDispatchedTurnInner(
   try {
     await runOnce(0);
   } finally {
-    compaction?.ensureRecorded?.(runner.sessionId);
     reset?.ensureRecorded?.(runner.sessionId);
     reparkNoticeIfUndelivered();
   }

@@ -48,7 +48,7 @@
 import { randomUUID } from "node:crypto";
 import type { BranchAutoResetCard, WsServerMessage } from "../shared/types.js";
 import { autoResetMergedBranchOnContinue, clearResetSkipEpisode } from "./services/pre-turn-reset.js";
-import { recheckMergeBeforeTurn, type MergeRecheckOutcome } from "./services/pre-turn-merge-recheck.js";
+import { recheckMergeBeforeTurn } from "./services/pre-turn-merge-recheck.js";
 import { detectAndReArmResetSession, type ReArmDeps } from "./services/pr-rearm.js";
 import {
   emitChatCard,
@@ -127,19 +127,6 @@ export async function applyPreTurnReset(args: {
    * the global setting.
    */
   intent?: boolean;
-  /**
-   * docs/295 — the docs/282 recheck's answer, when something upstream has
-   * ALREADY paid for it. The pre-turn compaction runs ahead of this hook and
-   * gates on the same merge state, so without sharing one probe the two would
-   * read different snapshots: inside the poll window the compaction would see
-   * "not merged" and skip while the reset went on to discover the merge and
-   * move the branch — a continuation that resets without compacting, under a
-   * setting the user believes governs both.
-   *
-   * Absent means "nobody has looked yet", and this hook does its own probe as
-   * before. It is never called twice.
-   */
-  mergeRecheck?: MergeRecheckOutcome;
 }): Promise<PreTurnResetHookResult> {
   const { deps, runner, sessionId, sessionDir, intent } = args;
 
@@ -150,7 +137,7 @@ export async function applyPreTurnReset(args: {
   // where a fresh answer could change the outcome. Fail-safe and bounded — a
   // refusal or an error leaves the state as the poller had it, which is what
   // every turn ran on before this.
-  const recheck = args.mergeRecheck ?? await recheckMergeBeforeTurn(
+  const recheck = await recheckMergeBeforeTurn(
     {
       getSession: (id) => deps.sessionManager.get(id),
       getPrStatus: (id) => deps.sessionManager.getPrStatus(id),

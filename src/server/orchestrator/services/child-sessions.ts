@@ -969,6 +969,7 @@ export async function spawnChildSession(
     // No composer involved — a server-originated dispatch has no tick boxes.
     resetMergedBranch: undefined,
     compactContext: undefined,
+    silent: undefined,
   }));
 
   console.log(
@@ -1335,6 +1336,7 @@ export async function sendChildMessage(
     // No composer involved — a server-originated dispatch has no tick boxes.
     resetMergedBranch: undefined,
     compactContext: undefined,
+    silent: undefined,
   }));
   return {
     queuePosition: wasRunning ? runner.queueLength : 0,

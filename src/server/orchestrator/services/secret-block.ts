@@ -188,5 +188,6 @@ function dispatchRemediationTurn(
     // No composer involved — a server-originated dispatch has no tick boxes.
     resetMergedBranch: undefined,
     compactContext: undefined,
+    silent: undefined,
   }));
 }

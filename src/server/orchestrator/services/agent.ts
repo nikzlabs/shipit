@@ -251,6 +251,7 @@ export async function dispatchAgentMessage(
     // No composer involved — a server-originated dispatch has no tick boxes.
     resetMergedBranch: undefined,
     compactContext: undefined,
+    silent: undefined,
   }));
 
   return { ok: true, queued: wasRunning };
