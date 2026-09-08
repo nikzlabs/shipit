@@ -18,20 +18,29 @@ No design yet; `plan.md` follows once the open questions below are answered.
 
 5. The mechanism works purely from outside ShipIt — "essentially clicking buttons" the way a user would. ShipIt itself runs unmodified.
 
-6. The demo may use whichever agent harness (Claude CLI, Codex, OpenCode, or another) is most flexible for this purpose; the video is not tied to the Claude CLI.
+6. The demo session runs on the Claude Code harness. (Codex and OpenCode were considered; see the resolved question below.)
+
+7. The pipeline supports multiple scenarios. A scenario is one storyboard that produces one video; adding a scenario does not change the pipeline.
+
+8. The first scenario is a video that auto-plays on the ShipIt website. It is silent and it loops. The feature set and the length were delegated to the agent (see the resolved question below); the agent's proposal:
+   - Length: 40 seconds or less, so a visitor sees the whole loop before scrolling on.
+   - Beats, in order: (a) type a prompt that describes a small app and send it; (b) the agent works — files appear in the tree, the transcript shows activity — and the preview pane renders the app; (c) a follow-up prompt changes the app and the preview updates in place; (d) the pull-request card appears in the transcript, and the merge happens inside ShipIt.
+   - The beats are the product principles in motion: chat is the input (§5), the preview and the PR are inline (§1, §2).
+
+9. The video has no spoken narration. Any words on screen come from the product itself or from captions.
+
+10. The video is produced on demand — someone triggers a run — not on every release.
 
 ## Open questions
 
-- Which features the video shows, and in what order (the storyboard). Previews are in; the rest of the list is undecided.
-- Target length of the video.
 - Where the dedicated demo instance is hosted.
-- Whether the video has narration, and if so which voice and provider.
-- Whether the video is produced on every release or on demand.
-- Whether a cursor / click-highlight overlay is wanted.
-- Which agent harness the demo uses — Claude CLI, Codex, or OpenCode. A probe is in progress to find which one is easiest to point at a replay proxy from a file in the demo repository.
+- Whether a cursor / click-highlight overlay is wanted. A silent, looping video has no narrator to say "look here", so this matters more for scenario 1 than it would for a narrated cut.
 
 ## Resolved questions
 
 - 2026-09-08 — Should the video be recorded against the dogfood inner instance? Chosen: no — a dedicated demo instance, because the inner instance does not show previews and previews are a headline feature. Requirement 4.
 - 2026-09-08 — Should a live model drive the demo in real time? Chosen: no — timings would be inconsistent; the run must be repeatable. Requirement 3.
 - 2026-09-08 — Does producing the video require changes to ShipIt's server? Chosen: no — the mechanism lives entirely outside ShipIt and drives it as a user would. Requirement 5. (The agent's design answer — record the model's responses once and replay them at the API boundary — is a candidate mechanism for `plan.md`, not a requirement.)
+- 2026-09-08 — Which agent harness? Nik asked whether Codex or OpenCode would be more flexible. A probe (recorded on planning#524) measured the opposite: Claude Code 2.1.252 takes an API redirect from a two-line `.claude/settings.json` in the demo repo; Codex 0.153.2 rejects a project-local redirect; OpenCode 1.18.25 accepts one standalone but is shadowed inside a ShipIt session. Nik chose Claude Code. Requirement 6.
+- 2026-09-08 — Which features, in what order, and how long? Nik: "We need to support multiple scenarios. First use case: auto-playing video on the website. Come up with feature set and length." The multi-scenario rule is requirement 7; the first scenario is requirement 8, with the feature set and length delegated to the agent and recorded there as the agent's proposal.
+- 2026-09-08 — Narration and cadence? Nik chose no narration, produced on demand. Requirements 9 and 10.
