@@ -270,8 +270,6 @@ export interface QueuedMessage {
    */
   resetMergedBranch?: boolean;
   compactContext?: boolean;
-  /** docs/295 — ShipIt started this turn (the compaction): no user bubble. */
-  silent?: boolean;
 }
 
 /**
@@ -364,6 +362,7 @@ export interface AgentDispatchOptions {
   /** docs/218 + docs/295 — see {@link QueuedMessage}. Absent on server dispatches. */
   resetMergedBranch?: boolean;
   compactContext?: boolean;
+  /** docs/295 — ShipIt started this turn (the compaction): no user bubble, no user row. */
   silent?: boolean;
 }
 
@@ -550,7 +549,12 @@ export function dispatchOnRunner(
   // would be the turn reported as never-run. Registered in the same place as
   // the two nets and torn down with them.
   let sawTurnResult = false;
-  const onTurnResult = (): void => { sawTurnResult = true; };
+  // docs/295 — a compaction turn can run inside this dispatch's lifetime ahead
+  // of its own turn; its result is not this delivery's. `activeDeliveryId` is
+  // still the emitting turn's at `turn_result`.
+  const onTurnResult = (): void => {
+    if (runner.activeDeliveryId === opts.deliveryId) sawTurnResult = true;
+  };
   const settleAsDropped = (reason: string): void => {
     if (settlement.isSettled) return;
     if (sawTurnResult) {
@@ -665,7 +669,6 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.dictated !== undefined) queued.dictated = opts.dictated;
   if (opts.resetMergedBranch !== undefined) queued.resetMergedBranch = opts.resetMergedBranch;
   if (opts.compactContext !== undefined) queued.compactContext = opts.compactContext;
-  if (opts.silent !== undefined) queued.silent = opts.silent;
   return queued;
 }
 

@@ -53,6 +53,9 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     const git = (args: string[]): string =>
       execFileSync("git", args, { cwd: sessionDir, encoding: "utf8" }).trim();
     git(["init", "-b", "shipit/fix-login"]);
+    // The fixture puts the session's log dir inside the repo; keep the
+    // post-turn commit from sweeping it up and moving HEAD past the merge.
+    fs.writeFileSync(path.join(sessionDir, ".git", "info", "exclude"), "logs/\n");
     git(["config", "user.email", "t@example.com"]);
     git(["config", "user.name", "Test"]);
     fs.writeFileSync(path.join(sessionDir, "a.txt"), "shipped work\n");
@@ -151,6 +154,111 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     // 5 — and the compaction happened once (the re-queued message carries
     // `compactContext: false`; the session itself stays eligible).
     expect(spawns).toHaveLength(2);
+
+    client.close();
+  });
+
+  it("compacts a message that had to QUEUE behind a running turn (req 4)", async () => {
+    // The first send opts out of both actions, so it runs at once and leaves
+    // the session eligible. The second, sent while it runs, queues — and must
+    // still get its compaction when it drains.
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "first", compactContext: false, resetMergedBranch: false });
+    const first = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    expect(first.lastPrompt).toContain("first");
+    first.initSession("agent-a");
+
+    client.send({ type: "send_message", text: "second", compactContext: true });
+    await client.receiveType("message_queued");
+
+    first.finish("agent-a");
+    const compaction = await waitForClaude(() => spawns.at(-1) ?? (null as never), first);
+    expect(compaction.lastCompact).toBe(true);
+    expect(compaction.lastPrompt).not.toContain("second");
+    compaction.emit("event", { type: "agent_compacted", preTokens: 100, postTokens: 50 });
+    compaction.emit("event", { type: "agent_result", status: "success", sessionId: "agent-a" });
+    compaction.emit("done", 0);
+
+    const userTurn = await waitForClaude(() => spawns.at(-1) ?? (null as never), compaction);
+    expect(userTurn.lastPrompt).toContain("second");
+    expect(userTurn.lastCompact).toBeFalsy();
+    expect(spawns).toHaveLength(3);
+
+    client.close();
+  });
+
+  it("queues a second send that arrives while the first is still being decided", async () => {
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "first", compactContext: true });
+    // Unticked so this fixture (no `origin/main`, so the reset is refused and
+    // the session stays eligible) does not compact a second time.
+    client.send({ type: "send_message", text: "second", compactContext: false });
+
+    const compaction = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    expect(compaction.lastCompact).toBe(true);
+    expect(spawns).toHaveLength(1);
+    compaction.emit("event", { type: "agent_compacted", preTokens: 100, postTokens: 50 });
+    compaction.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    compaction.emit("done", 0);
+
+    // first, then second — in order, each as its own turn.
+    const firstTurn = await waitForClaude(() => spawns.at(-1) ?? (null as never), compaction);
+    expect(firstTurn.lastPrompt).toContain("first");
+    expect(firstTurn.lastPrompt).not.toContain("second");
+    firstTurn.initSession("after");
+    firstTurn.finish("after");
+    const secondTurn = await waitForClaude(() => spawns.at(-1) ?? (null as never), firstTurn);
+    expect(secondTurn.lastPrompt).toContain("second");
+    expect(secondTurn.lastCompact).toBeFalsy();
+
+    client.close();
+  });
+
+  it("still runs the message when the user STOPS the compaction (req 9)", async () => {
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "start the next slice", compactContext: true });
+    const compaction = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    expect(compaction.lastCompact).toBe(true);
+
+    client.send({ type: "interrupt_agent" });
+    await client.receiveType("agent_interrupted");
+    // The fake exits with code 1 after an interrupt (see `interrupt()`).
+    const userTurn = await waitForClaude(() => spawns.at(-1) ?? (null as never), compaction);
+    expect(userTurn.lastPrompt).toContain("start the next slice");
+    expect(userTurn.lastCompact).toBeFalsy();
+
+    client.close();
+  });
+
+  it("says so in the transcript when the compaction turn ends with no compaction (req 9)", async () => {
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "start the next slice", compactContext: true });
+    const compaction = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    // Exits 0 with a result and no `agent_compacted`.
+    compaction.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    compaction.emit("done", 0);
+
+    const userTurn = await waitForClaude(() => spawns.at(-1) ?? (null as never), compaction);
+    expect(userTurn.lastPrompt).toContain("start the next slice");
+    userTurn.initSession("after");
+    userTurn.finish("after");
+    await new Promise((r) => setTimeout(r, 200));
+
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${SESSION_ID}/history` });
+    const history = res.json() as { messages: { notice?: boolean; noticeLevel?: string; text?: string; compaction?: unknown }[] };
+    expect(history.messages.filter((m) => m.compaction !== undefined)).toHaveLength(0);
+    const notices = history.messages.filter((m) => m.notice);
+    const missed = notices.filter((m) => m.text?.includes("not compacted"));
+    expect(missed).toHaveLength(1);
+    expect(missed[0]?.noticeLevel).toBe("warn");
 
     client.close();
   });

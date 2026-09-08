@@ -18,6 +18,8 @@ import {
 } from "./services/pre-turn-merge-recheck.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
+import { emitNoticePostTurn } from "./chat-card-persistence.js";
+import type { PersistedMessage } from "./chat-history.js";
 
 /**
  * The post-merge summarization brief. A default summary ends with the shipped
@@ -101,4 +103,26 @@ export async function shouldCompactBeforeTurn(args: CompactBeforeTurnArgs): Prom
     console.error(`[compact-before-turn] decision failed for ${sessionId}:`, err);
     return false;
   }
+}
+
+/**
+ * req 9 — a compaction turn that ended with no compaction card. An error turn
+ * already shows its error; this covers a backend that accepted the trigger,
+ * exited 0 and compacted nothing. Called from the turn's own drain, after its
+ * rows are final, so the notice lands after them.
+ */
+export function noteMissedCompaction(
+  runner: Pick<SessionRunnerInterface, "recordedCards" | "wasInterrupted" | "emitMessage">,
+  chatHistory: { append(sessionId: string, message: PersistedMessage): unknown },
+  sessionId: string,
+): void {
+  if (runner.wasInterrupted) return;
+  if (runner.recordedCards.some((c) => c.message.compaction !== undefined)) return;
+  emitNoticePostTurn(
+    (m) => runner.emitMessage(m),
+    chatHistory,
+    sessionId,
+    "The context was not compacted before this message; it runs with the context as it was.",
+    "warn",
+  );
 }

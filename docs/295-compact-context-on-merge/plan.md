@@ -49,20 +49,25 @@ checkbox and follows the global setting, exactly as the reset does.
   without the reset's prefix loses req 7), and finally `isResetEligible` — the
   same predicate that offers the reset checkbox (reqs 1, 3, 13). Fail-safe
   false throughout (req 9).
-- **Two takeovers** — `send-message.ts` for a typed send, `dispatched-turn.ts`
-  for a continuation the user did not type. Each queues the message with
-  `compactContext: false` and runs a `/compact` turn. The flag says the true
-  thing that stops a loop: the compaction for this message has already happened,
-  while the *session* stays eligible. The dispatched takeover runs before
-  attachment resolution (the drain redoes it) and inherits `systemTurn` —
-  `drainNext` refuses to drain under `systemTurnInProgress` unless its own turn
-  is a system turn, so a compaction without the marker would end and never start
-  the message. It excludes `postTurn: "none"` for the reset's reason: a
-  rebase-resolution turn is a step inside a git operation, and compacting there
-  would summarise away the conflict context.
-- **`silent`** — the one new field on the dispatch and queue shape. ShipIt
-  started the compaction turn, so it gets no user bubble and no user row; the
-  compaction card is the record. A value, not a mechanism: the executor already
+- **Two takeovers** — `ws-handlers/send-message.ts` for a typed send (and,
+  through the same `runCompactionAhead` helper, the WS queue drain for a
+  message that queued behind another turn), `dispatched-turn.ts` for a
+  continuation the user did not type. Each puts the message at the **front** of
+  the queue — it was next and stays next, so an entry queued earlier cannot
+  overtake it — with `compactContext: false`, which says the true thing that
+  stops a loop: the compaction for this message has already happened, while the
+  *session* stays eligible. Then it runs the `/compact` turn as a **system
+  turn**: a send arriving meanwhile queues behind it instead of being steered
+  into the compaction process (which would run it before the message it
+  overtook, without that message's reset). The compaction's own drain is the one
+  interactive drain allowed to run under `systemTurnInProgress`. The dispatched
+  takeover runs before attachment resolution (the drain redoes it) and excludes
+  `postTurn: "none"` for the reset's reason: a rebase-resolution turn is a step
+  inside a git operation, and compacting there would summarise away the
+  conflict context.
+- **`silent`** — the one new field on the dispatch shape (never queued: only
+  the compaction turn carries it). ShipIt started that turn, so it gets no user
+  bubble and no user row; the compaction card is the record. A value, not a mechanism: the executor already
   takes `emitUserEcho` and `persistUserMessage` as inputs.
 
 ## Ordering, and why the merge notice survives (req 4, req 7)
@@ -109,14 +114,33 @@ derived: the same parse against the agent that will run it.
 
 ## Visibility and failure (req 8, req 9)
 
-Both are inherited. The compaction turn emits `agent_compaction_started` and the
+Mostly inherited. The compaction turn emits `agent_compaction_started` and the
 persisted compaction card (docs/178) through the ordinary turn listeners; the
 user's message shows as queued while it runs. A failed compaction is a failed
 turn: its error persists like any other, and every terminal path of a turn
 drains the queue — including the ones where the agent process dies (CLAUDE.md
-post-turn invariant 2) — so the message is never lost. One trade: a backend that
-accepts the trigger, exits 0 and compacts nothing shows as a turn with no
-compaction card rather than an explicit notice.
+post-turn invariant 2) — so the message is never lost. Two cases needed a line
+each:
+
+- **Stop during the compaction** stops the compaction; the message it ran ahead
+  of still runs. The WS drain normally clears the queue after an interrupt (the
+  user stopped *their* turn); after the compaction turn it does not.
+- **A compaction turn that ends with no compaction card** (a backend that
+  accepted the trigger, exited 0 and compacted nothing) gets a persisted `warn`
+  notice from the turn's drain, `noteMissedCompaction`, so the failure is never
+  silent. An interrupted or errored turn already shows why.
+
+**A wake's settlement is its own.** A notify-on-merge wake dispatched onto an
+eligible session has the compaction run inside its dispatch's lifetime, so the
+dispatch's `turn_result` latch (which tells *interrupted* — do not redeliver —
+from *dropped* — redeliver) only counts a result emitted while
+`activeDeliveryId` is the wake's own. Without that, a runner disposed after the
+compaction but before the wake ran reported the wake delivered.
+
+**Known trade:** the queued message lives in the in-memory queue for the length
+of the compaction, as any queued message does. An orchestrator restart in that
+window loses it — the same window a user who presses compact and then sends has
+today.
 
 ## The composer control (req 1, req 2, req 3, req 10)
 
@@ -140,11 +164,11 @@ Advanced description names both.
 
 | File | Role |
 |---|---|
-| `orchestrator/compact-before-turn.ts` | The decision and the post-merge `/compact` prompt. |
+| `orchestrator/compact-before-turn.ts` | The decision, the post-merge `/compact` prompt, `noteMissedCompaction`. |
 | `orchestrator/ws-handlers/send-message.ts` | The interactive takeover. |
 | `orchestrator/dispatched-turn.ts` | The dispatched takeover (req 13); `/compact` re-derived on the drain (req 12). |
-| `orchestrator/ws-handlers/agent-execution.ts` | `silent`; `/compact` re-derived on the WS drain (req 12); tick boxes carried off the queue. |
-| `orchestrator/session-runner.ts`, `prepared-dispatch.ts` | `shouldCompactBeforeTurn` dep; `compactContext` / `resetMergedBranch` / `silent` on the dispatch and queue shape. |
+| `orchestrator/ws-handlers/agent-execution.ts` | `decideCompactBeforeTurn` + `runCompactionAhead` (shared by the send handler and the WS drain); `silent`, `systemTurn`; the compaction turn's drain exemptions and `noteMissedCompaction`; `/compact` re-derived on the WS drain (req 12). |
+| `orchestrator/session-runner.ts`, `prepared-dispatch.ts` | `shouldCompactBeforeTurn` dep; `compactContext` / `resetMergedBranch` on the queue shape, `silent` on the dispatch shape; the delivery-aware `turn_result` latch. |
 | `orchestrator/turn-executor.ts` | `TurnInput.compact`, passed to `buildRunParams` for the dispatched path. |
 | `shared/types/ws-client-messages.ts` | `compactContext?: boolean`. |
 | `client/components/MessageInput/MessageInput.tsx` | The control, its tick state, the payload flag. |
@@ -160,3 +184,7 @@ Advanced description names both.
 - **Stop reaches the compaction, not the send.** Interrupting during the
   compaction stops that turn; the queued message then runs. Cancelling the
   whole send from inside the compaction is not something a requirement asks for.
+- **A refused reset compacts again next time.** Eligibility is the composer's
+  own signal, so while a reset keeps being refused (no network, say) the box
+  keeps appearing ticked and each message compacts first. Consistent with what
+  the user sees; untick to skip.

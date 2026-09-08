@@ -39,7 +39,7 @@ import type { PreparedDispatch } from "./prepared-dispatch.js";
 import { queuedMessageToDispatchOptions } from "./queue-drain.js";
 import { prepareDispatch } from "./prepared-dispatch.js";
 import { toQueuedMessage } from "./session-runner.js";
-import { POST_MERGE_COMPACT_PROMPT } from "./compact-before-turn.js";
+import { POST_MERGE_COMPACT_PROMPT, noteMissedCompaction } from "./compact-before-turn.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protocol.js";
 import { formatSessionMessagePrompt } from "./session-message-origin.js";
@@ -142,16 +142,17 @@ export async function runDispatchedTurn(
   const sessionDir = runner.sessionDir;
 
   // docs/295 req 13 — a continuation the user did not type compacts too, the
-  // same way the interactive path does it: put this message back on the queue
-  // and run a `/compact` turn; that turn's drain starts the message with every
-  // option it arrived with. `compactContext: false` stops it deciding again.
-  // Before attachment resolution, which the drain would redo. `postTurn: "none"`
-  // is excluded for the reset's reason below.
+  // same way the interactive path does it: put this message at the FRONT of
+  // the queue (it was next, and stays next) and run a `/compact` turn; that
+  // turn's drain starts the message with every option it arrived with.
+  // `compactContext: false` stops it deciding again. Before attachment
+  // resolution, which the drain would redo. `postTurn: "none"` is excluded for
+  // the reset's reason below.
   if (
-    sessionDir && opts.postTurn !== "none" && !isCompactRequest && !opts.silent
+    sessionDir && opts.postTurn !== "none" && !isCompactRequest
     && await deps.shouldCompactBeforeTurn?.(runner, agentId, runner.sessionId, sessionDir, opts.compactContext)
   ) {
-    runner.enqueue({ ...toQueuedMessage(opts), compactContext: false });
+    runner.messageQueue.unshift({ ...toQueuedMessage(opts), compactContext: false });
     runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
     await runDispatchedTurn(runner, deps, agentId, prepareDispatch({
       text: POST_MERGE_COMPACT_PROMPT,
@@ -164,10 +165,10 @@ export async function runDispatchedTurn(
       uploads: undefined,
       permissionMode: opts.permissionMode,
       postTurn: undefined,
-      // Inherited, and load-bearing: `drainNext` refuses to drain under
-      // `systemTurnInProgress` unless its own turn is a system turn, so a
-      // compaction without the marker would end and never start the message.
-      systemTurn: opts.systemTurn,
+      // ShipIt's own turn: a send arriving meanwhile queues behind it instead
+      // of being steered into it. Also what lets `drainNext` below run under
+      // `systemTurnInProgress` when the message it ran ahead of is a system turn.
+      systemTurn: true,
       onTurnComplete: undefined,
       deliveryId: undefined,
       dictated: undefined,
@@ -405,6 +406,7 @@ export async function runDispatchedTurn(
     // and the flow can't have grabbed the hold mid-turn (`runRebaseFlow`
     // refuses while the flag is up).
     if (runner.systemTurnInProgress && !opts.systemTurn) return;
+    if (opts.silent) noteMissedCompaction(runner, deps.listenerDeps.chatHistoryManager, runner.sessionId);
     if (runner.queueLength === 0) return;
     const next = runner.dequeue();
     if (!next) return;

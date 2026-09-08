@@ -6,6 +6,11 @@ import { postTurnCommit } from "./post-turn.js";
 import { billingModeForRoute } from "../sessions.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { parseCompactCommand } from "../../shared/compact-command.js";
+import {
+  shouldCompactBeforeTurn,
+  noteMissedCompaction,
+  POST_MERGE_COMPACT_PROMPT,
+} from "../compact-before-turn.js";
 import { emitResetEligible } from "../services/pre-turn-reset.js";
 import { applyPreTurnReset, type PreTurnResetHookResult } from "../pre-turn-reset-hook.js";
 import { buildBugOutcomeNotice } from "../services/bug-report.js";
@@ -99,6 +104,8 @@ export async function drainNextQueuedMessage(
   capturedSessionId: string | undefined,
   capturedSessionDir: string | null | undefined,
   emit: (msg: WsServerMessage) => void,
+  /** docs/295 — the turn this drain runs off is ShipIt's own compaction turn. */
+  compactionTurn = false,
 ): Promise<void> {
   if (!runner) return;
 
@@ -107,11 +114,17 @@ export async function drainNextQueuedMessage(
   // clearing `running` and this drain running is an await on the local commit).
   // Starting a queued turn now would displace the flow's agent slot mid-rebase.
   // Leave the queue alone: the flow's `finally` releases it when it settles.
-  // This drain only ever runs off an interactive turn, which never owns the flag.
-  if (runner.systemTurnInProgress) return;
+  // The one interactive turn that owns the flag is the compaction turn, whose
+  // drain is what starts the message it ran ahead of.
+  if (runner.systemTurnInProgress && !compactionTurn) return;
 
   const messageQueue = runner.messageQueue;
-  if (runner.wasInterrupted) {
+  if (compactionTurn && capturedSessionId) {
+    noteMissedCompaction(runner, ctx.chatHistoryManager, capturedSessionId);
+  }
+  // A stop during the compaction stops the compaction; the message it ran
+  // ahead of still runs (req 9).
+  if (runner.wasInterrupted && !compactionTurn) {
     if (messageQueue.length > 0) {
       runner.clearQueue();
       emit({ type: "queue_updated", queue: [] });
@@ -143,6 +156,66 @@ function isCompactCommandFor(ctx: FullCtx, text: string): boolean {
   return capable && parseCompactCommand(text).match;
 }
 
+/** docs/295 — the decision, on the WS transport's deps. */
+export function decideCompactBeforeTurn(
+  ctx: FullCtx,
+  runner: SessionRunnerInterface,
+  sessionId: string,
+  sessionDir: string,
+  intent: boolean | undefined,
+): Promise<boolean> {
+  return shouldCompactBeforeTurn({
+    deps: {
+      getSession: (id) => ctx.sessionManager.get(id),
+      getSessionRow: (id) => ctx.sessionManager.get(id),
+      getPrStatus: (id) => ctx.sessionManager.getPrStatus(id),
+      createGitManager: ctx.createGitManager,
+      getAutoResetMergedBranch: () => ctx.credentialStore.getAutoResetMergedBranch(),
+      mergeRecheckDeps: {
+        verifyPrState: (id) =>
+          ctx.prStatusPoller.forceVerifySessionPrState(id, { armAbsentDebounce: false }),
+        awaitMergeHandling: (id) => ctx.prStatusPoller.awaitMergeHandling(id),
+      },
+    },
+    runner,
+    agentId: ctx.getActiveAgentId(),
+    sessionId,
+    sessionDir,
+    ...(intent !== undefined ? { intent } : {}),
+  });
+}
+
+/**
+ * docs/295 — compact first: put the message at the FRONT of the queue (it was
+ * next, and stays next) with `compactContext: false`, so the compaction for it
+ * is not decided twice, and run the `/compact` turn. That turn's drain starts
+ * the message. A system turn, so a send arriving meanwhile queues behind it
+ * instead of being steered into it.
+ */
+export async function runCompactionAhead(
+  ctx: FullCtx,
+  runner: SessionRunnerInterface,
+  queued: QueuedMessage,
+  agentSessionId: string | undefined,
+  permissionMode: PermissionMode | undefined,
+): Promise<void> {
+  runner.messageQueue.unshift({ ...queued, compactContext: false });
+  runner.emitMessage({ type: "message_queued", text: queued.text, position: 1 });
+  runner.running = true;
+  runner.systemTurnInProgress = true;
+  await runAgentWithMessage(ctx, {
+    userText: POST_MERGE_COMPACT_PROMPT,
+    images: undefined,
+    validatedFiles: [],
+    agentSessionId,
+    permissionMode,
+    isNewSession: false,
+    compact: true,
+    silent: true,
+    systemTurn: true,
+  });
+}
+
 /**
  * The WS transport's own queue re-entry: resolve the entry's attachments and
  * start an interactive turn. Reached ONLY for `execution: "interactive"` entries
@@ -157,6 +230,17 @@ async function runQueuedInteractiveMessage(
   emit: (msg: WsServerMessage) => void,
   next: QueuedMessage,
 ): Promise<void> {
+  const nextSession = capturedSessionId
+    ? ctx.sessionManager.get(capturedSessionId)
+    : undefined;
+  // docs/295 — a message that queued behind another turn compacts too (req 4).
+  if (
+    capturedSessionId && capturedSessionDir && !isCompactCommandFor(ctx, next.text)
+    && await decideCompactBeforeTurn(ctx, runner, capturedSessionId, capturedSessionDir, next.compactContext)
+  ) {
+    await runCompactionAhead(ctx, runner, next, nextSession?.agentSessionId, next.permissionMode);
+    return;
+  }
   const nextImages = next.images && next.images.length > 0 ? next.images : undefined;
   const nextFileRefs = next.files && next.files.length > 0 ? next.files : undefined;
   let nextValidatedFiles: FileAttachment[] = [];
@@ -188,9 +272,6 @@ async function runQueuedInteractiveMessage(
       // which is what makes hydrateUploads work correctly.
     }
   }
-  const nextSession = capturedSessionId
-    ? ctx.sessionManager.get(capturedSessionId)
-    : undefined;
   try {
     await runAgentWithMessage(ctx, {
       userText: next.text,
@@ -264,6 +345,8 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
    * gets no user bubble: nobody typed its prompt.
    */
   silent?: boolean;
+  /** docs/169 — the turn is ShipIt's own; sends queue behind it, never into it. */
+  systemTurn?: boolean;
   /**
    * docs/144 — the user dictated this message by voice, so `userText` is a
    * machine transcription. Adds the `<dictated_input>` context block to the
@@ -795,7 +878,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // into this adapter, so the executor's post-turn drain funnels back through
   // the WS path's attachment handling.
   const drainNext = (): Promise<void> =>
-    drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emit);
+    drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emit, opts.silent === true);
 
   // docs/218 — a branch that moved must leave a record even if the turn dies
   // before it reaches the anchor (`afterUserMessagePersisted`). `ensureRecorded`
@@ -807,6 +890,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       prompt,
       userText,
       ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
+      ...(opts.systemTurn ? { systemTurn: true } : {}),
       // The SENDING tab already rendered an optimistic bubble, but no other
       // attached viewer has one — so echo, and let that tab dedupe on its own
       // `clientRequestId`.

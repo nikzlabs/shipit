@@ -17,6 +17,7 @@ import {
   type FakeAgent,
 } from "./integration_tests/dispatch-test-helpers.js";
 import { TURN_COMPLETED } from "./turn-settlement.js";
+import type { QueuedMessage } from "./session-runner.js";
 
 const MERGE_PREFIX = "[System] Your previous pull request (#482) was merged into main.";
 
@@ -88,6 +89,60 @@ describe("dispatched turn — the docs/295 compaction takeover (req 13)", () => 
     // Exactly one user row: the compaction turn is `silent`, nobody typed it.
     const userRows = appended.filter((m) => m.role === "user");
     expect(userRows.map((m) => m.text)).toEqual(["Retry the failed import"]);
+  });
+
+  it("keeps the message NEXT — an entry already queued does not overtake it", async () => {
+    // The queue held B; A was dispatched and taken over. A goes to the FRONT,
+    // so after the compaction A runs, then B — the order they arrived in.
+    const { agents, deps, prompts, decisions } = setup();
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.enqueue({ text: "B, queued earlier", execution: "dispatched" } as QueuedMessage);
+
+    runner.dispatch(testDispatch({ text: "A, dispatched now" }));
+    await flushTurn();
+    expect(runner.getQueueSnapshot().map((q) => q.text)).toEqual(["A, dispatched now", "B, queued earlier"]);
+
+    agents[0]?.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    await flushTurn();
+    expect(prompts[1]).toContain("A, dispatched now");
+    expect(decisions.at(-1)).toEqual({ sessionId: "s1", intent: false });
+  });
+
+  it("runs the compaction as ShipIt's own turn, so a send meanwhile queues behind it", async () => {
+    // An SDK click is not a system turn; the compaction ahead of it is.
+    const { deps } = setup();
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "keep going", systemTurn: undefined }));
+    await flushTurn();
+    expect(runner.running).toBe(true);
+    expect(runner.systemTurnInProgress).toBe(true);
+  });
+
+  it("does not let the compaction's result count as the wake's result", async () => {
+    // The wake's dispatch latches `turn_result` to tell `interrupted` (ran, then
+    // cut short — do not redeliver) from `dropped` (never ran — redeliver). The
+    // compaction's result must not latch it: a runner disposed after the
+    // compaction but before the wake ran would report the wake delivered.
+    const { agents, deps } = setup();
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    const outcomes: { status: string }[] = [];
+    runner.dispatch(testDispatch({
+      text: "wake up",
+      systemTurn: true,
+      deliveryId: "watch-2:1",
+      onTurnComplete: (o) => outcomes.push(o),
+    }));
+    await flushTurn();
+    agents[0]?.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    agents[0]?.emit("done", 0);
+    await flushTurn();
+    // The wake has been dequeued and is starting; dispose now.
+    runner.dispose({ force: true });
+    await flushTurn();
+    expect(outcomes.map((o) => o.status)).toEqual(["dropped"]);
   });
 
   it("compacts exactly once — the drained message does not decide again", async () => {

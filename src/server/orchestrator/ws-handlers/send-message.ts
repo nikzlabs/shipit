@@ -8,14 +8,13 @@ import { graduateSession } from "../services/graduate-session.js";
 import { pinIssueSeededSession } from "../services/issue-seeded-session.js";
 import { markIssueStartedFromSeed } from "../issue-lifecycle.js";
 import { recordSteeredMessage, persistTurnInProgress } from "./agent-listeners.js";
-import { runAgentWithMessage, saveImagesToUploadsDir, assembleAgentPrompt } from "./agent-execution.js";
+import { decideCompactBeforeTurn, runCompactionAhead, runAgentWithMessage, saveImagesToUploadsDir, assembleAgentPrompt } from "./agent-execution.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { shouldSteerMessage } from "../dispatch-steering.js";
 import { resetSubAgentSpawnBudget } from "../session-runner.js";
 import { settleNetworkModeWrites } from "../services/network-mode-writes.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { toQueuedMessage } from "../session-runner.js";
-import { shouldCompactBeforeTurn, POST_MERGE_COMPACT_PROMPT } from "../compact-before-turn.js";
 import { agentAdmissionError } from "../services/agent-auth-gate.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
 
@@ -617,8 +616,11 @@ export async function handleSendMessage(
   // is separated from this line by attachment resolution, session activation and
   // filesystem reads. The executor can take the hold inside that gap, and then
   // this would start a turn on top of a merge already in flight. Same shape as
-  // the executor's own re-check under its hold, for the same reason.
-  if (turnRunner?.mergeHold) {
+  // the executor's own re-check under its hold, for the same reason. `running`
+  // too: another send can have started its turn in the same gap (docs/295
+  // widened it with the compaction decision), and `dispatch` queues or steers
+  // this one exactly as if it had arrived a moment later.
+  if (turnRunner?.mergeHold || turnRunner?.running) {
     turnRunner.dispatch(prepareDispatch({
       text: userText,
       agentInterface: undefined,
@@ -639,40 +641,20 @@ export async function handleSendMessage(
     }));
     return;
   }
+  if (turnRunner) turnRunner.running = true;
   // docs/295 — a merged session compacts its context before this message runs,
   // the way a user does it by hand: queue the message, run a `/compact` turn,
   // and let that turn's drain start the message. Skipped for a `/compact` the
   // user typed (req 12): they asked for exactly one compaction.
   if (
     turnRunner && activeId && activeDir && !isCompactRequest
-    && await shouldCompactBeforeTurn({
-      deps: {
-        getSession: (id) => ctx.sessionManager.get(id),
-        getSessionRow: (id) => ctx.sessionManager.get(id),
-        getPrStatus: (id) => ctx.sessionManager.getPrStatus(id),
-        createGitManager: ctx.createGitManager,
-        getAutoResetMergedBranch: () => ctx.credentialStore.getAutoResetMergedBranch(),
-        mergeRecheckDeps: {
-          verifyPrState: (id) =>
-            ctx.prStatusPoller.forceVerifySessionPrState(id, { armAbsentDebounce: false }),
-          awaitMergeHandling: (id) => ctx.prStatusPoller.awaitMergeHandling(id),
-        },
-      },
-      runner: turnRunner,
-      agentId: ctx.getActiveAgentId(),
-      sessionId: activeId,
-      sessionDir: activeDir,
-      ...(msg.compactContext !== undefined ? { intent: msg.compactContext } : {}),
-    })
+    && await decideCompactBeforeTurn(ctx, turnRunner, activeId, activeDir, msg.compactContext)
   ) {
-    // `compactContext: false` — the compaction for this message has happened,
-    // so a drain that decides again (`releaseQueuedTurn` → dispatched executor)
-    // does not run another one.
-    const position = turnRunner.enqueue(toQueuedMessage(prepareDispatch({
+    await runCompactionAhead(ctx, turnRunner, toQueuedMessage(prepareDispatch({
       text: userText,
       agentInterface: undefined,
       resetMergedBranch: msg.resetMergedBranch,
-      compactContext: false,
+      compactContext: msg.compactContext,
       silent: undefined,
       execution: "interactive",
       images: allImages,
@@ -685,24 +667,10 @@ export async function handleSendMessage(
       onTurnComplete: undefined,
       deliveryId: undefined,
       dictated: msg.dictated,
-    })));
-    turnRunner.emitMessage({ type: "message_queued", text: userText, position });
-    turnRunner.running = true;
-    // The same turn a typed `/compact` starts; `silent` because nobody typed it.
-    await runAgentWithMessage(ctx, {
-      userText: POST_MERGE_COMPACT_PROMPT,
-      images: undefined,
-      validatedFiles: [],
-      agentSessionId,
-      permissionMode: msg.permissionMode,
-      isNewSession: false,
-      compact: true,
-      silent: true,
-    });
+    })), agentSessionId, msg.permissionMode);
     return;
   }
 
-  if (turnRunner) turnRunner.running = true;
   await runAgentWithMessage(ctx, {
     userText,
     images: allImages,

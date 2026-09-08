@@ -13,13 +13,16 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 
 ## The two takeovers (req 13)
 
-- [x] `ws-handlers/send-message.ts` — queue the message with
-      `compactContext: false`, run the `/compact` turn `silent`.
-- [x] `dispatched-turn.ts` — the same, before attachment resolution, inheriting
-      `systemTurn`, excluding `postTurn: "none"`; wired through
-      `SystemTurnDeps.shouldCompactBeforeTurn` in `runner-registry-factory.ts`.
-- [x] `silent` on the dispatch and queue shape: no user row, no echo, on both
-      transports.
+- [x] `ws-handlers/send-message.ts` and the WS queue drain — put the message at
+      the front of the queue with `compactContext: false`, run the `/compact`
+      turn `silent` and as a system turn (`runCompactionAhead`).
+- [x] `dispatched-turn.ts` — the same, before attachment resolution, excluding
+      `postTurn: "none"`; wired through `SystemTurnDeps.shouldCompactBeforeTurn`
+      in `runner-registry-factory.ts`.
+- [x] A stop during the compaction still runs the message; a compaction turn
+      with no card leaves a `warn` notice (req 9).
+- [x] A wake's `turn_result` latch ignores the compaction's result.
+- [x] `silent` on the dispatch shape: no user row, no echo, on both transports.
 - [x] The reset runs on the user's turn, after the compaction, so its merge
       prefix cannot be summarised away (req 7).
 
@@ -48,7 +51,8 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
       drained turn, the `postTurn: "none"` and queued-`/compact` exclusions.
 - [x] `integration_tests/pre-turn-compaction.test.ts` — a real merged
       repository end to end: two spawns in order, the compaction card and
-      exactly one user row survive the user's turn; the untick and typed
+      exactly one user row survive the user's turn; a queued send; a second
+      send during the decision; stop; a missing card; the untick and typed
       `/compact` cases.
 - [x] `MessageInput.test.tsx`, `send-handler.test.ts` — the control, its
       re-tick rules, the payload flag, and the `/review` frame.
