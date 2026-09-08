@@ -158,7 +158,15 @@ export async function handleSendMessage(
       // listeners. If there's no resident agent, fall through to the normal
       // queue path. compact() is a best-effort no-op when the resident process
       // can't compact (e.g. a one-shot PTY mid-turn).
-      if (isCompactRequest) {
+      // docs/295 req 12 — NOT under a pre-turn hold, though. That branch returns
+      // unconditionally, so a `/compact` arriving there is spent either way:
+      // early in the phase the slot is empty and the command evaporates with no
+      // compaction and nothing queued; once the automatic compaction's proxy is
+      // installed, it is handed to THAT process — a nested request against a
+      // maintenance spawn the user did not make. Falling through queues it, and
+      // the drain re-classifies it as the command (`dispatched-turn.ts`), so the
+      // user's one compaction happens once, after the phase, as its own turn.
+      if (isCompactRequest && !runnerForQueue.preTurnHold) {
         const compactAgent = runnerForQueue.getAgent();
         if (compactAgent?.compact) {
           compactAgent.compact(compactParsed.instructions);
@@ -617,12 +625,13 @@ export async function handleSendMessage(
   // Mark the runner as running. Resolve via registry so this stays correct
   // even if the WS disconnects between handler entry and `await` resumption.
   const turnRunner = resolveRunner(ctx);
-  // docs/288 req 6 — re-asked here because the check at the top of this handler
-  // is separated from this line by attachment resolution, session activation and
-  // filesystem reads. The executor can take the hold inside that gap, and then
-  // this would start a turn on top of a merge already in flight. Same shape as
-  // the executor's own re-check under its hold, for the same reason.
-  if (turnRunner?.mergeHold) {
+  // docs/288 req 6 + docs/295 — re-asked here because the check at the top of
+  // this handler is separated from this line by attachment resolution, session
+  // activation and filesystem reads. Either hold can be taken inside that gap,
+  // and then this would start a turn on top of a merge already in flight, or
+  // alongside another send's pre-turn compaction. Same shape as the executor's
+  // own re-check under its hold, for the same reason.
+  if (turnRunner?.mergeHold || turnRunner?.preTurnHold) {
     turnRunner.dispatch(prepareDispatch({
       text: userText,
       agentInterface: undefined,
@@ -702,13 +711,15 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   const runnerEarly = resolveRunner(ctx);
   if (runnerEarly) runnerEarly.assertCanDispatch();
 
-  // docs/288 req 6 — a FOURTH turn-start path, and the one most easily missed:
-  // this handler does not go through `dispatch`, it sets `running = true` and
-  // calls `runAgentWithMessage` itself. An answer arriving while ShipIt is
-  // merging would start a turn that pushes behind a merge in flight. Queue it
-  // through `dispatch`, which is what the hold makes enqueue; the executor's
-  // `releaseQueuedTurn` starts it when the merge is done.
-  if (runnerEarly?.mergeHold) {
+  // docs/288 req 6 + docs/295 — a FOURTH turn-start path, and the one most
+  // easily missed: this handler does not go through `dispatch`, it sets
+  // `running = true` and calls `runAgentWithMessage` itself. An answer arriving
+  // while ShipIt is merging would start a turn that pushes behind a merge in
+  // flight; one arriving inside another send's pre-turn compaction would take
+  // the agent slot that compaction is using. Queue it through `dispatch`, which
+  // is what either hold makes enqueue; the executor's `releaseQueuedTurn`
+  // starts it when the hold clears.
+  if (runnerEarly?.mergeHold || runnerEarly?.preTurnHold) {
     runnerEarly.dispatch(prepareDispatch({
       text: answerText,
       agentInterface: undefined,

@@ -42,6 +42,7 @@ import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protoc
 import { formatSessionMessagePrompt } from "./session-message-origin.js";
 import { dependencyGapAgentPrefix } from "./dependency-staleness.js";
 import { isCompactCommand } from "../shared/compact-command.js";
+import { withPreTurnHold } from "./pre-turn-hold.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 
 /**
@@ -89,6 +90,26 @@ function supersedeRetiredTurn(outgoing: AgentProcess): void {
   outgoing.emit("superseded");
 }
 
+/**
+ * planning#266 + docs/295 — publish this turn's ownership BEFORE its pre-turn
+ * phase, not at `executeAgentTurn`, and give it back if the setup throws.
+ *
+ * `dispatchOnRunner` already does this for a turn it starts from idle, and for
+ * exactly this reason. The paths that reach the body below WITHOUT it are the
+ * DRAINS — `drainNext` and `queue-drain.ts` — which dequeue an entry and call
+ * straight in. Everything before the executor then ran unowned: the docs/295
+ * merged-session compaction can spawn a CLI and wait minutes on it, and for all
+ * of that the delivery read as not-in-flight, so a redelivery supervisor sent
+ * the identical prompt again. `preTurnHold` alone only made the duplicate
+ * QUEUE — it still ran, right after the turn it duplicated.
+ *
+ * The `catch` is the other half, and is new with the publication: setup work
+ * (attachment resolution, the pre-turn phase, agent creation) used to throw with
+ * `running` still false, and now would throw with it true — a session that looks
+ * permanently busy with no turn in it. `dispatchOnRunner` owns the same
+ * restoration for the path it starts; this covers the drains, which have no
+ * such owner.
+ */
 export async function runDispatchedTurn(
   runner: SessionRunnerInterface,
   deps: SystemTurnDeps,
@@ -100,6 +121,32 @@ export async function runDispatchedTurn(
   // first entered dispatch. This is currently defense in depth (there is no
   // trust-revoke UI), and makes later revocation fail closed.
   runner.assertCanDispatch();
+  // Idempotent for the dispatch path (both are already set to these values), and
+  // the delivery is assigned unconditionally INCLUDING to `undefined`, for the
+  // same reason the executor does it: a turn starting is proof the previous one
+  // is over.
+  runner.running = true;
+  if (opts.systemTurn) runner.systemTurnInProgress = true;
+  runner.activeDeliveryId = opts.deliveryId;
+  try {
+    await runDispatchedTurnInner(runner, deps, agentId, opts, createAgent);
+  } catch (err) {
+    runner.running = false;
+    if (opts.systemTurn) runner.systemTurnInProgress = false;
+    if (opts.deliveryId !== undefined && runner.activeDeliveryId === opts.deliveryId) {
+      runner.activeDeliveryId = undefined;
+    }
+    throw err;
+  }
+}
+
+async function runDispatchedTurnInner(
+  runner: SessionRunnerInterface,
+  deps: SystemTurnDeps,
+  agentId: AgentId,
+  opts: PreparedDispatch,
+  createAgent: (agentId: AgentId) => AgentProcess,
+): Promise<void> {
   const { text, activity } = opts;
 
   // docs/178 + docs/295 req 12 — a `/compact` the user typed is one compaction
@@ -276,17 +323,24 @@ export async function runDispatchedTurn(
   //
   // Outside `runOnce` like the reset, so a no-result retry re-runs the agent but
   // not the compaction. A retried turn must not compact twice.
-  const compaction = sessionDir && opts.postTurn !== "none" && !isCompactRequest
-    ? await deps.preTurnCompact?.(
-        runner, agentId, runner.sessionId, sessionDir, createAgent, opts.compactContext,
-      )
-    : undefined;
+  // Both under one hold, for the whole phase — see `pre-turn-hold.ts`. Paired
+  // with the ownership publication at the top of this function: `running` stops
+  // another turn STARTING, the hold stops one being STEERED into the
+  // compaction's process or admitted while the branch is being moved.
+  const { compaction, reset } = await withPreTurnHold(runner, async () => {
+    const compaction = sessionDir && opts.postTurn !== "none" && !isCompactRequest
+      ? await deps.preTurnCompact?.(
+          runner, agentId, runner.sessionId, sessionDir, createAgent, opts.compactContext,
+        )
+      : undefined;
 
-  const reset = sessionDir && opts.postTurn !== "none" && !isCompactRequest
-    ? await deps.preTurnReset?.(
-        runner, runner.sessionId, sessionDir, compaction?.mergeRecheck, opts.resetMergedBranch,
-      )
-    : undefined;
+    const reset = sessionDir && opts.postTurn !== "none" && !isCompactRequest
+      ? await deps.preTurnReset?.(
+          runner, runner.sessionId, sessionDir, compaction?.mergeRecheck, opts.resetMergedBranch,
+        )
+      : undefined;
+    return { compaction, reset };
+  });
 
   // docs/218 + docs/295 — both hooks anchor their transcript record right after
   // the user row, and the executor has one slot for that. Compose them in the
@@ -361,7 +415,13 @@ export async function runDispatchedTurn(
     pendingNotice,
     bugOutcomeNotice,
     reset?.agentPrefix,
-    dependencyGapAgentPrefix(runner.dependencyGap),
+    // docs/295 req 12 — skipped for a `/compact`, exactly as the three above it
+    // are and as the interactive path already did. A `[System] …run the install…`
+    // in front of the command defeats the in-band recognition the backends that
+    // parse the prompt rely on (Grok), so the user's one compaction is spent as
+    // prose. Nothing is lost by waiting: this prefix is re-derived from live
+    // runner state, so the next real turn carries it unchanged.
+    isCompactRequest ? "" : dependencyGapAgentPrefix(runner.dependencyGap),
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -409,6 +469,15 @@ export async function runDispatchedTurn(
     // and the flow can't have grabbed the hold mid-turn (`runRebaseFlow`
     // refuses while the flag is up).
     if (runner.systemTurnInProgress && !opts.systemTurn) return;
+    // docs/295 — and the same shape one step later in the turn's life: THIS
+    // turn's post-turn window overlaps another send's PRE-turn phase. The
+    // sequence is real — turn A clears `running` and awaits its local commit, a
+    // message B arrives and enters its pre-turn phase, A's commit finishes and
+    // gets here. Dequeuing now starts C alongside B, and B has not bumped the
+    // turn epoch yet (that happens in `executeAgentTurn`), so no later guard
+    // catches it: C can displace B's compaction proxy or reset the same tree
+    // underneath it. The queue is not lost — B's own turn drains it.
+    if (runner.preTurnHold) return;
     if (runner.queueLength === 0) return;
     const next = runner.dequeue();
     if (!next) return;

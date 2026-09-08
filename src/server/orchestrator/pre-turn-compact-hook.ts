@@ -8,43 +8,28 @@
  * that no longer exists in that form. This step compacts it, immediately before
  * the reset, so the next slice starts clean on both counts.
  *
- * ## It is a TURN, not a bare spawn — and that is not an implementation detail
+ * ## It owns the agent SLOT, and is not a turn
  *
  * docs/295's plan.md left one thing unproven: whether a compaction could run in
- * a turn's *pre-spawn phase*, as a spawn the turn executor never sees. It cannot,
- * and two shipped mechanisms say so independently:
+ * a turn's *pre-spawn phase*. It took two answers.
  *
- *  - **Events reach an agent only through the runner's single `_agent` slot.**
- *    In container mode the SSE relay resolves every worker event against the
- *    proxy currently installed there and drops anything else
- *    (`container-session-runner.ts` `isStaleSpawnEvent` / the `(no _agent)`
- *    drop). A compaction process spawned *beside* the turn's agent would receive
- *    no `agent_compacted`, no `done` and no `error` — it would hang until a
- *    timeout, every time, in production but not in an in-process test.
- *  - **The executor's terminal sequence is not opt-out-able per spawn.** Every
- *    terminal path runs drain → commit → finished
- *    (`turn-executor.ts`), and `tryDrain` starts a QUEUED turn. A compaction
- *    settling there would begin a queued user message *concurrently* with the
- *    turn we are about to spawn.
+ * **A process spawned BESIDE the turn's agent cannot work.** In container mode
+ * the SSE relay resolves every worker event against the proxy currently
+ * installed in the runner's single `_agent` slot and drops the rest
+ * (`container-session-runner.ts` `isStaleSpawnEvent` / the `(no _agent)` drop).
+ * Such a process would receive no `agent_compacted`, no `done` and no `error` —
+ * it would hang until a timeout, every time, in production but never in an
+ * in-process test. So the compaction must OWN the slot.
  *
- * So the compaction goes through `executeAgentTurn` like everything else, in the
- * mode the codebase already has for exactly this shape: `postTurn: "none"` +
- * `systemTurn: true` — "a step inside a larger operation the driver owns", the
- * mode the docs/146 rebase driver runs its resolution turns in. That mode is
- * what makes the sequencing safe, and each half is load-bearing:
+ * **But owning the slot does not make it a turn**, and conflating those two was
+ * the mistake this file was first written around — see
+ * {@link runCompactionOperation}, which carries the full account. It installs a
+ * proxy, wires four narrow listeners, spawns, awaits its own latch, and clears
+ * the slot. It cannot commit, push, drain, settle, announce readiness or publish
+ * a delivery, by construction rather than by a flag.
  *
- *  - `postTurn: "none"` elides the auto-commit, the push, the PR / re-arm /
- *    release flows AND the queue drain (`turn-executor.ts` `tryDrain` and
- *    `runCommitAndPrInner` both return early on it). Without it, the compaction
- *    would commit the user's un-run turn under the summary "Compacting context"
- *    and drain a queued message on top of the turn we are about to start.
- *  - `systemTurn: true` holds `systemTurnInProgress` for the compaction's
- *    duration, so a message that arrives mid-compaction is QUEUED rather than
- *    steered into it (`drainNextQueuedMessage` stands down on the same flag).
- *
- * It also inherits the exclusion that mode already carries on the dispatch path:
- * `dispatched-turn.ts` skips the docs/218 reset for `postTurn: "none"`, so the
- * compaction turn cannot trigger a branch move or a skip notice of its own.
+ * Admission for the whole surrounding phase is held by the CALLER, through
+ * `pre-turn-hold.ts` — not here, and not by borrowing the executor's flags.
  *
  * ## One gate, not two
  *
@@ -79,6 +64,8 @@ import {
 } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
+import { detectMissingConversation } from "./missing-conversation.js";
+import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 
 /**
  * What the compaction turn actually achieved. Requirement 9 forbids reporting
@@ -203,26 +190,60 @@ export interface PreTurnCompactHookArgs {
 export async function applyPreTurnCompaction(
   args: PreTurnCompactHookArgs,
 ): Promise<PreTurnCompactHookResult> {
-  const { runner, intent } = args;
+  const { intent } = args;
 
   // Requirement 5 — the untick applies to this one message. Checked before
   // anything expensive: an unticked box must cost nothing, not merely change
   // nothing.
   if (intent === false) return NOT_APPLICABLE;
 
-  // Held from here, BEFORE the first await, and released in the `finally` at the
-  // bottom. The window this closes is not the compaction itself but everything
-  // around it: the merge probe is a network round-trip and the eligibility check
-  // reads git, and during those the session is idle by every measure a caller
-  // consults. A message arriving there — or a previous turn's late `done`
-  // clearing the slot — used to be admitted straight into the send that is
-  // already in progress.
-  runner.preTurnHold = true;
-  try {
-    return await decideAndCompact(args);
-  } finally {
-    runner.preTurnHold = false;
-  }
+  // Admission is held by the CALLER, across the whole pre-turn phase
+  // (`pre-turn-hold.ts`) — the merge probe and the eligibility check here, the
+  // agent-slot resolution, and the branch reset after it. It was held in this
+  // function once, and released one step too early: the destructive half of the
+  // phase then ran with the session reading admissible again.
+  return decideAndCompact(args);
+}
+
+/**
+ * Attach a transcript notice to an outcome, on both delivery routes.
+ *
+ * `afterUserMessagePersisted` anchors it inside the fresh turn, right after the
+ * user row; `ensureRecorded` is the `finally` fallback for a turn that died
+ * before reaching that anchor. Latched, so exactly one of the two ever writes —
+ * and the latch stays OPEN on a failed attempt, so the fallback can retry.
+ */
+function attachNotice(
+  runner: SessionRunnerInterface,
+  chatHistoryManager: InProgressPersister,
+  outcome: CompactOutcome,
+  notice: string,
+): PreTurnCompactHookResult {
+  let recorded = false;
+  const record = (sid: string, anchored: boolean): void => {
+    if (recorded) return;
+    try {
+      if (anchored) {
+        emitNoticeInTurn(runner, sid, notice, chatHistoryManager, "warn");
+      } else {
+        emitNoticePostTurn((m) => runner.emitMessage(m), chatHistoryManager, sid, notice, "warn");
+      }
+      recorded = true;
+    } catch (err) {
+      // A missing notice is a regression; a notice that kills the turn is a
+      // worse one. Same shape as the reset hook's.
+      console.error(
+        `[pre-turn-compact] notice failed for ${sid}`
+          + `${anchored ? " (will retry on the post-turn fallback)" : ""}:`,
+        err,
+      );
+    }
+  };
+  return {
+    outcome,
+    afterUserMessagePersisted: (sid) => { record(sid, true); },
+    ensureRecorded: (sid) => { record(sid, false); },
+  };
 }
 
 async function decideAndCompact(
@@ -235,6 +256,18 @@ async function decideAndCompact(
   if (!deps.getAutoResetMergedBranch()) return NOT_APPLICABLE;
   // Requirement 10 — a backend that cannot compact is not asked to.
   if (!(getAgentCapabilities(agentId)?.supportsCompaction ?? false)) return NOT_APPLICABLE;
+
+  // An armed conversation replay (a rewind, a fork, a docs/153 recovery) means
+  // the CLI-side conversation is absent or must not be continued, and the user's
+  // turn is about to start a fresh one seeded from ShipIt's own transcript.
+  // There is nothing to compact — and compacting anyway would DESTROY the
+  // replay, because `buildAgentRunParams` consumes it read-and-clear: this
+  // spawn would take the seed, `/compact` a conversation that holds only that
+  // seed, and hand the user's turn a summary of nothing. Peeked rather than
+  // consumed, so the turn still gets it.
+  if (turnDeps.listenerDeps.sessionManager.get(sessionId)?.conversationReplay) {
+    return NOT_APPLICABLE;
+  }
 
   // docs/282, shared with the reset (docs/295). Merge detection is poll-driven,
   // so a turn admitted inside the poll window reads a session that has not been
@@ -255,6 +288,18 @@ async function decideAndCompact(
   /** Everything from here on must carry the probe's answer to the reset. */
   const withRecheck = (result: PreTurnCompactHookResult): PreTurnCompactHookResult =>
     mergeRecheck === undefined ? result : { ...result, mergeRecheck };
+
+  // docs/282's one outcome that is a DECISION rather than a refresh: the merge
+  // landed inside the probe but its bookkeeping did not finish. The reset stands
+  // down on it (`pre-turn-reset-hook.ts`), and this must stand down with it —
+  // sharing the probe is pointless if the two gates then act on it differently.
+  //
+  // The harm is specific and is req 7's: a session can read as merged here
+  // (`mergedAt` stamped) while the reset returns an empty prefix, so on Codex
+  // and OpenCode — which ignore the compaction instructions entirely — the turn
+  // would run with a summarized context and NOTHING telling the agent its work
+  // shipped. The next turn, against settled state, does both.
+  if (mergeRecheck === "unsettled") return withRecheck(NOT_APPLICABLE);
 
   let eligible: boolean;
   try {
@@ -277,12 +322,26 @@ async function decideAndCompact(
   // check entirely. Enqueuing is not available here — the compaction has to
   // finish before the user's turn is assembled — so the answer is to skip it.
   // Losing one compaction is a far smaller harm than killing a running review.
-  if (runner.getAgent() !== null && runner.backgroundWorkDescriptions.length > 0) {
+  const backgroundWork = runner.getAgent() !== null ? runner.backgroundWorkDescriptions : [];
+  if (backgroundWork.length > 0) {
     console.log(
       `[pre-turn-compact] skipping the compaction for ${sessionId}: the resident process holds `
-      + `${runner.backgroundWorkDescriptions.length} background task(s) that retiring it would lose`,
+      + `${backgroundWork.length} background task(s) that retiring it would lose`,
     );
-    return withRecheck(NOT_APPLICABLE);
+    // Told, not swallowed. Every OTHER `not-applicable` above means the control
+    // was never offered or the box was unticked — nothing to report. This one is
+    // different: the box WAS on screen, the user left it ticked, and the action
+    // they asked for did not happen. Silence there is the requirement-9 failure
+    // shape in a case that is not, strictly, a failure of the compaction.
+    return withRecheck(attachNotice(
+      runner,
+      deps.chatHistoryManager,
+      { kind: "not-applicable" },
+      `The context was not compacted before this message ran: the agent is still holding `
+      + `${backgroundWork.length === 1 ? "background work" : `${backgroundWork.length} background tasks`} `
+      + `(${backgroundWork.join(", ")}), and compacting would have discarded it. This turn continues `
+      + `with the full conversation.`,
+    ));
   }
 
   // Requirement 9 is that the user's message runs whatever happens here, so
@@ -302,53 +361,29 @@ async function decideAndCompact(
 
   if (outcome.kind === "compacted") {
     // The compaction card (docs/178) is the record, emitted and persisted by the
-    // turn's own listeners. Nothing to add.
+    // operation's own listener. Nothing to add.
     return withRecheck({ outcome });
   }
+  // The operation stood down before spawning anything (a conversation replay
+  // appeared during credential prep). Nothing ran, nothing was lost, and the
+  // user's turn is about to replay its own transcript — so there is nothing to
+  // report, exactly as for the gates that never got this far.
+  if (outcome.kind === "not-applicable") return withRecheck({ outcome });
 
   // Requirement 9 — "the transcript says that the compaction did not succeed, so
   // a failure is never silent". The two shapes are deliberately distinguishable:
   // a user who reads "reported no compaction" knows the backend accepted the
   // request and did nothing, which is a different thing to report upstream than
   // a crash.
-  const notice = outcome.kind === "failed"
-    ? `The context could not be compacted before this message ran, so this turn continues with the `
-      + `full conversation. ${outcome.detail}`
-    : "The agent reported no compaction, so this turn continues with the full conversation.";
-
-  let recorded = false;
-  const record = (sid: string, anchored: boolean): void => {
-    if (recorded) return;
-    try {
-      if (anchored) {
-        emitNoticeInTurn(runner, sid, notice, deps.chatHistoryManager, "warn");
-      } else {
-        emitNoticePostTurn(
-          (m) => runner.emitMessage(m),
-          deps.chatHistoryManager,
-          sid,
-          notice,
-          "warn",
-        );
-      }
-      recorded = true;
-    } catch (err) {
-      // Same shape as the reset hook's: a missing notice is a regression, a
-      // notice that kills the turn is a worse one. The latch stays OPEN on a
-      // failed attempt so the `finally` route can retry.
-      console.error(
-        `[pre-turn-compact] notice failed for ${sid}`
-          + `${anchored ? " (will retry on the post-turn fallback)" : ""}:`,
-        err,
-      );
-    }
-  };
-
-  return withRecheck({
+  return withRecheck(attachNotice(
+    runner,
+    deps.chatHistoryManager,
     outcome,
-    afterUserMessagePersisted: (sid) => { record(sid, true); },
-    ensureRecorded: (sid) => { record(sid, false); },
-  });
+    outcome.kind === "failed"
+      ? `The context could not be compacted before this message ran, so this turn continues with the `
+        + `full conversation. ${outcome.detail}`
+      : "The agent reported no compaction, so this turn continues with the full conversation.",
+  ));
 }
 
 /**
@@ -421,15 +456,31 @@ async function runCompactionOperation(args: {
   runner.setAgent(agent);
 
   let sawCompaction = false;
+  /**
+   * Read by the spawn below, AFTER its awaits. The timeout does not reach into
+   * `prepareAgentEnv`, so a credential round-trip that resolves late would
+   * otherwise call `agent.run()` on a slot this operation has already handed
+   * back — and in container mode a conflicting `/agent/start` retries and can
+   * kill the worker's resident process, which by then is the user's own turn.
+   */
+  let finished = false;
   let settle: (outcome: CompactOutcome) => void = () => {};
   const settled = new Promise<CompactOutcome>((resolve) => {
-    let done = false;
     settle = (outcome) => {
-      if (done) return;
-      done = true;
+      if (finished) return;
+      finished = true;
       resolve(outcome);
     };
   });
+
+  /**
+   * docs/153 Fix 2 — the CLI could not resume the conversation we named, so the
+   * id it reports next is a fresh, useless one. Writing it back would turn one
+   * failed resume into a permanent one for the user's turn and every turn after
+   * it. The turn listeners honour the same signal; this operation wires its own
+   * listeners and so has to honour it itself.
+   */
+  let missingConversation = false;
 
   // The narrow listener set. `wireAgentListeners` is deliberately NOT used: it
   // accumulates a transcript, records usage, drives auth recovery and finalizes
@@ -480,8 +531,36 @@ async function runCompactionOperation(args: {
       // resume the pre-compaction conversation and throw the whole compaction
       // away. `buildRunParams` reads this fresh from the database at spawn
       // time, so writing it here is what the user's turn picks up.
-      turnDeps.listenerDeps.sessionManager.setAgentSessionId(sessionId, event.sessionId);
+      //
+      // Not when the resume failed, though — see `missingConversation`. A
+      // doomed spawn emits a fresh id here too, and taking it would leave the
+      // session pointing at a conversation that never existed.
+      if (!missingConversation) {
+        turnDeps.listenerDeps.sessionManager.setAgentSessionId(sessionId, event.sessionId);
+      }
+      // …and this is a TERMINAL event, not merely an informative one. Two of the
+      // four backends end a compaction here and never emit `done`: OpenCode's
+      // `runCompaction` settles the turn through a synthetic `agent_result`
+      // because it spawns no long-lived process (`opencode/adapter.ts`), and
+      // Codex does the same in compact-spawn mode (`codex-event-handler.ts`).
+      // Waiting for `done` on those meant every successful compaction held the
+      // user's message for the full 300 s and was then reported as a timeout
+      // failure that had not happened.
+      //
+      // Safe for the other two: Claude and Grok both emit `agent_compacted`
+      // from a stream event that PRECEDES their result, so settling here can
+      // never mistake a real compaction for `no-compaction`.
+      settle(
+        sawCompaction
+          ? { kind: "compacted" }
+          : event.status === "error"
+            ? { kind: "failed", detail: event.error ?? "the compaction reported an error" }
+            : { kind: "no-compaction" },
+      );
     }
+  });
+  agent.on("log", (source: string, text: string) => {
+    if (detectMissingConversation(source, text)) missingConversation = true;
   });
   agent.on("done", () => {
     settle(
@@ -512,6 +591,9 @@ async function runCompactionOperation(args: {
     );
   }, COMPACTION_TIMEOUT_MS);
 
+  /** The route this spawn actually ran on, for the teardown's token write-back. */
+  let spawnRoute: { kind: ProviderRouteKind; id: string } | undefined;
+
   try {
     // Started, deliberately NOT awaited. `prepareAgentEnv` and `buildRunParams`
     // are awaits the timer cannot interrupt, so sequencing them ahead of the
@@ -524,6 +606,27 @@ async function runCompactionOperation(args: {
       // Credentials first, exactly as a turn's spawn does — the step that keeps
       // a subscription token fresh at the moment the CLI starts.
       const prep = await turnDeps.prepareAgentEnv?.(sessionId, agentId, {});
+      spawnRoute = prep?.turnRoute;
+      // The replay is checked BEFORE this step too, and has to be checked again
+      // HERE, because this step is one of the things that arms one: the docs/153
+      // leak repair runs inside credential prep, and on finding no resumable
+      // conversation on disk it clears the id and arms a replay from ShipIt's own
+      // transcript (`session-agent-env.ts` `armConversationReplay`).
+      //
+      // `buildRunParams` below would then CONSUME it — read-and-clear — and this
+      // spawn would summarize a conversation holding nothing but that seed. If it
+      // then failed, the user's turn would have neither the original conversation
+      // nor the recovery replay: it would start from nothing, under a notice
+      // saying it continues with the full conversation. Stand down instead; the
+      // user's turn gets the replay it was armed for.
+      if (turnDeps.listenerDeps.sessionManager.get(sessionId)?.conversationReplay) {
+        console.log(
+          `[pre-turn-compact] standing down for ${sessionId}: credential prep armed a conversation `
+          + `replay, which this spawn would consume`,
+        );
+        settle({ kind: "not-applicable" });
+        return;
+      }
       // The route selection has to be threaded as a VALUE (docs/260 §1b) —
       // `buildAgentRunParams` cannot recover it from the session row, which no
       // longer records one. Dropping it made the compaction spawn against the
@@ -536,6 +639,17 @@ async function runCompactionOperation(args: {
         prep?.turnRoute,
         { compact: true },
       );
+      // The awaits above are the whole reason this check exists: by here the
+      // operation may have timed out, given the slot back, and let the user's
+      // turn install its own agent. Starting now would run a compaction the
+      // caller stopped waiting for, into someone else's slot.
+      if (finished || runner.getAgent() !== agent) {
+        console.log(
+          `[pre-turn-compact] abandoning the compaction spawn for ${sessionId}: `
+          + `${finished ? "the operation already settled" : "the agent slot changed"} while it was starting`,
+        );
+        return;
+      }
       agent.run(params);
     })().catch((err: unknown) => {
       settle({ kind: "failed", detail: err instanceof Error ? err.message : String(err) });
@@ -543,6 +657,18 @@ async function runCompactionOperation(args: {
     return await settled;
   } finally {
     clearTimeout(timer);
+    // docs/149 — a CLI that rotated its OAuth token on the way out has written
+    // it into the session's credential subtree, and only this call publishes it
+    // back to the orchestrator source for sibling sessions to use. A turn's
+    // executor does it through `trySyncToken`; this spawn has no executor, so a
+    // token rotated by the compaction was stranded in the container.
+    try {
+      turnDeps.finalizeAgentEnv?.(sessionId, agentId, spawnRoute
+        ? { providerRouteKind: spawnRoute.kind, providerRouteId: spawnRoute.id }
+        : undefined);
+    } catch (err) {
+      console.error(`[pre-turn-compact] finalizing the agent environment for ${sessionId} failed:`, err);
+    }
     // The transient indicator is cleared on EVERY exit, not just on
     // `agent_compacted`. A compaction that announced itself and then errored or
     // timed out left "Compacting…" up across the user's whole turn, with only a

@@ -1158,6 +1158,17 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this._reconcileDivergenceCount = 0;
       return;
     }
+    // docs/295 — a turn's PRE-turn phase is in flight (the merged-session
+    // compaction). `running` is published for it, but the worker legitimately
+    // reports no agent for as long as the merge probe, the eligibility check and
+    // the compaction's own env-prep take — all of which can exceed two ticks.
+    // The divergence is expected here, so counting it would let this net reset a
+    // turn that is merely still starting, and take the compaction's agent slot
+    // with it.
+    if (this._preTurnHold) {
+      this._reconcileDivergenceCount = 0;
+      return;
+    }
     let workerRunning: boolean;
     try {
       const status = await workerGet(this.workerUrl, "/agent/status") as { running?: boolean };
@@ -3351,6 +3362,16 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // early on `!_isRunning`. See `runReconcileCheck`.
     const staleResidentOnly = !this._isRunning && this._isStreamingActive;
     if (!this._isRunning && !staleResidentOnly) return false;
+    // docs/295 — a turn's PRE-turn phase is in flight (the merged-session
+    // compaction). `running` is published for it and the worker legitimately has
+    // no agent yet, so this would read a divergence that is not one: it clears
+    // the agent slot and the delivery, emits `turn_abandoned`, and reports the
+    // session idle before the user's turn has run. The guard lives HERE rather
+    // than only in the periodic reconciler because the reconciler is not the only
+    // caller — `services/child-sessions.ts` calls this directly from
+    // `shipit session wait`, which is exactly the concurrent probe that would hit
+    // a session inside its pre-turn phase.
+    if (this._preTurnHold) return this._isRunning;
     // Captured before the await below, for the identity re-check after it.
     const wasRunning = this._isRunning;
     const turnEpochAtCheck = this.turnEpoch;

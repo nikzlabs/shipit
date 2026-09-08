@@ -44,6 +44,7 @@ import {
   normalizeAgentUsageLimitError,
 } from "./agent-rate-limits.js";
 import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
+import { detectMissingConversation } from "../missing-conversation.js";
 
 // `buildTurnMessages` / `persistTurnInProgress` now live in
 // `chat-card-persistence.ts` (co-located with `recordChatCard`, which shares
@@ -583,14 +584,11 @@ export function wireAgentListeners(
     // listener stops the pending agent_session_id from clobbering the DB,
     // and surface a chat-level error so the user sees why the turn aborted
     // (vs. the previous silent loop).
-    const missingConversation = source === "stderr"
-      ? /No conversation found with session ID:\s*([^\s]+)/i.exec(text)
-      : null;
-    if (missingConversation) {
+    const invalidId = detectMissingConversation(source, text);
+    if (invalidId) {
       if (!missingConversationDetected) {
         missingConversationDetected = true;
         pendingAgentSessionId = null;
-        const invalidId = missingConversation[1];
         const recovering = opts.recoverMissingConversation?.(invalidId) ?? false;
         if (!recovering) {
           const message = "Couldn't resume the previous conversation. ShipIt could not start a fresh thread automatically; resend your message or open Settings → Agents if the problem continues.";

@@ -432,6 +432,20 @@ export function dispatchOnRunner(
     return settlement;
   };
 
+  // docs/288 req 6 + docs/295 — the session is held either side of a turn: a
+  // merge in flight before it, a pre-turn compaction inside it. Both mean
+  // "queue this, do not start it alongside", and BOTH have to be asked before
+  // the steer branch below, not after it. A pre-turn hold is taken with
+  // `running` already true (the caller publishes ownership before its pre-turn
+  // phase), so a dispatch arriving mid-compaction took the steer branch and
+  // injected the user's message into the COMPACTION process — a message
+  // delivered into a conversation that is about to be summarized away.
+  //
+  // `releaseQueuedTurn` routes through `dispatch`, so this one check covers the
+  // drain too — and the executor calls it when the hold clears, which is what
+  // starts the held turn.
+  if (runner.mergeHold || runner.preTurnHold) return enqueueAndReport();
+
   if (runner.running) {
     // docs/163 — honor live steering on the dispatch path too: when the running
     // turn is steerable+streaming and live steering is on, inject the message
@@ -465,17 +479,6 @@ export function dispatchOnRunner(
   if (runner.systemTurnInProgress && !(opts.systemTurn && opts.postTurn === "none")) {
     return enqueueAndReport();
   }
-
-  // docs/288 req 6 — ShipIt is merging this session's pull request right now.
-  // Unlike the flag above this has NO exception: the rebase driver's resolution
-  // turn is a step inside a git operation that driver owns, whereas any turn at
-  // all here would run against a branch a merge is landing. `releaseQueuedTurn`
-  // routes through `dispatch`, so this one check covers the drain too — and the
-  // executor calls it when the hold clears, which is what starts the held turn.
-  // docs/288 + docs/295 — the session is held either side of a turn: a merge in
-  // flight before it, a pre-turn compaction inside it. Both mean "queue this,
-  // do not start it alongside".
-  if (runner.mergeHold || runner.preTurnHold) return enqueueAndReport();
 
   // docs/260-turn-level-account-routing req 13 — a resident process holding background work (a sub-agent
   // review, agent-started background tasks) may not be displaced by a system

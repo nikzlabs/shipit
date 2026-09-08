@@ -108,6 +108,13 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
           text: prompt,
           sessionId: sid,
           ...plan.frame,
+          // docs/218 + docs/295 — `/review` is still a composer send, so it
+          // carries the composer's per-send tick boxes. Omitted, an unticked box
+          // was silently ignored and the branch was reset (or the context
+          // compacted) anyway, on the one send where the user had just said not
+          // to. Carried separately so unticking one never changes the other.
+          ...(resetMergedBranch !== undefined ? { resetMergedBranch } : {}),
+          ...(compactContext !== undefined ? { compactContext } : {}),
         }),
     });
     // docs/293 req 4 — the frame never left the browser. `sendUserMessage` has

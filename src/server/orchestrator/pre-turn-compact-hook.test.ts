@@ -63,7 +63,7 @@ function makeSession(over: Partial<SessionInfo> = {}): SessionInfo {
   } as SessionInfo;
 }
 
-function makePrStatus(): PrStatusSummary {
+function makePrStatus(over: Partial<PrStatusSummary> = {}): PrStatusSummary {
   return {
     sessionId: "s1",
     prNumber: 482,
@@ -72,6 +72,7 @@ function makePrStatus(): PrStatusSummary {
     baseBranch: "main",
     headBranch: "shipit/fix-login",
     checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
+    ...over,
   } as unknown as PrStatusSummary;
 }
 
@@ -99,6 +100,10 @@ type Script =
   | { kind: "silent" }
   | { kind: "errors"; message: string }
   | { kind: "compacts-then-errors"; message: string }
+  /** docs/153 — the CLI cannot resume the conversation and reports a fresh id. */
+  | { kind: "missing-conversation" }
+  /** OpenCode / Codex compact-spawn: `agent_result` is terminal; no `done`. */
+  | { kind: "result-only" }
   | { kind: "hangs" };
 
 interface FakeAgent extends AgentProcess {
@@ -128,14 +133,31 @@ function makeAgent(script: Script): FakeAgent {
       // settle latch by the time anything arrives.
       queueMicrotask(() => {
         if (script.kind === "hangs") return;
-        if (script.kind === "compacts" || script.kind === "compacts-then-errors") {
+        if (script.kind === "missing-conversation") {
+          // The exact production shape: stderr first, then a fresh, useless id
+          // on `agent_result`, then exit.
+          fire("log", "stderr", "No conversation found with session ID: agent-before-compaction");
+          fire("event", { type: "agent_result", status: "error", sessionId: "fresh-useless-id" } as AgentEvent);
+          fire("done", 1);
+          return;
+        }
+        if (script.kind === "compacts" || script.kind === "compacts-then-errors"
+            || script.kind === "result-only") {
           fire("event", { type: "agent_compacted", preTokens: 19585, postTokens: 10335 } as AgentEvent);
         }
-        fire("event", { type: "agent_result", status: "success", sessionId: "agent-after-compaction" } as AgentEvent);
+        // A process ERROR is a process that died — it does not report a
+        // successful result on the way out. Emitting one first (as this fake
+        // once did) made the error scripts unreachable through any settlement
+        // path that reads `agent_result`, which is the one two backends use.
         if (script.kind === "errors" || script.kind === "compacts-then-errors") {
           fire("error", new Error(script.message));
           return;
         }
+        fire("event", { type: "agent_result", status: "success", sessionId: "agent-after-compaction" } as AgentEvent);
+        // docs/276 — OpenCode's `runCompaction` and Codex's compact-spawn mode
+        // settle the turn with that synthetic result and spawn no long-lived
+        // process, so no `done` is ever coming. `result-only` is that contract.
+        if (script.kind === "result-only") return;
         fire("done", 0);
       });
     },
@@ -153,8 +175,10 @@ interface Harness {
   agents: FakeAgent[];
   routesSeen: unknown[];
   sessionIdWrites: string[];
-  holdSamples: boolean[];
+  finalizeCalls: unknown[];
   probes: string[];
+  /** Resolves the pending `prepareAgentEnv`, for the late-setup tests. */
+  releaseEnvPrep: () => void;
 }
 
 function makeHarness(over: {
@@ -165,13 +189,31 @@ function makeHarness(over: {
   resident?: boolean;
   backgroundWork?: string[];
   script?: Script;
-  recheck?: boolean;
+  /**
+   * `true` wires the docs/282 probe on a session that already reads merged (it
+   * answers `"unchanged"`). `"unsettled"` builds the race the outcome exists
+   * for: a session NOT yet recorded as merged, whose probe discovers the merge
+   * and then runs out of budget waiting for the bookkeeping to land.
+   */
+  recheck?: true | "unsettled";
   /** Make `createAgent` throw, i.e. the container will not hand back a proxy. */
   createAgentThrows?: boolean;
   /** Make credential prep hang, i.e. a stall the timer cannot interrupt. */
   envPrepHangs?: boolean;
+  /**
+   * Make credential prep hang until `releaseEnvPrep()` — a stall that then ENDS,
+   * which is the shape a timeout has to survive.
+   */
+  envPrepDeferred?: boolean;
   /** What routing selected for this spawn, as `prepareAgentEnv` reports it. */
   turnRoute?: { kind: string; id: string };
+  /** A rewind/fork armed a conversation replay for the user's turn to consume. */
+  conversationReplay?: string;
+  /**
+   * The docs/153 leak repair arms one from INSIDE `prepareAgentEnv`, i.e. after
+   * this hook's pre-gate has already looked and found none.
+   */
+  replayArmedByEnvPrep?: boolean;
 } = {}): Harness {
   const emitted: WsServerMessage[] = [];
   const appended: PersistedMessage[] = [];
@@ -179,10 +221,20 @@ function makeHarness(over: {
   const killed: string[] = [];
   const agents: FakeAgent[] = [];
   const sessionIdWrites: string[] = [];
-  const holdSamples: boolean[] = [];
+  const finalizeCalls: unknown[] = [];
   const probes: string[] = [];
+  let releaseEnvPrep = (): void => {};
   const routesSeen: unknown[] = [];
-  const session = "session" in over ? over.session : makeSession();
+  // Mutable, because the `"unsettled"` race is precisely a session whose merge
+  // state changes DURING the probe.
+  const unsettled = over.recheck === "unsettled";
+  const sessionRef = {
+    value: "session" in over
+      ? over.session
+      : unsettled
+        ? makeSession({ mergedAt: undefined })
+        : makeSession(),
+  };
 
   const residentAgent = over.resident
     ? ({
@@ -221,24 +273,37 @@ function makeHarness(over: {
     lastPersistedBufferIndex: 0,
   } as unknown as SessionRunnerInterface;
 
+  /** Flipped by `prepareAgentEnv` when the harness models the docs/153 repair. */
+  let replayArmed = over.conversationReplay;
+  const envPrepResult = over.turnRoute ? { turnRoute: over.turnRoute } : undefined;
+  const prepareAgentEnv = over.envPrepHangs
+    ? () => new Promise<never>(() => { /* never resolves */ })
+    : over.envPrepDeferred
+      ? () => new Promise((resolve) => { releaseEnvPrep = () => { resolve(envPrepResult); }; })
+      : vi.fn(() => {
+          if (over.replayArmedByEnvPrep) replayArmed = "…the transcript so far…";
+          return Promise.resolve(envPrepResult);
+        });
+
   const turnDeps = {
     listenerDeps: {
       sessionManager: {
+        get: () => (replayArmed
+          ? { ...sessionRef.value, conversationReplay: replayArmed }
+          : sessionRef.value),
         setAgentSessionId: (_sid: string, agentSessionId: string) => {
           sessionIdWrites.push(agentSessionId);
         },
       },
     },
-    prepareAgentEnv: over.envPrepHangs
-      ? () => new Promise<never>(() => { /* never resolves */ })
-      : vi.fn().mockResolvedValue(over.turnRoute ? { turnRoute: over.turnRoute } : undefined),
+    prepareAgentEnv,
+    finalizeAgentEnv: (_sid: string, _aid: string, route: unknown) => {
+      finalizeCalls.push(route);
+    },
     buildRunParams: (
       _sid: string, _aid: string, prompt: string, route: unknown, opts?: { compact?: boolean },
     ) => {
       if (route !== undefined) routesSeen.push(route);
-      // Sampled at the moment of the spawn: the hold must be up by then, or a
-      // message arriving during credential prep is admitted alongside this.
-      holdSamples.push(runner.preTurnHold);
       return Promise.resolve({
         prompt, cwd: "/w/s1", ...(opts?.compact ? { compact: true } : {}),
       } as AgentRunParams);
@@ -247,9 +312,16 @@ function makeHarness(over: {
 
   const args: Parameters<typeof applyPreTurnCompaction>[0] = {
     deps: {
-      getSession: () => session,
-      getPrStatus: () => makePrStatus(),
-      createGitManager: () => over.git ?? makeGit(),
+      getSession: () => sessionRef.value,
+      getPrStatus: () => (unsettled ? makePrStatus({ prState: "open" }) : makePrStatus()),
+      createGitManager: () => over.git ?? (unsettled
+        // `origin/<branch>` at HEAD, so the probe's "has the branch moved?"
+        // clause passes and it reaches the network step this test is about.
+        ? makeGit({
+            getRefHash: vi.fn((ref: string) =>
+              Promise.resolve(ref === "origin/shipit/fix-login" ? MERGED_SHA : BASE_TIP)),
+          })
+        : makeGit()),
       chatHistoryManager: {
         replaceInProgress: vi.fn(),
         append: (_sid: string, msg: PersistedMessage) => { appended.push(msg); },
@@ -258,8 +330,17 @@ function makeHarness(over: {
       ...(over.recheck
         ? {
             mergeRecheckDeps: {
-              verifyPrState: () => { probes.push("verify"); return Promise.resolve(); },
-              awaitMergeHandling: () => Promise.resolve(),
+              verifyPrState: () => {
+                probes.push("verify");
+                // The probe found the merge and stamped `merged_at`…
+                if (unsettled) sessionRef.value = makeSession();
+                return Promise.resolve();
+              },
+              // …and the rest of the bookkeeping (the head-branch delete) is
+              // still in flight when the budget expires.
+              awaitMergeHandling: () => (unsettled
+                ? new Promise<void>(() => { /* never settles */ })
+                : Promise.resolve()),
             },
           }
         : {}),
@@ -280,7 +361,8 @@ function makeHarness(over: {
 
   return {
     args, emitted, appended, slot, superseded, killed, agents, routesSeen,
-    sessionIdWrites, holdSamples, probes,
+    sessionIdWrites, finalizeCalls, probes,
+    releaseEnvPrep: () => { releaseEnvPrep(); },
   };
 }
 
@@ -330,15 +412,59 @@ describe("applyPreTurnCompaction — when it runs at all", () => {
     expect((await applyPreTurnCompaction(h.args)).outcome).toEqual({ kind: "compacted" });
   });
 
-  it("skips rather than killing a resident that holds background work", async () => {
+  it("stands down when a conversation replay is armed for the user's turn", async () => {
+    // A rewind, a fork, or a docs/153 recovery. The CLI-side conversation is
+    // absent or must not be continued, and the user's turn is about to start a
+    // fresh one seeded from ShipIt's transcript — so there is nothing to
+    // compact. Worse, `buildAgentRunParams` consumes the replay read-and-clear,
+    // so compacting would take the seed and hand the user's turn a summary of
+    // nothing.
+    const h = makeHarness({ conversationReplay: "…the transcript so far…" });
+    expect((await applyPreTurnCompaction(h.args)).outcome).toEqual({ kind: "not-applicable" });
+    expect(h.agents).toHaveLength(0);
+  });
+
+  it("skips rather than killing a resident that holds background work — and SAYS so", async () => {
     // docs/260 req 13 — `dispatchOnRunner` refuses to let a system turn displace
     // such a process by enqueuing it. This operation cannot enqueue (it has to
     // finish before the user's turn is assembled), so it stands down. Losing one
     // compaction is a far smaller harm than losing a running review.
     const h = makeHarness({ resident: true, backgroundWork: ["reviewing the diff"] });
-    expect((await applyPreTurnCompaction(h.args)).outcome).toEqual({ kind: "not-applicable" });
+    const result = await applyPreTurnCompaction(h.args);
+    expect(result.outcome).toEqual({ kind: "not-applicable" });
     expect(h.agents).toHaveLength(0);
     expect(h.killed).toEqual([]);
+    // Unlike every other `not-applicable`, the control WAS on screen and the
+    // user left it ticked. Standing down silently is the req-9 failure shape in
+    // a case that is not, strictly, a failed compaction.
+    result.afterUserMessagePersisted!("s1");
+    expect(JSON.stringify(h.emitted)).toContain("reviewing the diff");
+  });
+
+  it("stands down when the merge recheck is unsettled, exactly as the reset does", async () => {
+    // docs/282's one outcome that is a decision: the merge landed inside the
+    // probe but its bookkeeping did not finish, so the reset returns no prefix.
+    // Compacting anyway strips the context AND leaves nothing telling the agent
+    // its work shipped — on Codex and OpenCode, which ignore the compaction
+    // instructions, that is req 7 gone. Sharing one probe is pointless if the
+    // two gates then act on it differently.
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness({ recheck: "unsettled" });
+      const pending = applyPreTurnCompaction(h.args);
+      // The probe's budget expires with the merge recorded but its head-branch
+      // delete still in flight — the production race, through the real
+      // `recheckMergeBeforeTurn`.
+      await vi.advanceTimersByTimeAsync(8_001);
+      const result = await pending;
+      expect(result.mergeRecheck).toBe("unsettled");
+      expect(result.outcome).toEqual({ kind: "not-applicable" });
+      // Eligibility would have PASSED by now — the session reads merged — so
+      // this cannot be the ordinary not-eligible exit.
+      expect(h.agents).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -360,28 +486,76 @@ describe("applyPreTurnCompaction — it is an operation, not a turn", () => {
     expect(kinds).not.toContain("session_status");
   });
 
-  it("holds the session against a second turn for the WHOLE operation", async () => {
-    // Not just the compaction: the merge probe is a network round-trip and the
-    // eligibility check reads git, and during those the session is idle by
-    // every measure a caller consults.
-    const h = makeHarness();
-    const pending = applyPreTurnCompaction(h.args);
-    expect(h.args.runner.preTurnHold).toBe(true);
-    await pending;
-    // …and gives it back, or every later message in the session is queued
-    // forever.
-    expect(h.args.runner.preTurnHold).toBe(false);
-    // Up before the spawn, too — a message arriving during credential prep
-    // would otherwise start alongside it.
-    expect(h.holdSamples).toEqual([true]);
-  });
-
-  it("gives the hold back even when the agent cannot be created", async () => {
+  it("returns a failed outcome when the agent cannot be created", async () => {
+    // Not a throw: requirement 9 is that the user's message runs whatever
+    // happens here, and a rejection would skip both callers' executors and lose
+    // the message outright — without even the notice the outcome carries.
     const h = makeHarness({ createAgentThrows: true });
     const result = await applyPreTurnCompaction(h.args);
     expect(result.outcome).toEqual({ kind: "failed", detail: "container unreachable" });
-    // Stuck true, this queues every later message in the session forever.
-    expect(h.args.runner.preTurnHold).toBe(false);
+  });
+
+  it("abandons a spawn whose setup finishes after the operation gave the slot back", async () => {
+    // The timeout does not reach into `prepareAgentEnv`. So a credential
+    // round-trip that resolves LATE would call `run()` on a slot the user's turn
+    // now owns — and in container mode a conflicting start retries and can kill
+    // the worker's resident process, i.e. the user's actual turn.
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness({ envPrepDeferred: true });
+      const pending = applyPreTurnCompaction(h.args);
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect((await pending).outcome).toEqual({
+        kind: "failed",
+        detail: "The agent did not finish compacting within 300s.",
+      });
+      // The user's turn takes the slot the operation just handed back.
+      const usersAgent = makeAgent({ kind: "silent" });
+      h.slot.agent = usersAgent;
+      // …and only NOW does credential prep come back.
+      h.releaseEnvPrep();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.agents[0]!.runCalls).toEqual([]);
+      expect(h.slot.agent).toBe(usersAgent);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stands down when CREDENTIAL PREP arms a conversation replay", async () => {
+    // The pre-gate cannot cover this: `prepareAgentEnv` is itself one of the
+    // things that arms a replay — the docs/153 leak repair clears an
+    // unresumable conversation id and seeds one from ShipIt's transcript. The
+    // next call, `buildRunParams`, would CONSUME it, and a spawn that then
+    // failed would leave the user's turn with neither the conversation nor the
+    // replay: starting from nothing, under a notice saying otherwise.
+    const h = makeHarness({ replayArmedByEnvPrep: true });
+    const result = await applyPreTurnCompaction(h.args);
+    expect(result.outcome).toEqual({ kind: "not-applicable" });
+    // It got as far as creating the agent — this is not the pre-gate firing.
+    expect(h.agents).toHaveLength(1);
+    // …and never spawned it, so the replay is untouched.
+    expect(h.agents[0]!.runCalls).toEqual([]);
+    // Silent: nothing was lost and the user's turn replays its own transcript.
+    expect(result.afterUserMessagePersisted).toBeUndefined();
+  });
+
+  it("publishes a token the compaction CLI rotated on its way out", async () => {
+    // docs/149 — the CLI writes a refreshed OAuth token into the session's
+    // credential subtree, and only this call publishes it back to the source for
+    // sibling sessions. A turn's executor does it through `trySyncToken`; this
+    // spawn has no executor, so the token was stranded in the container.
+    const h = makeHarness({ turnRoute: { kind: "account", id: "acct-7" } });
+    await applyPreTurnCompaction(h.args);
+    expect(h.finalizeCalls).toEqual([
+      { providerRouteKind: "account", providerRouteId: "acct-7" },
+    ]);
+  });
+
+  it("publishes the token even when the compaction failed", async () => {
+    const h = makeHarness({ script: { kind: "errors", message: "boom" }, turnRoute: { kind: "account", id: "acct-7" } });
+    await applyPreTurnCompaction(h.args);
+    expect(h.finalizeCalls).toHaveLength(1);
   });
 
   it("does not fake a user message", async () => {
@@ -410,6 +584,16 @@ describe("applyPreTurnCompaction — it is an operation, not a turn", () => {
     const h = makeHarness();
     await applyPreTurnCompaction(h.args);
     expect(h.sessionIdWrites).toEqual(["agent-after-compaction"]);
+  });
+
+  it("does NOT write back the id of a spawn that could not resume the conversation", async () => {
+    // docs/153 Fix 2 — a `--resume <missing-id>` spawn reports a fresh, useless
+    // id on `agent_result` before exiting. Taking it turns one failed resume
+    // into a permanent one: the good id is gone, and every later turn resumes
+    // the same missing conversation.
+    const h = makeHarness({ script: { kind: "missing-conversation" } });
+    await applyPreTurnCompaction(h.args);
+    expect(h.sessionIdWrites).toEqual([]);
   });
 
   it("retires and settles a resident process, then hands the slot back empty", async () => {
@@ -486,6 +670,24 @@ describe("applyPreTurnCompaction — what it reports", () => {
     expect(JSON.stringify(h.emitted)).toContain("could not be compacted");
   });
 
+  it("settles on `agent_result` for a backend that never emits `done`", async () => {
+    // docs/276 — OpenCode's `runCompaction` and Codex's compact-spawn mode both
+    // settle through a synthetic `agent_result` and spawn no long-lived process,
+    // so `done` is never coming. Waiting for it held the user's message for the
+    // full 300 s on EVERY OpenCode compaction and then reported a timeout that
+    // had not happened. Under fake timers, so a test that regressed would hang
+    // rather than quietly take five minutes.
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness({ script: { kind: "result-only" } });
+      const pending = applyPreTurnCompaction(h.args);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect((await pending).outcome).toEqual({ kind: "compacted" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("counts a compaction that happened even if the process then died", async () => {
     // The history really was replaced, so a failure notice for it would be
     // false — and the card is already in the transcript saying otherwise.
@@ -505,7 +707,6 @@ describe("applyPreTurnCompaction — what it reports", () => {
     } finally {
       vi.useRealTimers();
     }
-    expect(h.args.runner.preTurnHold).toBe(false);
     expect(h.slot.agent).toBeNull();
   });
 

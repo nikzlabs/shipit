@@ -19,9 +19,11 @@ import { SessionRunner } from "./session-runner.js";
 import type { AgentId } from "../shared/types.js";
 import type { PreTurnResetHookResult } from "./pre-turn-reset-hook.js";
 import type { PreTurnCompactHookResult } from "./pre-turn-compact-hook.js";
+import type { DependencyGap } from "./dependency-staleness.js";
 import {
   testDispatch,
   makeDispatchTurnDeps,
+  makeFakeAgent,
   flushTurn,
   type FakeAgent,
 } from "./integration_tests/dispatch-test-helpers.js";
@@ -294,6 +296,158 @@ describe("dispatched turn — pre-turn context compaction (docs/295 req 13)", ()
     await flushTurn();
 
     expect(hooks.order).toEqual(["compact", "reset"]);
+  });
+
+  it("keeps the dependency-gap prefix off a `/compact` too (req 12)", async () => {
+    // The last of the four prefixes, and the one that was still prepended
+    // unconditionally: a `[System] …run the install…` in front of the command
+    // defeats the in-band recognition Grok does on the prompt, so the user's one
+    // compaction is spent as prose. Nothing is lost — the prefix is re-derived
+    // from live runner state, so the next real turn carries it unchanged.
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    makeHooks().install(deps);
+    let promptSeen = "";
+    deps.buildRunParams = vi.fn(async (_sid, _agentId, prompt) => {
+      promptSeen = prompt;
+      return { prompt, cwd: "/tmp/s1" } as never;
+    });
+
+    runner = makeRunner();
+    (runner as unknown as { dependencyGap: DependencyGap }).dependencyGap = {
+      reason: "install-failed",
+      commands: ["npm ci"],
+    };
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "/compact" }));
+    await flushTurn();
+
+    expect(promptSeen).toBe("/compact");
+  });
+
+  it("holds the session against admission across BOTH hooks", async () => {
+    // The hold used to be taken inside the compaction hook and released when it
+    // returned — so the branch reset, the DESTRUCTIVE half, ran with the session
+    // reading admissible again.
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    const held: boolean[] = [];
+
+    runner = makeRunner();
+    deps.preTurnCompact = async () => {
+      held.push(runner.preTurnHold);
+      return { outcome: { kind: "compacted" } };
+    };
+    deps.preTurnReset = async (): Promise<PreTurnResetHookResult> => {
+      held.push(runner.preTurnHold);
+      return { agentPrefix: "" };
+    };
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "keep going" }));
+    await flushTurn();
+
+    expect(held).toEqual([true, true]);
+    // …and gives it back, or every later message in the session queues forever.
+    expect(runner.preTurnHold).toBe(false);
+  });
+
+  it("queues a message that arrives mid-phase instead of steering it into a doomed process", async () => {
+    // The reachable window, and it opens BEFORE the compaction spawns: the merge
+    // probe is a network round-trip and the eligibility check reads git, and for
+    // both of those the resident streaming process is still installed and still
+    // steerable. A message steered in there is injected into the exact process
+    // the compaction is about to retire and kill — delivered nowhere, with no
+    // error. `running` cannot catch this: `running` is what makes the arrival
+    // take the steer branch in the first place.
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
+    let releaseCompaction = (): void => {};
+    const compacting = new Promise<void>((r) => { releaseCompaction = r; });
+
+    runner = makeRunner();
+    // The pre-retire shape: a live streaming CLI in the slot.
+    const resident = makeFakeAgent();
+    runner.setAgent(resident as never);
+    runner.isStreamingActive = true;
+    deps.preTurnCompact = async () => {
+      await compacting;
+      return { outcome: { kind: "compacted" } };
+    };
+    deps.preTurnReset = async (): Promise<PreTurnResetHookResult> => ({ agentPrefix: "" });
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "first" }));
+    await flushTurn();
+
+    runner.dispatch(testDispatch({ text: "second" }));
+    expect(resident.sendUserMessage).not.toHaveBeenCalled();
+    expect(runner.queueLength).toBe(1);
+
+    releaseCompaction();
+    await flushTurn();
+  });
+
+  it("does not let a FINISHED turn's drain start a turn beside a pre-turn phase", async () => {
+    // The interleaving no other guard covers, and the one the epoch check cannot
+    // catch: turn A ends and its drain runs from the gap while its local commit
+    // is awaited; message B has already been admitted and is inside its pre-turn
+    // phase; B has not bumped the turn epoch (that happens in
+    // `executeAgentTurn`), so A's drain happily starts C alongside it — two
+    // turns, one working tree, one agent slot.
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    makeHooks().install(deps);
+
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "A" }));
+    await flushTurn();
+
+    // C queues behind the running turn A, and B's pre-turn phase takes the hold.
+    // (Which send holds it does not matter to the guard — that a phase is in
+    // flight does.)
+    runner.dispatch(testDispatch({ text: "C" }));
+    expect(runner.queueLength).toBe(1);
+    runner.preTurnHold = true;
+
+    // A finishes: its terminal path runs `drainNext`.
+    const spawnsBefore = agents.length;
+    agents[0]?.emit("event", { type: "agent_result", status: "success", sessionId: "a1" });
+    await flushTurn();
+
+    expect(agents).toHaveLength(spawnsBefore); // C did NOT start
+    expect(runner.queueLength).toBe(1);        // …and was not lost either
+    runner.preTurnHold = false;
+  });
+
+  it("publishes the delivery for the pre-turn phase of a DRAINED turn", async () => {
+    // planning#266 — `dispatchOnRunner` publishes ownership for a turn it starts
+    // from idle; a drain calls `runDispatchedTurn` straight. So the compaction —
+    // which can wait minutes on a CLI — ran with the delivery reading as
+    // not-in-flight, and a redelivery supervisor sent the identical prompt again.
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    const seen: { delivery: string | undefined; running: boolean }[] = [];
+
+    runner = makeRunner();
+    deps.preTurnCompact = async () => {
+      seen.push({ delivery: runner.activeDeliveryId, running: runner.running });
+      return { outcome: { kind: "compacted" } };
+    };
+    deps.preTurnReset = async (): Promise<PreTurnResetHookResult> => ({ agentPrefix: "" });
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "first", deliveryId: "d-1" }));
+    await flushTurn();
+    // Queued behind the running turn, then drained by its own terminal path.
+    runner.dispatch(testDispatch({ text: "second", deliveryId: "d-2" }));
+    agents[0]?.emit("event", { type: "agent_result", status: "success", sessionId: "a1" });
+    await flushTurn();
+
+    expect(seen).toEqual([
+      { delivery: "d-1", running: true },
+      { delivery: "d-2", running: true },
+    ]);
   });
 
   it("is a no-op when the runtime wires no hook (minimal setups)", async () => {

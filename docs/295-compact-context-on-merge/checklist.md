@@ -188,39 +188,135 @@ real operation, and subsequent history replacement."*
 - [x] **A failed compaction left "Compacting…" up** across the user's whole
       turn. The indicator is now cleared on every exit, not just on success.
 
-**Still open — these are real and this is not mergeable until they are done**
+**Then fixed — the composition, in one pass**
 
-- [ ] **Timing out does not cancel setup.** The un-awaited spawn has no
-      ownership check after its awaits, so a `prepareAgentEnv` that resolves
-      after the timeout still calls `agent.run()` — into a slot the user's turn
-      now owns. In container mode a conflicting start retries and can kill the
-      worker's resident agent, i.e. the user's actual turn.
-- [ ] **`preTurnHold` is not checked at every admission point.** Programmatic
-      steering tries to steer before the hold is consulted; the `answer_question`
-      path and the post-attachment recheck in `send-message.ts` check only
-      `mergeHold`; the periodic container reconciler ignores it entirely; and the
-      hold is released before the branch reset, leaving that window open.
-- [ ] **A dispatched queue drain loses delivery ownership during compaction.**
-      `drainNext` dequeues the entry but publishes neither its `deliveryId` nor
-      `running` until `executeAgentTurn` — so the delivery reads as not-in-flight
-      for the whole pre-turn phase, and `preTurnHold` only queues the duplicate a
-      supervisor then sends. `agentBusy` and the disposal guard do not include
-      the hold either.
-- [ ] **Req 12 is still breakable on the dispatched path**: the dependency-gap
-      prefix is prepended unconditionally, so `/compact` can still reach the CLI
-      as `[System] …run install…` followed by the command — which Grok will not
-      recognise in-band.
-- [ ] **`/review` drops the composer's opt-out** — `send-handler.ts` builds that
-      WS message without `compactContext` or `resetMergedBranch`, so an unticked
-      compaction runs anyway.
-- [ ] **Credential teardown omits `finalizeAgentEnv`**, so a token the compaction
-      CLI rotated just before exit may never be published to sibling sessions.
-- [ ] **Run-param assembly consumes pending conversation replay** and the result
-      handler writes back every session id without the missing-conversation
-      guard, so a failed resume can overwrite a good id with a useless one.
-- [ ] **The test strategy needs one integration test** that joins real admission,
-      the real operation, and the user's turn's history replacement. Mutation
-      counts on isolated units do not establish that the composition is safe —
-      finding 1 is the proof, and it survived two rounds of them.
+- [x] **Timing out now cancels setup.** The un-awaited spawn re-checks ownership
+      after its awaits (`finished`, and the slot still being this agent), so a
+      `prepareAgentEnv` that resolves late abandons the spawn instead of calling
+      `agent.run()` into the slot the user's turn now owns — which in container
+      mode retries a conflicting start and can kill the worker's resident
+      process, i.e. the user's actual turn.
+- [x] **`preTurnHold` is asked at every admission point, and spans the whole
+      phase.** It moved out of the compaction hook into `withPreTurnHold`
+      (`pre-turn-hold.ts`), which both transports wrap around compaction +
+      agent-slot resolution + branch reset — the release used to land one step
+      early, leaving the destructive half unheld. `dispatchOnRunner` asks it
+      BEFORE the steer branch (the reachable defect: during the merge probe the
+      resident streaming process is still installed, so a message was steered
+      into the process the compaction was about to kill); `releaseQueuedTurn`,
+      the `answer_question` path and the post-attachment re-check ask it too; the
+      periodic container reconciler stands down under it.
+- [x] **A dispatched queue drain owns its turn for the pre-turn phase.**
+      `runDispatchedTurn` publishes `running` + `activeDeliveryId` at entry —
+      `dispatchOnRunner` already did this for a turn it starts from idle, and the
+      DRAINS reached the body without it, so the delivery read as not-in-flight
+      for the compaction's whole duration and a supervisor re-sent the prompt.
+      Paired with a `catch` that gives ownership back if setup throws.
+- [x] **Req 12 holds on the dispatched path**: the dependency-gap prefix is now
+      skipped for a `/compact` like the three prefixes beside it, so the command
+      cannot reach the CLI behind `[System] …run install…`.
+- [x] **`/review` carries the composer's opt-out** — both per-send fields, on the
+      one send where the user had just unticked them.
+- [x] **Credential teardown calls `finalizeAgentEnv`**, so a token the compaction
+      CLI rotated on its way out is published back to sibling sessions.
+- [x] **The replay and the resume id are both protected.** A session with a
+      conversation replay armed is not compacted at all (`buildAgentRunParams`
+      consumes it read-and-clear, so compacting would destroy it); and a spawn
+      that hit the docs/153 `--resume` failure does not write its fresh, useless
+      session id back. The signature is shared with the turn listeners
+      (`missing-conversation.ts`) rather than copied.
+
+**Guards**
+
+- [x] Eleven new tests across five files, each proved red on its own with the
+      defect present: the late-spawn abandon, the two `finalizeAgentEnv` paths,
+      the replay stand-down, the resume-id write-back, the hold helper's two
+      properties, the `/compact` dependency prefix, the hold spanning both hooks,
+      the mid-phase steer, the drained turn's delivery, `releaseQueuedTurn`, the
+      reconciler stand-down, and the two `/review` frame shapes.
+- [x] The mid-phase steer guard had to be rewritten: the first version passed
+      with the check removed, because its harness had nothing steerable in the
+      slot. It now installs a live streaming process and asserts nothing was
+      written to it — which is also the realistic production shape, since the
+      window opens BEFORE the compaction retires the resident.
+- [x] Two WS admission points are guarded through the real handler
+      (`integration_tests/system-turn-queue.test.ts`). The third — the
+      post-attachment re-check in `send-message.ts` — is defence-in-depth behind
+      the check at the top of the same handler, and is NOT independently guarded:
+      producing a hold taken inside that gap needs timing this harness cannot
+      make deterministic. Recorded rather than papered over.
+- [x] **The end-to-end test the strategy was missing.**
+      `integration_tests/pre-turn-compaction.test.ts` joins real admission (a WS
+      `send_message`), the real operation (a compaction spawn off a real merged
+      git repo, driven by the real hook), and the user's turn's history
+      replacement — with a final `GET /history` read AFTER that turn finishes.
+      Routing the card back through `emitChatCard` makes it go red, which is
+      precisely the defect that passed two rounds of unit-level mutation testing.
+- [x] Full suite: 998 files, 17,466 tests. `npm run typecheck` and
+      `npm run lint:dev` clean.
+
+### Fourth review round — the composition again, and two backend contracts
+
+A fourth review found nine more, six of them in code the third round's fixes had
+just introduced or moved. All nine were verified at source before being acted on;
+one was judged pre-existing and is recorded rather than fixed.
+
+- [x] **`agent_result` is a TERMINAL event, and the hook ignored it.** OpenCode's
+      `runCompaction` and Codex's compact-spawn mode both settle through a
+      synthetic `agent_result` and spawn no long-lived process, so `done` is
+      never coming (`opencode/adapter.ts`, `codex-event-handler.ts`). Every
+      OpenCode compaction therefore held the user's message for the full 300 s
+      and was then reported as a timeout that had not happened. Settling on
+      `agent_result` is safe for Claude and Grok too: both emit `agent_compacted`
+      from a stream event that PRECEDES their result. The fake had to be fixed as
+      well — it emitted a SUCCESSFUL result before an `error`, which no dying
+      process does, and which made the error scripts unreachable through the
+      settlement path two backends actually use.
+- [x] **`verifyRunningState` honours the hold**, not just the periodic
+      reconciler that calls it. `services/child-sessions.ts` calls it directly
+      from `shipit session wait`, so a concurrent wait on a session inside its
+      pre-turn phase cleared the agent slot and the delivery, emitted
+      `turn_abandoned`, and reported the session idle before the user's turn ran.
+- [x] **Both active-turn queue drains check the hold.** The interleaving: turn A
+      clears `running` and awaits its local commit, message B is admitted and
+      enters its pre-turn phase, A's commit finishes and its drain starts C
+      alongside B. The turn-epoch guard cannot catch it — B does not bump the
+      epoch until `executeAgentTurn`.
+- [x] **A `/compact` arriving mid-phase is queued, not swallowed.** That branch
+      returns unconditionally, so under the hold the command was spent either
+      way: with an empty slot it evaporated, and once the compaction's proxy was
+      installed it was fired at THAT process — a nested request against a spawn
+      the user never made (req 12).
+- [x] **Credential prep can arm a conversation replay AFTER the pre-gate** — the
+      docs/153 leak repair does exactly that — and `buildRunParams` would then
+      consume it. Re-checked after `prepareAgentEnv`; the operation stands down.
+- [x] **The compaction stands down on an `unsettled` merge recheck**, as the
+      reset already did. The session can read merged while the reset returns no
+      prefix, so on Codex and OpenCode the turn would run with a summarized
+      context and nothing saying the work shipped (req 7).
+- [x] **The background-work skip now says so.** Every other `not-applicable`
+      means the control was never offered or was unticked; this one happens with
+      the box on screen and ticked, so silence was the req-9 failure shape in a
+      case that is not, strictly, a failed compaction.
+- [x] **An agent-factory throw no longer loses the compaction's notice too.** A
+      container that will not hand back a proxy fails both calls, and the
+      `finally` that delivers the notice sits far below the second one.
+- [ ] **Not fixed, and pre-existing:** container `/agent/start` calls are
+      serialized on `_startInFlight` with no timeout, so a start that never
+      returns blocks the next one. docs/295 adds one more start per turn and so
+      doubles the exposure, but the class predates it and belongs to
+      `_startAgentViaProxy`, not here. Recorded rather than papered over.
+
+**Guards for this round**, each proved red on its own: the `agent_result`
+settlement (under fake timers, so a regression fails rather than taking five
+minutes), the `unsettled` stand-down (through the REAL `recheckMergeBeforeTurn`,
+driving the actual timeout race), the background-work notice, the late replay,
+the dispatched drain, the WS drain, the mid-phase `/compact`, and
+`verifyRunningState`. Two had to be rewritten after passing with their defect
+present: the WS-drain test waited on `!running`, which is true for an instant
+BEFORE the drain runs, and the `verifyRunningState` test used an unreachable
+worker, whose catch returns the same value the guard does.
+
+- [x] Full suite after this round: 999 files, 17,475 tests.
 
 - [x] Comment the outcome on `planning#522`.

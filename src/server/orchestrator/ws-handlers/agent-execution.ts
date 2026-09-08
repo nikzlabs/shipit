@@ -9,6 +9,7 @@ import { parseCompactCommand } from "../../shared/compact-command.js";
 import { emitResetEligible } from "../services/pre-turn-reset.js";
 import { applyPreTurnReset, type PreTurnResetHookResult } from "../pre-turn-reset-hook.js";
 import { applyPreTurnCompaction } from "../pre-turn-compact-hook.js";
+import { withPreTurnHold } from "../pre-turn-hold.js";
 import { buildBugOutcomeNotice } from "../services/bug-report.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
@@ -110,6 +111,13 @@ export async function drainNextQueuedMessage(
   // Leave the queue alone: the flow's `finally` releases it when it settles.
   // This drain only ever runs off an interactive turn, which never owns the flag.
   if (runner.systemTurnInProgress) return;
+  // docs/295 — the same window, one flag over: another send is inside its
+  // PRE-turn phase (a compaction spawn, then a branch move). This drain runs
+  // from the gap between `tryDrain` clearing `running` and the local commit
+  // resolving, so it can land squarely inside that phase and start a turn
+  // alongside it — against the same tree, racing for the same agent slot. The
+  // phase's own turn drains the queue when it ends.
+  if (runner.preTurnHold) return;
 
   const messageQueue = runner.messageQueue;
   if (runner.wasInterrupted) {
@@ -700,98 +708,122 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
 
   // ---------------------------------------------------------------------------
   // Pre-turn steps, in the order they affect the turn: compact the context,
-  // reset the branch, then assemble the prompt from what both produced.
+  // resolve the agent slot, reset the branch, then assemble the prompt from what
+  // they produced.
   //
   // They sit BELOW `deps` (docs/295) rather than at the top of this function
-  // where docs/218 first put the reset, because the compaction is itself a turn
-  // and runs on those deps. Nothing between the two positions depends on them.
+  // where docs/218 first put the reset, because the compaction spawns on those
+  // deps. Nothing between the two positions depends on them.
+  //
+  // The whole phase runs under `withPreTurnHold`: `running` is already published
+  // (`send-message.ts` sets it before calling this), which stops another turn
+  // STARTING, and the hold is what additionally stops one being STEERED into the
+  // compaction's process or admitted while the branch is being moved.
   // ---------------------------------------------------------------------------
-
-  // docs/295 — compact the agent's context before the turn runs, for a session
-  // whose pull request merged. Ahead of the reset below: the compaction gates on
-  // the same eligibility predicate that put the tick box in front of the user,
-  // and the reset moves HEAD to the base, after which that predicate is false by
-  // construction.
-  //
-  // Skipped for a `/compact` request (req 12) on the same reasoning that skips
-  // the reset: the user asked for exactly one compaction, and a pre-step here
-  // would make their command compact twice.
-  const compaction =
-    capturedSessionId && capturedSessionDir && runner && !opts.compact
-      ? await applyPreTurnCompaction({
-          deps: {
-            getSession: (id) => ctx.sessionManager.get(id),
-            getPrStatus: (id) => ctx.sessionManager.getPrStatus(id),
-            createGitManager: ctx.createGitManager,
-            chatHistoryManager: ctx.chatHistoryManager,
-            getAutoResetMergedBranch: () => ctx.credentialStore.getAutoResetMergedBranch(),
-            // docs/282 + docs/295 — one merge probe per turn, paid for here and
-            // handed to the reset below, so both gates read the same snapshot.
-            mergeRecheckDeps: {
-              verifyPrState: (id) =>
-                ctx.prStatusPoller.forceVerifySessionPrState(id, { armAbsentDebounce: false }),
-              awaitMergeHandling: (id) => ctx.prStatusPoller.awaitMergeHandling(id),
+  const preTurn = await withPreTurnHold(runner, async () => {
+    // docs/295 — compact the agent's context before the turn runs, for a session
+    // whose pull request merged. Ahead of the reset below: the compaction gates on
+    // the same eligibility predicate that put the tick box in front of the user,
+    // and the reset moves HEAD to the base, after which that predicate is false by
+    // construction.
+    //
+    // Skipped for a `/compact` request (req 12) on the same reasoning that skips
+    // the reset: the user asked for exactly one compaction, and a pre-step here
+    // would make their command compact twice.
+    const compaction =
+      capturedSessionId && capturedSessionDir && runner && !opts.compact
+        ? await applyPreTurnCompaction({
+            deps: {
+              getSession: (id) => ctx.sessionManager.get(id),
+              getPrStatus: (id) => ctx.sessionManager.getPrStatus(id),
+              createGitManager: ctx.createGitManager,
+              chatHistoryManager: ctx.chatHistoryManager,
+              getAutoResetMergedBranch: () => ctx.credentialStore.getAutoResetMergedBranch(),
+              // docs/282 + docs/295 — one merge probe per turn, paid for here and
+              // handed to the reset below, so both gates read the same snapshot.
+              mergeRecheckDeps: {
+                verifyPrState: (id) =>
+                  ctx.prStatusPoller.forceVerifySessionPrState(id, { armAbsentDebounce: false }),
+                awaitMergeHandling: (id) => ctx.prStatusPoller.awaitMergeHandling(id),
+              },
             },
-          },
-          turnDeps: deps,
-          runner,
-          agentId,
-          sessionId: capturedSessionId,
-          sessionDir: capturedSessionDir,
-          createAgent: (id) => ctx.agentFactory(id),
-          // The per-send tick box: `false` = unticked for this message.
-          ...(opts.compactContext !== undefined ? { intent: opts.compactContext } : {}),
-        })
-      : undefined;
+            turnDeps: deps,
+            runner,
+            agentId,
+            sessionId: capturedSessionId,
+            sessionDir: capturedSessionDir,
+            createAgent: (id) => ctx.agentFactory(id),
+            // The per-send tick box: `false` = unticked for this message.
+            ...(opts.compactContext !== undefined ? { intent: opts.compactContext } : {}),
+          })
+        : undefined;
 
-  // The agent this turn runs on, resolved only now. The compaction above is a
-  // turn: it takes the runner's single agent slot, retires whatever was resident
-  // in it, and hands it back empty. Resolving here rather than at the top of the
-  // function is what keeps an unstarted proxy out of the slot for the compaction
-  // to kill — and what lets `existingAgent` see the truth about whether a
-  // resident streaming process actually survived.
-  const existingAgent = useStreaming ? (runner?.getAgent() ?? null) : null;
-  const currentAgent = existingAgent ?? ctx.agentFactory(agentId);
-  if (!existingAgent && runner) runner.setAgent(currentAgent);
-  // docs/140 — drop the previous turn's per-turn listeners off a reused process
-  // before the executor re-wires its own, else they fire N times after N turns.
-  if (existingAgent) existingAgent.removeAllListeners();
+    // The agent this turn runs on, resolved only now. The compaction above owns
+    // the runner's single agent slot while it runs: it retires whatever was
+    // resident in it and hands it back empty. Resolving here rather than at the
+    // top of the function is what keeps an unstarted proxy out of the slot for the
+    // compaction to kill — and what lets `existingAgent` see the truth about
+    // whether a resident streaming process actually survived.
+    const existingAgent = useStreaming ? (runner?.getAgent() ?? null) : null;
+    let currentAgent;
+    try {
+      currentAgent = existingAgent ?? ctx.agentFactory(agentId);
+    } catch (err) {
+      // The turn cannot start — but the compaction's own outcome is a record the
+      // user is owed either way, and the `finally` that would deliver it is much
+      // further down, past this line. A container that will not hand back a proxy
+      // fails BOTH calls, so without this the user loses the message and every
+      // explanation of why (req 9). Delivered post-turn, since there is no turn.
+      if (capturedSessionId) compaction?.ensureRecorded?.(capturedSessionId);
+      // Nothing is going to clear the flag the send handler set one line before
+      // calling this, and a session stuck `running` admits nothing ever again.
+      if (runner) runner.running = false;
+      throw err;
+    }
+    if (!existingAgent && runner) runner.setAgent(currentAgent);
+    // docs/140 — drop the previous turn's per-turn listeners off a reused process
+    // before the executor re-wires its own, else they fire N times after N turns.
+    if (existingAgent) existingAgent.removeAllListeners();
 
-  // docs/218 — pre-turn auto-reset of a MERGED session's branch to the latest
-  // base, BEFORE the turn runs. The decision, the git move, the "branch updated"
-  // card and the planning#297 skip notice all live in the shared hook, which the
-  // dispatch path calls too (planning#333) — so a message from the Agent Interface
-  // SDK, `shipit session message`, or a wake turn continues on the same fresh
-  // base a typed message would. Fully fail-safe: a skip/throw leaves the branch
-  // un-moved and the turn runs normally.
-  //
-  // Skip entirely for a `/compact` request (docs/178): compaction is a
-  // maintenance command, not a continuation of work, so it must NOT trigger the
-  // destructive branch move — and the `[System] …PR was merged…` prefix the
-  // reset prepends would derail the compaction (the agent reacts to the merge
-  // notice instead of compacting). The reset still runs on the user's next real
-  // turn, where it belongs.
-  let resetHook: PreTurnResetHookResult = { agentPrefix: "" };
-  if (capturedSessionId && capturedSessionDir && runner && !opts.compact) {
-    resetHook = await applyPreTurnReset({
-      deps: {
-        sessionManager: ctx.sessionManager,
-        prStatusPoller: ctx.prStatusPoller,
-        createGitManager: ctx.createGitManager,
-        sseBroadcast: ctx.sseBroadcast,
-        chatHistoryManager: ctx.chatHistoryManager,
-        getAutoResetMergedBranch: () => ctx.credentialStore.getAutoResetMergedBranch(),
-      },
-      runner,
-      sessionId: capturedSessionId,
-      sessionDir: capturedSessionDir,
-      // The per-send tick box (Phase 3): `false` = unticked for this message.
-      ...(opts.resetMergedBranch !== undefined ? { intent: opts.resetMergedBranch } : {}),
-      // docs/295 — reuse the compaction's merge probe rather than paying for a
-      // second one that could answer differently.
-      ...(compaction?.mergeRecheck !== undefined ? { mergeRecheck: compaction.mergeRecheck } : {}),
-    });
-  }
+    // docs/218 — pre-turn auto-reset of a MERGED session's branch to the latest
+    // base, BEFORE the turn runs. The decision, the git move, the "branch updated"
+    // card and the planning#297 skip notice all live in the shared hook, which the
+    // dispatch path calls too (planning#333) — so a message from the Agent Interface
+    // SDK, `shipit session message`, or a wake turn continues on the same fresh
+    // base a typed message would. Fully fail-safe: a skip/throw leaves the branch
+    // un-moved and the turn runs normally.
+    //
+    // Skip entirely for a `/compact` request (docs/178): compaction is a
+    // maintenance command, not a continuation of work, so it must NOT trigger the
+    // destructive branch move — and the `[System] …PR was merged…` prefix the
+    // reset prepends would derail the compaction (the agent reacts to the merge
+    // notice instead of compacting). The reset still runs on the user's next real
+    // turn, where it belongs.
+    let resetHook: PreTurnResetHookResult = { agentPrefix: "" };
+    if (capturedSessionId && capturedSessionDir && runner && !opts.compact) {
+      resetHook = await applyPreTurnReset({
+        deps: {
+          sessionManager: ctx.sessionManager,
+          prStatusPoller: ctx.prStatusPoller,
+          createGitManager: ctx.createGitManager,
+          sseBroadcast: ctx.sseBroadcast,
+          chatHistoryManager: ctx.chatHistoryManager,
+          getAutoResetMergedBranch: () => ctx.credentialStore.getAutoResetMergedBranch(),
+        },
+        runner,
+        sessionId: capturedSessionId,
+        sessionDir: capturedSessionDir,
+        // The per-send tick box (Phase 3): `false` = unticked for this message.
+        ...(opts.resetMergedBranch !== undefined ? { intent: opts.resetMergedBranch } : {}),
+        // docs/295 — reuse the compaction's merge probe rather than paying for a
+        // second one that could answer differently.
+        ...(compaction?.mergeRecheck !== undefined ? { mergeRecheck: compaction.mergeRecheck } : {}),
+      });
+    }
+
+    return { compaction, existingAgent, currentAgent, resetHook };
+  });
+  const { compaction, existingAgent, currentAgent, resetHook } = preTurn;
   const resetAgentPrefix = resetHook.agentPrefix;
 
   // docs/221 — drain the pending out-of-band notice. The docs/218 reset above
