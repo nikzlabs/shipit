@@ -128,7 +128,7 @@ describe("replay mode", () => {
   });
   afterAll(() => stopProxy(fast));
 
-  it("answers lane request n with <lane>/NNN.sse, counting each lane separately, then 500 when exhausted", async () => {
+  it("answers lane request n with <lane>/NNN.sse, counting each lane separately, then 400 when exhausted", async () => {
     const p = fast!;
     const first = await messagesRequest(p, DUMMY, { model: "claude-fixture", messages: [1], tools: [1, 2], stream: true });
     expect(first.status).toBe(200);
@@ -147,11 +147,11 @@ describe("replay mode", () => {
     expect(Buffer.from(await second.arrayBuffer()).equals(fixtureBody("x-api-key", "002"))).toBe(true);
 
     const third = await messagesRequest(p, DUMMY);
-    expect(third.status).toBe(500);
+    expect(third.status).toBe(400);
     expect(await third.json()).toMatchObject({ error: { message: expect.stringContaining("exhausted") as string } });
 
     const bearerExhausted = await messagesRequest(p, BEARER);
-    expect(bearerExhausted.status).toBe(500);
+    expect(bearerExhausted.status).toBe(400);
 
     // Drift was logged as a warning but every request above was still answered.
     expect(p.stderr()).not.toContain("cassette drift lane=x-api-key n=1");
