@@ -35,9 +35,11 @@ No design yet; `plan.md` follows once the open questions below are answered.
 
 12. The final video cuts what is boring or slow. Loading and waiting are removed, and an action that should look instant — for example, opening a new session with its preview — is instant in the video, whatever it took in the recording. This is marketing footage, not a benchmark.
 
+13. The pipeline is built in two phases. Phase 1 fleshes out the basics against the dogfood inner instance, which runs inside a ShipIt session with no preview. Phase 2, once everything works, sets up the dedicated demo service (req 4) for the real video.
+
 ## Open questions
 
-- Where the dedicated demo instance is hosted.
+- Where the dedicated demo service (phase 2) is hosted. Not needed for phase 1.
 
 ## Resolved questions
 
@@ -49,3 +51,4 @@ No design yet; `plan.md` follows once the open questions below are answered.
 - 2026-09-08 — Narration and cadence? Nik chose no narration, produced on demand. Requirements 9 and 10.
 - 2026-09-08 — Cursor / click-highlight overlay? Nik: yes, as the agent suggested — a small overlay injected into the page by the driver. Requirement 11.
 - 2026-09-08 — Nik added, unprompted: the final video may need cuts — boring loading, and anything that should look instant but is not (his example: opening a new session with its preview). Requirement 12.
+- 2026-09-08 — Where does the demo instance run? Nik: "Let's start with the dogfood version. So we flesh out the basics, and once everything works, we'll set up a demo service." Phase 1 is the dogfood inner instance; the host for phase 2 stays open. Requirement 13.
