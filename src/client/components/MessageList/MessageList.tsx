@@ -1,4 +1,8 @@
 import { useMemo, useRef, useDeferredValue, type ReactNode } from "react";
+import { CompactLayout } from "./CompactLayout.js";
+import { useCompactConversation } from "./hooks/useCompactConversation.js";
+import { elementMessageIndex } from "./compact-turns.js";
+import { Button } from "../ui/button.js";
 import { Spinner } from "../Spinner.js";
 import type { SearchMatch } from "../../hooks/useSearch.js";
 import { buildVisualElements, type VisualElement } from "../visual-elements.js";
@@ -28,13 +32,6 @@ const NO_MATCHES_BY_MESSAGE = new Map<number, SearchMatch[]>();
 function defaultSessionNameFor(value: string): string {
   const cleaned = value.trim().replace(/\s+/g, " ").slice(0, 80);
   return cleaned || "Fork from here";
-}
-
-/** The message a visual element is anchored to (elements come out in transcript order). */
-function elementMessageIndex(el: VisualElement): number {
-  if (el.kind === "message") return el.index;
-  if (el.kind === "tool-group") return el.messageIndices[0] ?? 0;
-  return el.messageIndex;
 }
 
 /**
@@ -197,8 +194,9 @@ export function MessageList({
   );
   const messages = deferred.messages;
 
-  const { containerRef, contentRef, currentMatchRef } = useMessageScroll(messages, isLoading, currentMatch);
+  const { containerRef, contentRef, currentMatchRef, canRestoreReadingAnchor } = useMessageScroll(messages, isLoading, currentMatch);
 
+  const compactConversation = useSettingsStore((s) => s.compactConversation);
   const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
   // docs/178 — transient "Compacting…" indicator (emit-only; not persisted).
   // docs/239 — the transcript's owning session; the self merge-watch card's
@@ -392,7 +390,9 @@ export function MessageList({
   // is unchanged; anything volatile goes through `RowHandlersProvider` instead.
   // Adding a prop here that is rebuilt each render silently restores the 92 ms
   // whole-transcript re-render.
-  const rows = visualElements.map((el) => {
+  const compact = useCompactConversation(messages, isLoading, deferred.sessionId, compactConversation, visualElements, matchesByMessage, containerRef);
+  const rows = visualElements.map((el, rowIndex) => {
+    const view = compact.rows[rowIndex];
     const anchorIndex = elementMessageIndex(el);
     const key =
       el.kind === "task-panel" ? "task-panel"
@@ -408,9 +408,26 @@ export function MessageList({
       // is the one such row: `buildVisualElements` emits it wherever the todo
       // list last changed, so it relocates whenever the agent rewrites its todos.
       movable: el.kind === "task-panel",
+      visible: !view.hidden || !!view.first || (isBubble && shouldShowGapBefore(el.index)),
       node: (
+        <div key={key} hidden={view.hidden && !view.first && !(isBubble && shouldShowGapBefore(el.index))}>
+          {view.first && view.run && (
+            <div className="text-xs text-(--color-text-secondary)">
+              <Button variant="ghost" size="sm"
+                aria-expanded={view.open}
+                aria-controls={view.controls}
+                aria-label={`${view.open ? "Show compact turn" : "Show full turn"}: ${view.run.identity.text.slice(0, 80) || "Agent response"}`}
+                aria-disabled={view.search || undefined}
+                title={view.search ? "Revealed by the active search" : undefined}
+                onClick={() => { if (!view.search) compact.toggle(view.run, view.open); }}>
+                {view.open ? "Show compact turn" : "Show full turn"}
+              </Button>
+              {!view.open && !view.run.hasText && <span className="ml-2">Turn ended without an agent reply.</span>}
+            </div>
+          )}
+          {view.hidden && isBubble && shouldShowGapBefore(el.index) && renderRewindPoint(el.index)}
+          <div id={`compact-row-${rowIndex}`} data-compact-content data-compact-index={anchorIndex} hidden={view.hidden}>
         <TranscriptRow
-          key={key}
           el={el}
           anchor={messages[anchorIndex]}
           matchesByMessage={matchesByMessage}
@@ -423,9 +440,11 @@ export function MessageList({
           hasRewindControls={hasRewindControls}
           forkDefaultName={forkDefaultName}
           rewindPreviews={rewindPreviews}
-          showGapBefore={isBubble && shouldShowGapBefore(el.index)}
+          showGapBefore={!view.hidden && isBubble && shouldShowGapBefore(el.index)}
           gapPreviousRole={isBubble ? previousRoleBefore(el.index) : null}
         />
+          </div>
+        </div>
       ),
     };
   });
@@ -456,10 +475,10 @@ export function MessageList({
   const indicatorAt = compactingIndicatorIndex(visualElements, compactingAnchor, compactingIndicator);
   const rowGroups: ReactNode[] = [];
   let anchorsSeen = 0;
-  let current: { anchors: number; children: ReactNode[] } | null = null;
+  let current: { visible: number; children: ReactNode[] } | null = null;
   const flushGroup = () => {
     if (!current) return;
-    const { anchors, children } = current;
+    const { visible, children } = current;
     rowGroups.push(
       <div
         // The group's ORDINAL, not its first row's key. Keying by the first row
@@ -474,6 +493,8 @@ export function MessageList({
         // group could vanish, which needs the history replaced — and that
         // remounts the transcript regardless.
         key={`g-${rowGroups.length}`}
+        data-compact-group
+        hidden={visible === 0}
         className="space-y-3 sm:space-y-2 [content-visibility:auto]"
         // The rows' own margins are inside the skipped subtree, so the estimate
         // has to reserve them too — `contain-intrinsic-size` replaces the whole
@@ -483,7 +504,7 @@ export function MessageList({
         // in for any row taller than 5rem.
         style={{
           containIntrinsicSize:
-            `auto ${anchors * ROW_PLACEHOLDER_REM + Math.max(anchors - 1, 0) * ROW_GAP_REM}rem`,
+            `auto ${visible * ROW_PLACEHOLDER_REM + Math.max(visible - 1, 0) * ROW_GAP_REM}rem`,
         }}
       >
         {children}
@@ -493,11 +514,11 @@ export function MessageList({
   };
   rows.forEach((row, i) => {
     if (!row.movable && anchorsSeen > 0 && anchorsSeen % ROWS_PER_GROUP === 0) flushGroup();
-    const group = (current ??= { anchors: 0, children: [] });
-    if (i === indicatorAt) group.children.push(compactingIndicator);
+    const group = (current ??= { visible: 0, children: [] });
+    if (i === indicatorAt) { group.children.push(compactingIndicator); group.visible++; }
+    if (row.visible) group.visible++;
     if (!row.movable) {
       anchorsSeen++;
-      group.anchors++;
     }
     group.children.push(row.node);
   });
@@ -532,7 +553,10 @@ export function MessageList({
           to this scroll container via the ref so it never fires on the composer
           or other panels. */}
       <ChatQuoteReply containerRef={containerRef} />
-      {rowGroups}
+      <CompactLayout visibility={compact.rows.map((row) => row.hidden ? "1" : "0").join("")}
+        containerRef={containerRef} canRestoreReadingAnchor={canRestoreReadingAnchor}>
+        {rowGroups}
+      </CompactLayout>
       {/* An indicator anchored past the last row belongs after every group, not
           inside one — the same end-of-list placement `compactingIndicatorIndex`
           returns for a null anchor. */}

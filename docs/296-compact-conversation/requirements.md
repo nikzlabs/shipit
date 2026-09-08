@@ -7,7 +7,7 @@ description: An optional view that keeps completed turns short while preserving 
 
 ## User request
 
-Provide a setting, off by default, that shows only the last agent message and relevant cards for each finished turn. Keep context compaction, ShipIt and native sub-agent activity, questions, and proposed actions visible. This request covers design, a visual mockup, and a ShipIt review; production implementation is separate.
+Provide a setting, off by default, that shows only the last agent message and relevant cards for each finished turn. Keep context compaction, ShipIt and native sub-agent activity, questions, and proposed actions visible. The initial request covered design, a visual mockup, and a ShipIt review. The user then approved implementation and a code review.
 
 ## Required behavior
 
