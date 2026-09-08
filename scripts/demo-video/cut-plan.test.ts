@@ -155,3 +155,33 @@ describe("cut-plan.mjs CLI", () => {
     }
   });
 });
+
+describe("anchorBeats", () => {
+  const log = [
+    { id: "a", actionAt: 2.3, readyAt: 4.2 },
+    { id: "b", actionAt: null, readyAt: 82.35 },
+  ];
+  const story = { beats: [{ id: "a", lead: 0, hold: 1 }, { id: "b", lead: 0, hold: 3 }] };
+
+  it("shifts every stamp by wall − video, so the last hold lands inside the file", () => {
+    // Measured shape: the driver's wall clock ran 85.6 s, the file is 83.24 s,
+    // so the first frame was 2.36 s late and every stamp is that much early
+    // in the video's own time.
+    const plan = buildPlan(log, story, { wallDuration: 85.6, videoDuration: 83.24 });
+    const last = plan.slices[plan.slices.length - 1];
+    expect(last.start).toBeCloseTo(82.35 - 2.36, 2);
+    expect(last.end).toBeLessThanOrEqual(83.24);
+    expect(plan.keptSeconds).toBeCloseTo(4, 2);
+  });
+
+  it("leaves the stamps alone without an anchor, and clamps to the video end with one", () => {
+    const unanchored = buildPlan(log, story);
+    expect(unanchored.slices[unanchored.slices.length - 1].end).toBeCloseTo(85.35, 3);
+    const clamped = buildPlan(log, story, { wallDuration: 83.24, videoDuration: 83.24 });
+    expect(clamped.slices[clamped.slices.length - 1].end).toBe(83.24);
+  });
+
+  it("refuses a video longer than the wall clock", () => {
+    expect(() => buildPlan(log, story, { wallDuration: 80, videoDuration: 83.24 })).toThrow(/longer than the wall clock/);
+  });
+});
