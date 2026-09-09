@@ -397,7 +397,9 @@ turn while a 40s task was still pending:
 ```
 
 A new turn and a fresh `init` do **not** re-emit the outstanding list, and there
-is no heartbeat. There is also no pull API: the `TaskList` / `TaskGet` /
+is no heartbeat for a bash-backed task (measured to 30 minutes below; a
+backgrounded *subagent* is the one exception, and not a usable one).
+There is also no pull API: the `TaskList` / `TaskGet` /
 `TaskOutput` / `TaskStop` tools in the CLI's tool set are *model*-facing, not
 callable by the orchestrator over the control protocol. So ShipIt's copy is only
 as good as its event delivery, and a dropped event cannot self-heal from the
@@ -430,6 +432,30 @@ Two consequences, both load-bearing:
    process is alive. Make the getter return 0 unless `isStreamingActive` — that
    is free, and it collapses the largest drift window (process died, drain event
    never arrived) into a correct answer.
+
+**2026-09-09 — how long the silence actually lasts, and the one exception.**
+The "no heartbeat" finding above was drawn from a 12s and a 40s task, both far
+too short to see one. Three 33-minute probes (claude 2.1.252, same streaming
+invocation) settled it:
+
+- **Bash-backed tasks: confirmed, at scale.** A silent `sleep 1800` emitted
+  nothing between `result/success` at 5500ms and its drain at 1804090ms. A loop
+  printing a line every 15s (120 lines) likewise emitted nothing, 4922ms to
+  1804184ms — so task **output** does not drive the wire either.
+- **Backgrounded subagents are the exception.** `task_progress` *does* fire —
+  6 events, intervals 5759 / 5841 / 29532 / 5003 / 4731 ms. Each carries a
+  distinct `desc` naming the subagent's current tool call, and the 29.5s gap
+  spans a nested task the subagent itself backgrounded. It is **activity-driven,
+  not a timer**: a subagent inside one long tool call emits nothing for that
+  call's duration, so it cannot serve as a liveness refresh.
+- **The level signal is sound.** Both bash probes emitted
+  `background_tasks_changed tasks=[]` exactly at completion. Only the middle is
+  silent.
+
+Consequence for the decay below: `seenAt` is set once, at `task_started`, and a
+long job can never refresh it — so the TTL is the *whole* protection such a job
+gets, not a backstop on top of one. That is why `BACKGROUND_TASK_TTL_MS` is an
+hour rather than the ten minutes this section originally implied.
 
 **Residual gap, handled by decay.** A dropped SSE frame while the process stays
 alive is still possible. Treat the count as a bounded-lifetime *hint*: record

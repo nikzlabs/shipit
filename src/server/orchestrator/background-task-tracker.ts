@@ -4,7 +4,9 @@
  *
  * Why this is a *hint* and not a fact. The backend reports the list only when
  * it CHANGES: neither a new turn nor a fresh `init` re-states an outstanding
- * list, there is no heartbeat, and there is no pull API to ask with. So the
+ * list, there is no heartbeat for a bash-backed task (`task_progress` fires
+ * only for a backgrounded SUBAGENT, and appears to track its tool calls rather
+ * than tick — docs/235), and there is no pull API to ask the CLI with. So the
  * orchestrator's copy is exactly as good as its event delivery, and a single
  * dropped frame would otherwise pin `agentBusy` true forever — making the
  * session permanently unreclaimable, the same failure class the
@@ -33,13 +35,27 @@
  *
  * A stale count reads as `agentBusy`, and a busy session is never reclaimed —
  * so without a TTL one dropped event would pin a container for the life of the
- * process. Ten minutes bounds that to a single window.
+ * process. This bounds that to a single window.
+ *
+ * **An hour, because a running task cannot refresh it.** A 2026-09-09 probe
+ * (claude 2.1.252, ShipIt's streaming invocation) ran two 30-minute background
+ * bash tasks: after the list event that starts the task, neither emitted
+ * anything until it completed — including one printing a line every 15s, so
+ * output does not drive the wire either. A lone long task therefore coasts on
+ * one `seenAt` stamp, and the previous ten-minute value expired while the work
+ * was still running. The window is priced for a DROPPED drain event, not a
+ * missing one: both probes did emit theirs on completion (2 of 2 — enough to
+ * show the drain path works, not a reliability figure).
+ *
+ * Note this is per-LIST, not per-task: any later non-empty `set()` restamps
+ * everything outstanding, so a second task starting or finishing renews the
+ * first one's window.
  *
  * It used to be defined as the idle enforcer's grace period, which docs/284
  * removed when reclaim stopped being driven by elapsed time. The value was
  * always about how long to trust a stale reading, so it keeps it as its own.
  */
-export const BACKGROUND_TASK_TTL_MS = 600_000;
+export const BACKGROUND_TASK_TTL_MS = 3_600_000;
 
 /** One outstanding background task, normalized across agent backends. */
 export interface BackgroundTaskInfo {
