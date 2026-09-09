@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
 import { MessageInput } from "./MessageInput.js";
 import type { PermissionMode } from "../../server/shared/types.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -762,6 +762,183 @@ describe("MessageInput", () => {
       // No reset will run, so the signal must not be optimistically cleared —
       // the server's post-turn recompute keeps it eligible.
       expect(usePrStore.getState().resetEligibleBySession.s1).toBe(true);
+    });
+  });
+
+  describe("docs/295 — compact-the-context control", () => {
+    const compactingAgent = [{
+      id: "claude" as const,
+      name: "Claude Code",
+      installed: true,
+      hasRunnableModels: true,
+      models: ["claude-opus-4-8"],
+      supportsReview: true,
+      supportsCompaction: true,
+    }];
+    const nonCompactingAgent = [{ ...compactingAgent[0]!, supportsCompaction: false }];
+
+    const renderComposer = (
+      onSend = vi.fn(),
+      agents: typeof compactingAgent = compactingAgent,
+    ) => {
+      render(
+        <MessageInput
+          onSend={onSend}
+          disabled={false}
+          sessionId="s1"
+          agents={agents}
+          activeAgentId="claude"
+        />,
+      );
+      return onSend;
+    };
+
+    const typeAndSend = () => {
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "next slice of work" } });
+      fireEvent.click(screen.getByLabelText("Send message"));
+    };
+
+    afterEach(() => {
+      usePrStore.setState({ resetEligibleBySession: {} });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+    });
+
+    it("is offered whenever the reset control is, and ticked by default (reqs 1, 2)", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      const onSend = renderComposer();
+      expect(screen.getByTestId("compact-context-control")).toBeInTheDocument();
+      typeAndSend();
+      expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ compactContext: true }));
+    });
+
+    it("is hidden when the shared setting is off (req 11)", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: false });
+      renderComposer();
+      // One switch governs both, so turning it off must take BOTH controls away.
+      expect(screen.queryByTestId("compact-context-control")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("reset-merged-branch-control")).not.toBeInTheDocument();
+    });
+
+    it("is hidden when the session is not reset-eligible (req 3)", () => {
+      usePrStore.setState({ resetEligibleBySession: {} });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      renderComposer();
+      expect(screen.queryByTestId("compact-context-control")).not.toBeInTheDocument();
+    });
+
+    it("is hidden when the backend cannot compact (req 10)", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      renderComposer(vi.fn(), nonCompactingAgent);
+      // Only this one goes — the branch reset is unrelated to the harness.
+      expect(screen.queryByTestId("compact-context-control")).not.toBeInTheDocument();
+      expect(screen.getByTestId("reset-merged-branch-control")).toBeInTheDocument();
+    });
+
+    it("sends compactContext:false after the user unticks it (req 5)", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      const onSend = renderComposer();
+      fireEvent.click(screen.getByTestId("compact-context-control"));
+      typeAndSend();
+      expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ compactContext: false }));
+    });
+
+    it("leaves the reset intent alone when only the compaction is unticked (req 6)", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      const onSend = renderComposer();
+      fireEvent.click(screen.getByTestId("compact-context-control"));
+      typeAndSend();
+      expect(onSend).toHaveBeenCalledWith(
+        expect.objectContaining({ compactContext: false, resetMergedBranch: true }),
+      );
+    });
+
+    it("leaves the compaction intent alone when only the reset is unticked (req 6)", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      const onSend = renderComposer();
+      fireEvent.click(screen.getByTestId("reset-merged-branch-control"));
+      typeAndSend();
+      expect(onSend).toHaveBeenCalledWith(
+        expect.objectContaining({ compactContext: true, resetMergedBranch: false }),
+      );
+    });
+
+    it("does not carry the intent at all when the control was not shown", () => {
+      usePrStore.setState({ resetEligibleBySession: {} });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      const onSend = renderComposer();
+      typeAndSend();
+      // Absent, not `false`: the server then follows the global setting, which
+      // is how a programmatic continuation (req 13) behaves.
+      expect(onSend.mock.calls[0]![0]).not.toHaveProperty("compactContext");
+    });
+
+    it("re-ticks after a send, so the untick applies to that one message (req 5)", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      // Must report the send as ACCEPTED: the re-tick sits after the refusal
+      // check, so a composer whose parent turned the send away keeps both the
+      // text and the tick state the user had.
+      const onSend = renderComposer(vi.fn(() => true));
+      // Untick BOTH. Unticking only the compaction is not the case to test: the
+      // still-ticked reset optimistically clears eligibility, both controls
+      // vanish for the turn, and their reappearance re-ticks them anyway. It is
+      // the all-unticked send that leaves the session eligible and the controls
+      // on screen — so without an explicit re-tick the opt-out would silently
+      // ride every later message in the session.
+      fireEvent.click(screen.getByTestId("reset-merged-branch-control"));
+      fireEvent.click(screen.getByTestId("compact-context-control"));
+      typeAndSend();
+      typeAndSend();
+      expect(onSend.mock.calls[0]![0]).toMatchObject({
+        compactContext: false, resetMergedBranch: false,
+      });
+      expect(onSend.mock.calls[1]![0]).toMatchObject({
+        compactContext: true, resetMergedBranch: true,
+      });
+    });
+
+    it("does not carry an untick into a different session", () => {
+      // The composer is not keyed by session, so switching between two ALREADY
+      // eligible sessions leaves the visibility boolean true throughout — the
+      // re-check has to key on the session too, or one session's opt-out
+      // silently governs another session's send.
+      usePrStore.setState({ resetEligibleBySession: { s1: true, s2: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      const onSend = vi.fn();
+      const { rerender } = render(
+        <MessageInput
+          onSend={onSend} disabled={false} sessionId="s1"
+          agents={compactingAgent} activeAgentId="claude"
+        />,
+      );
+      fireEvent.click(screen.getByTestId("compact-context-control")); // untick in s1
+      rerender(
+        <MessageInput
+          onSend={onSend} disabled={false} sessionId="s2"
+          agents={compactingAgent} activeAgentId="claude"
+        />,
+      );
+      typeAndSend();
+      expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ compactContext: true }));
+    });
+
+    it("re-ticks whenever the control reappears (non-sticky, req 5)", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      const onSend = renderComposer();
+      fireEvent.click(screen.getByTestId("compact-context-control")); // untick
+      // The control goes away (the branch moved) and comes back on a later merge.
+      act(() => { usePrStore.setState({ resetEligibleBySession: {} }); });
+      act(() => { usePrStore.setState({ resetEligibleBySession: { s1: true } }); });
+      typeAndSend();
+      expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ compactContext: true }));
     });
   });
 

@@ -1,7 +1,7 @@
 ---
 issue: planning#522
 title: Compact the context when a merged session continues
-description: A shared pre-turn compaction step, offered as a second composer checkbox, so a merged session starts the next slice with a clean context as well as a clean tree — on typed and programmatic continuations alike.
+description: A merged session compacts its context before the next turn — offered as a second composer checkbox, on typed and programmatic continuations alike — so it starts the next slice with a clean context as well as a clean tree.
 ---
 
 # 295 — Compact the context when a merged session continues
@@ -15,242 +15,214 @@ harnesses.
 
 ## Shape
 
-A **shared pre-turn compaction step**, sitting immediately in front of the
-docs/218 reset and called from the same two places the reset is called from:
+**Two ordinary turns, in order** — what a user already gets by pressing compact
+and then sending their message:
 
 ```
-compaction  →  branch reset  →  prompt assembly (with the merge prefix)  →  spawn
+message arrives on an eligible merged session
+   → the message goes on the QUEUE
+   → a `/compact` turn runs                          (an ordinary turn)
+   → its post-turn drain starts the user's message   (an ordinary turn)
+      → which runs the docs/218 reset and carries the merge prefix
 ```
 
-Both transports call both hooks (req 13). The composer checkbox is the per-send
-intent for the typed path only; a programmatic continuation has no checkbox and
-follows the global setting, exactly as it already does for the reset.
+No new lifecycle state: at every instant the session is running exactly one
+ordinary turn and the message is in the queue. `executeAgentTurn` owns both
+turns' `running`, delivery, readiness, cancellation, transcript accumulators and
+persistence, as it owns every other turn's.
 
-**This shape is chosen because of planning#333.** docs/218 scoped its reset to the
-interactive path and wrote the wiring inline in `agent-execution.ts`, with "if
-we later want programmatic continues to reset too, factor a shared helper then."
-Later came: an Agent Interface SDK click, a `shipit session message`, and a
-notify-on-merge wake all reached `runDispatchedTurn`, which had none of it, and
-the agent worked on a branch still sitting on already-merged commits. Requirement
-13 puts this feature in that same position on day one, so it starts shared rather
-than being factored out after the same bug.
+Both transports make the same decision (req 13), for the planning#333 reason:
+docs/218 scoped its reset to the interactive path, and an Agent Interface SDK
+click, a `shipit session message` and a notify-on-merge wake then all continued
+on a branch still sitting on merged commits. The composer checkbox is the
+per-send intent for the typed path only; a programmatic continuation has no
+checkbox and follows the global setting, exactly as the reset does.
+
+## The pieces
+
+- **The decision** — `compact-before-turn.ts`, `shouldCompactBeforeTurn`. Gates,
+  in order: the per-send untick (req 5), the shared setting (req 11), the
+  harness capability (req 10), an armed conversation replay (the next spawn
+  consumes it read-and-clear, so a compaction turn would take the seed), a
+  resident holding background work (docs/260 req 13), the docs/282 merge
+  recheck's `unsettled` answer (the reset stands down on it, and a compaction
+  without the reset's prefix loses req 7), and finally `isResetEligible` — the
+  same predicate that offers the reset checkbox (reqs 1, 3, 13). Fail-safe
+  false throughout (req 9).
+- **Two takeovers** — `ws-handlers/send-message.ts` for a typed send (and,
+  through the same `runCompactionAhead` helper, the WS queue drain for a
+  message that queued behind another turn), `dispatched-turn.ts` for a
+  continuation the user did not type. Each puts the message at the **front** of
+  the queue — it was next and stays next, so an entry queued earlier cannot
+  overtake it — with `compactContext: false`, which says the true thing that
+  stops a loop: the compaction for this message has already happened, while the
+  *session* stays eligible. Then it runs the `/compact` turn as a **system
+  turn**: a send arriving meanwhile queues behind it instead of being steered
+  into the compaction process (which would run it before the message it
+  overtook, without that message's reset). `systemTurnInProgress` is held from
+  the moment the decision starts — an idle resident streaming process would
+  otherwise take a send arriving mid-decision — and released if the answer is
+  no. The compaction's own drain is the one interactive drain allowed to run
+  under the flag, and it is also what **clears** it: a streaming compaction
+  reuses the resident process, and the turn that follows strips its listeners
+  before the `done` that would have cleared it in `finishTurn`. The dispatched
+  takeover runs before attachment resolution (the drain redoes it) and excludes
+  `postTurn: "none"` for the reset's reason: a rebase-resolution turn is a step
+  inside a git operation, and compacting there would summarise away the
+  conflict context.
+- **`silent`** — the one new field on the dispatch shape (and, because the
+  queue narrows nothing, on the queue shape). ShipIt started the compaction
+  turn, so it gets no user bubble and no user row; the compaction card is the
+  record. A value, not a mechanism: the executor already
+  takes `emitUserEcho` and `persistUserMessage` as inputs.
 
 ## Ordering, and why the merge notice survives (req 4, req 7)
 
-The compaction runs **before** the reset, and both run before the prompt is
-assembled. That is what protects req 7.
+The docs/218 reset runs on the **user's** turn, after the compaction. Its
+`[System] …PR was merged…` prefix is built after the summary exists and is
+handed only to the turn that carries the user's message, so it cannot be
+absorbed into the summary. Reversed, the agent would start holding a paraphrase
+of the warning instead of the warning. The compaction turn is a `/compact`, so
+it skips the reset and every prefix, as a typed `/compact` already did.
 
-`buildAgentPrefix` (`services/pre-turn-reset.ts:1027`) tells the agent its pull
-request merged and that it must not re-apply the shipped work. The prefix is
-produced by the reset hook and prepended to the turn's prompt, so it enters the
-context **after** the compaction has already produced its summary. The notice
-cannot be absorbed into that summary, because it did not exist when the summary
-was written.
-
-Reverse the two and the feature breaks quietly: the compaction would summarise a
-conversation that ends with a merge notice, and the agent would start the turn
-holding a paraphrase of the warning instead of the warning.
-
-The interactive path already refuses to mix the two for exactly this reason.
-`runAgentWithMessage` skips the reset when `opts.compact` is set
-(`ws-handlers/agent-execution.ts:442`), with the reason at the call site: the
-`[System] …PR was merged…` prefix would derail a compaction, because the agent
-reacts to the merge notice instead of compacting. This design keeps that
-separation — the compaction spawn carries no prefix, and the prefix rides only
-the real turn.
-
-**The turn resumes the right agent session.** A compaction can leave the backend
-on a new agent session id, and a stale id would resume the pre-compaction
-conversation and throw the whole compaction away. This is safe here, verified at
-`ws-handlers/agent-execution.ts:594`: `buildRunParams` reads `agentSessionId`
-**fresh from the database** at spawn time rather than reusing the id captured
+The user's turn resumes the right agent session: `buildRunParams` reads
+`agentSessionId` fresh from the database at spawn time, not from the id captured
 when the handler started.
 
-## What the step actually does
+## Custom compaction instructions
 
-An idle session has no resident agent, so the compaction needs a spawn of its
-own. `compactAgentOnWorker` (`container-session-runner.ts:1669`) is **not** the
-mechanism here — it asks a *resident* agent to compact, which is the mid-turn
-`/compact` case. Between turns there is nothing resident to ask.
-
-So the step performs one compaction spawn — the `run({ compact: true })`
-semantics of `session-agent-run-params.ts:237`, which each adapter maps to its
-own trigger (Claude and Grok in-band, Codex `thread/compact/start`, OpenCode's
-transient `summarize` server) — and awaits it before returning.
-
-**The one thing implementation must verify in code:** that the compaction spawn's
-completion is not mistaken by the turn executor for the user's turn finishing.
-The step runs inside the turn's pre-spawn phase, and the executor's terminal
-handling (`agent_result`, the `done` path, the post-turn commit sequence) is
-built around one spawn per turn. This is named as a risk rather than asserted as
-safe, because nothing in the shipped code proves it today.
-
-## Custom compaction instructions — Claude and Grok
-
-A default summary ends with the shipped work's next steps, which is the wrong
-emphasis for a session whose work just merged. So the compaction carries a short
-post-merge instruction: keep the durable context — user preferences, repo
-conventions, unresolved questions — and drop the completed implementation
-detail.
-
-**Two harnesses honour it.** Claude passes instructions through to
-`/compact <instructions>` (`session/agents/claude/adapter.ts:595`). Grok honours
-them too — probed 2026-09-07 at grok 1.0.12 and written up in
-[docs/276](../276-headless-compaction-triggers/plan.md#it-does-honour-custom-compaction-instructions-probed-2026-09-07-grok-1012);
-it lifts them into a `user_context` field on its compaction request, and an
-instructed summary differs from a bare one under a negative control.
-
-Grok needs no adapter change **for this feature**, because this feature always
-takes the spawn path. Its trigger is the prompt, so `/compact <instructions>`
-delivers the instruction with the text — which is exactly what the probe drove.
-`GrokAdapter.compact()` does ignore its argument
-(`agents/grok/adapter.ts:1060`), but that method is the *resident, mid-turn*
-path, and Grok has no resident process to compact; the method exists only to
-warn. A session continuing after a merge is idle, so the step spawns.
-
-**Two do not.** Codex's `thread/compact/start` has no slot for them
-(`agents/codex/adapter.ts:525`) and OpenCode's `summarize` route has none either
-(`agents/opencode/adapter.ts:853`).
-
-So on **two of four** harnesses the docs/218 prefix is the only thing stopping
-the agent continuing the shipped work. That is why req 7 is a requirement rather
-than a nicety, and why the prefix must never be reordered ahead of the
-compaction as an optimisation — the instruction cannot be relied on to carry
-that meaning everywhere.
+The `/compact` carries a short post-merge brief: keep the durable context (user
+preferences, repo conventions, unresolved questions), reduce the shipped work to
+a statement of what it changed. Claude passes instructions through to `/compact
+<instructions>`; Grok lifts them into `user_context` (probed 2026-09-07 at grok
+1.0.12, [docs/276](../276-headless-compaction-triggers/plan.md)). Codex's
+`thread/compact/start` and OpenCode's `summarize` have no slot and ignore them.
+On those two the docs/218 prefix is the only thing stopping the agent continuing
+the shipped work — which is why req 7 is a requirement, not a nicety.
 
 ## The per-send intent (req 5, req 6)
 
 The wire path mirrors `resetMergedBranch` field for field:
+`WsSendMessage.compactContext?: boolean`, set only when the control was shown,
+non-sticky, never persisted, read independently of its sibling. Both flags ride
+the queue (`QueuedMessage`, `AgentDispatchOptions`), so an untick made while a
+turn was running still applies when the entry drains — including on the
+`/review` frame, which composes its own prompt.
 
-- `WsSendMessage.compactContext?: boolean`
-  (`shared/types/ws-client-messages.ts`) — set only when the control was shown;
-  non-sticky, never persisted.
-- Carried into `runAgentWithMessage`'s options beside the existing
-  `resetMergedBranch`.
+## A typed `/compact` is still one compaction (req 12)
 
-The two flags are read independently (req 6): unticking either does not change
-what the other does.
+`send-message.ts` classifies an immediate `/compact`. One that had to queue
+drains elsewhere — `runQueuedInteractiveMessage` or `runDispatchedTurn` — and
+both re-derive the command from the text with the same parse and capability
+check, so it skips the reset and the prefixes and reaches the adapter with the
+compaction flag. Re-derived rather than carried on the entry, because it is
+derived: the same parse against the agent that will run it.
 
-Unlike the reset, the compaction is **not** re-validated server-side. The reset
-earns its server-side gate because it destroys committed work; a compaction
-destroys no repository state, and the client sends the flag only when it showed
-the control. A second gate would only give two answers that could disagree.
+## Visibility and failure (req 8, req 9)
 
-## Programmatic continuations (req 13)
+Mostly inherited. The compaction turn emits `agent_compaction_started` and the
+persisted compaction card (docs/178) through the ordinary turn listeners; the
+user's message shows as queued while it runs. A failed compaction is a failed
+turn: its error persists like any other, and every terminal path of a turn
+drains the queue — including the ones where the agent process dies (CLAUDE.md
+post-turn invariant 2) — so the message is never lost. Two cases needed a line
+each:
 
-The dispatched path takes the same two hooks, in the same order, at the place
-the reset already runs: `runDispatchedTurn` calls `deps.preTurnReset` before
-prompt assembly, once per dispatched message, **outside `runOnce`** so a
-no-result retry neither re-resets nor re-emits (`dispatched-turn.ts:241`). The
-compaction step inherits both properties — once per message, not once per
-attempt. A retried turn must not compact twice.
+- **Stop during the compaction** stops the compaction; the message it ran ahead
+  of still runs. The WS drain normally clears the queue after an interrupt (the
+  user stopped *their* turn); after the compaction turn it does not. This rides
+  the turn's terminal event; a streaming CLI that answers a stop with neither a
+  result nor an exit leaves the session as it leaves any stopped streaming turn
+  today — nothing drains until the process ends.
+- **A compaction turn that ends with no compaction card** — stopped before any
+  output, or a backend that accepted the trigger, exited 0 and compacted
+  nothing — gets a persisted `warn` notice from the turn's drain,
+  `noteMissedCompaction`, so the failure is never silent on reload either.
 
-It also inherits the **one exclusion**: `postTurn: "none"`. That marks a turn
-that is a step inside a git operation the driver owns — docs/146
-rebase-conflict resolution — not a continuation of the session's work.
-Compacting there would summarise away the conflict context the agent is holding
-precisely to finish the rebase.
+**A dispatch's settlement is its own.** A continuation dispatched onto an
+eligible session has the compaction run inside its dispatch's lifetime, so the
+dispatch's `turn_result` latch (which tells *interrupted* — do not redeliver —
+from *dropped* — redeliver) ignores a compaction's result unless the dispatch
+asked for one, and for a delivery counts a result only while `activeDeliveryId`
+is its own. Without that, a runner disposed after the compaction but before the
+continuation ran reported it delivered.
 
-No intent is passed on this path, so the global setting alone decides — which is
-what the checkbox reflects when it is ticked.
+**The runner stays reserved through the handoff.** `tryDrain` clears `running`
+before the compaction's drain dequeues the continuation, whose own setup (the
+decision, attachments, the branch reset) then runs for a while. `runDispatchedTurn`
+publishes `running`, `systemTurnInProgress` and `activeDeliveryId` at entry —
+`dispatchOnRunner` already did for a turn started from idle; the drains did not
+— and restores them on a setup throw. One residual, of the class the executor
+already accepts for the WS drain: a one-shot predecessor's `done` landing while
+the reserved successor is still before its spawn finds an empty agent slot and
+reads `running` as its own stale flag. It cannot be told from the docs/287
+phantom adoption by state alone, and it self-heals at the successor's executor
+entry. And `systemTurnInProgress` describes the
+*current* turn: the executor assigns it for every turn at start, and a turn's
+`finishTurn` clears it only while that turn is still current. Before that, a
+one-shot compaction's `done` — landing while its drain awaited the commit, so
+the successor's spawn superseded nothing — cleared the flag a queued wake had
+just published.
+
+**Known trades.** A worker probe (`verifyRunningState`, run when a second send
+arrives) that finds no agent on the worker while a turn is still in its pre-spawn
+setup reads that turn as stuck and abandons it; the setup window has always
+included the branch reset, and the decision adds to it — a general property of
+the probe, not of this feature. An orchestrator restart mid-compaction adopts
+the surviving compaction process without its system-turn marker, as adoption
+does for every turn. The takeover queues the send's raw inputs (the drain resolves
+uploads, so queuing the resolved copies too handed the file to the agent twice —
+main's merge-hold re-check did the same and is fixed alongside). The queued
+message lives in the in-memory queue for the length of the compaction, as any
+queued message does; an orchestrator restart in that
+window loses it — the same window a user who presses compact and then sends has
+today. And the queue has never carried `userReview` (review-card metadata), so
+a review submitted on an eligible session runs as its prompt but persists
+without the card — the same loss a review queued behind a merge hold has today.
 
 ## The composer control (req 1, req 2, req 3, req 10)
-
-`client/components/MessageInput/MessageInput.tsx` already computes
-`showResetControl = resetEligible && autoResetMergedBranch` and holds
-`resetChecked` in non-sticky state that re-checks whenever the control
-reappears. The compaction control is the same pattern:
 
 ```
 showCompactControl = showResetControl && supportsCompaction
 ```
 
-`supportsCompaction` for the active agent is already on the client
-(`MessageInput.tsx:854`, where it gates the `/compact` autocomplete entry), so
-req 10 needs no new plumbing.
-
-**Nothing gates on context size.** Requirement 3 forbids a token or percentage
-threshold, so `showCompactControl` reads no usage state at all.
-
-**Placement: a second line inside the existing control block**, subordinate to
-"Start from the latest base" rather than an equal-weight second row. The block
-already sits inside the composer border as its top row (docs/218 placement B),
-so the input's corners still never change. Two equal rows would double the
-weight of a block that appears at the exact moment the user wants to type.
+Offered whenever the reset control is, so req 11's single setting governs both
+with no second gate. Nothing gates on context size (req 3). Placed as a
+subordinate second line inside the existing control block — one line, no
+description — so the block that appears at the moment the user wants to type
+does not double in weight. Both tick states re-tick on send and on a session
+switch, so an untick never rides a later message or another session.
 
 ## The shared setting (req 11)
 
-No new setting. `autoResetMergedBranch` governs both actions, so when it is off
-neither control is offered — which falls out of `showCompactControl` deriving
-from `showResetControl`. The Settings → Advanced row
-(`client/components/Settings/tabs/AdvancedTab.tsx:166`) keeps its toggle and its
-title; its description grows to name both actions.
-
-## A typed `/compact` is still one compaction (req 12)
-
-The intent flag and the `/compact` command can arrive on the same send: the
-control is on screen and the user types `/compact`. Without a guard, that send
-compacts twice — once as the pre-step, once as the command.
-
-So the pre-step is suppressed when the send is already a compaction request.
-`send-message.ts` computes `isCompactRequest` before anything else runs, and the
-step reads it. The reset is already suppressed for that same send by the shipped
-`opts.compact` skip, so both halves of req 12 come from one condition.
-
-## Visibility and failure (req 8, req 9)
-
-Visibility is inherited. The compaction spawn emits `agent_compaction_started`
-and the persisted compaction card (docs/178), so the user sees it start and sees
-the before/after result in the transcript — no new card type, no new persistence
-work.
-
-Failure must be **visible**, not merely survivable, or a user who ticked the box
-cannot tell a compaction that worked from one that did nothing. The step reports
-its outcome rather than its completion, and two shapes have to be
-distinguished:
-
-- the compaction **errored** — say so;
-- the compaction produced **no compaction event at all** — a backend that
-  accepted the trigger and did nothing. docs/276 req 2 is the precedent: a
-  command that exits successfully while doing nothing does not count as a
-  compaction and must not be reported as one.
-
-Either way the user's turn still runs (req 9). The notice reuses the docs/218
-skip-notice path (`emitNoticeInTurn` / `emitNoticePostTurn` in
-`chat-card-persistence.ts`), which already anchors a one-line explanation at its
-true transcript position.
-
-## The step must not fake a user message
-
-The compaction is started by ShipIt, not typed, so it must not persist a user
-row or echo a `/compact` bubble to other viewers — the transcript would then
-show a command the user never sent. The compaction card is the record; the
-bubble is not.
+No new setting. `autoResetMergedBranch` governs both actions; the Settings →
+Advanced description names both.
 
 ## Key files
 
-| File | Change |
+| File | Role |
 |---|---|
-| `orchestrator/pre-turn-compact-hook.ts` | **New.** The shared step: decide, spawn one compaction, await it, report the outcome. Sibling of `pre-turn-reset-hook.ts`. |
-| `orchestrator/ws-handlers/agent-execution.ts` | Call the step before `applyPreTurnReset`; pass the per-send intent. |
-| `orchestrator/dispatched-turn.ts` | Call the step before `deps.preTurnReset`, once per message, with the same `postTurn: "none"` exclusion (req 13). |
-| `orchestrator/runner-registry-factory.ts` | Wire the step into `SystemTurnDeps` beside `preTurnReset`. |
-| `shared/types/ws-client-messages.ts` | `compactContext?: boolean` on `WsSendMessage`. |
-| `client/components/MessageInput/MessageInput.tsx` | `showCompactControl`, non-sticky checked state, the subordinate control line, the payload flag. |
-| `client/components/Settings/tabs/AdvancedTab.tsx` | Description of the existing toggle names both actions. |
+| `orchestrator/compact-before-turn.ts` | The decision, the post-merge `/compact` prompt, `noteMissedCompaction`. |
+| `orchestrator/ws-handlers/send-message.ts` | The interactive takeover. |
+| `orchestrator/dispatched-turn.ts` | The dispatched takeover (req 13); `/compact` re-derived on the drain (req 12). |
+| `orchestrator/ws-handlers/agent-execution.ts` | `decideCompactBeforeTurn` + `runCompactionAhead` (shared by the send handler and the WS drain); `silent`, `systemTurn`; the compaction turn's drain exemptions and `noteMissedCompaction`; `/compact` re-derived on the WS drain (req 12). |
+| `orchestrator/session-runner.ts`, `prepared-dispatch.ts` | `shouldCompactBeforeTurn` dep; `compactContext` / `resetMergedBranch` on the queue shape, `silent` on the dispatch shape; the delivery-aware `turn_result` latch. |
+| `orchestrator/turn-executor.ts` | `TurnInput.compact`, passed to `buildRunParams` for the dispatched path. |
+| `shared/types/ws-client-messages.ts` | `compactContext?: boolean`. |
+| `client/components/MessageInput/MessageInput.tsx` | The control, its tick state, the payload flag. |
+| `client/utils/send-handler.ts` | Carries the flag, on the `/review` frame too. |
+| `client/components/Settings/tabs/AdvancedTab.tsx` | Description names both actions. |
 
 ## Risks
 
-- **The executor assumes one spawn per turn.** Named above; the pre-spawn
-  compaction is the part of this design that is not proven by shipped code, and
-  it is the first thing implementation should establish.
 - **The wait is visible.** Compaction measured 27.7 s on a 22k-token context
   (docs/178) and grows with the context; the user pays it before their turn
-  starts. It is spent under the compaction card rather than in silence, and the
-  checkbox is there to untick. Requirement 3 rules out shortening it with a size
-  gate. On a programmatic continuation nobody is waiting, so the cost is lower
-  there — but so is the supervision, which is why req 13 includes it.
-- ~~**Grok's instruction handling is unverified.**~~ Settled 2026-09-07: Grok
-  honours them, and the spawn path this feature uses delivers them (docs/276).
-  This risk is closed, and the post-merge instruction now reaches two harnesses
-  rather than one.
+  starts, under the compaction card, with the checkbox there to untick. Req 3
+  rules out shortening it with a size gate.
+- **Stop reaches the compaction, not the send.** Interrupting during the
+  compaction stops that turn; the queued message then runs. Cancelling the
+  whole send from inside the compaction is not something a requirement asks for.
+- **A refused reset compacts again next time.** Eligibility is the composer's
+  own signal, so while a reset keeps being refused (no network, say) the box
+  keeps appearing ticked and each message compacts first. Consistent with what
+  the user sees; untick to skip.

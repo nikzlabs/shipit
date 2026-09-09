@@ -108,6 +108,9 @@ export interface AgentDispatchInit {
   onTurnComplete: ((outcome: TurnOutcome) => void) | undefined;
   deliveryId: string | undefined;
   dictated: boolean | undefined;
+  resetMergedBranch: boolean | undefined;
+  compactContext: boolean | undefined;
+  silent: boolean | undefined;
 }
 
 /** Compile-time `T extends never` assertion — the error message names the offender. */
@@ -147,6 +150,9 @@ const DISPATCH_FIELDS: Record<keyof AgentDispatchOptions, true> = {
   onTurnComplete: true,
   deliveryId: true,
   dictated: true,
+  resetMergedBranch: true,
+  compactContext: true,
+  silent: true,
 };
 
 const DISPATCH_FIELD_KEYS = Object.keys(DISPATCH_FIELDS) as (keyof AgentDispatchOptions)[];
@@ -212,6 +218,10 @@ export function queuedMessageToDispatchOptions(next: QueuedMessage): PreparedDis
     // docs/144 — a message dictated while a turn was running still tells the
     // agent it was transcribed when it finally drains.
     dictated: next.dictated,
+    // docs/218 + docs/295 — the composer tick boxes, and `silent`.
+    resetMergedBranch: next.resetMergedBranch,
+    compactContext: next.compactContext,
+    silent: next.silent,
   });
 }
 

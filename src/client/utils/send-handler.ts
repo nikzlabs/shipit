@@ -52,6 +52,7 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
     uploadRefs,
     uploads: payloadUploads,
     resetMergedBranch,
+    compactContext,
     dictated,
   } = payload;
   // docs/203, docs/220 — `/review [@path]` is a chat-native entry point to AI
@@ -107,6 +108,10 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
           text: prompt,
           sessionId: sid,
           ...plan.frame,
+          // docs/218 + docs/295 — `/review` is still a composer send, so it
+          // carries the per-send tick boxes.
+          ...(resetMergedBranch !== undefined ? { resetMergedBranch } : {}),
+          ...(compactContext !== undefined ? { compactContext } : {}),
         }),
     });
     // docs/293 req 4 — the frame never left the browser. `sendUserMessage` has
@@ -168,6 +173,8 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
       })(),
       // docs/218 — per-send opt-out for the auto-reset-merged-branch control.
       ...(resetMergedBranch !== undefined ? { resetMergedBranch } : {}),
+      // docs/295 — and the compact-context control beside it (req 6).
+      ...(compactContext !== undefined ? { compactContext } : {}),
       // docs/144 — tell the agent this message was spoken, not typed, so it
       // reads STT artifacts as artifacts. The bubble above stays verbatim.
       ...(dictated ? { dictated: true } : {}),

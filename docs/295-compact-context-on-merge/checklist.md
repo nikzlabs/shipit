@@ -2,80 +2,66 @@
 
 Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md).
 
-## First — settle the one unproven thing
+## The decision
 
-- [ ] Establish in code whether a compaction spawn can run in a turn's pre-spawn
-      phase without the executor treating its completion as the user's turn
-      finishing (`agent_result`, the `done` path, the post-turn commit
-      sequence). Everything below assumes an answer to this.
+- [x] `orchestrator/compact-before-turn.ts` — `shouldCompactBeforeTurn`, gated on
+      the per-send untick, the shared setting, the harness capability, an armed
+      conversation replay, resident background work, the docs/282 `unsettled`
+      recheck and `isResetEligible`. Fail-safe false (req 9).
+- [x] The post-merge `/compact` prompt with its instructions; Claude and Grok
+      honour them, Codex and OpenCode ignore them (docs/276).
 
-## The shared step
+## The two takeovers (req 13)
 
-- [ ] New `orchestrator/pre-turn-compact-hook.ts` — decide, run one compaction
-      spawn (`run({ compact: true })` semantics), await it, return an outcome.
-- [ ] Return an **outcome**, never bare completion: errored, compacted, or
-      produced no compaction event at all.
-- [ ] Give Claude the post-merge instructions in the compaction prompt; leave
-      the other harnesses to ignore them.
-- [ ] Do not persist a user row or echo a `/compact` bubble for the step.
-- [ ] Never let the outcome gate the turn that follows (req 9).
+- [x] `ws-handlers/send-message.ts` and the WS queue drain — put the message at
+      the front of the queue with `compactContext: false`, run the `/compact`
+      turn `silent` and as a system turn (`runCompactionAhead`).
+- [x] `dispatched-turn.ts` — the same, before attachment resolution, excluding
+      `postTurn: "none"`; wired through `SystemTurnDeps.shouldCompactBeforeTurn`
+      in `runner-registry-factory.ts`.
+- [x] A stop during the compaction still runs the message; a compaction turn
+      with no card leaves a `warn` notice (req 9).
+- [x] A dispatch's `turn_result` latch ignores the compaction's result.
+- [x] `runDispatchedTurn` reserves the runner at entry; `systemTurnInProgress`
+      describes the current turn (assigned at every start, cleared only while
+      current).
+- [x] The takeovers queue the raw send, so an upload reaches the agent once.
+- [x] `silent` on the dispatch shape: no user row, no echo, on both transports.
+- [x] The reset runs on the user's turn, after the compaction, so its merge
+      prefix cannot be summarised away (req 7).
 
-## Wiring both transports (req 13)
+## The per-send intent (req 5, req 6)
 
-- [ ] Call it from `ws-handlers/agent-execution.ts`, before `applyPreTurnReset`.
-- [ ] Call it from `dispatched-turn.ts`, before `deps.preTurnReset` — once per
-      dispatched message, **outside `runOnce`**, so a no-result retry does not
-      compact twice.
-- [ ] Apply the same `postTurn: "none"` exclusion the reset uses, so a
-      rebase-conflict resolution step never compacts.
-- [ ] Wire it into `SystemTurnDeps` in `runner-registry-factory.ts`, beside
-      `preTurnReset`.
+- [x] `compactContext?: boolean` on `WsSendMessage`, non-sticky.
+- [x] `compactContext` and `resetMergedBranch` ride the queue and the `/review`
+      frame, so an untick survives a busy runner.
+- [x] A `/compact` that queued is re-derived as the command on both drains
+      (req 12): no reset, no prefixes, the adapter's compaction flag.
 
-## Wire path for the per-send intent
+## Composer and setting
 
-- [ ] `compactContext?: boolean` on `WsSendMessage`
-      (`shared/types/ws-client-messages.ts`), documented as non-sticky.
-- [ ] Carry it through `ws-handlers/send-message.ts` into the turn options.
-- [ ] Suppress the step when the send is already an `isCompactRequest` (req 12).
-
-## Composer control
-
-- [ ] `showCompactControl = showResetControl && supportsCompaction` in
-      `MessageInput.tsx` — reads no usage or occupancy state (req 3, req 10).
-- [ ] Checked by default, non-sticky, re-checked whenever the control reappears
-      (req 2, req 5), mirroring `resetChecked`.
-- [ ] Render as a subordinate line inside the existing control block, not an
-      equal-weight second row.
-- [ ] Put the flag on the send payload only when the control was shown.
-
-## Setting
-
-- [ ] Update the description of the existing "Start from the latest base after a
-      merge" row in `Settings/tabs/AdvancedTab.tsx` to name both actions. No new
-      setting (req 11).
+- [x] `showCompactControl = showResetControl && supportsCompaction` in
+      `MessageInput.tsx`; no occupancy state (req 3, req 10).
+- [x] Checked by default, re-ticked on send and on a session switch (req 2,
+      req 5); rendered as a subordinate line in the existing control block.
+- [x] The Settings → Advanced description names both actions (req 11).
 
 ## Tests
 
-- [ ] The compaction runs before the reset, and the turn still carries the
-      docs/218 merge prefix afterwards (req 7).
-- [ ] A dispatched continuation compacts under the global setting, with no
-      checkbox involved (req 13).
-- [ ] A retried dispatched turn compacts once, not twice.
-- [ ] A `postTurn: "none"` turn never compacts.
-- [ ] A `/compact` send with the control visible compacts exactly once and does
-      not reset the branch (req 12).
-- [ ] A failed compaction still runs the turn **and** leaves a notice (req 9).
-- [ ] A compaction that reports no event is not reported as a success.
-- [ ] The two checkboxes are independent (req 6).
-- [ ] The control is hidden when the harness cannot compact (req 10) and when
-      the global setting is off (req 11).
-- [ ] The control's visibility does not change with context occupancy (req 3).
-- [ ] Delete each guard singly and watch it fail, so no test passes with the
-      defect present.
+- [x] `compact-before-turn.test.ts` — every gate, including the `unsettled` race
+      through the real `recheckMergeBeforeTurn`.
+- [x] `dispatched-turn-compaction.test.ts` — the dispatched takeover through the
+      real `SessionRunner.dispatch` path: order, once only, settlement from the
+      drained turn, the `postTurn: "none"` and queued-`/compact` exclusions.
+- [x] `integration_tests/pre-turn-compaction.test.ts` — a real merged
+      repository end to end: two spawns in order, the compaction card and
+      exactly one user row survive the user's turn; a queued send; a second
+      send during the decision; stop; a missing card; the untick and typed
+      `/compact` cases.
+- [x] `MessageInput.test.tsx`, `send-handler.test.ts` — the control, its
+      re-tick rules, the payload flag, and the `/review` frame.
 
 ## Close-out
 
-- [ ] `npm run lint:dev` and `npm run typecheck` clean.
-- [ ] Independent review against every numbered requirement
-      (`shipit agent run --role reviewer`), review-only.
-- [ ] Comment the outcome on `planning#522`.
+- [x] Independent review against every numbered requirement.
+- [x] `plan.md` describes the shipped shape; issue planning#522 updated.

@@ -37,10 +37,15 @@ import type {
 } from "./session-runner.js";
 import type { PreparedDispatch } from "./prepared-dispatch.js";
 import { queuedMessageToDispatchOptions } from "./queue-drain.js";
+import { prepareDispatch } from "./prepared-dispatch.js";
+import { toQueuedMessage } from "./session-runner.js";
+import { POST_MERGE_COMPACT_PROMPT, noteMissedCompaction } from "./compact-before-turn.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protocol.js";
 import { formatSessionMessagePrompt } from "./session-message-origin.js";
 import { dependencyGapAgentPrefix } from "./dependency-staleness.js";
+import { isCompactCommand } from "../shared/compact-command.js";
+import { getAgentCapabilities } from "../shared/agent-registry.js";
 
 /**
  * How many times a dispatched first turn that exited WITHOUT producing a result
@@ -87,7 +92,58 @@ function supersedeRetiredTurn(outgoing: AgentProcess): void {
   outgoing.emit("superseded");
 }
 
+/**
+ * docs/295 — hold `systemTurnInProgress` while the compaction decision runs, so
+ * a send arriving in the window queues instead of being steered into the idle
+ * resident process ahead of this message. Released on `no`; on `yes` the
+ * compaction turn owns it.
+ */
+async function decideWithSystemHold(
+  runner: SessionRunnerInterface,
+  decide: () => Promise<boolean>,
+): Promise<boolean> {
+  const held = !runner.systemTurnInProgress;
+  if (held) runner.systemTurnInProgress = true;
+  let compact = false;
+  try {
+    compact = await decide();
+  } finally {
+    if (held && !compact) runner.systemTurnInProgress = false;
+  }
+  return compact;
+}
+
+/**
+ * planning#266 — reserve the runner for the setup that precedes the executor
+ * (the compaction decision, attachment resolution, the branch reset). The
+ * drains reach here with `running` already cleared by `tryDrain`, and an
+ * unreserved setup lets a second send — or the rebase driver — start against
+ * it. Idempotent on the start-now path (`dispatchOnRunner` set the same
+ * values); restored on a setup throw, which the executor's `finally` never sees.
+ */
 export async function runDispatchedTurn(
+  runner: SessionRunnerInterface,
+  deps: SystemTurnDeps,
+  agentId: AgentId,
+  opts: PreparedDispatch,
+  createAgent: (agentId: AgentId) => AgentProcess,
+): Promise<void> {
+  runner.running = true;
+  if (opts.systemTurn) runner.systemTurnInProgress = true;
+  runner.activeDeliveryId = opts.deliveryId;
+  try {
+    await runDispatchedTurnInner(runner, deps, agentId, opts, createAgent);
+  } catch (err) {
+    runner.running = false;
+    if (opts.systemTurn) runner.systemTurnInProgress = false;
+    if (opts.deliveryId !== undefined && runner.activeDeliveryId === opts.deliveryId) {
+      runner.activeDeliveryId = undefined;
+    }
+    throw err;
+  }
+}
+
+async function runDispatchedTurnInner(
   runner: SessionRunnerInterface,
   deps: SystemTurnDeps,
   agentId: AgentId,
@@ -99,6 +155,13 @@ export async function runDispatchedTurn(
   // trust-revoke UI), and makes later revocation fail closed.
   runner.assertCanDispatch();
   const { text, activity } = opts;
+
+  // docs/178 req 12 — a `/compact` that drains here (queued behind a merge hold
+  // or a dispatched turn) is still the command: no reset, no prefixes, and the
+  // adapter's compaction flag. Re-derived from the text, as the send handler
+  // does; this is also how the docs/295 compaction turn below is recognised.
+  const isCompactRequest =
+    (getAgentCapabilities(agentId)?.supportsCompaction ?? false) && isCompactCommand(text);
 
   // docs/163 — a child/quick-session dispatched turn must run as a *streaming*
   // process when live steering is on and the agent supports it, EXACTLY as a
@@ -128,6 +191,46 @@ export async function runDispatchedTurn(
   // prompt. `uploadPaths` is persisted on the user row so the bubble rehydrates
   // with its image/file chips and `hydrateUploads` sees the upload as sent.
   const sessionDir = runner.sessionDir;
+
+  // docs/295 req 13 — a continuation the user did not type compacts too, the
+  // same way the interactive path does it: put this message at the FRONT of
+  // the queue (it was next, and stays next) and run a `/compact` turn; that
+  // turn's drain starts the message with every option it arrived with.
+  // `compactContext: false` stops it deciding again. Before attachment
+  // resolution, which the drain would redo. `postTurn: "none"` is excluded for
+  // the reset's reason below.
+  if (
+    sessionDir && opts.postTurn !== "none" && !isCompactRequest
+    && await decideWithSystemHold(runner, () =>
+      deps.shouldCompactBeforeTurn?.(runner, agentId, runner.sessionId, sessionDir, opts.compactContext) ?? Promise.resolve(false))
+  ) {
+    runner.messageQueue.unshift({ ...toQueuedMessage(opts), compactContext: false });
+    runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+    await runDispatchedTurn(runner, deps, agentId, prepareDispatch({
+      text: POST_MERGE_COMPACT_PROMPT,
+      agentInterface: undefined,
+      messageOrigin: undefined,
+      execution: undefined,
+      activity: "Compacting context…",
+      images: undefined,
+      files: undefined,
+      uploads: undefined,
+      permissionMode: opts.permissionMode,
+      postTurn: undefined,
+      // ShipIt's own turn: a send arriving meanwhile queues behind it instead
+      // of being steered into it. Also what lets `drainNext` below run under
+      // `systemTurnInProgress` when the message it ran ahead of is a system turn.
+      systemTurn: true,
+      onTurnComplete: undefined,
+      deliveryId: undefined,
+      dictated: undefined,
+      resetMergedBranch: undefined,
+      compactContext: undefined,
+      silent: true,
+    }), createAgent);
+    return;
+  }
+
   let validatedFiles: FileAttachment[] = [];
   let images: ImageAttachment[] | undefined =
     opts.images && opts.images.length > 0 ? opts.images : undefined;
@@ -238,8 +341,10 @@ export async function runDispatchedTurn(
   // would report is `dirty-tree`, NOT `rebase-in-progress`: `computeResetBlocker`
   // checks `isClean()` first, and a conflicted rebase has an unclean tree. So
   // the exclusion is load-bearing, not belt-and-braces.
-  const reset = sessionDir && opts.postTurn !== "none"
-    ? await deps.preTurnReset?.(runner, runner.sessionId, sessionDir)
+  const reset = sessionDir && opts.postTurn !== "none" && !isCompactRequest
+    ? await deps.preTurnReset?.(
+        runner, runner.sessionId, sessionDir, opts.resetMergedBranch,
+      )
     : undefined;
 
   // docs/221 / nikzlabs/shipit#2349 — drain the out-of-band sync notice on this
@@ -250,7 +355,7 @@ export async function runDispatchedTurn(
   // silence. Same `postTurn: "none"` exclusion as the reset above and for the
   // same reason: a rebase-resolution turn is a step inside the git operation
   // that produced the notice, not a continuation to be warned about.
-  const pendingNotice = opts.postTurn !== "none"
+  const pendingNotice = opts.postTurn !== "none" && !isCompactRequest
     ? deps.consumePendingAgentNotice?.(runner.sessionId) ?? ""
     : "";
   // The consume is read-and-CLEAR, so a turn that dies before the agent ever
@@ -285,7 +390,7 @@ export async function runDispatchedTurn(
   // agent-facing copy makes silence the safe fallback. The two notices differ
   // because their stakes do — a branch that was rewritten in silence is a
   // correctness hazard, a missed report status is not.
-  const bugOutcomeNotice = opts.systemTurn
+  const bugOutcomeNotice = opts.systemTurn || isCompactRequest
     ? ""
     : buildBugOutcomeNotice(deps.consumeBugOutcomes?.(runner.sessionId) ?? []);
 
@@ -303,7 +408,9 @@ export async function runDispatchedTurn(
     pendingNotice,
     bugOutcomeNotice,
     reset?.agentPrefix,
-    dependencyGapAgentPrefix(runner.dependencyGap),
+    // Skipped for `/compact` like the three above; re-derived from live state,
+    // so the next real turn carries it unchanged.
+    isCompactRequest ? "" : dependencyGapAgentPrefix(runner.dependencyGap),
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -351,6 +458,12 @@ export async function runDispatchedTurn(
     // and the flow can't have grabbed the hold mid-turn (`runRebaseFlow`
     // refuses while the flag is up).
     if (runner.systemTurnInProgress && !opts.systemTurn) return;
+    if (opts.silent) {
+      // The compaction's result arrived, so its turn is over — see the WS
+      // drain for why this is not left to `finishTurn`.
+      runner.systemTurnInProgress = false;
+      noteMissedCompaction(runner, deps.listenerDeps.chatHistoryManager, runner.sessionId);
+    }
     if (runner.queueLength === 0) return;
     const next = runner.dequeue();
     if (!next) return;
@@ -508,6 +621,9 @@ export async function runDispatchedTurn(
       // reuse branch).
       ...(reuse ? { reuseExistingAgent: true } : {}),
       ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
+      // docs/178 — map the spawn to the adapter's compaction trigger instead of
+      // running `/compact` as an ordinary prompt.
+      ...(isCompactRequest ? { compact: true } : {}),
       // docs/169 — post-turn policy + system-turn marker + completion signal.
       ...(opts.postTurn !== undefined ? { postTurn: opts.postTurn } : {}),
       ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
@@ -522,7 +638,8 @@ export async function runDispatchedTurn(
       // Server-initiated message → emit a bubble (no client-side optimistic
       // one). A retry must NOT re-echo the bubble or re-append the user row —
       // both already happened on the first attempt — so only the first run does.
-      emitUserEcho: attempt === 0,
+      // A `silent` turn (the docs/295 compaction) gets neither: nobody typed it.
+      emitUserEcho: attempt === 0 && !opts.silent,
       ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
       ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
       // docs/218 — the "branch updated" card (or the planning#297 skip notice) lands
@@ -533,7 +650,7 @@ export async function runDispatchedTurn(
         ? { afterUserMessagePersisted: reset.afterUserMessagePersisted }
         : {}),
       persistUserMessage:
-        attempt === 0
+        attempt === 0 && !opts.silent
           ? (sid) =>
               deps.listenerDeps.chatHistoryManager.append(sid, {
                 role: "user",
@@ -544,7 +661,7 @@ export async function runDispatchedTurn(
                 ...(historyFiles ? { files: historyFiles } : {}),
                 ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),
               })
-          : () => { /* user row already persisted on the first attempt */ },
+          : () => { /* already persisted on the first attempt, or silent */ },
       isNewSession: false,
       fallbackTitle: text.slice(0, 80) || "Agent",
       turnStartHeadHash: null,

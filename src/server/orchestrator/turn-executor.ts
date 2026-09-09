@@ -293,6 +293,13 @@ export interface TurnInput {
    * commit / push / PR flow fires off the replayed `agent_result`.
    */
   adopt?: boolean;
+  /**
+   * docs/178 — this turn is a context-compaction request, so the adapter maps
+   * it to its own compaction trigger instead of running the prompt as work.
+   * Set by the dispatched path (`dispatched-turn.ts`); the WS path sets it on
+   * its own `buildRunParams` closure.
+   */
+  compact?: boolean;
 }
 
 /**
@@ -432,7 +439,10 @@ export async function executeAgentTurn(
   };
   const finishTurn = (): void => {
     if (turnCompleteFired) return;
-    if (input.systemTurn && runner) runner.systemTurnInProgress = false;
+    // Only while this turn is still the current one: a one-shot turn's `done`
+    // runs after its drain started the successor, and the successor — which
+    // set the flag to its own value at start — owns it from then on.
+    if (input.systemTurn && runner && turnIsCurrent()) runner.systemTurnInProgress = false;
     // `errored` keeps its pre-docs/240 meaning ("ended via an agent process
     // error") so the existing `{ errored }` consumers — the rebase driver, the
     // CI auto-fix loop — are unaffected; `status` carries the finer distinction
@@ -471,10 +481,12 @@ export async function executeAgentTurn(
     // docs/169 + planning#257 — a system turn suppresses live steering for its whole
     // duration. `dispatch` sets the flag synchronously for a turn it starts from
     // idle; a system turn that was ENQUEUED and drains later never went through
-    // that branch, so set it here too (idempotent) — otherwise a wake-turn
-    // drained behind a user turn would run steerable, and a message arriving
-    // mid-turn would be injected into it. `finishTurn` clears it.
-    if (input.systemTurn) runner.systemTurnInProgress = true;
+    // that branch, so set it here too — otherwise a wake-turn drained behind a
+    // user turn would run steerable, and a message arriving mid-turn would be
+    // injected into it. Assigned for EVERY turn, so the flag always describes
+    // the current one: a system predecessor's `finishTurn` can run after this
+    // turn started (one-shot `done` follows its drain) and stands down then.
+    runner.systemTurnInProgress = input.systemTurn === true;
     // planning#266 — publish this turn's delivery for its whole duration. `dispatch`
     // already set it synchronously on the start-now path; adoption and the
     // queue-drain path reach it only here.
@@ -2050,7 +2062,7 @@ export async function executeAgentTurn(
     // `dispatchOnRunner`, which is why a completed turn whose runner went away
     // mid-teardown was reported to the CI auto-fix loop as never-run. Each
     // dispatch latches this for its own turn — see `SessionRunnerEvents`.
-    runner?.emit("turn_result");
+    runner?.emit("turn_result", { compact: input.compact === true });
     // docs/150-multiple-provider-subscriptions req 14 — before ANY post-turn work. Draining the queue or
     // broadcasting "finished" here would tell the user (and the next queued
     // turn) that a turn we are about to re-run is over. The retry owns
@@ -2455,7 +2467,11 @@ export async function executeAgentTurn(
       // turn's own `executeAgentTurn` sets `running` again at entry, and the two
       // `running`-guarded steps here run after the drain and the commit — and
       // narrowing it further would need the adoption edge to be reported to the
-      // executor, which is more mechanism than the symptom is worth.
+      // executor, which is more mechanism than the symptom is worth. The same
+      // window exists for a DISPATCHED successor reserved by `runDispatchedTurn`
+      // whose setup (which can hold a branch reset) has not reached its spawn;
+      // it cannot be told from the docs/287 phantom above by state alone (a
+      // one-shot's rearm never re-captures the epoch), so it is accepted too.
       const unlatched = runner?.getAgent() === null && runner.running;
       if (unlatched) runner.running = false;
 
@@ -2602,7 +2618,13 @@ export async function executeAgentTurn(
       // started AFTER this turn what delivery the surviving turn belongs to.
       if (input.deliveryId !== undefined) agent.setDeliveryId?.(input.deliveryId);
       const paramsBegan = Date.now();
-      const runParams = await deps.buildRunParams(sessionId, agentId, prompt, turnRoute);
+      const runParams = await deps.buildRunParams(
+        sessionId,
+        agentId,
+        prompt,
+        turnRoute,
+        input.compact ? { compact: true } : undefined,
+      );
       console.log(`[turn] build-run-params for ${sessionId} took ${Date.now() - paramsBegan}ms; spawning agent`);
       // WS always carries `useStreaming` (true or false); dispatch leaves it
       // undefined so the run params are unchanged from the system-turn shape.

@@ -129,6 +129,35 @@ describe("an accepted /review carries its attachments and cleans up after itself
     expect(useFileStore.getState().previewFile).toBeNull();
   });
 
+  it("carries the composer's per-send tick boxes (docs/218, docs/295)", () => {
+    // `/review` composes its own prompt and used to build its frame from
+    // scratch, so an unticked "start from the latest base" or "compact the
+    // context" was silently ignored — the branch was reset and the context
+    // compacted anyway, on the one send where the user had just said not to.
+    useFileStore.setState({ previewFile: "src/a.ts" });
+    const d = deps();
+
+    runSend(d, payload({ text: "/review", resetMergedBranch: false, compactContext: false }));
+
+    const [frame] = framesFrom(d);
+    expect(frame.resetMergedBranch).toBe(false);
+    expect(frame.compactContext).toBe(false);
+  });
+
+  it("leaves the tick boxes off the frame when the controls were not shown", () => {
+    // The other half: absent means "no per-send intent", which is what makes a
+    // dispatch follow the global setting. Sending `false` for a control the user
+    // never saw would silently disable both actions.
+    useFileStore.setState({ previewFile: "src/a.ts" });
+    const d = deps();
+
+    runSend(d, payload({ text: "/review" }));
+
+    const [frame] = framesFrom(d);
+    expect("resetMergedBranch" in frame).toBe(false);
+    expect("compactContext" in frame).toBe(false);
+  });
+
   it("graduates the URL only once the send has gone out", () => {
     // The ORDER is the point, so it is asserted from inside the dispatch: at the
     // moment the frame is handed to the socket, the route must not have moved

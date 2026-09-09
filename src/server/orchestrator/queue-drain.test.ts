@@ -77,6 +77,9 @@ describe("queue drain routing (planning#257)", () => {
       files: [{ path: "src/a.ts" }],
       uploads: [{ path: "/uploads/a.png", type: "upload" }],
       permissionMode: "plan",
+      resetMergedBranch: false,
+      silent: false,
+      compactContext: false,
       postTurn: "none",
       systemTurn: true,
       onTurnComplete,
@@ -155,6 +158,7 @@ describe("releaseQueuedTurn (planning#338)", () => {
     expect(dispatched).toEqual([]);
     expect(dequeueCount()).toBe(0);
   });
+
 
   it("releases the head of the queue once the flow has released its hold", () => {
     const { runner, dispatched } = fakeReleaseRunner({

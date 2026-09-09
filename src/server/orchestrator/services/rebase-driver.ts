@@ -1199,6 +1199,10 @@ function runRebaseResolutionTurn(
       permissionMode: undefined,
       deliveryId: undefined,
       dictated: undefined,
+      // No composer involved — a server-originated dispatch has no tick boxes.
+      resetMergedBranch: undefined,
+      compactContext: undefined,
+      silent: undefined,
       onTurnComplete: (outcome) => {
         // The raw callback is NOT once-only: `withSettlement` latches the
         // settlement promise but invokes the chained original on every call,

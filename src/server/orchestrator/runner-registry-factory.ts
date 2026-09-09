@@ -39,6 +39,7 @@ import {
 import { emitPrLifecycleAfterCommit } from "./services/pr-lifecycle.js";
 import { detectAndReArmMergedSession, detectAndReArmResetSession } from "./services/pr-rearm.js";
 import { applyPreTurnReset } from "./pre-turn-reset-hook.js";
+import { shouldCompactBeforeTurn } from "./compact-before-turn.js";
 import { emitResetEligible } from "./services/pre-turn-reset.js";
 import { wireResetEligibleOnFileChange } from "./reset-eligible-watch.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
@@ -509,7 +510,7 @@ export function createRunnerRegistry(
         // model, no MCP, no autoCreatePr). When `credentialStore` is absent
         // (extreme-minimal test setup) we fall back to the minimal shape
         // so we don't regress those callers.
-        buildRunParams: async (sessionId, agentId, prompt, turnRoute) => {
+        buildRunParams: async (sessionId, agentId, prompt, turnRoute, runParamOpts) => {
           const session = sessionManager.get(sessionId);
           if (!credentialStore) {
             return {
@@ -534,6 +535,8 @@ export function createRunnerRegistry(
             ...(turnRoute ? { turnRoute } : {}),
             sessionDir: runner.sessionDir,
             ...(session?.agentSessionId !== undefined ? { agentSessionId: session.agentSessionId } : {}),
+            // docs/178 — a dispatched `/compact` turn.
+            ...(runParamOpts?.compact ? { compact: true } : {}),
           });
         },
         // docs/149 — write back any CLI-rotated OAuth token after a system
@@ -656,7 +659,7 @@ export function createRunnerRegistry(
         // Same lazy poller resolution as `postTurnReArmReset` below. Skipped
         // when the poller or credential store is absent (minimal test wiring) —
         // the reset needs the merged PR's base branch and the global setting.
-        preTurnReset: async (runner, sessionId, sessionDir) => {
+        preTurnReset: async (runner, sessionId, sessionDir, intent) => {
           const prStatusPoller = getPrStatusPoller?.();
           if (!prStatusPoller || !credentialStore) return { agentPrefix: "" };
           return await applyPreTurnReset({
@@ -671,6 +674,37 @@ export function createRunnerRegistry(
             runner,
             sessionId,
             sessionDir,
+            ...(intent !== undefined ? { intent } : {}),
+          });
+        },
+        // docs/295 req 13 — wired on this transport for the same planning#333
+        // reason the reset is. Same `credentialStore` guard: it owns the one
+        // setting that governs both (req 11).
+        shouldCompactBeforeTurn: async (runner, agentId, sessionId, sessionDir, intent) => {
+          if (!credentialStore) return false;
+          const prStatusPoller = getPrStatusPoller?.();
+          return await shouldCompactBeforeTurn({
+            deps: {
+              getSession: (id) => sessionManager.get(id),
+              getPrStatus: (id) => sessionManager.getPrStatus(id),
+              createGitManager,
+              getAutoResetMergedBranch: () => credentialStore.getAutoResetMergedBranch(),
+              // docs/282 — refresh the merge state before deciding.
+              ...(prStatusPoller
+                ? {
+                    mergeRecheckDeps: {
+                      verifyPrState: (id: string) =>
+                        prStatusPoller.forceVerifySessionPrState(id, { armAbsentDebounce: false }),
+                      awaitMergeHandling: (id: string) => prStatusPoller.awaitMergeHandling(id),
+                    },
+                  }
+                : {}),
+            },
+            runner,
+            agentId,
+            sessionId,
+            sessionDir,
+            ...(intent !== undefined ? { intent } : {}),
           });
         },
         // docs/221 / nikzlabs/shipit#2349 — deliver the parked "your tree was

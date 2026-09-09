@@ -8,12 +8,13 @@ import { graduateSession } from "../services/graduate-session.js";
 import { pinIssueSeededSession } from "../services/issue-seeded-session.js";
 import { markIssueStartedFromSeed } from "../issue-lifecycle.js";
 import { recordSteeredMessage, persistTurnInProgress } from "./agent-listeners.js";
-import { runAgentWithMessage, saveImagesToUploadsDir, assembleAgentPrompt } from "./agent-execution.js";
+import { decideCompactBeforeTurn, runCompactionAhead, runAgentWithMessage, saveImagesToUploadsDir, assembleAgentPrompt } from "./agent-execution.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { shouldSteerMessage } from "../dispatch-steering.js";
 import { resetSubAgentSpawnBudget } from "../session-runner.js";
 import { settleNetworkModeWrites } from "../services/network-mode-writes.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
+import { toQueuedMessage } from "../session-runner.js";
 import { agentAdmissionError } from "../services/agent-auth-gate.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
 
@@ -389,6 +390,11 @@ export async function handleSendMessage(
         deliveryId: undefined,
         // docs/144 — rides the queue so the hint survives the drain.
         dictated: msg.dictated,
+        // docs/218 + docs/295 — the composer's tick boxes ride the queue too, so
+        // an untick made while a turn was running still applies when it drains.
+        resetMergedBranch: msg.resetMergedBranch,
+        compactContext: msg.compactContext,
+        silent: undefined,
       }));
       return;
     }
@@ -610,14 +616,22 @@ export async function handleSendMessage(
   // is separated from this line by attachment resolution, session activation and
   // filesystem reads. The executor can take the hold inside that gap, and then
   // this would start a turn on top of a merge already in flight. Same shape as
-  // the executor's own re-check under its hold, for the same reason.
-  if (turnRunner?.mergeHold) {
+  // the executor's own re-check under its hold, for the same reason. `running`
+  // too: another send can have started its turn in the same gap (docs/295
+  // widened it with the compaction decision), and `dispatch` queues or steers
+  // this one exactly as if it had arrived a moment later.
+  if (turnRunner?.mergeHold || turnRunner?.running) {
     turnRunner.dispatch(prepareDispatch({
       text: userText,
       agentInterface: undefined,
+      resetMergedBranch: msg.resetMergedBranch,
+      compactContext: msg.compactContext,
+      silent: undefined,
       execution: "interactive",
-      images: allImages,
-      files: validatedFiles,
+      // The RAW inputs, as the queue path above carries them: the drain
+      // resolves `uploads` again, so the resolved copies would be duplicated.
+      images: msg.images,
+      files: msg.files,
       uploads: msg.uploads,
       permissionMode: msg.permissionMode,
       activity: undefined,
@@ -630,6 +644,37 @@ export async function handleSendMessage(
     return;
   }
   if (turnRunner) turnRunner.running = true;
+  // docs/295 — a merged session compacts its context before this message runs,
+  // the way a user does it by hand: queue the message, run a `/compact` turn,
+  // and let that turn's drain start the message. Skipped for a `/compact` the
+  // user typed (req 12): they asked for exactly one compaction.
+  if (
+    turnRunner && activeId && activeDir && !isCompactRequest
+    && await decideCompactBeforeTurn(ctx, turnRunner, activeId, activeDir, msg.compactContext)
+  ) {
+    await runCompactionAhead(ctx, turnRunner, toQueuedMessage(prepareDispatch({
+      text: userText,
+      agentInterface: undefined,
+      resetMergedBranch: msg.resetMergedBranch,
+      compactContext: msg.compactContext,
+      silent: undefined,
+      execution: "interactive",
+      // The RAW inputs, as the queue path above carries them: the drain
+      // resolves `uploads` again, so the resolved copies would be duplicated.
+      images: msg.images,
+      files: msg.files,
+      uploads: msg.uploads,
+      permissionMode: msg.permissionMode,
+      activity: undefined,
+      postTurn: undefined,
+      systemTurn: undefined,
+      onTurnComplete: undefined,
+      deliveryId: undefined,
+      dictated: msg.dictated,
+    })), msg.permissionMode);
+    return;
+  }
+
   await runAgentWithMessage(ctx, {
     userText,
     images: allImages,
@@ -694,6 +739,10 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     runnerEarly.dispatch(prepareDispatch({
       text: answerText,
       agentInterface: undefined,
+      // An answer to AskUserQuestion is not a composer send: no tick boxes.
+      resetMergedBranch: undefined,
+      compactContext: undefined,
+      silent: undefined,
       execution: "interactive",
       images: undefined,
       files: undefined,

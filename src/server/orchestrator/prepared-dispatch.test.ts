@@ -36,6 +36,9 @@ const FULL_INIT: AgentDispatchInit = {
   onTurnComplete: () => {},
   deliveryId: "watch-1:1",
   dictated: true,
+  resetMergedBranch: false,
+  compactContext: false,
+  silent: undefined,
 };
 
 function newRunner(): SessionRunner {

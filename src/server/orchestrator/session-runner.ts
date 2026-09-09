@@ -6,6 +6,7 @@
  * enforces resource limits.
  */
 
+import { isCompactCommand } from "../shared/compact-command.js";
 import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 import type { BillingMode } from "../shared/catalogue/types.js";
 import { EventEmitter } from "node:events";
@@ -264,6 +265,14 @@ export interface QueuedMessage {
   deliveryId?: string;
   /** docs/144 — voice-dictated prompt (see `AgentDispatchOptions.dictated`). */
   dictated?: boolean;
+  /**
+   * docs/218 + docs/295 — the composer's per-send tick boxes, carried through
+   * the queue so an untick made while a turn was running still applies.
+   */
+  resetMergedBranch?: boolean;
+  compactContext?: boolean;
+  /** docs/295 — see {@link AgentDispatchOptions.silent}; carried so the queue narrows nothing (planning#257). */
+  silent?: boolean;
 }
 
 /**
@@ -353,6 +362,11 @@ export interface AgentDispatchOptions {
    * composes has been through speech-to-text.
    */
   dictated?: boolean;
+  /** docs/218 + docs/295 — see {@link QueuedMessage}. Absent on server dispatches. */
+  resetMergedBranch?: boolean;
+  compactContext?: boolean;
+  /** docs/295 — ShipIt started this turn (the compaction): no user bubble, no user row. */
+  silent?: boolean;
 }
 
 export const REPOSITORY_UNTRUSTED_CODE = "repository_untrusted" as const;
@@ -538,7 +552,15 @@ export function dispatchOnRunner(
   // would be the turn reported as never-run. Registered in the same place as
   // the two nets and torn down with them.
   let sawTurnResult = false;
-  const onTurnResult = (): void => { sawTurnResult = true; };
+  // docs/295 — a compaction turn can run inside this dispatch's lifetime ahead
+  // of its own turn, and its result is not this turn's: a compaction result
+  // counts only when this dispatch asked for one, and a delivery's only while
+  // `activeDeliveryId` is its own (still the emitting turn's at `turn_result`).
+  const ownIsCompact = isCompactCommand(opts.text);
+  const onTurnResult = ({ compact }: { compact: boolean }): void => {
+    if (compact && !ownIsCompact) return;
+    if (runner.activeDeliveryId === opts.deliveryId) sawTurnResult = true;
+  };
   const settleAsDropped = (reason: string): void => {
     if (settlement.isSettled) return;
     if (sawTurnResult) {
@@ -651,6 +673,9 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.onTurnComplete !== undefined) queued.onTurnComplete = opts.onTurnComplete;
   if (opts.deliveryId !== undefined) queued.deliveryId = opts.deliveryId;
   if (opts.dictated !== undefined) queued.dictated = opts.dictated;
+  if (opts.resetMergedBranch !== undefined) queued.resetMergedBranch = opts.resetMergedBranch;
+  if (opts.compactContext !== undefined) queued.compactContext = opts.compactContext;
+  if (opts.silent !== undefined) queued.silent = opts.silent;
   return queued;
 }
 
@@ -717,6 +742,8 @@ export interface SystemTurnDeps {
     prompt: string,
     /** docs/260 §1b — the turn's selected credential route, threaded as a value. */
     turnRoute?: { kind: ProviderRouteKind; id: string },
+    /** docs/178 — `compact` marks the spawn as a compaction request. */
+    opts?: { compact?: boolean },
   ) => Promise<AgentRunParams>;
   /**
    * planning#266 — re-acquire the completion settlement for a DELIVERY whose turn
@@ -792,7 +819,20 @@ export interface SystemTurnDeps {
     runner: PreTurnResetRunner,
     sessionId: string,
     sessionDir: string,
+    /** docs/218 — the composer's tick box, when the drained entry carried one. */
+    intent?: boolean,
   ) => Promise<PreTurnResetHookResult>;
+  /**
+   * docs/295 req 13 — should a compaction turn run before this message?
+   * Decision only; `runDispatchedTurn` queues the message and runs `/compact`.
+   */
+  shouldCompactBeforeTurn?: (
+    runner: SessionRunnerInterface,
+    agentId: AgentId,
+    sessionId: string,
+    sessionDir: string,
+    intent?: boolean,
+  ) => Promise<boolean>;
   /**
    * docs/221 — read-and-clear the out-of-band "your working tree was rewritten"
    * notice a manual sync parked on the session, so a DISPATCHED turn delivers it
@@ -1143,7 +1183,7 @@ export interface SessionRunnerEvents {
    * (precisely the bug) while an event each dispatch latches for itself gives
    * both turns the right answer.
    */
-  turn_result: [];
+  turn_result: [{ compact: boolean }];
   /**
    * planning#246 — this runner's `backgroundWorkDescriptions` changed: a background
    * task appeared or drained, a consult started or finished, or the resident

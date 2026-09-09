@@ -38,6 +38,9 @@ export function testDispatch(
     postTurn: opts.postTurn,
     systemTurn: opts.systemTurn,
     onTurnComplete: opts.onTurnComplete,
+    resetMergedBranch: opts.resetMergedBranch,
+    compactContext: opts.compactContext,
+    silent: opts.silent,
     deliveryId: opts.deliveryId,
     dictated: opts.dictated,
   });
