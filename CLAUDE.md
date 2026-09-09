@@ -103,7 +103,7 @@ The WebSocket connection is a *transport* between the browser and the orchestrat
 
 - **Emit via `runner.emitMessage()`, not `ctx.send()`.** It broadcasts to every attached viewer AND buffers into the turn-event log, so reconnecting viewers see post-turn messages; `ctx.send` writes to one socket and silently drops on a closed one.
 
-- **A close handler only calls `detachFromRunner()`.** Never `runner.dispose()`, `agent.kill()`, `terminal.kill()`, or `container.destroy()` from any WS lifecycle event. Disposal belongs to the periodic idle enforcer (60s grace after detach; refuses to kill running agents) and explicit user actions (archive, repo delete, full reset, shutdown), which pass `{ force: true }`.
+- **A close handler only calls `detachFromRunner()`.** Never `runner.dispose()`, `agent.kill()`, `terminal.kill()`, or `container.destroy()` from any WS lifecycle event. Disposal belongs to the periodic idle enforcer (docs/284: reclaims ONLY when ShipIt is over its memory budget, longest-idle first — never a runner whose `agentBusy` is true or that has an attached viewer; the old fixed 60s post-detach grace is gone, and elapsed idle time alone reclaims nothing) and explicit user actions (archive, repo delete, full reset, shutdown), which pass `{ force: true }`.
 
 Executable contract: `integration_tests/ws-disconnect-resilience.test.ts`.
 
