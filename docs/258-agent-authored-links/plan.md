@@ -570,6 +570,18 @@ crossing into a frame, so the parser is a gate, not a formatter:
   the query survives byte-for-byte: rebuilding it through `URLSearchParams`
   would re-encode it (`%7E` → `~`, space → `+`) and hand the page a different
   string than the agent wrote, so the strip is textual.
+- **It is read on either side of the `#`** (`resolveRender`). Authors write
+  `#req-7?shipit-render=button` — a URL puts the query first, so read only in
+  the canonical position that failed silently twice at once: the requested form
+  was lost, *and* the parameter stayed in the fragment, so a Present pointer
+  scrolled to a heading that cannot exist and a Preview pointer handed the page
+  ShipIt's own knob in `location.hash` — which req 11 forbids in the query and
+  means equally in the hash. Being ShipIt's reserved name is the whole
+  justification: it is honoured and removed wherever it appears. This is
+  extraction, not the repair the parser refuses to do — a fragment's own `?`
+  stays untouched, since `#/items?focus=7` is a hash router's URL and belongs to
+  the page. The parameter in **both** positions is the same malformed pointer a
+  repeat within one query is.
 - The fragment is JSON-encoded into the injected scroll script, never
   concatenated into it. That script is the only place a pointer's data enters a
   document ShipIt assembles.

@@ -41,7 +41,9 @@ export const PRESENT_LINK_SCHEME = "shipit-present:";
 /**
  * The reserved query parameter by which the agent picks the rendered form
  * (req 1). The `shipit-` prefix is what makes "strip ShipIt's own parameters
- * before the page sees them" a rule rather than a special case.
+ * before the page sees them" a rule rather than a special case — and being a
+ * rule is why it is read wherever it appears, including after the fragment
+ * (`resolveRender`).
  */
 export const RENDER_PARAM = "shipit-render";
 
@@ -95,8 +97,8 @@ export interface PreviewShipitLink {
   /**
    * Absolute path with query string and fragment, ready to append to the
    * preview origin. Starts with exactly one `/`. `shipit-render` is already
-   * stripped, so a page never sees ShipIt's presentation knob in
-   * `location.search` (req 11 — the page reads its own URL).
+   * stripped from both, so a page never sees ShipIt's presentation knob in
+   * `location.search` or `location.hash` (req 11 — the page reads its own URL).
    */
   target: string;
   render: ShipitLinkRender;
@@ -146,6 +148,13 @@ function decodeQueryPart(raw: string): string | null {
 interface QuerySplit {
   /** The query string without its `?`, with every `shipit-render` segment removed. */
   rest: string;
+  /**
+   * Whether the parameter was present at all. `render` is `link` both when it is
+   * absent and when it is written out as `shipit-render=link`, so telling the two
+   * apart needs its own flag — `resolveRender` uses it to leave a fragment
+   * untouched and to catch the parameter appearing in both query positions.
+   */
+  found: boolean;
   render: ShipitLinkRender;
 }
 
@@ -163,7 +172,7 @@ interface QuerySplit {
  * is a bug in whoever authored the link.
  */
 function extractRenderParam(query: string): QuerySplit | { error: string } {
-  if (query === "") return { rest: "", render: "link" };
+  if (query === "") return { rest: "", found: false, render: "link" };
   const kept: string[] = [];
   const found: string[] = [];
   for (const segment of query.split("&")) {
@@ -177,13 +186,71 @@ function extractRenderParam(query: string): QuerySplit | { error: string } {
     found.push(eq < 0 ? "" : segment.slice(eq + 1));
   }
   if (found.length > 1) return { error: `the address repeats ${RENDER_PARAM}` };
-  if (found.length === 0) return { rest: kept.join("&"), render: "link" };
+  if (found.length === 0) return { rest: kept.join("&"), found: false, render: "link" };
 
   const value = decodeQueryPart(found[0]);
   if (value === null || !RENDER_FORMS.includes(value as ShipitLinkRender)) {
     return { error: `${RENDER_PARAM} must be one of ${RENDER_FORMS.join(", ")}` };
   }
-  return { rest: kept.join("&"), render: value as ShipitLinkRender };
+  return { rest: kept.join("&"), found: true, render: value as ShipitLinkRender };
+}
+
+/** A query and fragment with ShipIt's own parameter taken out of both. */
+interface RenderSplit {
+  /** The query string without its `?`, for the page. */
+  query: string;
+  /** The fragment without its `#`, still percent-encoded, for the page. */
+  fragment: string;
+  render: ShipitLinkRender;
+}
+
+/**
+ * Resolve the render form from **either** query position, and hand back what
+ * remains of each for the page.
+ *
+ * `shipit-render` is ShipIt's own name, so it is honoured — and stripped —
+ * wherever it appears in the address, not only in the query string a URL parser
+ * would call the query. Agents write it *after* the fragment often enough
+ * (`…/reqs.html#req-7?shipit-render=button`) that reading only the canonical
+ * position failed twice over, silently: the requested form was lost, and the
+ * fragment kept the parameter — so a Present pointer scrolled to a heading that
+ * cannot exist, and a Preview pointer handed the page ShipIt's own knob inside
+ * `location.hash`, which req 11 forbids in the query and means equally there.
+ *
+ * This is extraction, not repair. The parser stays a gate: a fragment's own `?`
+ * is left alone, because `#/items?focus=7` is a hash router's URL and belongs to
+ * the page byte-for-byte. Only the `?` that existed solely to introduce
+ * `shipit-render` goes with it.
+ *
+ * The parameter in **both** positions is the same malformed pointer a repeat
+ * within one query is, for the same reason: which one the author meant is
+ * unknowable, and picking either would honour a form nobody asked for.
+ */
+function resolveRender(query: string, fragment: string): RenderSplit | { error: string } {
+  const fromQuery = extractRenderParam(query);
+  if ("error" in fromQuery) return fromQuery;
+
+  const queryAt = fragment.indexOf("?");
+  if (queryAt < 0) {
+    return { query: fromQuery.rest, fragment, render: fromQuery.render };
+  }
+
+  const fromFragment = extractRenderParam(fragment.slice(queryAt + 1));
+  if ("error" in fromFragment) return fromFragment;
+  if (fromQuery.found && fromFragment.found) {
+    return { error: `the address repeats ${RENDER_PARAM}` };
+  }
+  // Absent from the fragment — hand it back exactly as it was written.
+  if (!fromFragment.found) {
+    return { query: fromQuery.rest, fragment, render: fromQuery.render };
+  }
+
+  const head = fragment.slice(0, queryAt);
+  return {
+    query: fromQuery.rest,
+    fragment: fromFragment.rest === "" ? head : `${head}?${fromFragment.rest}`,
+    render: fromFragment.render,
+  };
 }
 
 /**
@@ -246,7 +313,7 @@ function parsePreview(rest: string): ShipitLink {
   // failure in the form the agent asked for. A pointer that can't be opened
   // still renders (req 10), and it should render as the badge or button the
   // author wrote — not silently demote itself to an inline link.
-  const split = extractRenderParam(query);
+  const split = resolveRender(query, fragment);
   if ("error" in split) return invalid(split.error);
   const { render } = split;
 
@@ -266,19 +333,19 @@ function parsePreview(rest: string): ShipitLink {
 
   const target =
     normalizedPath +
-    (split.rest === "" ? "" : `?${split.rest}`) +
-    (fragment === "" ? "" : `#${fragment}`);
+    (split.query === "" ? "" : `?${split.query}`) +
+    (split.fragment === "" ? "" : `#${split.fragment}`);
 
   return { kind: "preview", service, target, render };
 }
 
 /** Parse everything after `shipit-present:` — a presented artifact's file path. */
 function parsePresent(rest: string): ShipitLink {
-  const { path, query, fragment } = splitParts(rest);
+  const { path, query, fragment: rawFragment } = splitParts(rest);
 
-  const split = extractRenderParam(query);
+  const split = resolveRender(query, rawFragment);
   if ("error" in split) return invalid(split.error);
-  const { render } = split;
+  const { render, fragment } = split;
 
   if (path === "") return invalid("the address names no file", render);
   if (path.length > MAX_FILE_PATH_LENGTH) return invalid("the file path is too long", render);

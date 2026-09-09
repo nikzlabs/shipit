@@ -218,6 +218,57 @@ describe("parseShipitLink — the render form (req 1)", () => {
   });
 });
 
+describe("parseShipitLink — shipit-render written after the fragment", () => {
+  // Authors write `#req-7?shipit-render=button` often enough that reading only
+  // the canonical position failed silently twice over: the requested form was
+  // lost, AND the parameter stayed in the fragment — so a Present pointer
+  // scrolled to a heading that cannot exist and a Preview pointer handed the
+  // page ShipIt's own knob in `location.hash`. It is ShipIt's name wherever it
+  // appears, so it is read and stripped wherever it appears.
+
+  it("reads the form from the fragment's own query, on both schemes", () => {
+    expect(ok(parseShipitLink("shipit-preview://web/reqs#req-7?shipit-render=button")).render)
+      .toBe("button");
+    expect(ok(parseShipitLink("shipit-present:/persist/reqs.html#req-7?shipit-render=badge")).render)
+      .toBe("badge");
+  });
+
+  it("strips it, so the destination is the one the author meant", () => {
+    expect(ok(parseShipitLink("shipit-preview://web/reqs#req-7?shipit-render=button")))
+      .toMatchObject({ target: "/reqs#req-7" });
+    expect(ok(parseShipitLink("shipit-present:/persist/reqs.html#req-7?shipit-render=button")))
+      .toMatchObject({ fragment: "req-7" });
+  });
+
+  it("keeps a real query string in its own position", () => {
+    expect(ok(parseShipitLink("shipit-preview://web/reqs?focus=7#req-7?shipit-render=badge")))
+      .toMatchObject({ target: "/reqs?focus=7#req-7", render: "badge" });
+  });
+
+  it("leaves a hash router's own query alone, taking only ShipIt's parameter", () => {
+    // `#/items?focus=7` is a URL the page routes on and belongs to it
+    // byte-for-byte; only the parameter that is ours may be removed from it.
+    expect(ok(parseShipitLink("shipit-preview://web/app#/items?focus=7")))
+      .toMatchObject({ target: "/app#/items?focus=7", render: "link" });
+    expect(ok(parseShipitLink("shipit-preview://web/app#/items?focus=7&shipit-render=button")))
+      .toMatchObject({ target: "/app#/items?focus=7", render: "button" });
+    // A `?` introducing nothing else is the author's, not ShipIt's leftover.
+    expect(ok(parseShipitLink("shipit-present:/x.md#req-7?"))).toMatchObject({ fragment: "req-7?" });
+  });
+
+  it("rejects the parameter appearing in both positions", () => {
+    // Which one the author meant is unknowable, and honouring either would pick
+    // a form nobody asked for — the same reason a repeat within one query fails.
+    expect(rejected(parseShipitLink("shipit-preview://web/x?shipit-render=button#f?shipit-render=badge")))
+      .toMatch(/repeats/);
+  });
+
+  it("rejects an unknown form there too", () => {
+    expect(rejected(parseShipitLink("shipit-present:/x.md#req-7?shipit-render=card")))
+      .toMatch(/must be one of/);
+  });
+});
+
 describe("slugifyHeading", () => {
   it("lowercases, strips punctuation and hyphenates whitespace", () => {
     expect(slugifyHeading("Requirement 7")).toBe("requirement-7");
