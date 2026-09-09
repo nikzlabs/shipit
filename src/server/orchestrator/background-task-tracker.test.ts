@@ -57,10 +57,26 @@ describe("BackgroundTaskTracker", () => {
     expect(t.descriptions(true, now + BACKGROUND_TASK_TTL_MS)).toEqual([]);
   });
 
+  it("still trusts the count through a long silent background task", () => {
+    // The regression this pins: a background bash task emits NOTHING between
+    // `task_started` and completion (2026-09-09 probe — two 30-minute tasks,
+    // zero events, one of them printing every 15s). So `seenAt` is set once at
+    // start and the TTL is the whole protection a long job gets. At the old
+    // ten-minute value this session read as idle 20 minutes before its work
+    // finished, and the idle enforcer was free to reclaim the container.
+    const t = new BackgroundTaskTracker();
+    t.set([task("a", "sleep 1800")]);
+    const now = Date.now();
+    expect(t.count(true, now + 30 * 60_000)).toBe(1);
+    expect(t.descriptions(true, now + 30 * 60_000)).toEqual(["sleep 1800"]);
+  });
+
   it("bounds the decay to a single window", () => {
     // A stale count reads as busy, and a busy session is never reclaimed, so
-    // the cost of a dropped event has to be bounded rather than open-ended.
-    expect(BACKGROUND_TASK_TTL_MS).toBe(600_000);
+    // the cost of a dropped event has to be bounded rather than open-ended —
+    // long enough to outlast a real build, short enough to not be forever.
+    expect(BACKGROUND_TASK_TTL_MS).toBeGreaterThanOrEqual(30 * 60_000);
+    expect(BACKGROUND_TASK_TTL_MS).toBeLessThanOrEqual(4 * 3_600_000);
   });
 
   it("clears everything on demand", () => {

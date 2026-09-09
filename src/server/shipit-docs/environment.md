@@ -275,6 +275,15 @@ no durability guarantee and belong in `docker-compose.yml`.
   a cron entry, a polling loop, an in-memory queue or timer — is killed on
   eviction and does **not** come back. The next message lands in a fresh
   container with none of it running.
+- **A *tracked* background task defers memory-path reclaim — for one hour, not
+  indefinitely.** A job you start with the Bash tool's `run_in_background`
+  (rather than a bare `&` or `nohup`) is reported to ShipIt, and while it is
+  outstanding the session counts as busy and is not reclaimed for memory. The
+  limit: that count is refreshed only when the task **list changes**, and a
+  running task emits nothing in between — not even when it prints output. So
+  the protection expires one hour after the task *started*, whatever it is
+  still doing. Enough for a build or a test run; **not** something to hand
+  multi-hour work to. Nothing about it survives eviction once it does happen.
 - **`/workspace` (the git repo) and `/persist` (non-git scratch) persist** —
   both are host-backed and re-mounted onto the new container. In-memory state,
   processes, and files written *elsewhere* (outside `/workspace`, `/persist`,
