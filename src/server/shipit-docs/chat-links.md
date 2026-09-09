@@ -89,6 +89,12 @@ Add the reserved `shipit-render` parameter to render the pointer as a badge or a
 block button instead of an inline link. It defaults to `link`, and ShipIt strips
 it before the page sees the URL.
 
+Write it in the query string, before the `#fragment` — that is where a URL puts
+a query. Written **after** the fragment it also works: the name is ShipIt's, so
+ShipIt reads it and removes it from either position. Everything else in the
+fragment is left exactly as you wrote it, so a hash router's own query
+(`#/items?focus=7`) reaches the page untouched.
+
 | Value | Looks like | Use for |
 |---|---|---|
 | `link` (default) | prose link | a pointer inside a sentence |
