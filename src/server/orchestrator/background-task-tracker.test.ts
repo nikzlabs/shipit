@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { BackgroundTaskTracker, BACKGROUND_TASK_TTL_MS } from "./background-task-tracker.js";
 
 /**
@@ -71,12 +71,43 @@ describe("BackgroundTaskTracker", () => {
     expect(t.descriptions(true, now + 30 * 60_000)).toEqual(["sleep 1800"]);
   });
 
-  it("bounds the decay to a single window", () => {
-    // A stale count reads as busy, and a busy session is never reclaimed, so
-    // the cost of a dropped event has to be bounded rather than open-ended —
-    // long enough to outlast a real build, short enough to not be forever.
-    expect(BACKGROUND_TASK_TTL_MS).toBeGreaterThanOrEqual(30 * 60_000);
-    expect(BACKGROUND_TASK_TTL_MS).toBeLessThanOrEqual(4 * 3_600_000);
+  it("expires exactly one hour after the list last changed", () => {
+    // The literal hour is the contract, not an incidental value: a stale count
+    // reads as busy, and a busy session cannot be reclaimed for memory, cannot
+    // descend a disk tier, and returns 409 on a manual merge. Written as
+    // elapsed times rather than as the exported constant, so that changing the
+    // constant has to be a deliberate edit here too.
+    vi.useFakeTimers();
+    try {
+      const t = new BackgroundTaskTracker();
+      t.set([task("a", "sleep 3600")]);
+      const start = Date.now();
+      expect(t.count(true, start + 60 * 60_000 - 1)).toBe(1);
+      expect(t.count(true, start + 60 * 60_000)).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("restarts the window when any later list update arrives", () => {
+    // `set()` replaces the WHOLE list and stamps `seenAt` for all of it, so a
+    // SECOND task starting or finishing renews protection for the first. This
+    // is why the agent-facing docs say the window runs from the list's last
+    // change and not from the task's start — the difference is unbounded.
+    vi.useFakeTimers();
+    try {
+      const t = new BackgroundTaskTracker();
+      t.set([task("a", "long")]);
+      vi.advanceTimersByTime(59 * 60_000);
+      t.set([task("a", "long"), task("b", "short")]); // b starts
+      t.set([task("a", "long")]); // b finishes — still non-empty, so still a stamp
+      const renewed = Date.now();
+      // `a` has now been outstanding for ~118 minutes and still counts.
+      expect(t.count(true, renewed + 59 * 60_000)).toBe(1);
+      expect(t.count(true, renewed + 60 * 60_000)).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("clears everything on demand", () => {

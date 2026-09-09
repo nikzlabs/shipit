@@ -275,15 +275,19 @@ no durability guarantee and belong in `docker-compose.yml`.
   a cron entry, a polling loop, an in-memory queue or timer — is killed on
   eviction and does **not** come back. The next message lands in a fresh
   container with none of it running.
-- **A *tracked* background task defers memory-path reclaim — for one hour, not
-  indefinitely.** A job you start with the Bash tool's `run_in_background`
+- **A *tracked* background task defers memory-path reclaim — but it is not a
+  job lifetime.** A job you start with the Bash tool's `run_in_background`
   (rather than a bare `&` or `nohup`) is reported to ShipIt, and while it is
-  outstanding the session counts as busy and is not reclaimed for memory. The
-  limit: that count is refreshed only when the task **list changes**, and a
-  running task emits nothing in between — not even when it prints output. So
-  the protection expires one hour after the task *started*, whatever it is
-  still doing. Enough for a build or a test run; **not** something to hand
-  multi-hour work to. Nothing about it survives eviction once it does happen.
+  outstanding the session counts as busy and is not reclaimed for memory.
+  Two limits. It holds only while the agent CLI process stays resident — when
+  that exits, its background work dies with it and the count goes to zero at
+  once. And ShipIt honours the last reported task list for **one hour after
+  that list last changed**, not one hour per task: a running task emits nothing
+  in between, not even when it prints output, so a single long job coasts on
+  one timestamp — while any *other* task starting or finishing restarts the
+  window for everything still outstanding. Treat it as cover for a build or a
+  test run, never as a guarantee your job runs to completion. Nothing about it
+  survives eviction once that does happen.
 - **`/workspace` (the git repo) and `/persist` (non-git scratch) persist** —
   both are host-backed and re-mounted onto the new container. In-memory state,
   processes, and files written *elsewhere* (outside `/workspace`, `/persist`,
