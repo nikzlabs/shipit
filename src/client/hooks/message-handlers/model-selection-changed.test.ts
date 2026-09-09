@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
+import { useFileStore } from "../../stores/file-store.js";
 import { handleModelSelectionChanged } from "./model-selection-changed.js";
 import type { HandlerContext } from "./types.js";
 import type { SessionInfo, WsModelSelectionChanged } from "../../../server/shared/types.js";
@@ -132,6 +133,64 @@ describe("handleModelSelectionChanged", () => {
       useSessionStore.setState({ sessions: [session({ agentPinned: true }), session({ id: "s2" })] });
       handleModelSelectionChanged(ctx, message({ roleName: "triage" }));
       expect(localStorage.getItem("shipit-role-name")).toBe("deep dive");
+    });
+  });
+
+  /**
+   * docs/272 — the ui store's `activeAgentId` is what the composer's pickers read
+   * on `/{repo}/new`: that route claims a WARM session, which `SessionManager.list()`
+   * filters out, so the row this handler updates does not exist there.
+   */
+  describe("the ui store's active harness", () => {
+    it("follows the answer for the session on screen", () => {
+      // The reported bug: choosing a role rewrote the three localStorage seeds
+      // and nothing moved this field, so "Adjust parameters…" showed the
+      // harness — and with it the model list and the per-harness reasoning
+      // seed — of the role selected BEFORE this one.
+      useUiStore.setState({ activeAgentId: "claude" });
+      handleModelSelectionChanged(ctx, message({ agentId: "codex", roleName: "triage" }));
+      expect(useUiStore.getState().activeAgentId).toBe("codex");
+    });
+
+    it("ignores a session the user is not looking at", () => {
+      // This field answers "what does the session on screen run on". A background
+      // session's answer would repaint the composer for a session it is not bound
+      // to — the same mistake as toasting another session's notice.
+      useUiStore.setState({ activeAgentId: "claude" });
+      handleModelSelectionChanged(ctx, message({ sessionId: "s2", agentId: "codex" }));
+      expect(useUiStore.getState().activeAgentId).toBe("claude");
+    });
+
+    it("refetches the skills when the harness actually moved", () => {
+      // Skills are per-backend, and the composer's autocomplete switches its
+      // insert prefix on the harness — so a role that changes harness left the
+      // menu offering the old harness's skills under the new one's prefix. An
+      // explicit harness pick already refetches; this is the same event by
+      // another route.
+      useUiStore.setState({ activeAgentId: "claude" });
+      const fetchSkills = vi.fn().mockResolvedValue(undefined);
+      useFileStore.setState({ fetchSkills } as never);
+      handleModelSelectionChanged(ctx, message({ agentId: "codex", roleName: "triage" }));
+      expect(fetchSkills).toHaveBeenCalledWith("s1", "codex");
+    });
+
+    it("does not refetch when the answer names the harness already on screen", () => {
+      // `set_model` and `set_reasoning` answer with the unchanged harness, and
+      // they are the common case — a request on each would be pure noise.
+      useUiStore.setState({ activeAgentId: "claude" });
+      const fetchSkills = vi.fn().mockResolvedValue(undefined);
+      useFileStore.setState({ fetchSkills } as never);
+      handleModelSelectionChanged(ctx, message({ agentId: "claude" }));
+      expect(fetchSkills).not.toHaveBeenCalled();
+    });
+
+    it("does not move the global new-session seed", () => {
+      // `setActiveAgentId`'s standing contract: an internal sync must never
+      // become the default every future session is created on.
+      localStorage.setItem("vibe-agent-id", "claude");
+      handleModelSelectionChanged(ctx, message({ agentId: "codex" }));
+      expect(localStorage.getItem("vibe-agent-id")).toBe("claude");
+      localStorage.removeItem("vibe-agent-id");
     });
   });
 

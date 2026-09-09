@@ -1,11 +1,13 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ROLE_PILL_CLASS, RoleSelector, useRolePickerState } from "./RoleSelector.js";
 import { ComposerSettingsMenu } from "./ComposerSettingsMenu.js";
 import { MessageInput } from "./MessageInput.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
+import { useUiStore } from "../../stores/ui-store.js";
+import { handleModelSelectionChanged } from "../../hooks/message-handlers/model-selection-changed.js";
 import type { AgentOption } from "../../agent-types.js";
 import type { RoleView } from "../../../server/shared/types/agent-types.js";
 
@@ -323,6 +325,51 @@ const claude: AgentOption = {
   reasoning: { label: "Reasoning", options: [{ value: "high", label: "High" }] },
 };
 
+/** A second harness, so "which role am I looking at" has a visible answer. */
+const codex: AgentOption = {
+  id: "codex",
+  name: "Codex",
+  installed: true,
+  hasRunnableModels: true,
+  models: ["gpt-6-astra"],
+  eligibleModels: [
+    {
+      serviceId: "openai",
+      serviceName: "OpenAI",
+      billingMode: "sub",
+      modelId: "gpt-6-astra",
+      label: "GPT-6 Astra",
+      canonicalModelKey: "gpt-6-astra",
+    },
+  ],
+  supportsReview: true,
+  supportedPermissionModes: [],
+  reasoning: { label: "Reasoning effort", options: [{ value: "low", label: "Low" }] },
+};
+
+/** …and a role that runs on it, so switching roles switches all three parameters. */
+const TRIAGE: RoleView = pinnedRole({
+  name: "triage",
+  params: {
+    kind: "pinned",
+    harnessId: "codex",
+    serviceId: "openai",
+    billingMode: "sub",
+    modelId: "gpt-6-astra",
+    reasoningEffort: "low",
+  },
+  resolved: {
+    harnessId: "codex",
+    harnessName: "Codex",
+    serviceId: "openai",
+    billingMode: "sub",
+    serviceName: "OpenAI",
+    modelId: "gpt-6-astra",
+    label: "GPT-6 Astra",
+    reasoningEffort: "low",
+  },
+});
+
 const SESSION_ID = "11111111-1111-1111-1111-111111111111";
 
 function renderMenu(props: Partial<React.ComponentProps<typeof ComposerSettingsMenu>> = {}) {
@@ -481,6 +528,129 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
     await userEvent.click(screen.getByTestId("reasoning-option-high"));
     expect(screen.getByTestId("role-selector-trigger").textContent).toBe("");
   });
+
+  it("shows the parameters of the role JUST PICKED, not the one before it", async () => {
+    /*
+      **The new-session route is its own case, and it is where this broke.**
+
+      `/{repo}/new` claims a WARM session, so the composer has a `sessionId`
+      while `hasActiveSession` is false — and `SessionManager.list()` filters
+      `warm = 0`, so there is no row for it to read. The three pickers therefore
+      fall through to the ui store's `activeAgentId`, which `useUiStore.reset()`
+      seeds ONCE, on arrival, and which `useConnectionSync` only ever syncs from
+      a session row. Choosing a role rewrote the three seeds
+      (`utils/role-seed.ts`) and nothing moved that field, so "Adjust
+      parameters…" showed the harness, model and level of the role selected
+      BEFORE this one.
+
+      So this drives the whole client half: pick the role, deliver the server's
+      answer to it, then ask to see what it set. `activeAgentId` starts as the
+      snapshot the route arrived with, exactly as it would in the app — the
+      wrapper reads it from the store the way `App.tsx` does, or the fix would
+      have nothing to move.
+    */
+    localStorage.setItem("shipit-role-name", "deep dive");
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem(
+      "vibe-model-id",
+      JSON.stringify({ serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" }),
+    );
+    useUiStore.setState({ activeAgentId: "claude" });
+    useSessionStore.setState({ sessionId: SESSION_ID, sessions: [] });
+    setRoles([DEEP_DIVE, TRIAGE]);
+
+    function Composer() {
+      const activeAgentId = useUiStore((s) => s.activeAgentId);
+      return (
+        <MessageInput
+          onSend={vi.fn().mockReturnValue(true)}
+          disabled={false}
+          agents={[claude, codex]}
+          activeAgentId={activeAgentId}
+          onAgentChange={vi.fn()}
+          onModelChange={vi.fn()}
+          onReasoningChange={vi.fn()}
+          onRoleChange={vi.fn()}
+          hasActiveSession={false}
+          sessionId={SESSION_ID}
+        />
+      );
+    }
+    render(<Composer />);
+
+    await openRoleMenu();
+    await userEvent.click(screen.getByTestId("role-option-triage"));
+    // The server applies the role and answers with what the session moved to.
+    act(() => {
+      handleModelSelectionChanged(undefined as never, {
+        type: "model_selection_changed",
+        sessionId: SESSION_ID,
+        agentId: "codex",
+        selection: { serviceId: "openai", billingMode: "sub", modelId: "gpt-6-astra" },
+        modelId: "gpt-6-astra",
+        reasoningEffort: "low",
+        roleName: "triage",
+      });
+    });
+
+    // A fresh pick folds the parameters away, so this is the reported flow in
+    // full: choose a role, then ask to see what it set.
+    await userEvent.click(screen.getByTestId("role-selector-trigger"));
+    await userEvent.click(screen.getByTestId("role-adjust-parameters"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("harness-trigger")).toHaveTextContent("Codex");
+    });
+    expect(screen.getByTestId("model-trigger")).toHaveTextContent("GPT-6 Astra");
+    expect(screen.getByTestId("reasoning-trigger")).toHaveTextContent("Low");
+  });
+
+  it("takes the level from the harness the row NAMES, not from the store's active one", async () => {
+    /*
+      The wide row's reasoning control resolved its harness by a second rule —
+      `agents.find(a => a.id === activeAgentId)` — where the harness picker
+      beside it uses `displayedHarness`. With **no session bound at all** (Quick
+      Capture, and the new-session route before its warm session is claimed) those
+      two disagree by design: the picker previews the seed, while `activeAgentId`
+      belongs to whichever session is running behind the overlay. So a role picked
+      here named its own harness and model and the level of somebody else's.
+
+      There is no session to echo an answer for, which is exactly why this case is
+      separate from the one above: the store write cannot reach it, and the second
+      rule is the whole defect.
+    */
+    localStorage.setItem("shipit-role-name", "triage");
+    localStorage.setItem("shipit-reasoning-by-agent", JSON.stringify({ claude: "high" }));
+    setRoles([DEEP_DIVE, TRIAGE]);
+    useSessionStore.setState({ sessionId: undefined, sessions: [] });
+    render(
+      <MessageInput
+        onSend={vi.fn().mockReturnValue(true)}
+        disabled={false}
+        agents={[claude, codex]}
+        // The background session's harness — what Quick Capture is handed.
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningChange={vi.fn()}
+        onRoleChange={vi.fn()}
+        hasActiveSession={false}
+      />,
+    );
+
+    await userEvent.click(screen.getByTestId("role-selector-trigger"));
+    await userEvent.click(screen.getByTestId("role-adjust-parameters"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("harness-trigger")).toHaveTextContent("Codex");
+    });
+    const reasoning = screen.getByTestId("reasoning-trigger");
+    // Both halves: the level itself, and the knob's NAME — each harness calls it
+    // something different, so the label alone says which one is being described.
+    expect(reasoning).toHaveTextContent("Low");
+    expect(reasoning.getAttribute("aria-label")).toBe("Reasoning effort selector");
+  });
+
 });
 
 describe("a locked role keeps the ROUTE to the parameters (docs/272 reqs 4, 5, 15)", () => {

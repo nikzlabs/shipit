@@ -12,7 +12,7 @@ import {
   PermissionModeSelector,
   type NetworkSectionProps,
 } from "../PermissionModeSelector.js";
-import { HarnessSelector, ModelSelector } from "../ModelPicker.js";
+import { HarnessSelector, ModelSelector, useHarnessPickerState } from "../ModelPicker.js";
 import { ReasoningSelector } from "../ReasoningSelector.js";
 import { FileAutoComplete } from "../FileAutoComplete.js";
 import { SkillAutoComplete, type SlashCommand } from "../SkillAutoComplete.js";
@@ -405,6 +405,24 @@ export function MessageInput({
     });
   };
   const showRoleControl = !!onRoleChange && (hasRoles || !!roleInForce);
+  /**
+   * The harness the wide row's reasoning control describes — **the one the
+   * harness picker beside it names**, resolved once and read by both.
+   *
+   * It used to be `agents.find((a) => a.id === activeAgentId)` at the call site,
+   * which is a different rule from `displayedHarness`'s and disagrees with it
+   * wherever the ui store's field is not the answer: on `/{repo}/new` the pickers
+   * preview the SEED, so after choosing a role the levels came from the harness
+   * of the role chosen before it. `ComposerSettingsMenu` already reads the
+   * derived harness — this is the wide row catching up, so the two layouts and
+   * the two controls cannot name three different things.
+   */
+  const displayedHarnessAgent = useHarnessPickerState({
+    agents,
+    activeAgentId,
+    hasActiveSession,
+    seedFromHistory: !sessionId,
+  }).displayAgent;
   const [isDragging, setIsDragging] = useState(false);
   const [showAutoComplete, setShowAutoComplete] = useState(false);
   const [autoCompleteQuery, setAutoCompleteQuery] = useState("");
@@ -1553,7 +1571,7 @@ export function MessageInput({
                 <ReasoningSelector
                   // Key on the session so the optimistic pick never lingers across a switch.
                   key={sessionId ?? "__new__"}
-                  agent={agents.find((a) => a.id === activeAgentId)}
+                  agent={displayedHarnessAgent}
                   sessionReasoning={sessionReasoning}
                   onChange={(effort) => { leavePendingRole(); onReasoningChange(effort); }}
                   disabled={settingsLocked || inert}
