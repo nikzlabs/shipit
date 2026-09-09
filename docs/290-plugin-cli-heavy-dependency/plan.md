@@ -38,6 +38,40 @@ work in the current worker environment. It does not establish broad Blender
 support, and it says nothing about a dependency that needs system packages —
 which req 1 also covers.
 
+**And the 2 GiB ceiling is a property of the plugin CLI container, not of a
+session.** The same measurement host gives an ordinary session 42.4 GiB and 16
+CPUs (`/sys/fs/cgroup/memory.max`), because session memory is sized from host
+capacity — half the usable budget, 4 GiB floor, 48 GiB cap
+(`shipit-docs/shipit-yaml.md` → "Container sizing is automatic"). So the render
+that had no headroom under a companion CLI has ample room when the agent runs it
+directly.
+
+### The motivating use case does not need this feature
+
+Recorded because it decides whether the feature is worth building, and because
+the design would otherwise read as necessary. The need behind it — *use Blender
+without installing it in every session* (user, 2026-09-09) — is already met, in
+an ordinary session, with no plugin and no ShipIt change:
+
+```yaml
+agent:
+  install: pip install --no-cache-dir --target vendor/py -r requirements.txt
+  install-inputs: [requirements.txt]
+  dep-dirs: [vendor/py]
+```
+
+`agent.dep-dirs` feeds the same overlay store this document already describes —
+docs/183-overlay-dep-store shares "a rolling overlay base per (repo, runtime),
+scoped to the dirs declared in shipit.yaml `agent.dep-dirs`" — so the tree is
+installed once and every later session on that repository **mounts** it. Combined
+with the measurement above, that is Blender in every session at no per-session
+install cost.
+
+What this feature adds over that is **packaging and cross-repository reuse**: a
+dep-dirs base is keyed per repository, so every project repeats the declaration
+and pays its own first install, and none of it is available to a plugin's
+companion CLI. Those are real, and they are conveniences — not the capability.
+
 Separately, the near-zero property req 2 asks for **partly exists already**. The
 plugin dependency store keys an install by the content of its declared inputs,
 promotes the resulting tree into a store under the orchestrator's own state
