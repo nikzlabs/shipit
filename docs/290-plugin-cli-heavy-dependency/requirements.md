@@ -75,7 +75,26 @@ because it changed the design's conclusion when it went away.
 
 ## Open questions
 
-None open.
+- **Does requirement 3 permit a plugin naming an *existing* third-party image
+  its CLI runs on** — `image: <a published blender image>` — as opposed to one
+  the plugin author publishes? The user asked this on 2026-09-09 and it is not
+  what requirement 3's earlier receipt answered: that ruled out asking the
+  author to publish a second artifact, and an image that already exists asks
+  nobody to publish anything.
+
+  It matters more than a wording question. Under the permissive reading the
+  simplest mechanism satisfies **all four** requirements with no build, which
+  removes the need for build-time egress containment
+  (`docs/291-contained-builds`, planning#512) from this feature entirely — a
+  large piece of platform work that is otherwise its prerequisite. Note also
+  that the strict reading would disqualify the `bpy` wheel from PyPI that the
+  measurements in `plan.md` used, since that is equally an artifact published
+  outside the repository.
+
+  The agent's reading is **permissive** — requirement 3's concern is a burden on
+  the author and on the operator, and naming an existing public image imposes
+  neither — but the requirement's words admit both, so this is the user's to
+  settle rather than the agent's to assume.
 
 ## Resolved questions
 

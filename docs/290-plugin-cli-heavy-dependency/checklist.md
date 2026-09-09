@@ -1,8 +1,9 @@
 # Checklist
 
-All open questions in [requirements.md](requirements.md) are answered, so the
-M3 work below is unblocked. Its first item is the prerequisite, not the
-plugin-facing surface.
+**Re-blocked.** One open question in [requirements.md](requirements.md) decides
+which mechanism is built at all: whether req 3 permits naming an *existing*
+third-party image. A permissive answer makes M2b the target and retires the M3
+work below for this feature.
 
 ## Requirements
 
@@ -12,8 +13,8 @@ plugin-facing surface.
 - [x] Review findings folded in: a derived requirement demoted to an open
       question, a withdrawn open question recorded, M3 extended to cover the CLI
       surface, and three overstated claims corrected
-- [x] Open questions answered by a human, with dated receipts under
-      `## Resolved questions` — none open; implementation is unblocked
+- [ ] Open question answered: does req 3 permit naming an existing third-party
+      image? It decides M2b vs M3, and the answer retires one of them
 
 ## M3 — plugin-supplied Dockerfile (the target: reqs 1–4)
 
@@ -33,9 +34,14 @@ plugin-facing surface.
 
 - [ ] M4 — running a call inside the plugin's service container; an
       optimisation of M3, with the trade recorded in `plan.md`
-- **M2 — a plugin-named published image: rejected.** It fails req 3, which the
-  user decided on 2026-09-05. Reviving it means changing req 3 and its receipt
-  first.
+- **M2a — an image the plugin author publishes: rejected.** It fails req 3,
+  which the user decided on 2026-09-05. Reviving it means changing req 3 and its
+  receipt first.
+- **M2b — naming an existing public image: candidate, pending the open
+  question.** If permitted it satisfies all four requirements with no build, so
+  its work is a pull path, not applying the worker-image env repairs to a
+  foreign image, and the manifest surface — and the M3 section above is retired
+  for this feature.
 - **M1 — making the dependency store's applicability observable: out of scope,
   and now shipped anyway.** The user ruled on 2026-09-05 that it is a separate
   bug; it was tracked as planning#511 and merged on its own. Nothing here

@@ -99,11 +99,70 @@ reason at every decline branch and at a promotion that pins nothing. Nothing in
 this design depended on it, and the outcome confirms the scoping was right: it
 shipped on its own while this design was still settling its requirements.
 
-### M2 — the plugin names a published image for its CLI
+### M2 — the plugin names an image for its CLI
 
-Satisfies reqs 1, 2 and 4. **Fails req 3**, which a human has already decided
-(see the resolved question). Recorded as a rejected alternative, not as a
-staged step: reviving it means changing req 3 and its receipt first.
+An earlier draft treated this as one mechanism and rejected it. That collapsed
+two cases with different answers, and the distinction is the user's
+(2026-09-09): *"could we allow invoking existing docker images instead?"*
+
+#### M2a — the plugin author publishes their own image
+
+Satisfies reqs 1, 2 and 4. **Fails req 3**, which a human decided on 2026-09-05:
+the plugin repository no longer carries what its CLI needs, and a *private*
+image additionally requires the operator to log the orchestrator's daemon in —
+there is no per-project registry credential (`compose-cli.ts:492`). Rejected;
+reviving it means changing req 3 and its receipt first.
+
+#### M2b — the plugin names an **existing** public image
+
+`image: <some published blender image>` in the manifest, pulled by the host
+daemon and shared by every session. The author publishes nothing.
+
+**Whether this satisfies req 3 is an open question** (see `requirements.md`) —
+it turns on whether "no separately published artifact" means *no artifact the
+author must publish* or *no artifact outside the repository at all*. Under the
+first reading M2b satisfies **all four** requirements, and note that the second
+reading would also disqualify the `bpy` wheel the measurements above used, since
+that is equally an artifact published elsewhere.
+
+If it is permitted, M2b is markedly cheaper than M3 and **needs no contained
+builds at all** — there is no build, so the prerequisite in
+`docs/291-contained-builds` simply does not apply to it. Against the
+requirements: req 1 is satisfied including the `apt` class, since the image
+carries its own system packages; req 2 is satisfied better than the dependency
+store manages, because there is no install step to share and the host pulls the
+image once; req 4 is satisfied trivially, since an ordinary commit that does not
+change the declared tag pulls nothing.
+
+**What it would need, and what it would face.** Verified against the code:
+
+- **A pull path, which does not exist.** No plugin container module pulls
+  anything — they run the worker image, which is always present locally. A first
+  call would otherwise fail on a missing image rather than fetch it, and a
+  multi-gigabyte pull needs its own progress and timeout story rather than
+  riding the 15-minute call budget.
+- **The toolchain env repairs must not be applied.** `pluginContainerEnv` sets
+  `HOME=/tmp` unconditionally — which is what a foreign image needs, since the
+  call runs as a per-session uid that cannot write the image's own home — but
+  its `PLAYWRIGHT_BROWSERS_PATH` / `NPM_CONFIG_PREFIX` / `PATH` overrides are
+  repairs for *borrowing the worker image* and would point a foreign image away
+  from what it ships. That line is already drawn for services
+  (`plugin-container-env.ts:40`); M2b applies the same rule to a CLI.
+- **The image must be able to execute the plugin's entry.** The invocation sets
+  `Entrypoint: [spec.entry]` (`plugin-cli-run.ts:846`), so the interpreter that
+  entry names has to exist in the image — and the image's own `ENTRYPOINT` is
+  bypassed, so an image that does setup there (an s6-based one, say) never runs
+  it.
+- **No new trust class.** A plugin *service* already names an arbitrary image
+  (`plugin-compose.ts:685`), and the CLI container is the more contained of the
+  two: `CapDrop: ALL`, `no-new-privileges`, and a network registered untrusted
+  at creation.
+
+**What it cannot do** is add anything to the image. A plugin needing Blender
+*plus* an addon, a font, or a Python library gets whatever the published image
+has. That is the case M3 exists for — and it is a narrower case than "a heavy
+dependency", which is why M2b may retire M3 for this feature without retiring
+the idea.
 
 ### M3 — the plugin ships a Dockerfile and ShipIt builds it
 
@@ -197,19 +256,35 @@ What it does trade is set out under [The M4 trade](#the-m4-trade).
 **Nothing here should be built before the open questions in `requirements.md`
 are answered.** With that said, the shape follows from req 1 taken whole:
 
-1. **M3 is the target**, because it is the only candidate that satisfies
-   reqs 1–4 together. Its first piece of work is **contained builds**, not the
-   plugin-facing surface.
-2. **M2 is rejected** — it fails req 3, which a human has already decided.
-3. **M4 is an optimisation of M3**, never a reason to choose it.
+**This ordering is contingent on the open question about req 3** (does naming an
+*existing* third-party image satisfy self-containment?), and the two answers give
+different targets:
+
+- **If yes — M2b is the target**, and M3 is not needed for this feature. M2b
+  satisfies all four requirements, needs no build, and therefore needs no
+  build-time egress containment; the remaining work is a pull path, not applying
+  the worker-image env repairs to a foreign image, and the manifest surface.
+  M3's idea survives for the narrower case M2b cannot serve — a plugin that
+  needs an image *plus* something the published one lacks — but that is not this
+  feature.
+- **If no — M3 is the target**, because it is then the only candidate satisfying
+  reqs 1–4 together, and its first piece of work is **contained builds**, not
+  the plugin-facing surface.
+
+Either way: **M2a is rejected** (it fails req 3, which a human decided), and
+**M4 is an optimisation of whichever image mechanism lands**, never a reason to
+choose one.
 
 M1 is not on this list: the user scoped it out as a separate bug
 (planning#511).
 
-An earlier draft recommended M1 first, on the reading that req 1 might be
-narrowed to dependencies a language package manager can install. Req 1 already
-classifies the `apt` case, so that reading asked the user to shrink their own
-requirement.
+Two earlier drafts got the ordering wrong in the same way — by narrowing a
+requirement rather than reading it whole. The first recommended M1, on the
+reading that req 1 might exclude dependencies needing system packages; req 1
+already classifies that case. The second rejected M2 outright, by collapsing
+"the author publishes an image" and "the plugin names an image that already
+exists" into one mechanism when only the first is what req 3's receipt ruled
+on.
 
 ## The M4 trade
 
