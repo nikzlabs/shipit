@@ -16,12 +16,6 @@ import { parseIssueRef } from "../../server/shared/issue-ref.js";
 import { resolveUiIssueRef } from "../stores/issues-store.js";
 import type { TrackerId } from "../../server/shared/types.js";
 
-/**
- * Open a doc's linked issue in ShipIt's inline issue view (docs/189). Mirrors
- * the chat cards' `onOpenIssue` shape so the doc chip reuses the same handler;
- * `id` is the tracker-native lookup id from `parseIssueRef` (the detail view
- * derives it from the identifier when absent).
- */
 export type OpenDocIssue = (ref: {
   tracker: TrackerId;
   id?: string;
@@ -34,24 +28,11 @@ export interface DocsViewerProps {
   files: DocEntry[];
   onFileClick: (path: string) => void;
   onRefresh: () => void;
-  /**
-   * Open a doc's linked issue inline (docs/168 → inline). When provided, a
-   * known-tracker issue chip opens ShipIt's Issues tab detail view instead of
-   * linking out (CLAUDE.md §2). Absent → the chip falls back to an external
-   * link, which is still the only option for an unknown-shape pointer.
-   */
   onOpenIssue?: OpenDocIssue;
 }
 
-/**
- * Shared sizing for every badge in a doc row. A fixed height keeps the cluster
- * aligned regardless of which badges render — notably the progress pill carries
- * a border (+2px box height) that the borderless badges don't, so without a
- * common height it would sit taller than its neighbors.
- */
 const DOC_BADGE_CLASS = "h-[18px] text-[11px]";
 
-/** A checklist is "complete" when it has items and all of them are checked. */
 function isChecklistComplete(doc: DocEntry): boolean {
   return (
     doc.checklist !== undefined &&
@@ -60,11 +41,6 @@ function isChecklistComplete(doc: DocEntry): boolean {
   );
 }
 
-/**
- * Renders `done/total` from a sibling `checklist.md`. Uses the `success`
- * variant once everything is checked so a fully-complete plan stands out at a
- * glance — the checklist is now the docs list's grouping key (docs/168).
- */
 function ChecklistProgressBadge({
   progress,
 }: {
@@ -82,21 +58,6 @@ function ChecklistProgressBadge({
   );
 }
 
-/**
- * Jump-to-issue chip for a doc's `issue:` pointer (docs/168). Work tracking
- * lives in the tracker, so the chip is the doc's link to its scheduling. The
- * chip stops row-click propagation so clicking it opens the issue rather than
- * the doc modal.
- *
- * When `onOpenIssue` is wired and the pointer resolves to a **declared**
- * destination (docs/248-declared-issue-trackers req 11 — all three reference forms resolve here, and one
- * that names nothing declared does not), the chip opens ShipIt's inline issue
- * detail view rather than linking out to the upstream tracker (CLAUDE.md §2:
- * inline beats link-out — the deep link lives inside that view). An unresolvable
- * pointer has no inline view to open, so it stays legible as the external link
- * it already was, or a plain badge when not even a URL is derivable — never a
- * broken in-app link.
- */
 function IssueChip({ issue, onOpenIssue }: { issue: string; onOpenIssue?: OpenDocIssue }) {
   const resolution = resolveUiIssueRef(issue);
   const ref = resolution.ok ? resolution.ref : parseIssueRef(issue);
@@ -155,12 +116,6 @@ function IssueChip({ issue, onOpenIssue }: { issue: string; onOpenIssue?: OpenDo
   );
 }
 
-/**
- * The trailing badge cluster for a doc row: checklist progress (when present)
- * and a jump-to-issue chip (when the doc carries an `issue:` pointer).
- * `compact` (the collapsed Done group) drops the issue chip to keep those
- * rows quiet.
- */
 function DocBadges({
   doc,
   compact = false,
@@ -180,19 +135,12 @@ function DocBadges({
   );
 }
 
-/** Show parent directory as secondary context, e.g. "docs/001-feature/" */
 function pathContext(docPath: string): string | null {
   const lastSlash = docPath.lastIndexOf("/");
   if (lastSlash <= 0) return null;
   return docPath.slice(0, lastSlash + 1);
 }
 
-/**
- * The clickable text column of a doc row: title, an optional frontmatter
- * `description` (wraps to two lines so a full sentence stays readable), and
- * the parent-directory path context as the smallest, last line. Shared across
- * the Modified / Tracked / Archived groups so every row stays consistent.
- */
 function DocRowText({ doc, onClick }: { doc: DocEntry; onClick: () => void }) {
   const ctx = pathContext(doc.path);
   return (
@@ -214,24 +162,10 @@ function DocRowText({ doc, onClick }: { doc: DocEntry; onClick: () => void }) {
   );
 }
 
-/**
- * Sort tracked docs newest-first. docs/168 moved work tracking out to the
- * tracker, so there's no longer a "what's hot" signal to sort on in the doc
- * itself. Creation-recency is the best ordering left, and the `NNN-`
- * prefix on feature directories is a reliable proxy for it, so we order
- * descending by that number (see `compareDocsByRecency`) to keep the newest
- * work at the top without scrolling.
- */
 function sortTrackedDocs(docs: DocEntry[]): DocEntry[] {
   return [...docs].sort((a, b) => compareDocsByRecency(a.path, b.path));
 }
 
-/**
- * Returns true when a doc was actually changed in the current session.
- * Derived server-side from git (committed branch changes + uncommitted edits),
- * which is reliable; the old mtime-vs-session-start heuristic produced false
- * positives because git rewrites file mtimes on every checkout/fetch/reset.
- */
 function wasModifiedInSession(doc: DocEntry): boolean {
   return doc.changedInSession === true;
 }
@@ -254,21 +188,9 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, onOpenIssu
     });
   }, [allFiles, searchQuery]);
 
-  // One pass over the doc list answers every grouping question below. Building
-  // it here rather than letting each predicate scan `files` is what keeps this
-  // component's render body linear: the predicates' convenience forms each
-  // rebuild it, and `hasTrackedSibling` used to rebuild it once per candidate
-  // sibling, which cost 342–486 ms per render on this repo's 866 docs — paid
-  // again on every parent render, i.e. once per streamed token whenever the
-  // Docs tab was the open one. See `doc-paths.ts` → `DocIndex`.
+  // Build once: repeated sibling scans made each streamed render cost 342–486 ms.
   const index = useMemo(() => buildDocIndex(files), [files]);
 
-  // Docs touched during the current session — shown in a dedicated group at the
-  // top so the user sees what the agent just worked on without scrolling.
-  // We exclude untracked siblings (e.g. `checklist.md`) when a tracked plan
-  // exists in the same directory: they share the derived title and path
-  // context, so listing both would render visually identical rows. The user
-  // can still reach the checklist via the modal's sibling tabs.
   const modifiedInSession = useMemo(
     () =>
       files.filter(
@@ -284,9 +206,6 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, onOpenIssu
     [modifiedInSession],
   );
 
-  // Below the "modified" group, the regular tabs render the rest of the docs.
-  // Excluding the session-modified ones avoids duplication — they're already
-  // visible at the top.
   const remaining = useMemo(
     () => files.filter((f) => !modifiedPaths.has(f.path)),
     [files, modifiedPaths],
@@ -299,11 +218,6 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, onOpenIssu
       ),
     [remaining, index],
   );
-  // Hide untracked siblings (e.g. `checklist.md`) when a tracked plan exists
-  // in the same directory — they're now reachable via the modal's sibling
-  // tabs, so listing them separately is redundant noise. We check against the
-  // full `files` list so a tracked plan that was pulled into the "Modified"
-  // group above still suppresses its untracked sibling here.
   const untracked = useMemo(
     () =>
       remaining.filter(
@@ -324,9 +238,6 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, onOpenIssu
     return hasTracked ? "tracked" : "other";
   }, [userTab, hasTracked]);
 
-  // Done docs (checklist 100% complete) in the Tracked group are collapsed by
-  // default — they're historical context, not active work, and would otherwise
-  // dominate the list as a project ages.
   const [doneExpanded, setDoneExpanded] = useState(false);
 
   if (allFiles.length === 0) {
@@ -360,8 +271,6 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, onOpenIssu
     setSearchQuery("");
   };
 
-  // Sort the modified-in-session group by recency (most recent first), with
-  // path as a deterministic tiebreaker.
   const sortedModified = [...modifiedInSession].sort((a, b) => {
     const am = a.modifiedAt ?? "";
     const bm = b.modifiedAt ?? "";
@@ -369,18 +278,12 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, onOpenIssu
     return a.path.localeCompare(b.path);
   });
   const sortedTracked = sortTrackedDocs(tracked);
-  // Split tracked into active work and done (checklist 100% complete) so we can
-  // render done items inside a collapsible group below the active list. A doc
-  // with no checklist (or an incomplete one) stays Active — see docs/168 for
-  // the known edge case where a finished reference doc with no checklist never
-  // folds into Done.
   const trackedActive = sortedTracked.filter((d) => !isChecklistComplete(d));
   const trackedDone = sortedTracked.filter((d) => isChecklistComplete(d));
   const showTabs = hasTracked && hasUntracked;
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header bar */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)">
         <span className="font-medium">
           {searchQuery.trim()
@@ -438,7 +341,6 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, onOpenIssu
         </div>
       )}
 
-      {/* List body — modified-in-session group renders above tabs */}
       <div className="flex-1 overflow-y-auto">
         {hasModified && (
           <div className="py-1 border-b border-(--color-border-secondary)">
@@ -462,7 +364,6 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, onOpenIssu
           </div>
         )}
 
-        {/* Tabs */}
         {showTabs && (
           <div className="flex border-b border-(--color-border-secondary)">
             <button

@@ -3,11 +3,6 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { EgressPromptCard } from "./EgressPromptCard.js";
 import { useEgressPromptStore } from "../stores/egress-prompt-store.js";
 
-/**
- * Tests for the in-chat `EgressPromptCard` (docs/172, planning#92). The card reads
- * its live host + phase from the egress-prompt store keyed by cardId.
- */
-
 const CARD_ID = "egress-sess-1-cdn.example.com";
 
 beforeEach(() => {

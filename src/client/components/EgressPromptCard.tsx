@@ -1,18 +1,3 @@
-/**
- * EgressPromptCard — inline allow-once card for a blocked egress host (docs/172,
- * planning#92, Tier C).
- *
- * Rendered at the chat position where the Tier C SNI proxy denied a connection
- * to a non-allowlisted host. Offers the user three choices:
- *   - Allow once — permit the host for this session (the agent's retry succeeds).
- *   - Add to allowlist — same, persisted for the session (durable cross-restart
- *     persistence is the Settings-UI follow-up).
- *   - Deny — leave it blocked.
- *
- * The host + phase come from the egress-prompt store (keyed by cardId) so an
- * `egress_prompt_resolved` update can swap the card to its terminal state.
- */
-
 import {
   ShieldWarningIcon,
   CheckCircleIcon,

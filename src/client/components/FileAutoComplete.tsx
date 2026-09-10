@@ -5,19 +5,13 @@ import { PopoverContent } from "./ui/popover.js";
 import type { FileTreeNode } from "../../server/shared/types.js";
 
 export interface FileAutoCompleteProps {
-  /** The current query text (after the @). */
   query: string;
-  /** Flat list of file tree nodes to search through. */
   fileTree: FileTreeNode[];
-  /** Called when the user selects a file. */
   onSelect: (filePath: string) => void;
-  /** Called when the autocomplete should be dismissed. */
   onDismiss: () => void;
-  /** Uploaded file paths (e.g. "/uploads/data.csv") to include in autocomplete. */
   uploadPaths?: string[];
 }
 
-/** Recursively flatten a FileTreeNode[] into a list of file paths. */
 function flattenTree(nodes: FileTreeNode[]): string[] {
   const result: string[] = [];
   function walk(list: FileTreeNode[]) {
@@ -34,7 +28,6 @@ function flattenTree(nodes: FileTreeNode[]): string[] {
   return result;
 }
 
-/** Filter file paths by a query string (case-insensitive substring match). */
 function filterFiles(allFiles: string[], query: string): string[] {
   if (!query) return allFiles.slice(0, 20);
   const lower = query.toLowerCase();
@@ -54,7 +47,6 @@ export function FileAutoComplete({
   const allFiles = [...flattenTree(fileTree), ...uploadPaths];
   const matches = filterFiles(allFiles, query);
 
-  // Reset selected index when query changes (inline state reset during render)
   const prevQueryRef = useRef(query);
   if (prevQueryRef.current !== query) {
     prevQueryRef.current = query;
