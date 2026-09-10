@@ -1,13 +1,3 @@
-/**
- * Integration tests for the inline tracker Issues tab routes (docs/170).
- *
- * Spins up a real Fastify app via `buildApp()` with stub managers and a stubbed
- * `trackerFetchImpl` so the Linear GraphQL calls never hit the network.
- * Exercises: the unconfigured empty state, connect (token validation) → team
- * binding → priority-sorted listing, the token non-echo invariant, and
- * disconnect. Orchestrator-only — no Docker, no real worker.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -45,7 +35,6 @@ describe("Integration: Issues tab routes (docs/170)", () => {
   let dbManager: DatabaseManager;
   let sessionManager: SessionManager;
   let githubAuthManager: StubGitHubAuthManager;
-  /** Routes each GraphQL operation to a canned response by query content. */
   let trackerFetch: ReturnType<typeof vi.fn>;
   let linearWorkspace: string;
 
@@ -75,12 +64,10 @@ describe("Integration: Issues tab routes (docs/170)", () => {
           },
         });
       }
-      // Comment thread (`listComments`) — backs GET /api/issue/comments.
       if (query.includes("IssueComments")) {
         return jsonResponse({
           data: {
             issue: {
-              // docs/248 — the team guard reads this off every id-taking read.
               team: { key: "SHI" },
               comments: {
                 nodes: [
@@ -97,8 +84,6 @@ describe("Integration: Issues tab routes (docs/170)", () => {
           },
         });
       }
-      // Team workflow states (`listStatuses`) — backs the list's availableStatuses
-      // and the inline status editor (docs/191).
       if (query.includes("TeamStates")) {
         return jsonResponse({
           data: {
@@ -114,7 +99,6 @@ describe("Integration: Issues tab routes (docs/170)", () => {
           },
         });
       }
-      // Per-issue states fetched before a `setStatus` (docs/191).
       if (query.includes("IssueStates")) {
         return jsonResponse({
           data: {
@@ -133,8 +117,6 @@ describe("Integration: Issues tab routes (docs/170)", () => {
           },
         });
       }
-      // issueUpdate mutation (`setStatus` / `updateIssue`) — backs the user-
-      // initiated status/priority writes (docs/191).
       if (query.includes("IssueUpdate")) {
         return jsonResponse({
           data: {
@@ -155,11 +137,9 @@ describe("Integration: Issues tab routes (docs/170)", () => {
           },
         });
       }
-      // Resolve a key → UUID before a comment mutation (`addComment`).
       if (query.includes("IssueId")) {
         return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
       }
-      // Create a comment (`addComment`) — backs POST /api/issue/comments.
       if (query.includes("AddComment")) {
         return jsonResponse({
           data: {
@@ -176,7 +156,6 @@ describe("Integration: Issues tab routes (docs/170)", () => {
           },
         });
       }
-      // Single-issue fetch (`getIssue`) — backs GET /api/issue (docs/189).
       if (query.includes("query Issue(")) {
         return jsonResponse({
           data: {
@@ -190,7 +169,6 @@ describe("Integration: Issues tab routes (docs/170)", () => {
               priorityLabel: "Urgent",
               state: { name: "In Progress", type: "started" },
               assignee: { displayName: "Nik" },
-              // docs/248 — `key` is what the team guard checks; `states` powers availableStatuses.
               team: { key: "SHI", states: { nodes: [{ id: "s1", name: "Todo", type: "unstarted", position: 0 }] } },
             },
           },
@@ -201,10 +179,6 @@ describe("Integration: Issues tab routes (docs/170)", () => {
 
     sessionManager = new SessionManager(dbManager);
     githubAuthManager = new StubGitHubAuthManager();
-    // docs/248 — Linear is a declared tracker like any other, so these route
-    // tests need a session whose workspace declares one. `lin-sess` is that
-    // session; requests that omit `sessionId` see no declarations at all, which
-    // is itself part of the contract (req 1: no built-in tracker).
     linearWorkspace = path.join(tmpDir, "linear-workspace");
     fs.mkdirSync(linearWorkspace, { recursive: true });
     fs.writeFileSync(
@@ -240,22 +214,14 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     const res = await app.inject({ method: "GET", url: "/api/trackers" });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { trackers: TrackerInfo[] };
-    // GitHub is registered alongside Linear (planning#82); both unconfigured with no
-    // token and no active-session repo binding.
-    // docs/248-declared-issue-trackers req 1 — with no session (so no declarations) the only destination
-    // is the session's own repository, which is itself unconfigured here. Linear
-    // is NOT present: it is a declared tracker now, not a built-in.
     expect(body.trackers).toEqual([{ id: "github", label: "GitHub", kind: "github", configured: false }]);
   });
 
   it("GitHub tracker auto-configures from the active session's GitHub remote", async () => {
-    // Authenticate GitHub (mirrors the user's existing GitHub connection) and
-    // track a session whose remote is a github.com repo.
     await githubAuthManager.setToken("ghp_test_token");
     sessionManager.track("gh-sess", "GH session");
     sessionManager.setRemoteUrl("gh-sess", "https://github.com/octocat/hello-world.git");
 
-    // Stub the GitHub REST issues endpoint on the shared tracker fetch.
     trackerFetch.mockImplementationOnce(async () =>
       jsonResponse([
         {
@@ -287,7 +253,6 @@ describe("Integration: Issues tab routes (docs/170)", () => {
 
   it("GitHub tracker stays unconfigured without an active GitHub session", async () => {
     await githubAuthManager.setToken("ghp_test_token");
-    // No sessionId → no repo binding → unconfigured, empty list, no fetch.
     const res = await app.inject({ method: "GET", url: "/api/issues?tracker=github" });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { tracker: TrackerInfo; issues: TrackerIssue[] };
@@ -301,14 +266,10 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     const body = res.json() as { tracker: TrackerInfo; issues: TrackerIssue[] };
     expect(body.tracker.configured).toBe(false);
     expect(body.issues).toEqual([]);
-    // No GraphQL call should fire when unconfigured.
     expect(trackerFetch).not.toHaveBeenCalled();
   });
 
   it("connects the credential, then lists the declared team's issues priority-sorted", async () => {
-    // docs/248-declared-issue-trackers req 4 — connecting stores the credential and returns the teams it
-    // can reach as a LOOKUP for writing a declaration. It binds nothing: the
-    // team lives in the repository's `shipit.yaml`, which `lin-sess` carries.
     const connect = await app.inject({
       method: "POST",
       url: "/api/trackers/linear/token",
@@ -317,12 +278,10 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     expect(connect.statusCode).toBe(200);
     expect((connect.json() as { teams: typeof TEAM[] }).teams).toEqual([TEAM]);
 
-    // List: urgent first.
     const list = await app.inject({ method: "GET", url: "/api/issues?tracker=linear%3ASHI&sessionId=lin-sess" });
     expect(list.statusCode).toBe(200);
     const body = list.json() as { tracker: TrackerInfo; issues: TrackerIssue[] };
     expect(body.tracker.configured).toBe(true);
-    // req 15 — identifiers render in the declared name's form.
     expect(body.issues.map((i) => i.identifier)).toEqual(["roadmap#SHI-1", "roadmap#SHI-2"]);
     expect(body.issues[0].priority.level).toBe("urgent");
     expect(body.issues[1].assignee).toBeUndefined();
@@ -332,9 +291,7 @@ describe("Integration: Issues tab routes (docs/170)", () => {
   it("passes includeDone through to the tracker's excluded-state filter", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
 
-    // listIssuesForTracker now fires the TeamIssues query AND a TeamStates query
-    // in parallel (docs/191 — statuses for the inline editor), so scan back for
-    // the TeamIssues call specifically rather than assuming it's the last one.
+    // TeamIssues and TeamStates run in parallel, so either call can be last.
     const lastIssuesVariables = () => {
       for (let i = trackerFetch.mock.calls.length - 1; i >= 0; i--) {
         const init = trackerFetch.mock.calls[i][1] as RequestInit;
@@ -347,11 +304,9 @@ describe("Integration: Issues tab routes (docs/170)", () => {
       throw new Error("no TeamIssues call recorded");
     };
 
-    // Default: open working set — completed + canceled excluded.
     await app.inject({ method: "GET", url: "/api/issues?tracker=linear%3ASHI&sessionId=lin-sess" });
     expect(lastIssuesVariables().excludedTypes).toEqual(["completed", "canceled"]);
 
-    // includeDone=true: only canceled stays excluded.
     await app.inject({ method: "GET", url: "/api/issues?tracker=linear%3ASHI&sessionId=lin-sess&includeDone=true" });
     expect(lastIssuesVariables().excludedTypes).toEqual(["canceled"]);
   });
@@ -361,7 +316,6 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  // docs/189 — the inline single-issue detail view's own read path.
   it("GET /api/issue returns one fully-hydrated Linear issue", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
 
@@ -371,14 +325,12 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     expect(body.issue.identifier).toBe("roadmap#SHI-1");
     expect(body.issue.description).toBe("The body of the issue.");
     expect(body.issue.status).toEqual({ name: "In Progress", type: "started" });
-    // `getIssue` hydrates the team's workflow states for the status picker.
     expect(body.issue.availableStatuses).toEqual([{ name: "Todo", type: "unstarted" }]);
   });
 
   it("GET /api/issue 400s when the tracker is unconfigured", async () => {
     const res = await app.inject({ method: "GET", url: "/api/issue?tracker=linear%3ASHI&sessionId=lin-sess&id=SHI-1" });
     expect(res.statusCode).toBe(400);
-    // No GraphQL call fires for an unconfigured tracker.
     expect(trackerFetch).not.toHaveBeenCalled();
   });
 
@@ -431,7 +383,6 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  // docs/191 — user-initiated inline status / priority writes.
   it("GET /api/issues includes the tracker's availableStatuses (docs/191)", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
 
@@ -444,7 +395,6 @@ describe("Integration: Issues tab routes (docs/170)", () => {
   it("GET /api/issue/labels returns the tracker's labels with colors (planning#94 foundation)", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
 
-    // The next tracker fetch is the `IssueLabels` query (`listLabels`).
     trackerFetch.mockImplementationOnce(async () =>
       jsonResponse({
         data: {
@@ -558,7 +508,6 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     const issues = await app.inject({ method: "GET", url: "/api/issues?tracker=linear%3ASHI&sessionId=lin-sess" });
     expect(trackers.body).not.toContain("secret-token");
     expect(issues.body).not.toContain("secret-token");
-    // But it is persisted server-side.
     expect(credentialStore.getLinearToken()).toBe("secret-token");
   });
 

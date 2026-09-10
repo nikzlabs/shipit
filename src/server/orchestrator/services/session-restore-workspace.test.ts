@@ -1,13 +1,3 @@
-/**
- * planning#181 — `restoreSessionWorkspace` re-materializes a LIVE (non-user-archived)
- * session's missing workspace from the bare cache, PRESERVING its committed
- * branch, so activating a disk-evicted session boots a container instead of
- * 404-looping on a missing bind-mount source.
- *
- * Distinct from `unarchiveSession` (covered by `session-restore-freshness.test.ts`),
- * which restores a USER-archived session and deliberately cuts a FRESH branch.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -63,7 +53,6 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-/** Push a feature branch with a distinct commit to the bare remote. */
 function pushBranch(branch: string, content: string): string {
   execSync(`git checkout -b ${branch}`, { cwd: seedDir, stdio: "ignore" });
   fs.writeFileSync(path.join(seedDir, "FEATURE.md"), content);
@@ -84,7 +73,6 @@ describe("restoreSessionWorkspace (planning#181)", () => {
     sessionManager.track(id, "Restore me", workspaceDir);
     sessionManager.setRemoteUrl(id, remoteUrl);
     sessionManager.setBranch(id, branch);
-    // Disk-evicted (docs/161 ladder): workspace wiped, NOT user-archived.
     dbManager.db.prepare("UPDATE sessions SET disk_tier = 'evicted' WHERE id = ?").run(id);
     expect(fs.existsSync(workspaceDir)).toBe(false);
 
@@ -93,15 +81,12 @@ describe("restoreSessionWorkspace (planning#181)", () => {
     );
 
     expect(restored).toBe(true);
-    // Workspace re-materialized, on the session's existing branch, at its tip.
     expect(fs.existsSync(path.join(workspaceDir, ".git"))).toBe(true);
     const currentBranch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: workspaceDir }).toString().trim();
     expect(currentBranch).toBe(branch);
     const head = execSync("git rev-parse HEAD", { cwd: workspaceDir }).toString().trim();
     expect(head).toBe(branchHead);
-    // Committed file is present — the branch's work survived eviction.
     expect(fs.existsSync(path.join(workspaceDir, "FEATURE.md"))).toBe(true);
-    // Tier flipped back to hot.
     expect(sessionManager.get(id)?.diskTier).toBe("hot");
   });
 
@@ -110,7 +95,6 @@ describe("restoreSessionWorkspace (planning#181)", () => {
     const workspaceDir = path.join(tmpDir, "workspace2");
     sessionManager.track(id, "Lost branch", workspaceDir);
     sessionManager.setRemoteUrl(id, remoteUrl);
-    // Branch name the remote/cache has never seen (unpushed work lost on eviction).
     sessionManager.setBranch(id, "shipit/never-pushed");
     dbManager.db.prepare("UPDATE sessions SET disk_tier = 'evicted' WHERE id = ?").run(id);
 
@@ -119,7 +103,6 @@ describe("restoreSessionWorkspace (planning#181)", () => {
     );
 
     expect(restored).toBe(true);
-    // Session is at least usable: the branch exists, cut from main's tip.
     const currentBranch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: workspaceDir }).toString().trim();
     expect(currentBranch).toBe("shipit/never-pushed");
     expect(sessionManager.get(id)?.diskTier).toBe("hot");
@@ -128,7 +111,6 @@ describe("restoreSessionWorkspace (planning#181)", () => {
   it("is a no-op when the workspace is present and the session is not evicted", async () => {
     const id = "sess-3";
     const workspaceDir = path.join(tmpDir, "workspace3");
-    // Materialize a real clone up front (hot session).
     await createRepoGit(cacheDir).cloneFromCache(workspaceDir, remoteUrl);
     sessionManager.track(id, "Healthy", workspaceDir);
     sessionManager.setRemoteUrl(id, remoteUrl);
@@ -146,7 +128,6 @@ describe("restoreSessionWorkspace (planning#181)", () => {
     await createRepoGit(cacheDir).cloneFromCache(workspaceDir, remoteUrl);
     sessionManager.track(id, "Survived eviction rm", workspaceDir);
     sessionManager.setRemoteUrl(id, remoteUrl);
-    // Tier says evicted, but the `rm` failed so the checkout is still on disk.
     dbManager.db.prepare("UPDATE sessions SET disk_tier = 'evicted' WHERE id = ?").run(id);
 
     const restored = await restoreSessionWorkspace(
@@ -168,13 +149,11 @@ describe("restoreSessionWorkspace (planning#181)", () => {
     sessionManager.setBranch(id, branch);
     dbManager.db.prepare("UPDATE sessions SET disk_tier = 'evicted' WHERE id = ?").run(id);
 
-    // Fire two concurrent activations (connect's void + send-message's await).
     const [a, b] = await Promise.all([
       restoreSessionWorkspace(sessionManager, createRepoGit, () => cacheDir, githubAuthManager, repoStore, id),
       restoreSessionWorkspace(sessionManager, createRepoGit, () => cacheDir, githubAuthManager, repoStore, id),
     ]);
 
-    // Both resolve to the SAME in-flight result, and the clone is intact.
     expect(a).toBe(b);
     expect(fs.existsSync(path.join(workspaceDir, ".git"))).toBe(true);
     const head = execSync("git rev-parse HEAD", { cwd: workspaceDir }).toString().trim();
@@ -183,9 +162,8 @@ describe("restoreSessionWorkspace (planning#181)", () => {
 
   it("throws a terminal ServiceError when a no-remote session's workspace is gone", async () => {
     const id = "sess-5";
-    const workspaceDir = path.join(tmpDir, "workspace5"); // never created
+    const workspaceDir = path.join(tmpDir, "workspace5");
     sessionManager.track(id, "No remote", workspaceDir);
-    // No remoteUrl set — nothing to re-clone from.
 
     await expect(
       restoreSessionWorkspace(

@@ -1,24 +1,3 @@
-/**
- * CodexAdapter — implements the AgentProcess interface for the OpenAI Codex CLI.
- *
- * Communication uses the Codex App Server JSON-RPC 2.0 protocol over stdio
- * (JSONL framing). The adapter spawns `codex app-server` as a child process,
- * performs the initialize handshake, manages thread/turn lifecycle, and
- * translates streaming notifications into normalized AgentEvent objects.
- *
- * Protocol reference:
- * - JSON-RPC 2.0 over JSONL on stdio
- * - Lifecycle: initialize → thread/start → turn/start → stream events → turn/completed
- * - Three message types: requests (with id), responses (echo id), notifications (no id)
- *
- * This file keeps the process lifecycle, the JSON-RPC wire format (send/receive
- * framing), and the public AgentProcess orchestration. The thread/turn event
- * stream processing lives in `CodexEventHandler`, tool/diff normalization in
- * `codex-tool-normalizer.ts`, and rate-limit/token-usage tracking in
- * `codex-rate-limits.ts` (P14 of docs/201). The adapter wires those together
- * via the `CodexTransport` surface and delegates protocol parsing to them.
- */
-
 import { EventEmitter } from "node:events";
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -49,50 +28,36 @@ import { CodexRateLimits } from "./codex-rate-limits.js";
 import { CodexEventHandler } from "./codex-event-handler.js";
 import { ensureCodexProjectTrusted } from "./project-trust.js";
 
-// Re-exported for unit tests and external callers that historically imported
-// these pure helpers from the adapter module (they now live in the normalizer).
 export { unwrapShellCommand, buildCodexPermissionInput } from "./codex-tool-normalizer.js";
 
-// ---- Codex JSON-RPC protocol types ----
-
-/** Outbound request (client → app-server). */
 interface JsonRpcRequest {
   method: string;
   id: number;
   params?: Record<string, unknown>;
 }
 
-/** Outbound notification (client → app-server, no id). */
 interface JsonRpcNotification {
   method: string;
   params?: Record<string, unknown>;
 }
 
-/** Inbound response (app-server → client). */
 interface JsonRpcResponse {
   id: number;
   result?: unknown;
   error?: { code: number; message: string; data?: unknown };
 }
 
-/** Inbound notification (app-server → client, no id). */
 interface JsonRpcServerNotification {
   method: string;
   params?: Record<string, unknown>;
 }
 
-/**
- * Inbound request (app-server → client) — has BOTH an id and a method. The
- * app-server blocks the turn until we send back a JsonRpcOutboundResponse with
- * the matching id. Approval prompts arrive this way.
- */
 interface JsonRpcServerRequest {
   id: number;
   method: string;
   params?: Record<string, unknown>;
 }
 
-/** Outbound response (client → app-server) — echoes a server request's id. */
 interface JsonRpcOutboundResponse {
   id: number;
   result?: unknown;
@@ -101,23 +66,10 @@ interface JsonRpcOutboundResponse {
 
 type JsonRpcInbound = JsonRpcResponse | JsonRpcServerNotification | JsonRpcServerRequest;
 
-/**
- * Path where the Codex CLI persists ChatGPT subscription credentials after
- * `codex login --device-auth`. In ShipIt this resolves through a symlink to
- * the shared `/credentials` volume (see Dockerfile.* — feature 119). The home
- * is `${agentHome()}/.codex` — `/home/shipit/.codex` in a session container,
- * `/root/.codex` in local mode (docs/150). Resolved at call time so the same
- * code serves both runtimes.
- */
 function codexAuthFile(configDir?: string): string {
   return path.join(configDir ?? codexHome(), "auth.json");
 }
 
-/**
- * True iff `<configDir>/auth.json` exists and is a non-empty regular file,
- * where `configDir` defaults to `${agentHome()}/.codex`. Exported for unit
- * tests and for reuse by AgentRegistry.checkCodexAuth.
- */
 export function hasCodexFileAuth(configDir?: string): boolean {
   try {
     const file = codexAuthFile(configDir);
@@ -133,12 +85,6 @@ export class CodexAdapter
   extends EventEmitter<AgentProcessEvents>
   implements AgentProcess
 {
-  /**
-   * docs/150 — the local-mode agent factory passes `resolveHome` so the CLI
-   * spawns against the provider account this session was routed to. Everything
-   * that reads Codex's config root goes through {@link codexConfigDir}, so the
-   * auth probe, the `config.toml` writer, and the spawned child all agree.
-   */
   private readonly resolveHome: AgentHomeResolver | undefined;
 
   constructor(
@@ -167,31 +113,14 @@ export class CodexAdapter
 
   readonly capabilities: AgentCapabilities = {
     supportsResume: true,
-    // Mirrors the catalogue row (docs/252 → `catalogue/harnesses.ts`), where the
-    // live probe is recorded: ShipIt's `<attached_images>` block, opened by
-    // Codex's own image tool, reaches the model as vision (planning#458).
     supportsImages: true,
     supportsSystemPrompt: true,
     supportsPermissionModes: false,
     supportedPermissionModes: [],
-    // Current Codex app-server surface ShipIt handles: shell command items,
-    // file-change/apply-patch items, MCP/dynamic tools, subagent collaboration,
-    // web/image/tool-discovery items, and ShipIt's ask bridge.
     toolNames: [...CODEX_TOOL_NAMES],
-    // Mirror of agent-registry.ts. Keep in sync with the registry; both feed
-    // the same picker in the UI.
     models: CODEX_MODELS,
-    // docs/266 item 15 — Codex has both ingredients the chat-native review flow
-    // needs: a shell tool (to run `shipit agent run --role reviewer` and read
-    // its stdout) and subagents (model spawns them via the `spawn_agent` collab
-    // tool on explicit instruction — exactly what the composed review prompt's
-    // fallback branch asks for). MCP is NOT one of them, docs/125
-    // notwithstanding: docs/220 deleted the last `submit_review` write path, so
-    // the flow is a plain chat message and calls no ShipIt tool.
     supportsReview: true,
     supportsSteering: true,
-    // docs/178 — the app-server exposes `thread/compact/start` and emits
-    // `contextCompaction` items we map to normalized compaction signals.
     supportsCompaction: true,
     skillsDirName: ".codex",
     skillInvocationPrefix: "$",
@@ -201,34 +130,18 @@ export class CodexAdapter
   private buffer = "";
   private nextId = 1;
 
-  /** The thread/turn event-stream processor (initialize, item/turn handling). */
   private readonly eventHandler: CodexEventHandler;
 
-  /** Rate-limit + token-usage tracker, shared with the event handler. */
   private readonly rateLimits: CodexRateLimits;
 
-  /** Pending JSON-RPC requests awaiting a response, keyed by id. */
   private pendingRequests = new Map<
     number,
     { resolve: (result: unknown) => void; reject: (err: Error) => void }
   >();
 
-  /**
-   * A same-harness sub-agent spawn's isolated per-spawn HOME
-   * (`AgentRunParams.homeDir`), captured at `run()`. Outranks the
-   * constructor-injected resolver: a per-spawn answer is more specific than a
-   * per-adapter one. Never set on the resident path, so `writeMcpConfig`
-   * (which runs before `run()`, resident-only) keeps resolving the session
-   * config root.
-   */
+  // Child runs override the account home; resident MCP setup uses the resolver.
   private spawnHomeOverride: string | undefined;
 
-  /**
-   * Codex's config root for this adapter — `<resolved HOME>/.codex` when a
-   * per-spawn home applies or the local-mode factory scoped us to an account,
-   * else the process-global {@link codexHome} (which the session container
-   * points at the per-session credentials mount).
-   */
   private codexConfigDir(): string {
     const home = this.spawnHomeOverride ?? this.resolveHome?.();
     return home ? path.join(home, ".codex") : codexHome();
@@ -238,17 +151,10 @@ export class CodexAdapter
     this.eventHandler.setPermissionRequester(requester);
   }
 
-  /**
-   * Spawn the Codex App Server process.
-   * The process stays alive across turns — we create threads and turns within it.
-   */
   run(params: AgentRunParams): void {
-    // Before anything reads `codexConfigDir()` below — the isolated per-spawn
-    // HOME of a same-harness sub-agent run, when one applies.
     this.spawnHomeOverride = params.homeDir;
     this.eventHandler.beginTurn(params.cwd);
 
-    // Check binary exists before attempting spawn
     try {
       execFileSync("which", ["codex"], { stdio: "ignore" });
     } catch {
@@ -263,73 +169,14 @@ export class CodexAdapter
       ...process.env as Record<string, string>,
     };
 
-    // docs/150 — in local mode the CLI must read the account this session was
-    // routed to, not the orchestrator's process-global home. HOME and
-    // CODEX_HOME are both set so an inherited CODEX_HOME can't win over the
-    // scoped HOME (the CLI prefers CODEX_HOME), and so the child agrees with
-    // `codexConfigDir()`, which is where `writeMcpConfig` wrote config.toml.
-    //
-    // planning#390 — set on EVERY spawn, not only when a scoped home applies.
-    // `resolveLocalAgentHome` returns a scoped home only for an `account` route
-    // and deliberately `undefined` for a reserved/string route, which is what
-    // every redirected service resolves to (docs/252). Under the old
-    // `if (scopedHome)` those spawns set neither variable and the child
-    // inherited whatever ambient `HOME` the hosting process had — in the
-    // dogfood inner orchestrator, the image's `HOME=/root`: mode 700 and
-    // root-owned, with the process running as uid 1000. Codex keys its config
-    // root off `$HOME`, so every redirected Codex turn died before starting
-    // with `Failed to read config file /root/.codex/config.toml: Permission
-    // denied (os error 13)` while a subscription turn (an `account` route, so a
-    // scoped home) worked — that asymmetry was the whole bug.
-    //
-    // So the spawn no longer depends on an ambient `HOME` it did not set.
-    // `resolveAgentHome` falls back to `agentHome()` (i.e. `AGENT_HOME`), which
-    // in a session container is the `/home/shipit` the child already inherited
-    // — a no-op there — and in local mode is the writable home compose pins.
-    // `codexConfigDir()` likewise falls back to `codexHome()`, which still
-    // honors an inherited `CODEX_HOME` when one is set. Same HOME/CODEX_HOME
-    // pairing as the warm-up spawn in `orchestrator/agents/codex/home-init.ts`.
-    //
-    // That warm-up is the other half of this change and was NOT already covering
-    // this spawn: its two gates keyed on the account root, so the root an
-    // unscoped turn now lands on had no cold-start serialization at all — and
-    // this fix is what makes that root reachable, since the turn previously died
-    // before it could race the naming CLI for it. `session-agent-env.ts` and
-    // `session-namer.ts` now gate on the same expression this line resolves.
-    // All three have to name one root, or the warm-up initializes a directory
-    // the turn will not read.
+    // Always set both homes: local mode can inherit an inaccessible /root.
+    // This root must match MCP setup and the account warm-up gate.
     const scopedHome = this.spawnHomeOverride ?? this.resolveHome?.();
     env.HOME = resolveAgentHome(scopedHome);
     env.CODEX_HOME = this.codexConfigDir();
 
-    // docs/252 phase 3 — a SHAPED turn runs against the selected model's
-    // service, so neither auth path below applies to it: `auth.json`
-    // authenticates OpenAI and nothing else, and the env key is whatever the
-    // catalogue named for this service. Resolved FIRST, and everything below
-    // gated on `shaped`, because otherwise the `hasFileAuth` branch would delete
-    // the very key this turn authenticates with — or, with a ChatGPT login
-    // present, hand a DeepSeek turn an OpenAI credential.
-    //
-    // Auth resolution — see docs/119-codex-subscription-auth/plan.md.
-    //
-    // Two modes:
-    //   1. ChatGPT subscription login — the `codex login --device-auth` flow
-    //      writes credentials to ~/.codex/auth.json (a symlink into the
-    //      shared credentials volume). When present, the CLI uses the user's
-    //      ChatGPT plan / Codex credits.
-    //   2. OPENAI_API_KEY env var — bills against the user's OpenAI Platform
-    //      account (separate from any ChatGPT subscription).
-    //
-    // If both are configured, we prefer the subscription path: strip the env
-    // key from the spawned child so `codex` doesn't silently route through
-    // Platform API billing — that's exactly the bug this feature exists to
-    // fix.
-    //
-    // docs/150-multiple-provider-subscriptions req 12 — a spawn scoped to a provider account never falls back
-    // to the env key. Failover moves work between subscription accounts only;
-    // a scoped account with no `auth.json` is an unusable account, and saying
-    // so (`auth_required`) is honest, where quietly billing the orchestrator's
-    // Platform key would look like the account had worked.
+    // Routed services use their own credentials. Subscription auth takes
+    // precedence over API billing; a scoped account must never fall back to it.
     const routing = params.serviceRouting;
     const providerArgs = codexProviderArgs(routing);
     const shaped = routing !== undefined && providerArgs.length > 0;
@@ -350,9 +197,6 @@ export class CodexAdapter
         `service routing: ${routing.serviceId}/${routing.billingMode} -> ${routing.baseUrl}`,
       );
     } else if (routing) {
-      // The catalogue named a service this CLI cannot be pointed at (a style it
-      // does not speak, or a credential shape it cannot carry). Running against
-      // OpenAI instead would bill the wrong account, so stop and say so.
       this.emit("error", new Error(
         `Codex cannot be pointed at ${routing.serviceId} over ${routing.style}.`,
       ));
@@ -374,25 +218,14 @@ export class CodexAdapter
       this.emit("log", "codex", "using OPENAI_API_KEY (Platform API billing)");
     }
 
-    // docs/217 — reasoning effort is a startup config, not a per-turn param, so
-    // it rides a `-c model_reasoning_effort=…` global override placed BEFORE the
-    // `app-server` subcommand. Omitted entirely when unset so Codex uses its own
-    // default. The value is validated server-side against the agent's option set
-    // before it reaches here. docs/252 phase 3 — the provider block rides the
-    // same position, for the same reason.
+    // Global config overrides must precede the subcommand.
     const args = [
       ...(params.reasoningEffort ? ["-c", `model_reasoning_effort=${params.reasoningEffort}`] : []),
       ...providerArgs,
       "app-server",
     ];
 
-    // Trust the workspace before the app-server reads it. Every ShipIt
-    // workspace has a `.codex/` (plugin-skills creates one per harness), and an
-    // untrusted project makes `initialize` log an ERROR and drop the repo's own
-    // project-local config, hooks and exec policies. Written to the file rather
-    // than passed as a `-c` override because only the file entry takes — see
-    // `project-trust.ts` for the measurement. Idempotent, so this is a read on
-    // every spawn after the first.
+    // Project trust must be in the file before startup; a -c override is ignored.
     ensureCodexProjectTrusted(env.CODEX_HOME, cwd);
 
     this.emit("log", "codex", `spawning: codex ${args.join(" ")} | cwd: ${cwd}`);
@@ -410,13 +243,11 @@ export class CodexAdapter
 
     this.buffer = "";
 
-    // Read stdout line by line (JSONL framing)
     this.proc.stdout?.on("data", (chunk: Buffer) => {
       this.buffer += chunk.toString("utf-8");
       this.drainLines();
     });
 
-    // Log stderr but also detect auth issues
     this.proc.stderr?.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf-8").trim();
       if (text) {
@@ -443,7 +274,6 @@ export class CodexAdapter
       this.proc = null;
     });
 
-    // Start the initialization handshake, then create a thread and turn
     this.eventHandler.initializeAndRun(params).catch((err: unknown) => {
       this.emit("error", err instanceof Error ? err : new Error(String(err)));
     });
@@ -452,26 +282,7 @@ export class CodexAdapter
   readonly isStreaming = false;
 
   writeStdin(data: string): void {
-    // For Codex, user input during a turn (live steering) is sent via
-    // `turn/steer`. Getting this to actually take required two non-obvious
-    // pieces — both verified by driving the real app-server (0.130/0.132):
-    //
-    // 1. `turn/steer` is a JSON-RPC **request**, not a notification. It has a
-    //    `TurnSteerResponse` (returns `{turnId}`). The app-server silently
-    //    DROPS a `turn/steer` sent without an `id` — no error, the turn just
-    //    runs to completion ignoring the message. So we must use
-    //    `sendRequest`, not `sendNotification`. (This was the bug behind
-    //    "Codex ignores live-steer messages sent mid-turn".)
-    //
-    // 2. `expectedTurnId` is mandatory (`TurnSteerParams`): validated
-    //    non-empty and must match the currently active turn, else the request
-    //    is rejected. We capture `currentTurnId` from the `turn/started`
-    //    event (and the `turn/start` response as a fallback); if it isn't set
-    //    there's no active turn to steer, so we skip.
-    //
-    // `input` is an array of content blocks, not a bare string — the same
-    // shape as `turn/start` (see `initializeAndRun`); a string is rejected
-    // with -32600 "invalid type: string, expected a sequence".
+    // turn/steer notifications are silently dropped; use a request with the active turn ID.
     const threadId = this.eventHandler.getThreadId();
     const currentTurnId = this.eventHandler.getCurrentTurnId();
     if (this.proc && threadId && currentTurnId) {
@@ -483,22 +294,9 @@ export class CodexAdapter
             expectedTurnId: currentTurnId,
             input: [{ type: "text", text: steerText }],
           });
-          // docs/140 — the request resolved, so the app-server accepted the
-          // steer into the active turn. Emit the delivery ACK (the same event
-          // Claude surfaces from its --replay-user-messages echo) so the
-          // orchestrator marks this steer `delivered` and does NOT re-queue it
-          // at turn end. Without this, an accepted Codex steer that produced no
-          // further assistant group would be misread as a lost gap-steer and
-          // re-sent (double-processed) by `requeueUndeliveredSteers`.
+          // Acknowledge acceptance so the orchestrator does not queue the steer again.
           this.emit("event", { type: "agent_user_replay", text: steerText });
         } catch (err: unknown) {
-          // A rejection here (e.g. ActiveTurnNotSteerable during a
-          // review/compaction turn, or the turn ending as we send) means the
-          // steer didn't land. The orchestrator already optimistically rendered
-          // the message, so emit `agent_steer_rejected` (docs/140) — the
-          // listener removes the optimistic bubble and re-queues the text so it
-          // runs as the next turn instead of silently vanishing. Also log for
-          // diagnostics.
           const reason = err instanceof Error ? err.message : String(err);
           this.emit("log", "codex", `turn/steer rejected: ${reason}`);
           this.emit("event", { type: "agent_steer_rejected", text: steerText });
@@ -508,24 +306,12 @@ export class CodexAdapter
   }
 
   sendUserMessage(text: string, _opts?: { images?: unknown[] }): void {
-    // Codex steers via turn/steer (writeStdin already does this)
     this.writeStdin(text);
   }
 
-  /**
-   * docs/178 — trigger a context compaction on the live app-server via the
-   * `thread/compact/start` RPC. Only works when a process + thread are resident
-   * (i.e. a turn is in flight); Codex tears its app-server down on turn
-   * completion, so between turns there's nothing to talk to and the orchestrator
-   * routes through `run({ compact: true })` (which spawns a fresh app-server,
-   * resumes the thread, and issues the same RPC) instead. We mark
-   * `compactionRequested` so the resulting `contextCompaction` items are labeled
-   * `"manual"` rather than `"auto"`.
-   */
+  // Between turns, compaction needs a new run({ compact: true }).
   compact(_instructions?: string): void {
-    // docs/178 §4 — Codex's `thread/compact/start` RPC takes only a threadId;
-    // it has no slot for custom-compaction instructions, so any `/compact <args>`
-    // text is intentionally dropped (Claude-only feature).
+    // The RPC has no field for custom compaction instructions.
     const threadId = this.eventHandler.getThreadId();
     if (this.proc && threadId) {
       this.eventHandler.markCompactionRequested();
@@ -541,19 +327,7 @@ export class CodexAdapter
   }
 
   interrupt(): void {
-    // Graceful interrupt (docs/140): ask the app-server to abort the in-flight
-    // turn via `turn/interrupt` rather than SIGTERMing the process. The server
-    // ends the turn with `turn/completed status:"interrupted"`, which
-    // `handleTurnCompleted` maps to an `agent_result` (error) and then tears
-    // the process down — same teardown the hard kill produced, but the model
-    // stops cleanly and the transcript records a real turn boundary instead of
-    // a process death (which is what the AskUserQuestion interrupt flow needs:
-    // the turn must END so the answer can start a fresh one).
-    //
-    // Fall back to `kill()` when there's no active turn to cancel, or if the
-    // request is rejected (older app-server without the method) — in both cases
-    // the graceful path can't complete and we must not leave the process
-    // resident waiting for input that never comes.
+    // Preserve a turn boundary for queued answers; kill if interruption fails.
     const threadId = this.eventHandler.getThreadId();
     const currentTurnId = this.eventHandler.getCurrentTurnId();
     if (this.proc && threadId && currentTurnId) {
@@ -570,13 +344,6 @@ export class CodexAdapter
     this.kill();
   }
 
-  /**
-   * Tear the app-server down — with its whole descendant tree. Codex is
-   * one-app-server-per-turn, so this runs at the end of EVERY turn, and it is
-   * the path that leaked: the MCP servers died with the app-server while a
-   * Playwright browser (spawned `detached` by playwright-core, so in a session
-   * of its own) survived reparented to pid 1. See `killProcessTree`.
-   */
   kill(): void {
     if (this.proc) {
       killProcessTree(this.proc, "SIGTERM", { label: "codex" });
@@ -586,30 +353,8 @@ export class CodexAdapter
     this.pendingRequests.clear();
   }
 
-  // ---- MCP config writer (docs/088, docs/125, docs/155 hair 10) ----
-
-  /**
-   * Codex reads MCP server definitions from `~/.codex/config.toml` at
-   * app-server startup, not from a per-run path like Claude. So we rewrite
-   * the ShipIt-managed block in that file before every spawn and return any
-   * resolved secret values via `runtimeEnv` (the worker sets them on the
-   * child process env for this run). The block is delimited so we never
-   * clobber a user's own MCP entries elsewhere in the file.
-   *
-   * For stdio servers:
-   *  - `env` entries become Codex `env_vars` (the actual values are passed
-   *    through `runtimeEnv` to the spawned child, so the `.toml` itself
-   *    never has resolved secrets in it).
-   * For HTTP servers:
-   *  - `Authorization: Bearer <token>` becomes Codex `bearer_token_env_var`,
-   *    matching `codex mcp add --bearer-token-env-var`. The env var stores
-   *    only the token, not the literal `Bearer ` prefix.
-   *  - Other `headers` entries become Codex `env_http_headers`, backed by
-   *    synthetic per-run environment variables.
-   *
-   * Resolved secrets embedded in `args` still have to be written literally
-   * because Codex has no argv env indirection.
-   */
+  // Config is read at startup. Keep secrets in runtimeEnv, except argv values:
+  // Codex has no argv environment indirection.
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult {
     const codexConfigDir = this.codexConfigDir();
     const configPath = path.join(codexConfigDir, "config.toml");
@@ -619,20 +364,7 @@ export class CodexAdapter
       "# ShipIt-managed MCP servers. This block is regenerated before each Codex turn.",
     ];
 
-    // docs/079 — built-in Playwright (browser) server, mirroring the Claude
-    // adapter. Codex runs with approvalPolicy:"never", so these tools
-    // auto-approve like every other tool; no allowlist plumbing is needed.
-    // See playwright-mcp.ts for the `sh -c` launch / `--browser chromium`
-    // rationale.
-    //
-    // SHI-#1558 — unlike Claude (whose MCP children inherit the worker's full
-    // env), Codex spawns each MCP server with a controlled environment: only
-    // vars named in `env_vars` reach the child (docs/088). The pre-installed
-    // browser is pinned to PLAYWRIGHT_BROWSERS_PATH (docs/150 §8); without
-    // forwarding it the Playwright MCP server can't find the chrome-for-testing
-    // build and every browser_* tool fails on first use with
-    // `Browser "chrome-for-testing" is not installed`. Forward it the same way
-    // user-server secrets are wired (runtimeEnv value + env_vars allowlist).
+    // Codex forwards only allowlisted environment variables to MCP children.
     lines.push(
       "",
       "[mcp_servers.playwright]",
@@ -645,15 +377,6 @@ export class CodexAdapter
       lines.push(`env_vars = ${tomlArray(["PLAYWRIGHT_BROWSERS_PATH"])}`);
     }
 
-    // planning#130 / docs/199 — ONE consolidated stdio bridge serves all of ShipIt's
-    // internal tools under the single `shipit` server, instead of five separate
-    // processes. The `SHIPIT_MCP_TOOLS` env selects which tools to expose; Codex
-    // gets review (docs/125), present (docs/093), voice (docs/163), ask
-    // (docs/147 — Codex lacks a Default-mode native question tool, so this
-    // exposes one whose output handleItem normalizes into an AskUserQuestion
-    // tool_use), and bug (docs/164) — NOT permission (Codex uses its native
-    // approval channel). The value is passed through `runtimeEnv` (the child's
-    // env) and allowlisted via `env_vars`, matching how user-server env is wired.
     if (ctx.shipitBridge) {
       runtimeEnv.SHIPIT_MCP_TOOLS = "present,voice,ask,bug,propose_actions";
       lines.push(
@@ -743,9 +466,6 @@ export class CodexAdapter
     return { runtimeEnv };
   }
 
-  // ---- JSON-RPC transport ----
-
-  /** Send a JSON-RPC request and return a promise for the response. */
   private sendRequest(method: string, params?: Record<string, unknown>): Promise<unknown> {
     const id = this.nextId++;
     const msg: JsonRpcRequest = { method, id };
@@ -757,31 +477,25 @@ export class CodexAdapter
     });
   }
 
-  /** Send a JSON-RPC notification (fire-and-forget, no response expected). */
   private sendNotification(method: string, params?: Record<string, unknown>): void {
     const msg: JsonRpcNotification = { method };
     if (params) msg.params = params;
     this.writeJsonRpc(msg);
   }
 
-  /** Reply to a server→client request with a successful result. */
   private sendResponse(id: number, result: unknown): void {
     this.writeJsonRpc({ id, result });
   }
 
-  /** Reply to a server→client request with a JSON-RPC error. */
   private sendErrorResponse(id: number, code: number, message: string): void {
     this.writeJsonRpc({ id, error: { code, message } });
   }
 
-  /** Write a JSON-RPC message to the process stdin. */
   private writeJsonRpc(msg: JsonRpcRequest | JsonRpcNotification | JsonRpcOutboundResponse): void {
     if (!this.proc?.stdin?.writable) return;
     const line = `${JSON.stringify(msg)  }\n`;
     this.proc.stdin.write(line);
   }
-
-  // ---- JSONL parsing ----
 
   private drainLines(flush = false): void {
     const lines = this.buffer.split("\n");
@@ -798,31 +512,22 @@ export class CodexAdapter
         const msg = JSON.parse(trimmed) as JsonRpcInbound;
         this.handleMessage(msg);
       } catch {
-        // Non-JSON line — log it
         this.emit("log", "codex-stdout", trimmed);
       }
     }
   }
-
-  // ---- Message dispatch ----
 
   private handleMessage(msg: JsonRpcInbound): void {
     const hasId = "id" in msg && msg.id !== null && msg.id !== undefined;
     const hasMethod =
       "method" in msg && typeof (msg as { method?: unknown }).method === "string";
 
-    // Server→client REQUEST: carries BOTH an id and a method. The app-server
-    // blocks the turn until we answer it (approval prompts arrive this way).
-    // This MUST be checked before the response branch — a server request also
-    // has an id, and treating it as a response to one of our calls drops it on
-    // the floor, hanging the turn forever (status → waitingOnApproval, UI stuck
-    // on "Thinking…").
+    // Requests also have IDs. Handle them first or approvals wait forever.
     if (hasId && hasMethod) {
       this.eventHandler.handleServerRequest(msg);
       return;
     }
 
-    // Response to one of OUR pending requests: an id, no method.
     if (hasId) {
       const resp = msg as JsonRpcResponse;
       const pending = this.pendingRequests.get(resp.id);
@@ -837,14 +542,9 @@ export class CodexAdapter
       return;
     }
 
-    // Server notification: a method, no id.
     this.eventHandler.handleNotification(msg as JsonRpcServerNotification);
   }
 }
-
-// ---- TOML emit helpers (kept module-local — Codex is the only adapter
-// emitting a TOML block today, and breaking these out for symmetry with the
-// other adapters would over-generalize). ----
 
 function tomlString(value: string): string {
   return JSON.stringify(value);

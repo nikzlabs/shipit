@@ -25,7 +25,6 @@ let app: Awaited<ReturnType<typeof buildApp>>;
 let client: TestClient;
 let githubAuth: StubGitHubAuthManager;
 let latestClaude: FakeClaudeProcess | null = null;
-/** Every FakeClaudeProcess the app created, in order. */
 let allClaudes: FakeClaudeProcess[] = [];
 let dbManager: DatabaseManager;
 let port: number;
@@ -39,7 +38,6 @@ beforeEach(async () => {
   allClaudes = [];
   credentialsDir = path.join(tmpDir, "credentials");
   credentialStore = createTestCredentialStore(tmpDir);
-  // Prevent rebase --continue from opening an editor.
   process.env.GIT_EDITOR = "true";
 
   githubAuth = new StubGitHubAuthManager();
@@ -67,7 +65,6 @@ beforeEach(async () => {
   const addr = app.server.address();
   port = typeof addr === "object" && addr ? addr.port : 0;
   client = await TestClient.connect(port);
-  // consume initial preview_status
   await client.receive();
 });
 
@@ -78,7 +75,6 @@ afterEach(async () => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-/** Create a session and run an initial agent turn to set it up. */
 async function createSession(): Promise<{ sessionId: string; sessionDir: string }> {
   client.send({ type: "send_message", text: "hello" });
   const claude = await waitForClaude(() => latestClaude);
@@ -102,10 +98,6 @@ async function createSession(): Promise<{ sessionId: string; sessionDir: string 
   return { sessionId, sessionDir };
 }
 
-/**
- * Set up the session with a bare remote and create divergence between
- * the session's branch and origin/main. Returns the bare remote path.
- */
 function setupDivergence(
   sessionDir: string,
   opts: { conflicting: boolean },
@@ -116,14 +108,10 @@ function setupDivergence(
   execSync("git init --bare -b main", { cwd: bareDir, env });
   execSync(`git remote add origin ${bareDir}`, { cwd: sessionDir, env });
 
-  // The session is already on `main` (git.init() creates it). Add a base
-  // commit with shared.txt so the conflicting case can edit it on both sides,
-  // then push as origin/main.
   fs.writeFileSync(path.join(sessionDir, "shared.txt"), "v1\n");
   execSync("git add -A && git commit -m 'Add shared'", { cwd: sessionDir, env });
   execSync("git push -u origin main", { cwd: sessionDir, env });
 
-  // Create feature branch and add a feature commit.
   execSync("git checkout -b feature", { cwd: sessionDir, env });
   if (opts.conflicting) {
     fs.writeFileSync(path.join(sessionDir, "shared.txt"), "feature edit\n");
@@ -133,7 +121,6 @@ function setupDivergence(
   execSync("git add -A && git commit -m 'Feature commit'", { cwd: sessionDir, env });
   execSync("git push -u origin feature", { cwd: sessionDir, env });
 
-  // Move main forward via a temp clone so origin/main diverges.
   const tempClone = path.join(tmpDir, "temp-clone");
   fs.mkdirSync(tempClone, { recursive: true });
   execSync(`git clone ${bareDir} .`, { cwd: tempClone, env });
@@ -150,7 +137,6 @@ function setupDivergence(
   return bareDir;
 }
 
-/** Issue a POST to start a rebase via HTTP. */
 async function postRebase(sessionId: string, baseBranch = "main"): Promise<{ status: number; body: { status?: string; error?: string } }> {
   const http = await import("node:http");
   const body = JSON.stringify({ baseBranch });
@@ -183,7 +169,6 @@ async function postRebase(sessionId: string, baseBranch = "main"): Promise<{ sta
   });
 }
 
-/** Drain WS messages up to a timeout. */
 async function collectMessages(timeoutMs = 3000): Promise<WsServerMessage[]> {
   const messages: WsServerMessage[] = [];
   const deadline = Date.now() + timeoutMs;
@@ -197,13 +182,7 @@ async function collectMessages(timeoutMs = 3000): Promise<WsServerMessage[]> {
   return messages;
 }
 
-/**
- * Wait until the agent has been run with a prompt containing `needle`.
- *
- * `waitForClaude`'s "not this instance" form doesn't fit here: the orchestrator
- * may reuse the same process across turns, so identity can't distinguish turn N
- * from turn N+1. The prompt text can.
- */
+// A reused process needs a prompt check to distinguish successive turns.
 async function waitForPrompt(needle: string, timeoutMs = 5000): Promise<FakeClaudeProcess> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -214,7 +193,6 @@ async function waitForPrompt(needle: string, timeoutMs = 5000): Promise<FakeClau
   throw new Error(`Timed out waiting for a prompt containing "${needle}"`);
 }
 
-/** Wait until a message of the given type arrives. */
 async function waitForMessage(type: string, timeoutMs = 5000): Promise<WsServerMessage> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -227,9 +205,6 @@ async function waitForMessage(type: string, timeoutMs = 5000): Promise<WsServerM
 describe("rebase flow: API + WS events", () => {
   it("returns 404 when no runner exists for the session", async () => {
     const { sessionId } = await createSession();
-    // Tear down the runner so the rebase endpoint can't find one.
-    // (createSession leaves a runner attached, but if we look up a totally
-    // non-existent ID we still get 404 from the runner registry check.)
     const res = await postRebase(`${sessionId  }-bogus`);
     expect(res.status).toBe(404);
   });
@@ -248,10 +223,6 @@ describe("rebase flow: API + WS events", () => {
     expect(completeMsg).toMatchObject({ type: "rebase_complete" });
   });
 
-  // docs/221 — the user-visible half of a manual sync (the "Synced with main"
-  // card) already worked; the agent was never told. A sync runs with no turn in
-  // flight, so the notice is parked on the session and delivered by the next
-  // turn's prompt — this asserts the whole round trip, not just the DB write.
   it("clean rebase — the next user turn's prompt carries the sync notice, once", { timeout: 25_000 }, async () => {
     await githubAuth.setToken("test-token");
     const { sessionId, sessionDir } = await createSession();
@@ -266,8 +237,6 @@ describe("rebase flow: API + WS events", () => {
     expect(first.lastPrompt).toContain("origin/main");
     first.finish("test-session-1");
 
-    // Delivered exactly once: the consume is read-and-clear, so a second turn
-    // must not re-litigate a sync the agent already heard about.
     await collectMessages(500);
     client.send({ type: "send_message", text: "and again" });
     const second = await waitForPrompt("and again");
@@ -275,13 +244,6 @@ describe("rebase flow: API + WS events", () => {
     second.finish("test-session-1");
   });
 
-  // planning#369 — the whole point of the rebase is to clear GitHub's
-  // `CONFLICTING` state, and the PR card renders straight off the poller's
-  // `mergeable`. The route never told the poller anything, so the "Merge
-  // conflicts" chip and the "Resolve conflicts" button outlived the fix by up to
-  // a slow tick (120s) — and forever while the polling gate was closed. This
-  // asserts the ROUTE wires the poller through; the driver's own behaviour
-  // (which calls, in which order, on which paths) is in rebase-driver.test.ts.
   it("clean rebase — the route makes the poller re-read the PR it just un-conflicted", { timeout: 20_000 }, async () => {
     await githubAuth.setToken("test-token");
     const { sessionId, sessionDir } = await createSession();
@@ -302,8 +264,6 @@ describe("rebase flow: API + WS events", () => {
   it("up-to-date branch — emits rebase_complete without rebase_started", { timeout: 20_000 }, async () => {
     const { sessionId, sessionDir } = await createSession();
 
-    // Set up a remote where main equals current HEAD — no divergence.
-    // Session is already on `main` from git.init(); just add a remote and push.
     const env = { ...process.env, HOME: tmpDir };
     const bareDir = path.join(tmpDir, "bare-remote.git");
     fs.mkdirSync(bareDir, { recursive: true });
@@ -326,15 +286,12 @@ describe("rebase flow: API + WS events", () => {
     const { sessionId, sessionDir } = await createSession();
     setupDivergence(sessionDir, { conflicting: true });
 
-    // The driver creates a *new* FakeClaudeProcess via the agent factory.
-    // Capture the next instance so we can drive its resolution.
     const claudeBeforeRebase = latestClaude;
 
     const res = await postRebase(sessionId, "main");
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("started");
 
-    // Server emits rebase_started → rebase_conflicts → system_user_message → ...
     await waitForMessage("rebase_started");
     const conflictsMsg = await waitForMessage("rebase_conflicts");
     expect(conflictsMsg).toMatchObject({
@@ -342,43 +299,24 @@ describe("rebase flow: API + WS events", () => {
       conflicts: expect.arrayContaining([expect.objectContaining({ path: "shared.txt" })]),
     });
 
-    // The agent factory was called for the resolution turn — find the new
-    // FakeClaudeProcess and have it "resolve" the conflict.
     const conflictAgent = await waitForClaude(() => latestClaude, claudeBeforeRebase);
 
-    // Resolve by writing a clean merged file (must be done in the worktree).
     fs.writeFileSync(path.join(sessionDir, "shared.txt"), "merged\n");
     conflictAgent.finish("test-session-1");
 
-    // Wait for completion event.
     const completeMsg = await waitForMessage("rebase_complete", 8_000);
     expect(completeMsg).toMatchObject({ type: "rebase_complete" });
 
-    // Verify the file is actually merged on disk.
     const finalContent = fs.readFileSync(path.join(sessionDir, "shared.txt"), "utf-8");
     expect(finalContent).not.toContain("<<<<<<<");
     expect(finalContent).toContain("merged");
   });
 
-  // docs/260-turn-level-account-routing reqs 6, 9, 12 — the conflict-resolution turn is a system turn on
-  // the shared dispatch path (`runner.dispatch` → `runDispatchedTurn` →
-  // `executeAgentTurn`), so it takes the same per-turn account selection and
-  // attempt loop a user-typed turn does. Under docs/150 this scenario was a
-  // preflight block ("no CLI ever spawns"); docs/260 inverts it: refusal
-  // memory alone must never stop the turn (req 5) — the optimistic first
-  // selection still returns a refusal-blocked account (req 12) and the turn
-  // runs on it (req 9's try-once). Only after every account has actually
-  // refused THIS turn does the resolution fail — with the provider's own
-  // words (req 6) — and the rebase reports the failure instead of silently
-  // hanging on a resolution turn that will never happen.
   it("still tries refusal-benched accounts for the conflict-resolution turn, aborting only after every account refuses (docs/260-turn-level-account-routing reqs 6, 9, 12)", { timeout: 20_000 }, async () => {
     await githubAuth.setToken("test-token");
     const { sessionId, sessionDir } = await createSession();
     setupDivergence(sessionDir, { conflicting: true });
 
-    // Both connected Claude subscriptions carry refusal memory by the time the
-    // rebase needs an agent (`exhaustedUntil` + `exhaustedAt`, the shape
-    // `refusalBlockedUntil` honours).
     const accounts = new ProviderAccountManager({ credentialsDir, credentialStore });
     const resetAt = Date.now() + 45 * 60 * 1000;
     for (const label of ["Work", "Personal"]) {
@@ -395,28 +333,19 @@ describe("rebase flow: API + WS events", () => {
     await waitForMessage("rebase_started");
     await waitForMessage("rebase_conflicts");
 
-    // reqs 9, 12 — the benched account is still TRIED: a CLI spawns and is
-    // handed the conflict prompt. Blocking here (the docs/150 behavior) is the
-    // regression this test now guards against.
     const attempt1 = await waitForClaude(() => latestClaude, claudeBeforeRebase);
     expect(attempt1.lastPrompt.length).toBeGreaterThan(0);
 
-    // The provider itself refuses → the attempt loop re-runs the resolution
-    // turn on the second account, same conflict prompt.
     const quotaError = "You've hit Claude's 5h usage limit. It resets at 2099-01-01T00:00:00.000Z.";
     attempt1.emit("event", { type: "agent_result", error: quotaError, sessionId: "test-session-1" });
     const attempt2 = await waitForClaude(() => latestClaude, attempt1);
     expect(attempt2.lastPrompt).toBe(attempt1.lastPrompt);
 
-    // The second account refuses too — every candidate is in the turn's
-    // attempt ledger, so the turn fails with the provider's refusals (req 6)...
     attempt2.emit("event", { type: "agent_result", error: quotaError, sessionId: "test-session-1" });
     const err = await waitForMessage("error", 8_000) as unknown as { message: string };
     expect(err.message).toContain("Every connected account refused this turn for quota");
     expect(err.message).toContain("usage limit");
-    // ...and the rebase reports the failure instead of hanging.
     await waitForMessage("rebase_aborted", 8_000);
-    // The ledger bounds the loop: exactly one real attempt per account.
     expect(allClaudes.slice(spawnedBefore).filter((c) => c.runCalled)).toHaveLength(2);
   });
 
@@ -427,12 +356,10 @@ describe("rebase flow: API + WS events", () => {
     const claudeBeforeRebase = latestClaude;
     await postRebase(sessionId, "main");
 
-    // Wait for rebase to start and conflicts to arrive — the agent is now busy.
     await waitForMessage("rebase_started");
     await waitForMessage("rebase_conflicts");
     await waitForClaude(() => latestClaude, claudeBeforeRebase);
 
-    // Hit the abort endpoint via HTTP.
     const http = await import("node:http");
     const abortRes = await new Promise<{ status: number }>((resolve, reject) => {
       const req = http.request(
@@ -448,24 +375,16 @@ describe("rebase flow: API + WS events", () => {
     });
     expect(abortRes.status).toBe(200);
 
-    // The aborted message should appear on the WS.
     await waitForMessage("rebase_aborted");
 
-    // Working tree should no longer be in rebase state.
     const env = { ...process.env, HOME: tmpDir };
     const isRebasing = fs.existsSync(path.join(sessionDir, ".git", "rebase-merge")) ||
                        fs.existsSync(path.join(sessionDir, ".git", "rebase-apply"));
     expect(isRebasing).toBe(false);
-    // The original feature commit is restored.
     const log = execSync("git log --oneline", { cwd: sessionDir, env, encoding: "utf-8" });
     expect(log).toContain("Feature commit");
 
-    // planning#338 — the abort explicitly settles the resolution turn the flow was
-    // awaiting (the fake CLI's kill, like a container kill whose terminal SSE
-    // is dropped once the slot clears, never reports completion on its own).
-    // Without that settle the flow's session hold is never released and every
-    // later message queues forever. The proof is end-to-end: a new message
-    // must spawn a fresh agent turn, not sit in the queue.
+    // The fake's kill emits no completion; abort must release the turn itself.
     const claudeAtAbort = latestClaude;
     client.send({ type: "send_message", text: "after abort" });
     const postAbortClaude = await waitForClaude(() => latestClaude, claudeAtAbort);
@@ -473,24 +392,12 @@ describe("rebase flow: API + WS events", () => {
     postAbortClaude.finish("test-session-post-abort");
   });
 
-  /**
-   * The 2026-09-07 incident, end to end through the real route: a manual sync
-   * over a workspace that still holds uncommitted work must SAVE that work
-   * through `postTurnCommit` and then rebase, rather than handing the user
-   * git's `cannot rebase: Your index contains uncommitted changes`.
-   *
-   * The route-level half matters on its own — the driver only refuses when
-   * `commitPendingWork` is absent, so a dropped wiring would turn every sync
-   * over a dirty tree into a refusal with no test to notice.
-   */
   it("dirty workspace — the sync saves the work, then rebases", { timeout: 20_000 }, async () => {
     await githubAuth.setToken("test-token");
     const { sessionId, sessionDir } = await createSession();
     setupDivergence(sessionDir, { conflicting: false });
     const env = { ...process.env, HOME: tmpDir };
 
-    // What the previous turn left behind: one edit unstaged, one already
-    // staged — the exact state git refuses to rebase over.
     fs.writeFileSync(path.join(sessionDir, "unstaged.txt"), "left behind\n");
     fs.writeFileSync(path.join(sessionDir, "staged.txt"), "already added\n");
     execSync("git add staged.txt", { cwd: sessionDir, env });
@@ -501,8 +408,6 @@ describe("rebase flow: API + WS events", () => {
     const completeMsg = await waitForMessage("rebase_complete", 10_000);
     expect(completeMsg).toMatchObject({ type: "rebase_complete" });
 
-    // Saved, not stashed and not discarded: both files are on the branch, and
-    // the branch now contains origin/main.
     const log = execSync("git log --oneline", { cwd: sessionDir, env, encoding: "utf-8" });
     expect(log).toContain("Save work before syncing with main");
     expect(log).toContain("Upstream commit");

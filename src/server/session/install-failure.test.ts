@@ -30,7 +30,6 @@ describe("formatInstallFailureMessage", () => {
     const msg = formatInstallFailureMessage("npm ci", 7, lines);
     expect(msg).toContain("line 19");
     expect(msg).toContain("line 14");
-    // Older lines are dropped — only the tail (last 6) is kept.
     expect(msg).not.toContain("line 13");
   });
 
@@ -40,10 +39,6 @@ describe("formatInstallFailureMessage", () => {
   });
 
   it("names every empty dep dir, and both ways out of the failure", () => {
-    // The message is the ONLY thing that reaches a human on this path — the
-    // install log shows a command that exited 0. Which declaration was not
-    // satisfied is the actionable fact, because the two fixes (repair the
-    // install / narrow `agent.dep-dirs`) are told apart only by the repo.
     const msg = formatEmptyDepDirsFailureMessage(["game/node_modules", "tools/debug/node_modules"]);
     expect(msg).toContain("game/node_modules");
     expect(msg).toContain("tools/debug/node_modules");
@@ -56,10 +51,6 @@ describe("formatInstallFailureMessage", () => {
   });
 
   it("names the disagreeing packages, and caps the examples it lists", () => {
-    // Same reasoning as the empty case: the install log shows a command that
-    // exited 0, so this message is the only thing that reaches a human. Naming
-    // the packages is what makes the claim checkable at a glance — but an
-    // upgrade can move hundreds, so the list is bounded and says how many more.
     const msg = formatStaleDepDirsFailureMessage(
       [
         {
@@ -76,12 +67,9 @@ describe("formatInstallFailureMessage", () => {
     );
     expect(msg).toContain("game/node_modules");
     expect(msg).toContain("node_modules/vite: lockfile wants 5.4.0, tree has 4.0.0");
-    // A package the tree does not hold at all reads as such, not as "undefined".
     expect(msg).toContain("node_modules/rollup: lockfile wants 4.0.0, tree has nothing");
     expect(msg).not.toContain("postcss");
     expect(msg).toContain("+1 more");
-    // Unlike the empty case there is only ONE way out — narrowing `dep-dirs`
-    // does not make a tree match its lockfile — so it must not offer two.
     expect(msg).not.toContain("agent.dep-dirs");
   });
 
@@ -95,8 +83,6 @@ describe("formatInstallFailureMessage", () => {
   });
 
   it("bounds the retained tail to a sane size", () => {
-    // The worker slices stderr to INSTALL_STDERR_TAIL_BYTES before calling this,
-    // so the constant exists as the accumulation cap. Sanity-check it's bounded.
     expect(INSTALL_STDERR_TAIL_BYTES).toBeGreaterThan(0);
     expect(INSTALL_STDERR_TAIL_BYTES).toBeLessThanOrEqual(64 * 1024);
   });

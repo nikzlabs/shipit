@@ -45,7 +45,7 @@ services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_PASSWORD: dev    # not a secret — dev-only default
+      POSTGRES_PASSWORD: dev    # Development only.
 ```
 
 Each name must be a valid env var identifier
@@ -62,20 +62,15 @@ services:
   api:
     image: node:24-slim
     x-shipit-secrets:
-      # Simple shorthand
       - SENTRY_DSN
 
-      # With description — shown in the secrets panel as a placeholder
       - name: STRIPE_SECRET_KEY
         description: Stripe API key (starts with sk_live_ or sk_test_)
 
-      # Required — surfaces a "Configure secrets to run" banner if missing
       - name: DATABASE_URL
         description: PostgreSQL connection string
         required: true
 
-      # Also exposed inside the agent container (Phase 3 — for migrations,
-      # codegen, tests that need to talk to the running stack)
       - name: DATABASE_URL
         agent: true
 ```
@@ -117,11 +112,10 @@ For each service that declares secrets, ShipIt writes a per-service env file
 and references it via `env_file:` in the generated compose override:
 
 ```yaml
-# compose.override.yml (generated, in the session's state dir — never your clone)
+# Generated compose.override.yml
 services:
   api:
     env_file: [/workspace/service-env/<sessionId>/.env.api]
-    # ... other override fields
 ```
 
 ```

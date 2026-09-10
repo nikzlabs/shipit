@@ -5,12 +5,6 @@ import { AgentPermissions } from "./AgentPermissions.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import type { RepoInfo } from "../../server/shared/types.js";
 
-/**
- * docs/287-agent-merge-per-repo — the human-held half of the grant. This switch
- * is the ONLY way the permission is given: it is deliberately absent from
- * `shipit.yaml`, which the agent can write.
- */
-
 const URL = "https://github.com/org/repo";
 
 function repo(allowAgentMerge: boolean): RepoInfo {
@@ -46,8 +40,6 @@ describe("AgentPermissions", () => {
     render(<AgentPermissions repoUrl={URL} />);
     await userEvent.click(screen.getByTestId("allow-agent-merge-toggle"));
 
-    // Both arguments matter: the wrong url grants a different repository, and
-    // an inverted flag turns the permission on when the user turned it off.
     expect(setAllow).toHaveBeenCalledWith(URL, true);
   });
 
@@ -63,8 +55,6 @@ describe("AgentPermissions", () => {
   });
 
   it("shows the grant as off for a repository the store does not hold", () => {
-    // `undefined` is not `true`: an unknown repository must never read as
-    // granted while the switch waits for the list to arrive.
     useRepoStore.getState().setRepos([]);
     render(<AgentPermissions repoUrl={URL} />);
     expect(screen.getByTestId("allow-agent-merge-toggle")).toHaveAttribute("aria-checked", "false");

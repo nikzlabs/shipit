@@ -4,8 +4,6 @@ import type { SessionRunnerInterface } from "./session-runner.js";
 
 function makeAgent(order: string[] = []) {
   return {
-    // A real `AgentProcess` is an `EventEmitter<AgentProcessEvents>`; planning#318
-    // settles the retired turn through `emit("superseded")`.
     emit: vi.fn((event: string) => { order.push(`emit:${event}`); }),
     kill: vi.fn(() => { order.push("kill"); }),
     removeAllListeners: vi.fn(() => { order.push("removeAllListeners"); }),
@@ -41,13 +39,7 @@ describe("releaseResidentOnSpawnChange", () => {
     expect(releaseResidentOnSpawnChange(asRunner(runner), "claude-opus-5")).toBe(true);
 
     expect(agent.kill).toHaveBeenCalledOnce();
-    // Listeners come off BEFORE the kill so the previous turn's `done` handler
-    // can't re-run its terminal flow against an already-finished turn.
     expect(agent.removeAllListeners).toHaveBeenCalledOnce();
-    // planning#318 — and the retired turn is SETTLED before either, because the
-    // settlement travels on one of the listeners about to come off. This site
-    // clears the slot, so the next spawn installs over an empty one and the
-    // displacement hook never fires; without the settle the turn strands.
     expect(order).toEqual(["emit:superseded", "removeAllListeners", "kill"]);
     expect(runner.getAgent()).toBeNull();
     expect(runner.isStreamingActive).toBe(false);
@@ -67,9 +59,6 @@ describe("releaseResidentOnSpawnChange", () => {
   });
 
   it("does not release on an unknown spawn-time model", () => {
-    // `appliedSpawnIdentity === undefined` means we never recorded what this process was
-    // spawned with (e.g. a proxy adopted across an orchestrator restart).
-    // Killing on that baseline would respawn the CLI on every single turn.
     const runner = makeRunner({ appliedSpawnIdentity: undefined });
     const agent = runner.agent!;
 

@@ -1,19 +1,3 @@
-/**
- * planning#379 — the anti-framing headers, on a real listening orchestrator
- * built by `buildApp()`.
- *
- * Two things `app.inject()` and the unit tests cannot show:
- *
- *   - that `buildApp()` actually WIRES the guard, rather than that
- *     `framePolicyFor()` returns the right string;
- *   - that `/api/events` carries the headers. That route writes its own header
- *     object straight onto the raw response, so anything set on `reply` never
- *     reaches the wire — the exact shape a review found was silently exempt.
- *     An SSE stream is not framable UI; the point is that the "every response"
- *     contract is literally true, so the next raw-response route does not
- *     inherit an untested exception.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";

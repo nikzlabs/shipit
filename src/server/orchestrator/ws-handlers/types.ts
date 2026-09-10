@@ -22,24 +22,13 @@ import type { SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry, QueuedMessage } from "../session-runner.js";
 import type { GenerateText } from "../non-turn-model.js";
 
-// Re-export so existing consumers of types.ts don't break
 export type { QueuedMessage };
 
-// ---------------------------------------------------------------------------
-// Sub-context interfaces — see docs/054-handler-context-refactor/plan.md
-// ---------------------------------------------------------------------------
-
-/**
- * Per-connection state and communication.
- * Scoped to a single WebSocket connection's lifecycle.
- */
 export interface ConnectionCtx {
-  // Communication
   send: (msg: WsServerMessage) => void;
   broadcastLog: (source: LogSource, text: string) => void;
   sseBroadcast: (event: string, data: unknown) => void;
 
-  // Active session accessors
   getActiveDir: () => string;
   getActiveGitManager: () => GitManager;
   getActiveAppSessionId: () => string | undefined;
@@ -48,59 +37,30 @@ export interface ConnectionCtx {
   setActiveSessionDir: (dir: string | null) => void;
   activateSession: (sessionId: string) => void | Promise<void>;
 
-  // Per-connection helpers
   checkGitIdentity: (dir: string) => void;
   readSystemPrompt: () => Promise<string | undefined>;
   scheduleAutoPush: (git: GitManager, sessionId?: string) => void;
   clearLogBuffer: () => void;
 }
 
-/**
- * Per-session runner delegation.
- *
- * The previous incarnation of this interface exposed ~15 setters/getters
- * that delegated to a per-connection `attachedRunner`. They were a hazard:
- * after a WS disconnect, `attachedRunner` was null and every setter silently
- * no-oped. State mutations from async closures vanished.
- *
- * The setters are gone. Resolve the runner via `resolveRunner(ctx)` (which
- * prefers the registry) and mutate `runner.X` directly. See
- * `docs/095-runner-ctx-simplification/plan.md`.
- */
 export interface RunnerCtx {
-  // Agent factory — delegates to runner.createAgent if available.
   agentFactory: (agentId: AgentId) => AgentProcess;
 
-  // Per-connection identifiers — these don't depend on runner state.
   getActiveAgentId: () => AgentId;
   setActiveAgentId: (id: AgentId) => void;
   getSelectedModel: () => string | undefined;
   setSelectedModel: (model: string | undefined) => void;
-  /** docs/217 — per-session reasoning effort for the active agent's own turns. */
   getSelectedReasoning: () => string | undefined;
   setSelectedReasoning: (effort: string | undefined) => void;
 
-  // Runner lookup — the ONLY supported way to access runner state.
-  /** Get the runner attached to this connection (if any). Prefer
-   *  `resolveRunner(ctx)` from `./resolve-runner.ts`, which falls back to
-   *  the registry — that survives WS disconnects, which `getRunner()` does
-   *  not. */
+  /** Connection-scoped; use resolveRunner(ctx) to survive disconnects. */
   getRunner: () => SessionRunnerInterface | null;
-  /** Get the app-level runner registry. The preferred way to find a runner
-   *  by session ID, including from async closures and post-disconnect code. */
   getRunnerRegistry: () => SessionRunnerRegistry;
-  /** Attach this connection to a runner (detaches previous). */
   attachToRunner: (runner: SessionRunnerInterface) => void;
-  /** Detach this connection from its current runner. */
   detachFromRunner: () => void;
 }
 
-/**
- * App-wide manager references, factories, and config.
- * Shared singletons that live for the lifetime of the server process.
- */
 export interface AppCtx {
-  // Managers
   sessionManager: SessionManager;
   chatHistoryManager: ChatHistoryManager;
   createGitManager: (dir: string) => GitManager;
@@ -108,150 +68,41 @@ export interface AppCtx {
   githubAuthManager: GitHubAuthManager;
   usageManager: UsageManager;
   authManager: AuthManager;
-  /**
-   * Per-agent auth manager map (docs/155 Phase 2). Drives the
-   * `auth_required` dispatch in `agent-listeners.ts` — the failing turn's
-   * backend gets its own auth flow restarted, not Claude's.
-   */
   authManagers: Map<LoginIntegrationId, AgentAuthManager>;
-  /**
-   * Per-agent run-params prep hooks (docs/155 Phase 3). Each backend's hook
-   * injects its own Claude-only / Codex-only fields onto `AgentRunParams`
-   * (Claude: `settingsPath`, `autoCreatePr`; Codex: identity). The shared
-   * `buildAgentRunParams` invokes the hook for the spawning agent so the
-   * old `agentId === "claude" ? "/etc/shipit/managed-settings.json" : …`
-   * branch can go away. Optional on the AppCtx because legacy test setups
-   * skip the map; fallback inside `buildAgentRunParams` is identity.
-   */
   runParamsPreps?: Map<AgentId, PrepareRunParamsFn>;
   agentRegistry: AgentRegistry;
   credentialStore: CredentialStore;
   providerAccountManager: ProviderAccountManager;
-  /**
-   * docs/170/177 — override for the `fetch` used to reach issue trackers
-   * (Linear GraphQL / GitHub REST). Integration tests inject a stub; production
-   * leaves it undefined and the adapters use the global `fetch`. Used by the
-   * issue-write undo handler so the reverse write hits the same stub the routes
-   * do.
-   */
   trackerFetchImpl?: typeof fetch;
 
-  // Repo management
   repoStore: RepoStore;
-  /** Warm a session for a repo (called after graduation). */
   warmSessionForRepo: (repoUrl: string) => Promise<void>;
-
-  /**
-   * docs/172 (planning#92) — durable egress allowlist + containment store. The Tier C
-   * card's "Add to allowlist" writes through here so the grant outlives the
-   * session. Optional — test / local contexts that don't exercise egress omit it.
-   */
   egressAllowlistStore?: EgressAllowlistStore;
-  /**
-   * docs/172 (planning#92) — used to reload a running session's egress sidecars after
-   * an "Add to allowlist" so the new host takes effect without a restart.
-   * Optional — null in local/test runtimes (the add still persists).
-   */
   containerManager?: SessionContainerManager;
 
-  // Factories
   generateText: GenerateText;
   getSharedRepoDir: (repoUrl: string) => string;
-
-  // PR lifecycle
   prStatusPoller: PrStatusPoller;
-
-  // Release lifecycle (docs/171)
   releaseStatusPoller: ReleaseStatusPoller;
 
-  /**
-   * Push a fresh rate-limit snapshot for any agent (from an
-   * `agent_rate_limits` AgentEvent) into the subscription-limits badge.
-   * Both Claude and Codex go through this single callback — Claude's data
-   * comes from the CLI's `rate_limit_event` stream messages, Codex's from
-   * the app-server `account/rateLimits/updated` notification. Optional
-   * because test contexts and non-WS callers don't wire it. See
-   * `index.ts` and the per-provider `setRateLimits()` methods.
-   */
   recordAgentRateLimits?: (
     agentId: AgentId,
     session: { usedPct: number | null; resetAt: string } | null,
     weekly: { usedPct: number | null; resetAt: string } | null,
-    /**
-     * docs/150 — the session whose turn reported these numbers, so the
-     * orchestrator can attribute them to that session's pinned provider
-     * account. Omitted only where no session owns the turn.
-     */
     sessionId?: string,
-    /**
-     * docs/252 req 10 — the credential route the reporting turn ACTUALLY ran
-     * on, when the caller resolved one of its own.
-     *
-     * A sub-agent consult resolves its route independently of the session's
-     * pinned one (`services/sub-agent.ts`), and can fail over mid-run. Without
-     * this the fallback re-derives a route from the session, which is a
-     * different credential — and since req 10 files a snapshot against the
-     * `(service, mode)` that OWNS the route, a consult on a key would be filed
-     * as the session's subscription quota.
-     */
+    /** Consults can use a different credential from the owning session. */
     routeId?: string,
   ) => void;
-  /**
-   * Latest subscription-limits snapshot from the limits registry. Used to
-   * classify agent result errors that upstream labels too generically.
-   */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
-  /**
-   * docs/150-multiple-provider-subscriptions req 7 — bench the provider account a session is pinned to until
-   * `until` (epoch ms), because the provider just failed that session's turn
-   * saying the subscription is spent. Makes the router skip the account so the
-   * next turn fails over instead of hitting the same wall. Optional — test
-   * contexts and non-WS callers don't wire it.
-   */
+  /** until is epoch milliseconds. */
   markSessionAccountExhausted?: (sessionId: string, until: number, routeId?: string) => void;
-  /**
-   * docs/153 — fire-and-forget nudge to the orchestrator-owned Claude OAuth
-   * refresher. Invoked from the session-level `auth_required` handler so that
-   * a stale per-session token gets healed even if the next scheduled tick is
-   * still minutes away. Single-flight inside the refresher; safe to call on
-   * every auth_required without coordination. Optional — not wired in test
-   * or local-runtime contexts. Kept as a direct ref for non-WS callers
-   * (credentials sync); the WS-side `auth_required` handler routes through
-   * the agent-keyed {@link onAgentAuthRequired} table. (docs/155)
-   */
   nudgeClaudeOAuthRefresh?: () => void;
-  /**
-   * docs/155 — per-agent dispatch for the WS-level `auth_required` event.
-   * Lets each backend register its own side effect (Claude: nudge the OAuth
-   * refresher; Codex: a future device-flow restart) at app-DI time so the
-   * listener's `auth_required` branch is agent-agnostic. Optional — no-op
-   * if the agent has no registered hook.
-   */
   onAgentAuthRequired?: (agentId: AgentId) => void;
-  /**
-   * docs/179 — proactively heal an agent's OAuth source token before it's read
-   * (pre-spawn env-prep, the runtime-401 auto-retry). A no-op for a healthy
-   * token; an awaited single-flight refresh when it's within the safety margin.
-   * Optional — not wired in test / local-runtime contexts. Resolves `true` when
-   * the token is usable after the call.
-   */
   ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
-
-  /**
-   * docs/192 — remove a session's durable `logs/` dir + in-memory ring when it
-   * is archived (e.g. the rollback/fork archive path). Optional; the
-   * disk-janitor sweep is the backstop.
-   */
   removeSessionLogs?: (sessionId: string) => void;
 
-  // Config
   workspaceDir: string;
   sessionsRoot: string;
   defaultAgentId: AgentId;
-  /**
-   * docs/138 — source-of-truth credentials root (e.g. `/credentials`). Used by
-   * the first-turn hook to provision the pinned agent's credential subtree into
-   * the session's private `<credentialsDir>/sessions/<id>` dir.
-   */
   credentialsDir: string;
 }

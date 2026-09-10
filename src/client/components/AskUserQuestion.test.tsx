@@ -3,22 +3,13 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 
-/**
- * `onAnswer` reports whether the answer reached the wire — the card's
- * answered-state lock is gated on it (see `sendUserMessage`). Tests that expect
- * the answered state must return `true`.
- */
 type AnswerFn = (toolUseId: string, answers: Record<string, string>, text: string) => boolean;
 
 afterEach(() => {
   cleanup();
-  // Reset the opt-in voice toggle so it never leaks between tests.
   useSettingsStore.setState({ voiceInputEnabled: false });
 });
 
-// The "Other" free-text field hosts a voice mic (docs/144), which pulls in
-// `useIsMobile()` → `window.matchMedia`. jsdom doesn't implement it, so stub
-// it to a desktop viewport for these tests.
 beforeEach(() => {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
@@ -142,7 +133,6 @@ describe("AskUserQuestion", () => {
         />
       );
       fireEvent.click(screen.getByTestId("option-Redis"));
-      // Clicking again should not call onAnswer again
       fireEvent.click(screen.getByTestId("option-In-memory"));
       expect(onAnswer).toHaveBeenCalledTimes(1);
     });
@@ -158,7 +148,6 @@ describe("AskUserQuestion", () => {
         />
       );
       fireEvent.click(screen.getByTestId("option-Redis"));
-      // Other option should be hidden
       expect(screen.queryByTestId("option-other")).not.toBeInTheDocument();
     });
   });
@@ -218,15 +207,13 @@ describe("AskUserQuestion", () => {
         />
       );
       fireEvent.click(screen.getByTestId("option-Auth"));
-      fireEvent.click(screen.getByTestId("option-Auth")); // deselect
+      fireEvent.click(screen.getByTestId("option-Auth"));
       fireEvent.click(screen.getByTestId("option-Cache"));
       fireEvent.click(screen.getByTestId("submit-answer"));
       expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Cache" }, "Cache");
     });
 
     it("keeps the checked options when Other is turned on", () => {
-      // The reported bug: clicking "Other" on a multi-select question blanked
-      // every checked box. "Other" is one more checkbox, not a mode switch.
       const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
@@ -239,10 +226,8 @@ describe("AskUserQuestion", () => {
       fireEvent.click(screen.getByTestId("option-Auth"));
       fireEvent.click(screen.getByTestId("option-Cache"));
       fireEvent.click(screen.getByTestId("option-other"));
-      // Still visibly checked.
       expect(screen.getByTestId("option-Auth").className).toContain("bg-(--color-accent-subtle)");
       expect(screen.getByTestId("option-Cache").className).toContain("bg-(--color-accent-subtle)");
-      // And still part of the answer, with the free text appended.
       fireEvent.change(screen.getByTestId("other-input"), { target: { value: "Metrics" } });
       fireEvent.click(screen.getByTestId("submit-answer"));
       expect(onAnswer).toHaveBeenCalledWith(
@@ -253,8 +238,6 @@ describe("AskUserQuestion", () => {
     });
 
     it("can still select and deselect options after Other is on", () => {
-      // The second half of the report: with "Other" active, option clicks had
-      // no visible effect, so the card read as frozen.
       const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
@@ -267,8 +250,8 @@ describe("AskUserQuestion", () => {
       fireEvent.click(screen.getByTestId("option-Auth"));
       fireEvent.click(screen.getByTestId("option-other"));
       fireEvent.change(screen.getByTestId("other-input"), { target: { value: "Metrics" } });
-      fireEvent.click(screen.getByTestId("option-Logging")); // add
-      fireEvent.click(screen.getByTestId("option-Auth")); // remove
+      fireEvent.click(screen.getByTestId("option-Logging"));
+      fireEvent.click(screen.getByTestId("option-Auth"));
       expect(screen.getByTestId("option-Logging").className).toContain("bg-(--color-accent-subtle)");
       expect(screen.getByTestId("option-Auth").className).not.toContain("bg-(--color-accent-subtle)");
       fireEvent.click(screen.getByTestId("submit-answer"));
@@ -276,7 +259,6 @@ describe("AskUserQuestion", () => {
     });
 
     it("toggles Other off again, dropping its text from the answer", () => {
-      // "Other" used to only ever be added, so a mis-click was unrecoverable.
       const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
@@ -289,7 +271,7 @@ describe("AskUserQuestion", () => {
       fireEvent.click(screen.getByTestId("option-Auth"));
       fireEvent.click(screen.getByTestId("option-other"));
       fireEvent.change(screen.getByTestId("other-input"), { target: { value: "Metrics" } });
-      fireEvent.click(screen.getByTestId("option-other")); // untick
+      fireEvent.click(screen.getByTestId("option-other"));
       expect(screen.queryByTestId("other-input")).not.toBeInTheDocument();
       fireEvent.click(screen.getByTestId("submit-answer"));
       expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Auth" }, "Auth");
@@ -328,15 +310,11 @@ describe("AskUserQuestion", () => {
       expect(screen.getByTestId("option-Auth").className).toContain("bg-(--color-accent-subtle)");
       expect(screen.getByTestId("option-Cache").className).toContain("bg-(--color-accent-subtle)");
       expect(screen.getByTestId("option-Logging").className).not.toContain("bg-(--color-accent-subtle)");
-      // The free text shows as its own row rather than swallowing the labels.
       expect(screen.getByText("Metrics")).toBeInTheDocument();
       expect(screen.queryByText("Auth, Cache, Metrics")).not.toBeInTheDocument();
     });
 
     it("does not resurrect an option label that appears inside the free text", () => {
-      // Free text "custom, Cache" used to have its trailing "Cache" matched as
-      // a checked option on reload, so the card showed a box the user never
-      // ticked and the answer came back reordered as "Auth, Cache, custom".
       render(
         <AskUserQuestion
           toolUseId="t1"
@@ -423,7 +401,6 @@ describe("AskUserQuestion", () => {
           disabled={false}
         />
       );
-      // No submit button before "Other" is chosen (predefined options auto-submit).
       expect(screen.queryByTestId("submit-answer")).not.toBeInTheDocument();
       fireEvent.click(screen.getByTestId("option-other"));
       expect(screen.getByTestId("submit-answer")).toBeInTheDocument();
@@ -441,7 +418,6 @@ describe("AskUserQuestion", () => {
       );
       fireEvent.click(screen.getByTestId("option-other"));
       const submit = screen.getByTestId("submit-answer");
-      // Disabled until some text is typed.
       expect(submit).toBeDisabled();
       fireEvent.change(screen.getByTestId("other-input"), { target: { value: "My custom answer" } });
       fireEvent.click(submit);
@@ -462,7 +438,6 @@ describe("AskUserQuestion", () => {
       expect(screen.getByTestId("other-input")).toBeInTheDocument();
       fireEvent.click(screen.getByTestId("option-other"));
       expect(screen.queryByTestId("other-input")).not.toBeInTheDocument();
-      // Back to the plain state: a preset option auto-submits again.
       fireEvent.click(screen.getByTestId("option-Redis"));
       expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Redis" }, "Redis");
     });
@@ -623,11 +598,6 @@ describe("AskUserQuestion", () => {
     });
   });
 
-  // Reproduces the "missed questions on reload" UX bug: chat history
-  // re-rendered after a refresh used to show the question with no answer
-  // selected, even though the agent had a tool_result for it. Now we
-  // accept a `resolvedAnswer` prop and reconstruct the answered state
-  // from the persisted tool_result content.
   describe("resolvedAnswer (history reload)", () => {
     it("highlights the matching option when resolvedAnswer matches a label", () => {
       render(
@@ -639,8 +609,6 @@ describe("AskUserQuestion", () => {
           resolvedAnswer="Redis"
         />
       );
-      // Other options are rendered but hidden as un-selected, the matched one
-      // displays the answered checkmark — and the "Other" option is gone.
       expect(screen.queryByTestId("option-other")).not.toBeInTheDocument();
       const redisBtn = screen.getByTestId("option-Redis");
       expect(redisBtn).toBeDisabled();
@@ -658,8 +626,6 @@ describe("AskUserQuestion", () => {
         />
       );
       expect(screen.getByText("MyCustomCache")).toBeInTheDocument();
-      // The text input for "Other" should NOT be visible — we're in
-      // read-only answered state.
       expect(screen.queryByTestId("other-input")).not.toBeInTheDocument();
     });
 
@@ -674,9 +640,6 @@ describe("AskUserQuestion", () => {
           resolvedAnswer="Redis"
         />
       );
-      // Even though `disabled` is false (the message-list passes
-      // `!result` as the disabled flag, not !isLastMessage), clicking a
-      // resolved question must NOT re-fire onAnswer.
       fireEvent.click(screen.getByTestId("option-In-memory"));
       expect(onAnswer).not.toHaveBeenCalled();
     });
@@ -707,15 +670,11 @@ describe("AskUserQuestion", () => {
       );
       const redisBtn = screen.getByTestId("option-Redis");
       const postgresBtn = screen.getByTestId("option-Postgres");
-      // Both matching options should render the answered highlight.
       expect(redisBtn.className).toContain("bg-(--color-accent-subtle)");
       expect(postgresBtn.className).toContain("bg-(--color-accent-subtle)");
     });
 
     it("parses the bullet format so answers with embedded commas round-trip", () => {
-      // The "- {question}: {answer}" format is what the client now sends so
-      // that an answer like "Postgres, with citus" can't be mistaken for two
-      // separate answers when the chat history is reloaded.
       const twoQuestions: AskQuestionItem[] = [
         {
           question: "Pick a cache?",
@@ -740,7 +699,6 @@ describe("AskUserQuestion", () => {
         />,
       );
       expect(screen.getByTestId("option-Redis").className).toContain("bg-(--color-accent-subtle)");
-      // The DB answer kept its comma intact and renders as a free-form value.
       expect(screen.getByText("Postgres, with citus")).toBeInTheDocument();
     });
 
@@ -756,8 +714,6 @@ describe("AskUserQuestion", () => {
       );
       fireEvent.click(screen.getByTestId("option-In-memory"));
       expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "In-memory" }, "In-memory");
-      // Now imagine the agent emits a tool_result for some reason; the
-      // local "In-memory" answer should still take precedence.
       rerender(
         <AskUserQuestion
           toolUseId="t1"
@@ -773,13 +729,6 @@ describe("AskUserQuestion", () => {
   });
 });
 
-/**
- * The answered-state lock must never outrun the wire. `useWebSocket.send` is a
- * silent no-op when the socket isn't OPEN, so an unconditional lock rendered an
- * answered card for an answer the agent never received — and, because the card
- * has a real terminal state, the user could not re-answer it at all. Same
- * defect class as the action-checklist card's "Submitted" ack.
- */
 describe("AskUserQuestion — the answered lock is conditional on delivery", () => {
   it("stays answerable when the send never reaches the wire", () => {
     const onAnswer = vi.fn<AnswerFn>(() => false);
@@ -794,7 +743,6 @@ describe("AskUserQuestion — the answered lock is conditional on delivery", () 
     fireEvent.click(screen.getByTestId("option-Redis"));
     expect(onAnswer).toHaveBeenCalledTimes(1);
 
-    // Not locked: the same option is still live and clicking re-sends.
     const redis = screen.getByTestId("option-Redis");
     expect(redis).toBeEnabled();
     fireEvent.click(redis);
@@ -816,25 +764,13 @@ describe("AskUserQuestion — the answered lock is conditional on delivery", () 
     fireEvent.click(screen.getByTestId("option-Redis"));
     expect(onAnswer).toHaveBeenCalledTimes(2);
 
-    // Now answered — further clicks are inert.
     fireEvent.click(screen.getByTestId("option-Redis"));
     expect(onAnswer).toHaveBeenCalledTimes(2);
     expect(screen.getByTestId("option-Redis")).toBeDisabled();
   });
 });
 
-/**
- * The option rows are `<button>`s, and a browser refuses to select text inside
- * one unless `user-select: text` is set (verified in Chrome). That blocked the
- * user from highlighting an option to quote it back at the agent with
- * `ChatQuoteReply`'s "Reply" affordance.
- *
- * Making the text selectable is only half of it: the drag that selects it still
- * ends in a `click` on the row, so without the guard below, highlighting an
- * option answers the question with it.
- */
 describe("AskUserQuestion — option text is selectable", () => {
-  /** Put a live, non-collapsed selection over `el`'s text, as a drag would. */
   function selectTextIn(el: HTMLElement) {
     const range = document.createRange();
     range.selectNodeContents(el);
@@ -873,7 +809,6 @@ describe("AskUserQuestion — option text is selectable", () => {
     fireEvent.click(redis);
 
     expect(onAnswer).not.toHaveBeenCalled();
-    // Still answerable — the card is not locked, just not triggered.
     expect(redis).toBeEnabled();
   });
 
@@ -903,9 +838,6 @@ describe("AskUserQuestion — option text is selectable", () => {
         disabled={false}
       />
     );
-    // A selection on a *different* row (or, in the real UI, anywhere else on the
-    // page) must not suppress this row — that is what keyboard activation looks
-    // like, and the guard is row-scoped precisely so it stays live.
     selectTextIn(screen.getByTestId("option-In-memory"));
     fireEvent.click(screen.getByTestId("option-Redis"));
 

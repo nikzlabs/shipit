@@ -1,12 +1,3 @@
-/**
- * Integration tests for /api/mcp-servers routes (docs/088-mcp-integration).
- *
- * Spins up a real Fastify app via `buildApp()` with stub managers and exercises
- * the CRUD endpoints, secret non-echo invariant, enabled-server cap, and the
- * test-endpoint "no active session" 409 path. Stays orchestrator-only — no
- * Docker, no real worker.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -85,8 +76,6 @@ describe("Integration: /api/mcp-servers routes (docs/088)", () => {
     enabled: true,
   };
 
-  // ---- GET /api/mcp-servers ----
-
   it("GET /api/mcp-servers returns an empty list initially", async () => {
     const res = await app.inject({ method: "GET", url: "/api/mcp-servers" });
     expect(res.statusCode).toBe(200);
@@ -103,8 +92,6 @@ describe("Integration: /api/mcp-servers routes (docs/088)", () => {
     expect(body.servers.map((s) => s.name)).toEqual(["alpha", "zeta"]);
   });
 
-  // ---- POST /api/mcp-servers ----
-
   it("POST /api/mcp-servers saves config + secret, never echoes the secret value", async () => {
     const res = await app.inject({
       method: "POST",
@@ -116,14 +103,11 @@ describe("Integration: /api/mcp-servers routes (docs/088)", () => {
     });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { server: { env?: Record<string, string> } };
-    // Response contains the placeholder, not the raw value.
     expect(body.server.env?.LINEAR_API_KEY).toBe(
       "$secret:mcp__linear__LINEAR_API_KEY",
     );
-    // The raw secret value is stored under agentEnv but never echoed.
     expect(JSON.stringify(body)).not.toContain("lin_api_supersecret");
 
-    // Verify the secret IS persisted in CredentialStore.agentEnv.
     expect(credentialStore.getAgentEnv("mcp__linear__LINEAR_API_KEY")).toBe(
       "lin_api_supersecret",
     );
@@ -193,7 +177,6 @@ describe("Integration: /api/mcp-servers routes (docs/088)", () => {
     expect(res.statusCode).toBe(400);
     expect((res.json() as { error: string }).error).toMatch(/more than/);
 
-    // But a *disabled* server fits past the cap.
     const ok = await app.inject({
       method: "POST",
       url: "/api/mcp-servers",
@@ -219,11 +202,8 @@ describe("Integration: /api/mcp-servers routes (docs/088)", () => {
     expect(body.server.headers?.Authorization).toBe(
       "Bearer $secret:mcp__sentry__SENTRY_TOKEN",
     );
-    // No raw value in the response body.
     expect(JSON.stringify(body)).not.toContain("sntrys_abc");
   });
-
-  // ---- PUT /api/mcp-servers/:id ----
 
   it("PUT /api/mcp-servers/:id updates the config in place", async () => {
     await app.inject({
@@ -270,7 +250,6 @@ describe("Integration: /api/mcp-servers routes (docs/088)", () => {
     });
     expect(res.statusCode).toBe(200);
 
-    // Old keys are cleared, new ones present.
     expect(credentialStore.getMcpServer("linear")).toBeUndefined();
     expect(credentialStore.getAgentEnv("mcp__linear__LINEAR_API_KEY")).toBeUndefined();
     expect(credentialStore.getMcpServer("linearprod")?.name).toBe("linearprod");
@@ -287,8 +266,6 @@ describe("Integration: /api/mcp-servers routes (docs/088)", () => {
     });
     expect(res.statusCode).toBe(404);
   });
-
-  // ---- DELETE /api/mcp-servers/:id ----
 
   it("DELETE /api/mcp-servers/:id removes the blob and its secrets", async () => {
     await app.inject({
@@ -319,8 +296,6 @@ describe("Integration: /api/mcp-servers routes (docs/088)", () => {
     });
     expect(res.statusCode).toBe(404);
   });
-
-  // ---- POST /api/mcp-servers/:id/test ----
 
   it("POST /api/mcp-servers/:id/test returns 409 when no session container is active", async () => {
     await app.inject({

@@ -1,20 +1,3 @@
-/**
- * Session-claim service.
- *
- * Encapsulates the warm-pool-aware "give me a workspace for this repo" flow
- * shared by the home-screen claim route (`POST /api/repos/:url/claim-session`)
- * and the agent-spawned-sessions path (`spawnChildSession`). Both surfaces
- * end up wanting the same thing — a freshly-cloned workspace branched off
- * the real `origin/main` of the repo — and historically the home-screen had
- * the warm-pool integration while spawn cut its branch off the parent's
- * HEAD from a possibly-stale bare cache. This service is what makes the two
- * paths produce identical workspaces.
- *
- * The per-repo `claimChains` serialization lives inside the factory closure,
- * so a single service instance must be shared across all callers (route +
- * spawn) for the serialization to actually guard concurrent claims.
- */
-
 import { existsSync, unlinkSync } from "node:fs";
 import { sessionStateDirForWorkspace, sessionSharedStateDir, INSTALL_MARKER_FILE } from "../session-state-dir.js";
 import { rm } from "node:fs/promises";
@@ -57,17 +40,6 @@ export interface ClaimSessionDeps {
   waitForWarmSession?: (repoUrl: string) => Promise<void> | undefined;
   shouldSkipClaimFetch?: (repoUrl: string) => boolean;
   containerManager?: SessionContainerManager;
-  /**
-   * docs/285 req 8 — every new session starts at "Inherit workspace", and the
-   * REUSE path below is the one place that would quietly break it: an
-   * interactive claim recycles an ungraduated warm session from the same repo,
-   * so an abandoned `/new` draft carrying an explicit Contained/Open would hand
-   * both that setting AND the container built for it to the next new session.
-   * Read here to refuse that reuse.
-   *
-   * Optional, like `containerManager`: a runtime with no egress store has no
-   * override to find.
-   */
   egressAllowlistStore?: EgressAllowlistStore;
 }
 
@@ -79,64 +51,12 @@ export interface ClaimSessionResult {
 }
 
 export interface ClaimSessionOptions {
-  /**
-   * Polled at strategic points so the caller can short-circuit if e.g. the
-   * HTTP request was aborted. When it returns `true` between paths, the
-   * service throws a `ClaimAbortedError` instead of proceeding.
-   */
   isCancelled?: () => boolean;
-  /**
-   * When `true`, bypass the docs/145 `shouldSkipClaimFetch` optimization and
-   * always fetch `origin` synchronously before resolving the default-branch
-   * ref. The home-screen claim accepts ~6min of bare-cache staleness (the
-   * prefetcher's `CLAIM_SKIP_WINDOW_MS`) to shave ~650ms off claim latency,
-   * but agent-spawned child sessions must branch off a freshly-fetched
-   * `origin/main` — otherwise a child created moments after a merge can land
-   * on the pre-merge snapshot. Callers that prioritize correctness over
-   * latency (currently: `spawnChildSession`) opt in with `forceFetch: true`.
-   */
+  /** Bypass recent-cache fetch skipping, so children can see newly merged commits. */
   forceFetch?: boolean;
-  /**
-   * Session ids the claim must NEVER hand back. `spawnChildSession` passes the
-   * calling parent's id: an ungraduated parent is otherwise a valid hit for
-   * the reuse path, and "claiming" it returns the parent AS its own child —
-   * which hard-resets the parent's live workspace onto fresh `origin/main`
-   * (`refreshClaimedSession`) and records a self-parented session whose
-   * `findChildren` cycle then blows the recursive archive's stack (observed
-   * live: archive → "Maximum call stack size exceeded").
-   */
+  /** Exclude the spawning parent to prevent claiming and resetting its live workspace. */
   excludeSessionIds?: string[];
-  /**
-   * When `true`, skip the *reuse* path entirely — never hand back an existing
-   * ungraduated warm session via `findUngraduatedWarm`.
-   *
-   * THE RULE (applies to every caller of `claim()`, present and future):
-   * reuse is for *interactive* claims ONLY — a user claiming a session to work
-   * in, where recycling their own just-abandoned `/{repo}/new` draft is the
-   * intended behavior. Any *background, non-interactive* claim that mints a
-   * *new* session for some requested work MUST set `skipReuse: true`. If you
-   * are adding a new `claim()` call and the caller is not the user interactively
-   * claiming the session they're about to look at, you set this. No exceptions.
-   *
-   * Current callers that set it: `spawnChildSession` (agent-driven children) and
-   * `createHeadlessSession` (quick-capture, issue-seeded "Start session",
-   * webhooks). The single caller that leaves it unset is the interactive
-   * home-screen claim route (`POST /api/repos/:url/claim-session`).
-   *
-   * The reuse path recycles *abandoned* drafts so the home-screen quick-capture
-   * flow doesn't leak warm sessions (docs/145). But `findUngraduatedWarm` scans
-   * *every* `warm = 1` session for the repo — and a `/{repo}/new` page the user
-   * is actively typing in has already claimed a warm session that stays
-   * `warm = 1` until the first message graduates it. The reuse path cannot tell
-   * "abandoned draft" from "browser attached right now", so a concurrent spawn
-   * would alias the child onto the user's live draft, graduate it, and dispatch
-   * the child's first prompt into it — surfacing as a message appearing from
-   * nowhere while the user types their first prompt. Skipping reuse routes the
-   * spawn to the pre-warmed pool (whose `warmSessionId` pointer is always cleared
-   * the instant a browser claims it) or a slow-clone — neither of which can
-   * collide with an interactive draft. Interactive home-screen claims leave this
-   * unset so recycling your own just-abandoned draft still works.
-   */
+  /** Required for background claims: warm drafts may still have an attached user. */
   skipReuse?: boolean;
 }
 
@@ -148,27 +68,11 @@ export class ClaimAbortedError extends Error {
 }
 
 export interface ClaimSessionService {
-  /**
-   * Claim a workspace for `url`. Reuses an ungraduated warm session when one
-   * exists, claims a pre-warmed session, waits for in-flight warming, or
-   * falls through to a synchronous clone. The returned workspace is always
-   * branched off the real remote's default branch (origin/main / origin/master
-   * / origin/HEAD).
-   *
-   * Throws:
-   *  - `ServiceError(404)` when the repo is not registered.
-   *  - `ServiceError(400)` when the repo is still cloning.
-   *  - `ClaimAbortedError` when `opts.isCancelled` returns true.
-   */
   claim(url: string, opts?: ClaimSessionOptions): Promise<ClaimSessionResult>;
 }
 
+// Share one instance across callers so claims for the same repository serialize.
 export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionService {
-  // Per-repo promise chain: serializes claim requests for the same repo so
-  // git operations (fetch, clone) never run concurrently on the same bare
-  // cache. Shared by every caller of this service instance (the HTTP route
-  // and the spawn flow), which is why this lives in the factory closure
-  // rather than module scope.
   const claimChains = new Map<string, Promise<unknown>>();
   async function serializeClaim<T>(repoUrl: string, fn: () => Promise<T>): Promise<T> {
     const prev = claimChains.get(repoUrl) ?? Promise.resolve();
@@ -182,11 +86,6 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     }
   }
 
-  /**
-   * Surface a workspace-clone fetch that silently no-op'd during a claim —
-   * the W2 root cause. When `fetched` is false the clone was *not* refreshed
-   * against the real remote, so the claimed session may be on stale code.
-   */
   function warnIfStaleClaimFetch(fetched: boolean, url: string): void {
     if (fetched) return;
     console.warn(`[claim-session] Workspace fetch failed for ${url} — using the existing clone, which may be stale`);
@@ -195,16 +94,6 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     });
   }
 
-  /**
-   * Fetch latest origin refs and hard-reset a warm session clone to the
-   * current remote HEAD. Safe because warm sessions have zero user changes.
-   * Non-fatal — if fetch or reset fails, the session still works with older
-   * code.
-   *
-   * Always (re-)configures the workspace's credential helper before fetching.
-   * Reused sessions can be hours/days old and may have either no local
-   * credential helper or one with a now-expired token baked in.
-   */
   async function refreshCloneToLatestMain(
     sessionDir: string,
     repoLabel: string,
@@ -223,78 +112,28 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     if (resetTarget) {
       await sessionGit.rollback(resetTarget);
     }
-    // Keep local `main` aligned with `origin/main` on warm/reuse hand-out too,
-    // so the agent's `main..HEAD` PR review matches what the PR contains (docs/194).
+    // Keep local-base PR comparisons aligned with the remote base.
     await syncLocalDefaultBranchToOrigin(sessionDir);
-    // docs/231 — the `rollback` above is a `git reset --hard`, and the
-    // orchestrator's git has the LFS *smudge* filter disabled (see git-lfs.ts),
-    // so that reset re-writes pointer stubs over any content a previous
-    // materialization put there. Re-pull before handing the clone out, or a
-    // warm-reuse hand-out gives the agent a tree of stubs — #1729, reintroduced
-    // on the hot path. (With smudge off, git even reads a *materialized* LFS
-    // worktree as dirty, so a reset to the same commit still rewrites it.)
-    //
-    // Cost, stated honestly because this IS the hot path: no network — the
-    // objects are already in `.git/lfs`, so `git lfs fetch` is a no-op — but
-    // `git lfs checkout` then rewrites every tracked LFS file from the local
-    // store, because the reset just turned all of them back into pointers. On an
-    // asset-heavy repo that is thousands of local file writes per claim. The
-    // earlier "degenerates to a local checkout" note undersold that: local I/O,
-    // not zero I/O.
-    //
-    // Kept UNCONDITIONAL deliberately, rather than gated on `resetTarget` being
-    // truthy. Gating would skip the pull on claims where the fetch found nothing
-    // to reset to (where it is indeed pure waste), but it would also give up the
-    // self-heal this provides: a clone left holding stubs by an earlier failed
-    // materialization is repaired on its next claim. Correctness on a path that
-    // silently produces stubs beats the saving until the latency is measured to
-    // matter. See docs/232 "Known gaps".
+    // Reset writes LFS pointers with smudge disabled. Always materialize, including
+    // claims without a reset target, to repair stubs from earlier failed pulls.
     await materializeLfsWithWarning(sessionDir, repoLabel, (message) =>
       deps.sseBroadcast("error", { message }),
     );
-    // docs/150 §7 addendum (planning#147): the fetch/rollback/branch-realign git ops
-    // above re-materialize the WORKTREE — not just `.git` — so hand BOTH back
-    // before the worker uses them, or the non-root agent EACCESes editing
-    // tracked files.
-    //
-    // planning#412 — this used to say those ops "run as the root orchestrator"
-    // and leave the tree `root:root`. Since docs/266-orchestrator-git-trust-boundary E1 they do NOT: they go
-    // through `deps.createGitManager(sessionDir)` → `safeSimpleGit`, which drops
-    // to the session's own identity, so `rollback`'s `git reset --hard` writes
-    // worker-owned files. The handback is now belt-and-braces for the paths that
-    // still write as root (the clone itself), not the load-bearing step this
-    // comment described.
-    //
-    // Left standing rather than deleted because it is still correct about WHAT
-    // it does; only the stated reason was stale. That staleness was read as fact
-    // and nearly justified reordering the LFS pull below it.
     handWorkspaceBackToWorker(sessionDir);
     const headAfter = await sessionGit.getHeadHash();
     const headChanged = headBefore !== headAfter;
     if (headChanged) {
-      // docs/246 — the marker lives in the session state dir, outside the clone.
       const stateDir = sessionStateDirForWorkspace(sessionDir);
       try { unlinkSync(path.join(sessionSharedStateDir(stateDir), INSTALL_MARKER_FILE)); } catch { /* marker may not exist */ }
     }
     return { headChanged, fetched, fetchDurationMs };
   }
 
-  /**
-   * Shared tail of the reuse / warm / waiting sub-paths: refresh the claimed
-   * session's clone to latest main and surface a stale-fetch warning. Returns
-   * the fetch duration (for timing). Deliberately does NOT re-warm the pool —
-   * that's the caller's concern.
-   */
   async function refreshClaimedSession(
     url: string,
     workspaceDir: string,
     forceFetch: boolean,
   ): Promise<number> {
-    // docs/145: skip the synchronous fetch when the bare cache was
-    // pre-fetched in the background recently AND this clone's `origin/HEAD`
-    // already matches the cache's current HEAD. `forceFetch` (set by the
-    // agent-spawn path) bypasses the skip so child sessions always branch
-    // off the real remote's current HEAD.
     if (
       !forceFetch &&
       deps.shouldSkipClaimFetch?.(url) &&
@@ -316,10 +155,6 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     }
   }
 
-  /**
-   * Re-warm the pool for the *next* session — fire-and-forget so this
-   * claim's response isn't blocked on prep work for a future user.
-   */
   function rewarmPool(url: string): void {
     if (deps.warmSessionForRepo) void deps.warmSessionForRepo(url);
   }
@@ -340,32 +175,13 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         const inFlightWarming = deps.waitForWarmSession?.(url);
         if (inFlightWarming) await inFlightWarming;
 
-        // Re-read repo state AFTER awaiting warming — the pool may have just
-        // set `warmSessionId` during the await, and the original `repo`
-        // captured before the await is now stale. Using the stale value
-        // would make `findUngraduatedWarm`'s exclusion mis-fire and the
-        // reuse path could pick up the just-warmed session, leaving
-        // `warmSessionId` pointing at a now-graduated session — the next
-        // claim's warm path then re-claims it. See "claims race with
-        // warming" in the integration tests for the failure mode.
+        // Warming can change the pool pointer during the await.
         const repoAfterWarm = deps.repoStore.get(url) ?? repo;
 
-        // Reuse path: check for previously-claimed warm session. Skipped for
-        // background spawns (`skipReuse`), which must never recycle a warm
-        // session a browser may be actively attached to (see `skipReuse` docs).
         const reusable = skipReuse
           ? undefined
           : deps.sessionManager.findUngraduatedWarm(url, repoAfterWarm.warmSessionId ?? undefined);
-        // docs/285 req 8 — a draft that carries an explicit network mode is NOT
-        // recyclable. Clearing the override and handing the session over reads as
-        // the cheaper fix and is wrong: the mode is a *container topology*, and
-        // the recycled container is still running the abandoned draft's one. The
-        // next user would see "Inherit workspace — currently Contained" over an
-        // Open container and send their first turn into it — requirement 3 lost
-        // through a path that has nothing to do with the composer.
-        //
-        // Refusing the reuse costs one unused warm session, which the pool
-        // replenishes, and needs no rebuild on the claim path.
+        // Clearing a network override would leave its old container topology running.
         const carriedOverride = reusable
           ? deps.egressAllowlistStore?.getSessionOverride(reusable.id) ?? null
           : null;
@@ -380,7 +196,6 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
           return { sessionId: reusable.id, workspaceDir: reusable.workspaceDir, fetchDurationMs };
         }
 
-        // Warm path: claim the pre-warmed session.
         const currentRepo = deps.repoStore.get(url);
         if (currentRepo?.warmSessionId && !excluded.has(currentRepo.warmSessionId)) {
           const warmSession = deps.sessionManager.get(currentRepo.warmSessionId);
@@ -394,7 +209,6 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
           }
         }
 
-        // Waiting path: wait for in-progress warming.
         const warmingPromise = deps.waitForWarmSession?.(url);
         if (warmingPromise) {
           await warmingPromise;
@@ -412,7 +226,6 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
           }
         }
 
-        // Slow path: clone from bare cache synchronously.
         claimPath = "slow-clone";
         if (opts?.isCancelled?.()) throw new ClaimAbortedError();
         const cacheDir = deps.getSharedRepoDir(url);
@@ -422,10 +235,8 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
 
         await rm(workspaceDir, { recursive: true, force: true });
 
-        // Self-heal a missing or corrupt bare cache.
         const { git: cacheGit } = await ensureBareCache(cacheDir, url, deps.createRepoGit);
 
-        // Normalize the cache's remote.origin.url to the plain URL.
         if (deps.githubAuthManager.authenticated) {
           await cacheGit.setRemoteUrl(url);
         }
@@ -433,9 +244,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         try {
           await cacheGit.fetchCache();
         } catch (err) {
-          // Non-fatal — `fetchAndResolveDefaultBranch` below fetches the real
-          // remote directly in the workspace clone, so a stale bare cache no
-          // longer freezes the slow path.
+          // The workspace fetch below can still refresh a stale cache clone.
           console.error(`[claim-session] Fetch cache failed for ${url}:`, getErrorMessage(err));
           deps.sseBroadcast("error", {
             message: `Repository cache for ${url} could not be refreshed: ${getErrorMessage(err)}`,
@@ -444,7 +253,6 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
 
         await cacheGit.cloneFromCache(workspaceDir, url);
 
-        // Configure credentials BEFORE fetching the real remote.
         if (deps.githubAuthManager.authenticated) {
           deps.githubAuthManager.configureGitCredentials(workspaceDir);
         }
@@ -465,35 +273,11 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         if (resetTarget) branchArgs.push(resetTarget);
         await safeSimpleGit(workspaceDir).raw(branchArgs);
 
-        // Realign local `main` with `origin/main` (see syncLocalDefaultBranchToOrigin):
-        // the branch was just cut from the freshly-fetched `origin/HEAD`, but
-        // local `main` still points at the stale bare-cache snapshot, which
-        // would make a later `main..HEAD` PR review include already-merged
-        // commits (docs/194).
         await syncLocalDefaultBranchToOrigin(workspaceDir);
-        // docs/231 — pull Git LFS content after the `checkout -b` that
-        // materialized the worktree (as pointer stubs) and before the chown
-        // below. This is the one LFS path that IS on the user's critical path,
-        // which is why `materializeLfsContent` caps the pull with a timeout.
+        // Materialize after checkout, which writes LFS pointer stubs.
         await materializeLfsWithWarning(workspaceDir, url, (message) =>
           deps.sseBroadcast("error", { message }),
         );
-        // docs/150 §7 addendum (planning#147): hand back both worktree AND
-        // `.git`, because `checkout -b <resetTarget>` re-materializes the
-        // WORKTREE and not just `.git`.
-        //
-        // planning#412 — the tree this repairs is the one `cloneFromCache` just
-        // CREATED. That clone is a bare `safeSimpleGit()` naming no directory to
-        // stat, so it is the one git here that runs as root and lands
-        // `root:root`; `cloneFromCache` hands it over before returning
-        // (`repo-git.ts`), and the fetch, `checkout -b`, ref realignment and LFS
-        // pull above then all drop to this session's identity through
-        // `safeSimpleGit(workspaceDir)` / `gitSpawnOverridesForTree` and write
-        // worker-owned files. So this call's job is reconciling `.git` with
-        // `resolveGitDirOwner` — the uid that will next RUN git in it — and
-        // handing the worktree to the identity the container runs as. No-op
-        // wherever no identity resolves (local mode, dev, tests), which is also
-        // the only place the ops above still write as root.
         handWorkspaceBackToWorker(workspaceDir);
 
         deps.sessionManager.setRemoteUrl(appSessionId, url);
@@ -505,34 +289,13 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         return { sessionId: appSessionId, workspaceDir, fetchDurationMs };
       });
 
-      // Reset created_at to "now" for the claimed session. Warm-pool warming
-      // inserts the session row before the workspace is cloned, so without
-      // this reset every file in the freshly-cloned workspace would have
-      // mtime > createdAt and the docs viewer's "modified in this session"
-      // group would incorrectly list everything in the repo.
+      // Exclude clone-time file writes from the docs viewer's session-modified group.
       deps.sessionManager.markStarted(result.sessionId);
 
-      // Claiming a workspace IS using the repo, so stamp `lastUsedAt` here and
-      // not only at graduation (`graduateSession`). The steady-state janitor
-      // reclaims a `repo-cache/<hash>` whose repo's `lastUsedAt` is past the
-      // cold cutoff; with the stamp landing only on the first *turn*, a repo the
-      // user opened repeatedly but never graduated kept `lastUsedAt == addedAt`
-      // and aged into "cold" while in active use. Its cache was then deleted out
-      // from under the very claims that were recreating it — an hourly
-      // delete/re-clone loop against a repo somebody was trying to work in.
+      // Opening a workspace counts as use even if it never receives a first turn.
       deps.repoStore.touch(url);
 
-      // `claimPath` says which path MINTED the session; it has never said
-      // whether the warm tier could actually deliver one. A "warm" claim whose
-      // standby has died goes on to pay a full cold container create, and the
-      // line read as a warm hit either way — which is how the hollow-warm-tier
-      // failure (planning#501) stayed invisible. Report both, so this line and
-      // the `container.acquire` line that follows it can be compared.
-      // Asked of DOCKER, not of the tracking map. A missed `die` event is the
-      // motivating failure here, and the map is exactly what such an event
-      // fails to update — reading it would report `ready` for the container
-      // that is gone (review finding). One inspect, against a claim that has
-      // already spent a git fetch.
+      // Inspect Docker: a warm-pool pointer can survive a missed container die event.
       const standbyRunning = await deps.containerManager?.isTrackedContainerRunning(result.sessionId);
       const standby = standbyRunning === true ? "ready"
         : standbyRunning === false ? "missing"

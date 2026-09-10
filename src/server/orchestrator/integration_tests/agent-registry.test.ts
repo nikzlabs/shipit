@@ -1,7 +1,3 @@
-/**
- * Integration tests for agent registry — list_agents via HTTP bootstrap.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -73,7 +69,6 @@ describe("Integration: Agent registry — list_agents", () => {
 
     const codex = data.agents.find((a: any) => a.id === "codex");
     expect(codex.installed).toBe(true);
-    // Codex auth depends on OPENAI_API_KEY being set
     expect(codex.name).toBe("Codex");
   });
 });

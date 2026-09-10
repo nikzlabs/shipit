@@ -1,12 +1,3 @@
-/**
- * docs/262 req 12 — `shipit plugin refresh`, server side.
- *
- * Refresh IS activation, so the interesting behaviour here is not the fetch —
- * `plugin-generations.test.ts` owns that — but what the agent is TOLD: which
- * commit moved, which repository was touched, and what a failure reports while
- * the prior generation keeps serving (req 15).
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -46,7 +37,6 @@ function writeConfig(yaml: string): void {
   fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), yaml);
 }
 
-/** Add a commit on the plugin origin, so the next refresh has somewhere to go. */
 async function commitOnOrigin(message: string): Promise<string> {
   fs.writeFileSync(path.join(originDir, `${message}.txt`), message);
   const git = simpleGit(originDir);
@@ -92,8 +82,6 @@ describe("refreshPluginRepos", () => {
     expect(first.rows[0]!.after).toMatch(/^[0-9a-f]{40}$/);
     expect(first.rows[0]!.ref).toBe("branch main");
 
-    // The plugin repository gains a commit — this is the case the verb exists
-    // for: nothing about the CONSUMER changed, so no other trigger would fire.
     const moved = await commitOnOrigin("second");
     const second = await refreshPluginRepos("sess", workspaceDir, deps());
 
@@ -139,28 +127,17 @@ describe("refreshPluginRepos", () => {
   });
 
   it("refuses `repo: self` rather than reporting a no-op as success", async () => {
-    // req 27: self IS the working tree. There is no generation to refresh, so
-    // "nothing happened" would be a misleading answer.
     writeConfig("plugins:\n  repos:\n    - repo: self\n      name: dev\n");
     const result = await refreshPluginRepos("sess", workspaceDir, deps(), "dev");
     expect(result.error).toContain("`dev`");
-    // And it says WHY. "not a declared repository" would send the reader
-    // looking for a typo that is not there.
     expect(result.error).toContain("repo: self");
   });
 
-  // req 15 — a failed refresh keeps the prior generation whole and live. The
-  // agent has to be told BOTH: that the refresh failed, and which commit its
-  // session is still running.
   it("reports a failure while the prior generation keeps serving", async () => {
     writeConfig(DECLARATION);
     const good = await refreshPluginRepos("sess", workspaceDir, deps());
     const live = good.rows[0]!.after;
 
-    // The SAME repository, at a ref that cannot be resolved — the shape a
-    // deleted tag or a bad pin produces. It has to stay the same repository:
-    // pointing the name at a DIFFERENT one is a re-point, and a stranger's
-    // files are not a degraded version of this plugin (see the test below).
     writeConfig("plugins:\n  repos:\n    - repo: acme/tools\n      name: tools\n      pin: v-does-not-exist\n");
     const failed = await refreshPluginRepos("sess", workspaceDir, deps());
 
@@ -168,11 +145,6 @@ describe("refreshPluginRepos", () => {
     expect(failed.rows[0]!.after).toBe(live);
   });
 
-  // Re-pointing is not refreshing. Every on-disk path is keyed by the
-  // declaration NAME, so before the generation recorded its source the old
-  // repository's checkout stayed live under the new declaration — the report,
-  // the Plugins tab and `/plugins/tools` all showed the new repository at the
-  // old repository's commit.
   it("does not keep the previous repository live when the name is re-pointed", async () => {
     writeConfig(DECLARATION);
     await refreshPluginRepos("sess", workspaceDir, deps());
@@ -185,17 +157,11 @@ describe("refreshPluginRepos", () => {
     expect(failed.rows[0]!.after).toBeNull();
   });
 
-  // The shared activation-state map belongs to the UI and is owned by whichever
-  // round finishes last. Deriving the report from it meant a refresh whose
-  // install had just failed could read back as `unchanged` and exit 0, because a
-  // second trigger had already replaced the state with `activating: true`.
   it("reports ITS OWN round's failure, not the shared latest-attempt state", async () => {
     writeConfig("plugins:\n  repos:\n    - repo: acme/missing\n      name: tools\n      branch: main\n");
     const failed = await refreshPluginRepos("sess", workspaceDir, deps());
     expect(failed.rows[0]!.status).toBe("failed");
 
-    // Wipe the shared map, exactly as a disposal would. The row already
-    // computed above stands on its own; a fresh round still answers for itself.
     clearActivationState("sess");
     const again = await refreshPluginRepos("sess", workspaceDir, deps());
     expect(again.rows[0]!.status).toBe("failed");
@@ -209,18 +175,8 @@ describe("refreshPluginRepos", () => {
   });
 });
 
-/**
- * docs/266 — what a consumer whose live version is broken can see and do.
- *
- * Both halves were missing at once, and that is what made the reported episode
- * expensive: the round said `unchanged` and exited 0 while the plugin was
- * unusable, and there was no way to try the same version again.
- */
 describe("refreshPluginRepos — diagnosing and retrying a live version", () => {
   it("reports the LIVE version's own degradation on a round that did nothing", async () => {
-    // A manifest that declares an install this runtime has no runner for: the
-    // generation goes live "active but not installed" (req 13 degrades visibly),
-    // and until now that sentence reached only the Plugins tab.
     fs.writeFileSync(
       path.join(originDir, "shipit.yaml"),
       "exports:\n  plugins:\n    probe:\n      cli:\n        probe: bin/probe.mjs\n      install: npm ci\n",
@@ -246,10 +202,6 @@ describe("refreshPluginRepos — diagnosing and retrying a live version", () => 
   });
 
   it("reports a FAILED install for the live version on a later plain refresh", async () => {
-    // The gap review found: `degraded` read only the generation's own warnings,
-    // and a failed install publishes NO generation — so the state this feature
-    // exists for (live version, install failed) was silent on every round after
-    // the one that failed. The durable record is the only carrier of it.
     writeConfig(DECLARATION);
     const first = await refreshPluginRepos("sess", workspaceDir, deps());
     const live = first.rows[0]!.after!;
@@ -267,10 +219,6 @@ describe("refreshPluginRepos — diagnosing and retrying a live version", () => 
   });
 
   it("carries a SUCCEEDED install's output on the row, for `--json` to print", async () => {
-    // planning#416. The row already reported a failed install through
-    // `degraded`; a successful one is deliberately NOT degradation — nothing is
-    // wrong — and it is still the answer to "it says it installed, so what did
-    // it write?". So it rides its own field rather than the warning line.
     writeConfig(DECLARATION);
     const first = await refreshPluginRepos("sess", workspaceDir, deps());
     const live = first.rows[0]!.after!;
@@ -284,16 +232,10 @@ describe("refreshPluginRepos — diagnosing and retrying a live version", () => 
 
     const again = await refreshPluginRepos("sess", workspaceDir, deps());
     expect(again.rows[0]!.install?.output).toContain("built dist/index.js");
-    // A successful install is not a degradation, and reporting it as one would
-    // teach a reader to ignore the field that means something is wrong.
     expect(again.rows[0]!.degraded).toBeUndefined();
   });
 
   it("labels a carried record with the commit it was for, live or not", async () => {
-    // The record is the last attempt for the REPOSITORY. A reader must be able
-    // to tell "this is what your live version installed" from "this is what the
-    // refresh that failed was doing", so the commit travels with the output
-    // rather than being implied by the row it sits on.
     writeConfig(DECLARATION);
     await refreshPluginRepos("sess", workspaceDir, deps());
 
@@ -310,8 +252,6 @@ describe("refreshPluginRepos — diagnosing and retrying a live version", () => 
   });
 
   it("does not report a failed attempt on a version that is not live", async () => {
-    // A failed refresh to B leaves A serving. Naming B's failure under A would
-    // be the fabricated diagnosis the same review finding names.
     writeConfig(DECLARATION);
     await refreshPluginRepos("sess", workspaceDir, deps());
 
@@ -327,8 +267,6 @@ describe("refreshPluginRepos — diagnosing and retrying a live version", () => 
   });
 
   it("refuses --force without a repository name, and runs nothing", async () => {
-    // It re-runs an install and replaces what the last one left; a forgotten
-    // name must not apply that to every declared repository.
     writeConfig(DECLARATION);
     const before = await refreshPluginRepos("sess", workspaceDir, deps());
     expect(before.rows[0]!.status).toBe("activated");
@@ -339,8 +277,6 @@ describe("refreshPluginRepos — diagnosing and retrying a live version", () => 
   });
 
   it("does not claim a re-install when --force ran a FIRST activation", async () => {
-    // Nothing was live, so the forced round is an ordinary activation. Saying
-    // `re-installed` there would describe work on a version that never existed.
     writeConfig(DECLARATION);
     const first = await refreshPluginRepos("sess", workspaceDir, deps(), "tools", true);
 
@@ -354,24 +290,15 @@ describe("refreshPluginRepos — diagnosing and retrying a live version", () => 
     const first = await refreshPluginRepos("sess", workspaceDir, deps());
     const live = first.rows[0]!.after;
 
-    // Without --force this is the terminal `unchanged` the issue reported: the
-    // consumer's only escape was the plugin's author publishing a new commit.
     const plain = await refreshPluginRepos("sess", workspaceDir, deps(), "tools");
     expect(plain.rows[0]!.status).toBe("unchanged");
     expect(plain.rows[0]!.reinstalled).toBeUndefined();
 
     const forced = await refreshPluginRepos("sess", workspaceDir, deps(), "tools", true);
     expect(forced.rows[0]!.reinstalled).toBe(true);
-    // The same version — a retry, not an upgrade.
     expect(forced.rows[0]!.after).toBe(live);
   });
 
-  /**
-   * docs/273-plugin-generation-rebuild — the reporter never ran `--force` in
-   * the first place: they edited `shipit.yaml`, and the round that read the edit
-   * had to install. `reinstalled` is what tells them it did, because the commit
-   * cannot move for a re-install and `status` alone reads `unchanged`.
-   */
   it("reports a rebuild ShipIt decided on itself, not only a forced one", async () => {
     fs.writeFileSync(
       path.join(originDir, "shipit.yaml"),
@@ -388,13 +315,11 @@ describe("refreshPluginRepos — diagnosing and retrying a live version", () => 
       },
     });
 
-    // Published while nothing selects `probe` — so nothing was installed.
     writeConfig(DECLARATION);
     const first = await refreshPluginRepos("sess", workspaceDir, withInstall());
     expect(first.rows[0]!.status).toBe("activated");
     expect(installed).toEqual([""]);
 
-    // The declaration now selects it, at the same commit.
     writeConfig(`${DECLARATION}  use:\n    - plugin: probe\n      from: tools\n`);
     const repaired = await refreshPluginRepos("sess", workspaceDir, withInstall(), "tools");
 

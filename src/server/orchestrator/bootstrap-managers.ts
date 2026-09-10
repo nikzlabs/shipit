@@ -93,54 +93,21 @@ import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { pinStorePath } from "./plugin-pins.js";
 import { createPluginRepoFetcher } from "./plugin-fetch.js";
 
-/**
- * Static, process-lifetime metadata captured at startup and surfaced to the
- * client (e.g. the uptime / version badge over the SSE `system_info` event).
- * Computed in `index.ts` (so `processStartedAt` is the true process start) and
- * threaded through here so the SSE endpoint and routes can read it off the
- * runtime context.
- */
 export interface BootstrapMeta {
-  /** `Date.now()` captured once at process startup (live uptime badge). */
   processStartedAt: number;
-  /** Build identifier of the running instance (baked `SHIPIT_BUILD_ID`). */
   buildId: string | undefined;
-  /** Channel-aware human-facing version of the running instance (feature 162). */
   version: VersionInfo;
-  /** Update mode (managed vs manual). */
   updateMode: UpdateMode;
-  /** Resolved `dist/client` directory used by the static file handler. */
   clientDir: string;
 }
 
-/** Inputs to {@link bootstrapManagers}. */
 export interface BootstrapManagersDeps {
   deps: AppDeps;
   mgrs: ManagerSet;
-  /**
-   * docs/172 (planning#92) egress containment resolver. Computed in `index.ts`
-   * (before the Fastify app + this call, to preserve the original ordering of
-   * the UID guard) and fed straight into the container manager setup here.
-   */
   resolveEgressConfig: (sessionId: string) => ResolvedEgressConfig;
   meta: BootstrapMeta;
 }
 
-/**
- * Instantiate and wire every orchestrator manager / collaborator, in the exact
- * order the original `buildApp()` did. This is pure DI + wiring — it does NOT
- * touch the Fastify `app` (no route registration; the first `app.X` call lives
- * in `route-registry.ts`) and starts no timers (those live in
- * `startup-monitors.ts`).
- *
- * The wiring order here is load-bearing — see CLAUDE.md §"Post-turn flow" and
- * the WebSocket-lifecycle invariants. Extracted from `index.ts` for the P4
- * split (docs/201) with no behavior change.
- *
- * Returns the full runtime context consumed by the SSE endpoint, the startup
- * monitors, and the route registry. The shape is inferred and re-exported as
- * {@link OrchestratorRuntime}.
- */
 export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const { deps, mgrs, resolveEgressConfig, meta } = args;
   const {
@@ -154,31 +121,16 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     isTestMode, runtimeMode,
   } = mgrs;
 
-  // ---- Retire the previous process's warm sessions ----
-  // FIRST, before the container setup on the next line reads
-  // `sessionManager.allIds()`: with the rows already gone, its orphan sweep
-  // treats each standby as an orphan and its rediscovery never re-adopts one
-  // (which is how a standby used to survive every deploy — the idle enforcer
-  // skips standbys, so nothing else would ever have reaped it). The container
-  // itself is killed by label inside that call (`reapStandbyContainers`); what
-  // this owns is the row, the repo pointer and the clone — and clearing the
-  // pointer is what makes `scheduleStartupTasks` re-warm the pool on the new
-  // image. See `retireWarmSessions`.
+  // Retire rows before discovery so old standbys cannot be adopted again.
   await retireWarmSessions({
     repoStore, sessionManager, chatHistoryManager, usageManager, presentStore,
   });
 
-  // ---- Container manager (Docker isolation) ----
   const { containerManager, dockerProxyServer } = await setupContainerManager({
     deps, isTestMode, credentialsDir, stateDir, sessionManager, runtimeMode, resolveEgressConfig,
   });
 
-  // docs/262 req 19 — re-declare the plugin networks untrusted BEFORE this
-  // process can accept a request. The registry is process memory while the
-  // networks and any container still on them belong to the daemon, so a restart
-  // with a plugin container alive left its subnet unknown and the guard read it
-  // as a browser caller. Awaited here rather than left to the boot orphan sweep,
-  // which is fire-and-forget and paced. See `registerExistingPluginNetworks`.
+  // Restore untrusted network identities before requests can mistake plugin callers for browsers.
   if (containerManager) {
     await registerExistingPluginNetworks(
       containerManager.dockerClient,
@@ -186,21 +138,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     );
   }
 
-  // ---- Docker instance for memory stats ----
   const dockerForStats = containerManager ? createDockerClient() : null;
 
-  // ---- Bare repo cache directory ----
-  // In local mode (dogfooding), `stateDir` lives outside the visible
-  // workspace so the inner orch's repo-cache/dep-cache don't pollute the
-  // outer's source tree. Production keeps stateDir = workspaceDir.
   const getBareCacheDir = createBareCacheDirHelper(stateDir);
   const getDepCacheDir = createDepCacheDirHelper(stateDir);
 
-  // ---- Marketplace store (docs/149 — skill install UX) ----
-  // App-wide catalog list (Settings → Skills → Discover). v1 ships with
-  // pre-seeded official Claude and Codex catalogs and never inserts/deletes
-  // after that — v2 adds the add/remove verbs. The background pre-clone is
-  // kicked off below, after the route table is registered.
   const marketplaceStore = new MarketplaceStore(databaseManager);
   marketplaceStore.seedIfMissing({
     id: "claude-plugins-official",
@@ -215,47 +157,19 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     autoUpdate: true,
   });
 
-  // ---- SSE (Server-Sent Events) ----
   const { sseClients, sseBroadcast } = createSSE();
 
-  // ---- Log buffer ----
-  // Durable per-session log store (docs/192) — backs both the agent "Logs" tab
-  // and the preview-service log panels so history survives orchestrator
-  // restart, idle eviction, and container destruction. The in-memory ring in
-  // createLogBuffer stays as a hot, synchronous cache for diagnostics.
   const logStore = new LogStore(sessionsRoot);
   const { getLogBuffer, clearLogBuffer, removeLogBuffer, broadcastLog } = createLogBuffer(logStore);
-  // docs/192 — drop a session's durable logs dir + in-memory ring when it goes
-  // away for good (archive / delete / full reset). The disk-janitor sweep is
-  // the startup backstop for paths that don't call this.
   const removeSessionLogs = (sid: string): void => {
     logStore.remove(sid);
     removeLogBuffer(sid);
   };
 
-  // ---- OOM circuit breaker ----
-  // One process-local instance shared between the health monitor (which
-  // records OOMs and trips the breaker), the runner factory (which refuses
-  // to create a container when tripped), the recovery handlers (which
-  // reset on user-initiated restart), and the diagnostics endpoint
-  // (which surfaces the current state to the panel).
   const oomBreaker = createOomCircuitBreaker();
 
-  // ---- SIGTERM/recreate loop detector ----
-  // Process-local instance shared between the health monitor (which
-  // records `container_started` events and force-trips the breaker on a
-  // loop) and the recovery handlers (which call `forget()` on a
-  // user-initiated restart). Hoisted out of `setupContainerHealthMonitoring`'s
-  // default parameter so recovery can reach it — resetting the breaker
-  // without also clearing the loop detector leaves the trip sticky, since
-  // both gate the same runner factory.
   const loopDetector = createSessionLoopDetector();
 
-  // ---- Runner factory ----
-  // docs/150 — `localAgentFactory` + `providerAccountManager` let a local-mode
-  // runner spawn its CLI against the account this session was routed to.
-  // planning#300 — `credentialStore` is the MCP env that spawn carries, standing in
-  // for the worker secrets push local mode has no worker to receive.
   const effectiveRunnerFactory = buildRunnerFactory({
     deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog,
     oomBreaker, presentStore, chatHistoryManager, credentialStore,
@@ -263,69 +177,23 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     providerAccountManager,
   });
 
-  // ---- Service manager registry (per-session compose stacks) ----
   const serviceManagers = new Map<string, ServiceManager>();
-  /**
-   * In-flight `mgr.stop()` promises keyed by sessionId. Used by
-   * `setupServiceManager` to serialize compose ops per session — see the
-   * `composeStopPromises` doc on RunnerRegistryDeps for the race story.
-   */
   const composeStopPromises = new Map<string, Promise<void>>();
-  /** Per-session compose warnings/errors for configs without a ServiceManager (e.g. old format). */
   const composeWarnings = new Map<string, string>();
-  /** Sessions where compose is not configured in shipit.yaml. */
   const composeNotConfigured = new Set<string>();
 
-  /**
-   * planning#496 — tell every browser that this session's previews are gone.
-   *
-   * A viewer keeps one iframe per `(session, port)` mounted so returning to a
-   * session is instant (`useIframePool`), and since planning#492 each of those
-   * costs a renderer process. Once a session's Compose stack is torn down that
-   * retention pays nothing back: the document is served by containers that no
-   * longer exist, and `PreviewFrame` reloads the slot when the services return
-   * (planning#478) rather than showing the stale page. So the browser is told,
-   * and drops the slot.
-   *
-   * Deliberately NOT emitted for every teardown. The idle enforcer's tier 1 and
-   * the agent-restart path stop the agent container while keeping the Compose
-   * stack serving — for those the retained iframe is pointing at a *live*
-   * preview, and dropping it would destroy exactly what the pool exists to
-   * keep. Both call sites below are the ones where previews genuinely stop:
-   * tier 2's stack stop, and a full container teardown.
-   *
-   * Fire-and-forget. A viewer that misses it (SSE interruption) simply keeps
-   * the slot until LRU evicts it — today's behaviour — so this is an
-   * optimization with a benign miss, not a correctness signal needing a
-   * snapshot to converge on.
-   */
   const announcePreviewsStopped = (sessionId: string): void => {
     sseBroadcast("session_previews_stopped", { sessionId });
   };
 
-  // Absent in local/dogfood mode (`RUNTIME_MODE=local`), which has no containers
-  // to tear down and so nothing to announce.
   containerManager?.on("container_destroyed", (sessionId, previewsStopped) => {
     if (previewsStopped) announcePreviewsStopped(sessionId);
   });
 
-  // ---- Latest Docker memory stats (memory budget cache) ----
-  // The periodic stats poller below writes here on every successful read,
-  // having stamped the resolved budget onto the snapshot. The idle enforcer
-  // reads from here to decide whether ShipIt is over budget and, if so, how
-  // many bytes each session would give back (docs/284).
-  // A simple holder is enough — we only need the most recent reading and
-  // it's overwritten in place every 10s.
   const latestMemoryStats: { value: DockerMemoryStats | null } = { value: null };
 
-  // ---- Session runner registry ----
-  // Idle enforcement uses a lazy reference to `runnerRegistry` — the callback
-  // only fires when a runner goes idle (always after initialization).
   const registryHolder: { ref: SessionRunnerRegistry | null } = { ref: null };
-  // docs/284 — built ONCE and cached. The enforcer carries state across passes
-  // (which sessions tier 1 already reclaimed, when it last freed anything), so
-  // rebuilding it per call would silently reset that and let a burst of
-  // triggers reclaim against the same stale memory snapshot repeatedly.
+  // Reuse the enforcer: its state prevents repeated reclaim against a stale memory reading.
   let idleEnforcer: (() => void) | null = null;
   const enforceIdleContainerLimit = () => {
     if (!registryHolder.ref) return;
@@ -341,10 +209,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
           const mgr = serviceManagers.get(sessionId);
           if (!mgr) return;
           serviceManagers.delete(sessionId);
-          // Announced when the stop SUCCEEDS, not when it starts: a viewer acts
-          // on this by dropping the session's iframes, and `compose down` is
-          // both asynchronous and allowed to fail. Broadcasting here would
-          // discard a document that is still being served.
+          // Drop browser iframes only after Compose stops successfully.
           trackComposeStop(composeStopPromises, sessionId, mgr, {
             onStopped: () => announcePreviewsStopped(sessionId),
           });
@@ -356,20 +221,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     idleEnforcer();
   };
 
-  // ---- Non-turn work's text generator (docs/252 phase 7, req 9) ----
-  //
-  // The injected `deps.generateText` still wins: tests and the dogfood local
-  // path supply their own, and replacing an explicitly-provided generator would
-  // change what those runs produce. What this replaces is the PRODUCTION
-  // default, which returned the empty string because the orchestrator has no
-  // resident agent — so every containerized pull request got a blank body and
-  // the feature degraded silently (req 9 calls that half a change, not a
-  // behaviour to preserve).
-  //
-  // The registry is read through the holder above rather than captured: this
-  // generator is passed INTO `createRunnerRegistry` below, so it cannot close
-  // over the registry it spawns through. Same lazy shape, same reason, as
-  // `getPrStatusPoller`.
   const effectiveGenerateText: GenerateText = deps.generateText ?? makeNonTurnGenerateText({
     credentialStore,
     providerAccountManager,
@@ -377,38 +228,12 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     ensureAgentTokenFresh: (...args) => ensureAgentTokenFresh(...args),
     chatHistoryManager,
     usageManager,
-    // The credential window a background spawn needs: its harness and account
-    // are chosen independently of the session, so they are routinely not the
-    // ones the session's container already holds.
     ...(credentialsDir ? { credentialsDir } : {}),
     sessionManager,
-    // A call with no session is not non-turn *work* — it is the post-interrupt
-    // commit message, which has no session to attribute to and no notice to
-    // raise. It keeps app-di's generator, which is the in-process agent in local
-    // mode and the degrade-to-empty default otherwise.
-    // `opts` forwarded, not dropped: in local mode this generator spawns a real
-    // CLI, so it needs the session to record the unattributed row planning#343
-    // is about (`app-di.ts`).
     fallback: (prompt, cwd, opts) => generateText(prompt, cwd, opts),
   });
 
-  // docs/184: compose services no longer receive the user's platform-managed
-  // credentials (Claude OAuth / GitHub token / MCP OAuth). The
-  // `source: platform:*` forwarding path was removed because it handed the
-  // user's global identity to attacker-controlled service code on the
-  // strength of a repo-committed compose file. Compose services now get only
-  // user-supplied secrets from the secret store.
-
-  // Docker-secrets isolation (087 Phase 1 follow-up) — opt-in via env vars.
-  // When `SHIPIT_SECRETS_INTERNAL_DIR` is set, ServiceManager writes secret
-  // values to per-secret files under that directory and references them
-  // from compose via `secrets: { file: ... }` instead of `env_file:`. The
-  // agent container's workspace doesn't see the values.
-  //
-  // `SHIPIT_SECRETS_HOST_DIR` is the path the Docker daemon (host-side) sees
-  // for the same directory — required when the orchestrator runs inside a
-  // container, since `file:` references are resolved by the daemon, not the
-  // orchestrator. Omit for orchestrator-on-host setups.
+  // Internal and host paths refer to the same secrets directory in different mount namespaces.
   const dockerSecretsConfig = process.env.SHIPIT_SECRETS_INTERNAL_DIR
     ? {
       internalDir: process.env.SHIPIT_SECRETS_INTERNAL_DIR,
@@ -418,65 +243,25 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     }
     : undefined;
 
-  // docs/183 — service-only secret isolation. By default, per-service compose
-  // env files are written to `<stateDir>/service-env/<sessionId>/.env.<svc>`,
-  // OUTSIDE the agent's workspace mount, instead of the agent-readable
-  // workspace `.shipit/.env.<svc>`. In containerized runtime `stateDir`
-  // defaults to the workspace-volume root, and the agent mounts only the
-  // `sessions/<id>/workspace` subpath, so this directory is outside the
-  // agent's view (see docs/183 §"Why <stateDir>/service-env is agent-invisible").
-  // `SHIPIT_SERVICE_ENV_DIR` overrides the root for operators who keep
-  // `stateDir` somewhere the safety assertion would reject. Docker-secrets
-  // mode (above) takes priority over this when configured.
+  // Keep service secrets outside the agent's workspace mount.
   const serviceEnvDir = process.env.SHIPIT_SERVICE_ENV_DIR
     ?? path.join(stateDir, "service-env");
 
-  // docs/149 — lazy holder for the PR status poller. The poller is constructed
-  // AFTER the runner registry (depends on it), but the registry's system-turn
-  // PR lifecycle hook needs to reach it at runtime. Wired below, after the
-  // poller exists.
   const prStatusPollerRef: { ref: PrStatusPoller | null } = { ref: null };
 
-  // ---- Post-turn auto-push (services/auto-push-scheduler.ts) ----
-  // Session-keyed and process-lived, deliberately NOT stored on the runner: a
-  // runner disposed between the commit and the debounce used to take the push
-  // with it, silently. Both the WS path and the system-turn path arm THIS
-  // scheduler, so the two can no longer disagree about what a post-turn push
-  // does. The runner is resolved lazily at fire time, and only to report.
+  // Pushes must survive runner disposal, so the scheduler belongs to the process.
   const autoPushScheduler = createAutoPushScheduler({
     debounceMs: autoPushDebounceMs,
     githubAuthManager,
     getRunner: (sessionId) => registryHolder.ref?.get(sessionId) ?? null,
     broadcastLog,
-    // A rejected (diverged) push leaves a persisted transcript notice, not just
-    // a log-ring line — the 2026-08-15 incident, where ten hours of rejections
-    // were invisible on every surface the user or the agent reads.
     chatHistory: chatHistoryManager,
     notifyAutoPush: (sessionId) => prStatusPollerRef.ref?.notifyAutoPush(sessionId),
-    // Derived exactly as the CLI env is (`session-agent-run-params.ts`:
-    // `Boolean(sessionInfo?.mergedHeadSha)`), so the notice never names a
-    // force-push the PreToolUse hook would refuse when the agent runs it.
     destructiveGitGuarded: (sessionId) => Boolean(sessionManager.get(sessionId)?.mergedHeadSha),
   });
 
-  // planning#266 — the same forward-ref shape for the merge-watch manager, which is
-  // likewise built after the runner registry. Turn adoption (wired into every
-  // runner's system-turn deps) reaches it to re-acquire the settlement for a
-  // delivery whose wake-turn outlived an orchestrator restart.
   const mergeWatchManagerRef: { ref: MergeWatchManager | null } = { ref: null };
 
-  // docs/153 / docs/154 — lazy holders for orchestrator-owned OAuth
-  // refreshers. Constructed below (after `wireEventHandlers` so
-  // `repushTokenToPinnedSessions` is in scope), referenced from the
-  // runner-registry's listener deps (built first) via forward refs so the
-  // auth-required hooks resolve to live instances at runtime. Stay `null` in
-  // test mode / local runtime.
-  //
-  // docs/153 — lazy holder for the Claude OAuth refresher. Constructed below
-  // (after `wireEventHandlers` so `repushTokenToPinnedSessions` is in scope),
-  // referenced from the runner-registry's listener deps (built first) via this
-  // forward ref so `nudgeClaudeOAuthRefresh` resolves to the live instance at
-  // runtime. Stays `null` in test mode / local runtime.
   const claudeOAuthRefresherRef: { ref: ClaudeOAuthRefresher | null } = { ref: null };
   const codexOAuthRefresherRef: { ref: CodexOAuthRefresher | null } = { ref: null };
   const nudgeClaudeOAuthRefresh = (): void => {
@@ -493,37 +278,18 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       console.error("[codex-oauth-refresh] nudge failed:", err);
     });
   };
-  /**
-   * docs/155 — per-agent dispatch for the WS `auth_required` handler. Each
-   * backend that needs a side effect on auth failure registers itself here;
-   * the listener calls `onAgentAuthRequired(agentId)` without knowing which
-   * agent it is. Adding a backend with its own hook (e.g. Codex device-flow
-   * restart) means one `set()` here.
-   */
   const agentAuthRequiredHooks = new Map<AgentId, () => void>();
   agentAuthRequiredHooks.set("claude", nudgeClaudeOAuthRefresh);
   agentAuthRequiredHooks.set("codex", nudgeCodexOAuthRefresh);
   const onAgentAuthRequired = (agentId: AgentId): void => {
     agentAuthRequiredHooks.get(accountOwnerHarness(agentId))?.();
   };
-  /**
-   * docs/179 — proactively heal an agent's OAuth source token before someone
-   * reads it (session start, AI session naming, the 401 auto-retry). Keyed by
-   * agent like {@link onAgentAuthRequired}: Claude registers the refresher's
-   * `ensureFresh` (a no-op when the token is healthy, an awaited single-flight
-   * refresh when it's within the safety margin). Codex also registers its awaited refresher; OpenCode
-   * account consumers dispatch through that same owner. Returns `true` when the token is usable after the call.
-   */
   const ensureTokenFreshHooks = new Map<
     AgentId,
     (accountId?: string, opts?: { force?: boolean }) => Promise<boolean>
   >();
   ensureTokenFreshHooks.set("claude", async (accountId?: string, opts?: { force?: boolean }): Promise<boolean> => {
     const r = claudeOAuthRefresherRef.ref;
-    // No refresher (test / local runtime) → nothing this path can heal. Return
-    // false: the proactive callers ignore the boolean (they fail open and just
-    // proceed), while the runtime-401 auto-retry reads it as "couldn't heal" and
-    // correctly surfaces the sign-in card instead of pointlessly re-dispatching.
     if (!r) return false;
     try {
       return await r.ensureFresh(accountId, opts);
@@ -536,9 +302,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     if (!accountId) return false;
     return codexOAuthRefresherRef.ref?.ensureFresh(accountId, opts) ?? false;
   });
-  // docs/179 — `opts.force` is set only by the runtime-401 recovery; the
-  // proactive callers (env-prep step 2a, session naming) omit it and keep the
-  // cheap expiry short-circuit.
   const ensureAgentTokenFresh = async (
     agentId: AgentId,
     accountId?: string,
@@ -547,117 +310,48 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     const hook = ensureTokenFreshHooks.get(accountOwnerHarness(agentId));
     return hook ? hook(accountId, opts) : true;
   };
-  // docs/149 — same shape as the WS handler's readSystemPrompt, hoisted to
-  // app scope so the system-turn hook can read it without per-connection state.
-  // `workspaceDir` here is the orchestrator's own root, not a session clone —
-  // which is exactly what `readGlobalSystemPrompt` wants.
   const readSystemPromptApp = (): Promise<string | undefined> =>
     readGlobalSystemPrompt(workspaceDir);
 
-  // docs/155 Phase 5 — per-agent runtime tables. `buildAgentRuntime()` lives in
-  // `agents/index.ts` and assembles the lookup tables the
-  // orchestrator consumes (auth managers for shutdown / limits rearm / SSE,
-  // limits providers for `recordAgentRateLimits`, run-params preps for the
-  // shared run-params assembler, system-prompt fragments for
-  // `agent-instructions.ts`). Adding a backend = one new folder under
-  // `agents/<id>/` + one entry per HARNESS-keyed table inside
-  // `buildAgentRuntime()`. `authManagers` is the exception: it is keyed by
-  // `LoginIntegrationId`, so a harness that signs in through a login flow that
-  // already exists adds nothing to it.
   const agentRuntime = buildAgentRuntime({
     authManager,
     codexAuthManager,
-    // planning#435 — the `xai-oauth` device flow. Its own key in the map, not a
-    // second harness on an existing login: the credential is an xAI account.
     xaiAuthManager,
-    // docs/150 — lets the Claude limits provider fetch each account's usage
-    // with THAT account's token, and know about an account before it has ever
-    // reported quota.
     ...(providerAccountManager ? { providerAccountManager } : {}),
   });
   const { authManagers, limitsProviders, runParamsPreps } = agentRuntime;
 
-  // docs/150 — let the provider-account manager drive account-scoped login
-  // flows through the per-provider auth managers (built just above).
   providerAccountManager.attachAuthManagers(authManagers);
 
-  // docs/183 Phase 4b — runner-adapting publish-after-install hook. Closes over
-  // the orchestrator-visible `stateDir` (same dir the disk-janitor sweeps) plus
-  // the bare-cache git oracle, so `publishDepDirOverlayBases` stays runner- and
-  // HTTP-agnostic. Cheap flag gate first so a kill-switched session never awaits
-  // worker readiness. Default ON; inert when `OVERLAY_DEP_STORE=0`/`false`.
-  //
-  // This is also where the pull's lifetime is bound to the runner's: the snapshot
-  // producer is the session container, so `dispose()` (archive / full reset) means
-  // the worker is about to be SIGKILLed and the multi-hundred-MB stream we are
-  // reading is about to die under us. Aborting on `"disposed"` turns that into a
-  // prompt cancellation instead of a mid-stream socket kill.
-  // docs/262 — plugin-repository activation. Constructed here for the same
-  // reason `publishOverlayBases` is: it needs `getBareCacheDir` and
-  // `createRepoGit`, which the runner registry does not have. Fire-and-forget
-  // by design — a slow plugin fetch must not delay a session opening (req 13),
-  // and the Plugins tab reports the interim state.
-  // One in-flight cache operation per bare cache. `ensureBareCache` documents
-  // that callers serialize it (it rm's and re-clones a corrupt cache), and two
-  // sessions activating the same plugin repository for the first time would
-  // otherwise clone into the same directory concurrently (review finding 7).
+  // Serialize shared-cache fetches: recovery can delete and clone the cache again.
   const cacheOps = new Map<string, Promise<void>>();
-  // docs/262 req 10 — the fetch resolves the PLUGIN repository's own credential
-  // (a read-only App installation token, else the host PAT, else none) rather
-  // than riding the orchestrator's global helper, which only ever echoes the
-  // PAT. A plugin repository is a different repository from the project, so
-  // under GitHub App mode the project's token does not cover it.
   const fetchPluginRepo = createPluginRepoFetcher({ authority: githubAuthManager, createRepoGit });
-  // docs/262 — a plugin's `install` runs in a container of its own, holding
-  // only that generation's overlay volume. Built per session because the
-  // staging directory it installs against lives in that session's state dir.
-  // No container manager (local mode, tests) means no Docker, so no install
-  // hook: activation then behaves exactly as it did before install existed.
   const pluginInstallHook = (sessionId: string, workspaceDir: string): PluginInstallHook | undefined => {
     if (!containerManager) return undefined;
     let sessionStateDir: string;
     try {
       sessionStateDir = sessionStateDirForWorkspace(workspaceDir);
     } catch {
-      return undefined; // a workspace whose layout has no state dir has no generations either
+      return undefined;
     }
     return createPluginInstallRunner({
       docker: containerManager.dockerClient,
       image: containerManager.workerImageName,
       sessionId,
       stateDir: sessionStateDir,
-      // req 28 — the shared dependency store lives beside every session, in the
-      // orchestrator's own state dir. Always passed: unlike `stateRoot` below it
-      // is not about daemon-path translation, so a bind-mount deployment needs
-      // it just as much.
       depStoreDir: stateDir,
-      // req 24 — a thunk, so a refresh hours later installs under the posture
-      // that holds then rather than the one this runner was built under.
       egress: () => containerManager.pluginEgressPolicy(sessionId),
-      // Both omitted in dev/dogfood bind-mount mode, where the daemon and this
-      // process see the same paths and no translation is needed.
       ...(containerManager.workspaceVolumeName
         ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
         : {}),
     });
   };
-  /**
-   * The activation dependencies, built once per call so the fire-and-forget
-   * trigger and the agent's awaited `shipit plugin refresh` cannot drift into
-   * two different fetch or install policies (docs/262 req 12: refresh IS
-   * activation).
-   */
   const pluginActivationDeps = (
     sessionId: string,
     workspaceDir: string,
     onSettled?: (id: string) => void,
   ) => {
     const runInstall = pluginInstallHook(sessionId, workspaceDir);
-    // docs/262 req 15 — the consumer lease a prune takes before deleting a
-    // superseded generation. Docker-shaped for the same reason install is: the
-    // durable half of the lease is "a container still holds this generation's
-    // volume", which only the daemon can answer. Without a container manager
-    // there are no plugin containers, so there is nothing to lease against.
     const beginGenerationDeletion = containerManager
       ? createGenerationDeletionLease({ docker: containerManager.dockerClient, sessionId })
       : undefined;
@@ -665,26 +359,14 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     return {
       getBareCacheDir,
       pinStorePath: pinStorePath(stateDir),
-      // Fetching runs here, in the orchestrator, so plugin code never reaches
-      // fetch credentials (req 19).
       ...(onSettled ? { onSettled } : {}),
       ...(runInstall ? { runInstall } : {}),
       ...(beginGenerationDeletion ? { beginGenerationDeletion } : {}),
-      // docs/262 plan §1a phase 3 — the pre-publish gate. Built here rather than
-      // inside the activation service because the egress posture is the
-      // container manager's answer, and it is read at gate time (a thunk) so the
-      // verdict matches the one `resolvePluginServices` below will reach with
-      // the same posture.
       validateStaged: createStagedGenerationGate({
         workspaceDir,
         containEgress: () => containerManager?.isEgressContained(sessionId) ?? false,
       }),
-      // req 8 — pins are durable per consuming PROJECT, so every session of one
-      // repository resolves a pinned tag to the same commit.
       ...(remoteUrl ? { consumerKey: remoteUrl } : {}),
-      // The queue stays here (it is about two sessions racing on one cache
-      // directory); WHICH credential the fetch uses is `plugin-fetch.ts`'s, and
-      // is resolved per call so a re-minted App token is always the current one.
       ensureCache: (cacheDir: string, repoUrl: string) => {
         const previous = cacheOps.get(cacheDir) ?? Promise.resolve();
         // eslint-disable-next-line no-restricted-syntax -- chaining a serial queue in a sync factory
@@ -709,22 +391,12 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       });
   };
 
-  /**
-   * docs/262 reqs 3, 5, 16, 18, 20 — resolve a session's plugin services.
-   *
-   * Built here for the same reason the install hook is: it needs Docker (a
-   * tracked plugin's own code reaches its services through the generation's
-   * overlay volume) and the orchestrator-visible state root that maps onto the
-   * workspace volume. Without a container manager there is no Docker and no
-   * Compose either, so the whole path is inert rather than partly wired.
-   */
   const resolvePluginServices = (
     sessionId: string,
     workspaceDir: string,
   ): Promise<PluginComposeService[]> =>
     resolveSessionPluginServices(sessionId, workspaceDir, {
       ...(containerManager ? { docker: containerManager.dockerClient } : {}),
-      // req 28 — where a generation's pinned dependency bases resolve.
       depStoreDir: stateDir,
       ...(containerManager?.workspaceVolumeName
         ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
@@ -732,24 +404,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       containEgress: containerManager?.isEgressContained(sessionId) ?? false,
     });
 
-  /**
-   * docs/262 req 12 — the awaited half. Same round, same deps; the caller is an
-   * agent waiting for an answer rather than a session opening.
-   *
-   * Two things it must NOT skip, both found by review because the first version
-   * skipped them:
-   *
-   * 1. **The settled hook.** It is not decoration — `emitPluginReposUpdated`
-   *    also calls the container's `preparePlugins()`, which re-links
-   *    `/plugins/<name>` and re-materializes the plugin's skills. Without it a
-   *    refresh swapped the generation on disk, printed `activated`, and left
-   *    the session looking at the old one. The refresh would not have reached
-   *    the agent at all, which is the entire point of the verb.
-   * 2. **The trust gate.** Automatic activation sits below
-   *    `repoStore.isTrusted()` (docs/178) precisely because fetching a plugin
-   *    repository and running its install is repo-declared auto-execution. A
-   *    verb the agent can invoke must not be the way around that.
-   */
   const refreshPluginReposForSession = async (
     sessionId: string,
     workspaceDir: string,
@@ -764,10 +418,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
           + "anything a plugin repository declares. Trust it in the UI first.",
       };
     }
-    // Through the lazy holder, not `runnerRegistry` directly: that binding is
-    // declared further down this function, and the established pattern here
-    // for "a callback that only runs after bootstrap" is the holder.
     const runner = registryHolder.ref?.get(sessionId);
+    // Also re-link the worker's plugin generation and skills after refresh.
     const onSettled = runner
       ? emitPluginReposUpdated(runner, { sessionManager, serviceManagers, resolvePluginServices })
       : undefined;
@@ -780,23 +432,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     );
   };
 
-  /**
-   * docs/262 req 17 — run one imported plugin's companion CLI.
-   *
-   * Built per call rather than per session because everything it needs is
-   * per-call anyway, and because the trust gate below has to be re-read: a
-   * repository un-trusted since the wrapper was generated must stop executing
-   * plugin code, and this is the only place that can notice.
-   *
-   * The gate is the same one automatic activation sits under (docs/178). A
-   * companion CLI is repo-declared code the agent can invoke, so a verb that
-   * ran it without the gate would be the way around the gate.
-   *
-   * No container manager (local mode, tests) means no Docker and therefore no
-   * invocation container. The hook is then absent and the route says so, which
-   * is the honest answer — running the command in the orchestrator or in the
-   * agent container is exactly what this design refuses (plan §1b).
-   */
   const runPluginCommandForSession = !containerManager
     ? undefined
     : async (
@@ -822,37 +457,13 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
           workspaceDir,
           consumerRepoUrl: remoteUrl,
           secretStore,
-          // A session archived, reset or deleted mid-call must stop the
-          // command: otherwise third-party code keeps the project and state
-          // mounts, and its network, for the rest of the timeout.
-          //
-          // **Archive has to be part of that test, and was not** (review
-          // finding, confirmed at source): `SessionManager.get` returns an
-          // archived row like any other, so only a DELETED session cancelled
-          // anything. Archiving disposes the runner, destroys the container and
-          // then removes the session's `workspace/` and `state/` outright
-          // (`reclaimRegenerableSessionDirs`) — under a running invocation
-          // container's `/project`, `/plugin-state` and generation mount, which
-          // is the same live-mount deletion req 15's lease exists to prevent,
-          // arriving from the one direction a lease cannot cover: a recursive
-          // `rm` of the whole tree by an actor that never asks.
+          // Archived rows still exist, but their mounts can be removed.
           isCancelled: () => {
             const live = sessionManager.get(sessionId);
             return !live || live.userArchived === true;
           },
-          // req 28 — where a generation's pinned dependency bases resolve.
           depStoreDir: stateDir,
-          // req 24 — read per call, not per session: a companion CLI can be
-          // invoked long after the session opened, after a grant or a flip to
-          // Open mode.
           egress: () => containerManager.pluginEgressPolicy(sessionId),
-          // docs/183 — the overlay dep dirs this session's agent container
-          // attaches, so `/project` (and `/plugin` under `repo: self`) hold the
-          // dependencies `agent.install` produced rather than the empty mount
-          // point they are on the volume. #2426 — resolved from the agent
-          // container's RECORD, falling back to re-derivation only when there is
-          // no record to read; see `resolveSiblingOverlayDepDirs` for why the
-          // record wins and what changed to make it available here.
           overlayDepDirs: async () => {
             const live = sessionManager.get(sessionId);
             if (!live || !isOverlayEligible(live)) return [];
@@ -878,8 +489,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   }): Promise<DepDirPublishOutcome[]> => {
     if (!isOverlayEnabled() || !session.remoteUrl) return [];
     await runner.whenWorkerReady();
-    // `dispose()` resolves `whenWorkerReady()` so no awaiter leaks — which means
-    // reaching here says nothing about the runner still being alive. Re-check.
+    // Disposal also resolves whenWorkerReady.
     if (runner.disposed) return [];
 
     const controller = new AbortController();
@@ -895,32 +505,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     }
   };
 
-  /**
-   * docs/150-multiple-provider-subscriptions req 7 — the provider failed a turn saying the subscription is
-   * spent. Stamp the credential that turn ran on, so the router stops choosing
-   * it and the session fails over on its next turn.
-   *
-   * Resolved here for the same reason `recordAgentRateLimits` is: this is the
-   * one place that knows how a session maps to a stored credential.
-   *
-   * **docs/252 phase 5 — two shapes of subscription, one rule.** A subscription
-   * is not always an account: GLM's coding plan is a subscription authenticated
-   * by a supplied key, and phase 2 made a mode able to hold several of them. So
-   * this stamps either shape and branches on the **billing mode**, never on how
-   * the credential is delivered. What is still never stamped is a metered key —
-   * it has no subscription window to exhaust and req 12 forbids failing it over
-   * — and neither is an unpinned session, which has no credential to blame, nor
-   * an env-delivered one, which has no row to carry the stamp.
-   *
-   * The name is unchanged deliberately: it is still "bench the credential this
-   * session's turns are billed to", asked at ~6 call sites, and re-keying them
-   * would be churn without a behaviour change.
-   */
   const markSessionAccountExhausted = (sessionId: string, until: number, capturedRouteId?: string): void => {
-    // docs/260 — ONLY the turn's own captured route may be stamped. The old
-    // session-row fallback is gone with the columns: a refusal that cannot
-    // name the credential it came from stamps nothing, because stamping a
-    // guess is exactly the wrong-account benching the incident was made of.
+    // Attribute exhaustion only to the turn's captured route.
     const routeId = capturedRouteId;
     if (!routeId) return;
     const account = providerAccountManager?.getByRouteId(routeId);
@@ -934,8 +520,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       }
       return;
     }
-    // `markCredentialRouteExhausted` is what refuses a `key` route, so the rule
-    // lives with the store rather than being re-stated per caller.
     const benched = credentialStore.markCredentialRouteExhausted(routeId, until);
     if (benched) {
       console.log(
@@ -945,22 +529,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     }
   };
 
-  /**
-   * planning#358 — the two halves of "this supplied secret was refused for
-   * authentication", written to the credential row so Settings stops calling it
-   * `ready`.
-   *
-   * Both no-op for an account route: those carry their own status, written by
-   * their sign-in flow, and a second writer is how the two come to disagree.
-   * `markCredentialRouteAuthFailed` enforces that in the store, so the check is
-   * stated once rather than per caller — the same division `markSessionAccount-
-   * Exhausted` uses just above for the `key`-route refusal.
-   *
-   * Broadcast only when the row actually changed, which is why both store
-   * methods return a boolean: the clear runs on EVERY successful turn, and an
-   * unconditional `credential_routes` fan-out would put a Settings re-render on
-   * the hot path of normal operation.
-   */
   const markCredentialRouteAuthFailed = (routeId: string): void => {
     if (!credentialStore.markCredentialRouteAuthFailed(routeId)) return;
     console.log(`[auth] credential ${routeId} refused a turn; marked auth_failed`);
@@ -973,8 +541,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     sseBroadcast("credential_routes", { routes: listCredentialRoutesForWire(credentialStore) });
   };
 
-  // docs/287-agent-merge-per-repo §4 — one claim store for the process. Shared
-  // by the three reconciliation triggers below and by the merge route.
   const agentMergeClaims = new AgentMergeClaimStore(databaseManager);
 
   const runnerRegistry = createRunnerRegistry({
@@ -997,26 +563,12 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
     ...(credentialsDir ? { credentialsDir } : {}),
-    // docs/150-multiple-provider-subscriptions req 13 — give the system-turn env-prep hook the same router the
-    // WS path has, so a dispatched turn is blocked by an exhausted provider
-    // instead of spawning against it.
     ...(providerAccountManager ? { providerAccountManager } : {}),
     readSystemPrompt: readSystemPromptApp,
     generateText: effectiveGenerateText,
     getPrStatusPoller: () => prStatusPollerRef.ref ?? undefined,
-    // planning#266 — same lazy-resolution shape, same reason: the merge-watch manager
-    // is built after the registry it dispatches into. Turn adoption calls this
-    // with the delivery id the worker reported, so a wake-turn that outlived a
-    // restart settles its ORIGINAL watch instead of a duplicate being queued.
     rebindDelivery: (deliveryId: string) => mergeWatchManagerRef.ref?.rebindDelivery(deliveryId),
-    // docs/146 — same lazy-resolution pattern as the poller itself: the
-    // manager is constructed inside the poller's constructor, which runs
-    // after the registry, so the runner-idle hook reads through a getter.
     getAutoConflictResolveManager: () => prStatusPollerRef.ref?.autoConflictResolveManager,
-    // req 9 — the end-of-turn trigger. Lazy for the same reason as the poller:
-    // settlement needs it, and it is constructed after this registry.
-    // docs/288 req 6 — seeds a freshly created runner's `mergeHold` when the
-    // merge started while this session had no container.
     isAgentMergeInFlight: (sessionId: string) => agentMergeClaims.isMergeInFlight(sessionId),
     reconcileAgentMergeClaimsFor: (sessionId: string) => {
       void reconcileAgentMergeClaims({
@@ -1032,11 +584,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   });
   registryHolder.ref = runnerRegistry;
 
-  // ---- Proactive bare-cache git pre-fetch (docs/145) ----
-  // Keeps each ready repo's bare cache close to `origin/main` in the
-  // background so the claim path can skip its synchronous ~650ms fetch.
-  // Disabled in test mode so integration tests stay deterministic (they
-  // exercise the synchronous-fetch fallback, which the fakes drive).
   const repoPrefetcher: RepoPrefetcher | null = isTestMode ? null : createRepoPrefetcher({
     repoStore, getBareCacheDir, createRepoGit, githubAuthManager,
   });
@@ -1045,18 +592,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const drainQueueForSession = (sessionId: string): void => {
     const runner = runnerRegistry.get(sessionId);
     if (!runner) return;
-    // planning#257 — the shared release, never a hand-rolled field copy: this drain
-    // (post auto-conflict-resolve) previously dropped `systemTurn`, `postTurn`,
-    // and `onTurnComplete`, so a docs/196 wake-turn that queued during a rebase
-    // ran as an ordinary turn and never signalled completion. planning#282 moved the
-    // body into `releaseQueuedTurn` so the stuck-running recovery — the other
-    // path with no turn of its own to drain from — shares it.
     releaseQueuedTurn(runner);
   };
 
-  // ---- Notify-on-merge watches (docs/196) ----
-  // Built before the poller so the poller's `onPrTerminalState` hook can fire it.
-  // The PR-status lookup + startup reconcile are bound after the poller exists.
   const mergeWatchManager = new MergeWatchManager({
     sessionManager,
     runnerRegistry,
@@ -1066,9 +604,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     credentialStore,
     providerAccountManager,
     containerManager,
-    // docs/239 — a watch can outlive its session's checkout (disk reclaim during
-    // a long human review), so the wake re-materializes it rather than the
-    // reclaim tiers exempting pending watches.
     restoreWorkspace: (sessionId: string) =>
       restoreSessionWorkspace(
         sessionManager, createRepoGit, getBareCacheDir, githubAuthManager, repoStore, sessionId,
@@ -1076,54 +611,24 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   });
   mergeWatchManagerRef.ref = mergeWatchManager;
 
-  // ---- PR Status Poller ----
   const prStatusPoller = createPrStatusPoller({
     deps, githubAuthManager, sessionManager, sseBroadcast,
     runnerRegistry, defaultAgentId, createRepoGit, createGitManager, getBareCacheDir,
     mergeWatchManager,
-    // Skip the volume-prune fallback in test mode so the poller's
-    // auto-archive-on-merge path doesn't shell out to docker from tests.
     pruneSessionVolumes: isTestMode ? undefined : pruneSessionVolumes,
-    // Destroy each archived session's container so its workspace bind mount
-    // is released before fs.rm runs — see archiveSession docblock.
     containerManager,
-    // On-change pre-fetch: a detected merge moved `main`, so refresh the
-    // bare cache now (off the request path) — see docs/145.
     ...(repoPrefetcher ? { onRepoMainAdvanced: (url: string) => repoPrefetcher.prefetchRepo(url) } : {}),
-    // docs/146 — collaborators needed to construct the auto-resolve callback.
-    // The closure inside `createPrStatusPoller` builds `RebaseDriverDeps`
-    // per-session from these shared managers. (`createGitManager` is already
-    // passed above for the diff-stats override.)
     chatHistoryManager,
     usageManager,
     credentialStore,
     drainQueueForSession,
     ...(agentFactory ? { agentFactory } : {}),
   });
-  // docs/149 — fill in the lazy reference that the system-turn PR-lifecycle
-  // hook closes over.
   prStatusPollerRef.ref = prStatusPoller;
 
-  // docs/196 — bind the merge-watch PR-status lookup to the poller, then
-  // re-derive any watch whose child PR already reached a terminal state while
-  // the orchestrator was down (loadPersisted, run inside createPrStatusPoller,
-  // has already seeded the snapshots this reads). Best-effort, off the boot path.
   mergeWatchManager.setPrStatusLookup((id) => prStatusPoller.getStatus(id));
-  // planning#261 (second half) — the reconcile itself is deliberately NOT started
-  // here. It must run AFTER the docs/240 turn-adoption sweep (see the
-  // `reattachInFlightTurns` block below), which is what chains it.
-
-  // ---- Release Status Poller (docs/171) ----
-  // Reflects the inline release lifecycle card: gate/CI status + the published
-  // GitHub Release, off the agent-pushed tag. Reuses the PR poller's global gate
-  // shape (viewers / detach grace / active release).
   const releaseStatusPoller = new ReleaseStatusPoller({
     githubAuth: githubAuthManager,
-    // Single sink for every release-card transition: persist it to chat history
-    // (upsert by cardId — append on propose, patch on every later phase) so it
-    // survives reload + restart, and emit a `release_card` WS to the session's
-    // viewers so the inline transcript card updates live. Replaces the prior
-    // in-memory-only `release_status` SSE (docs/171).
     onCard: (card) => {
       chatHistoryManager.upsertReleaseCard(card.sessionId, card);
       runnerRegistry
@@ -1133,61 +638,32 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     runnerRegistry,
   });
 
-  // Filled after the agent limits providers are indexed below. Auth events
-  // cannot fire until bootstrap returns, so the callback passed into event
-  // wiring always observes the initialized registry.
   let limitsRegistry: LimitsRegistry | null = null;
 
-  // ---- Event wiring (deployment + auth) ----
-  // `authManagers` map is built above the runner-registry construction (see
-  // docs/155 Phase 2) so system-turn listeners can pick it up.
   wireEventHandlers({
     authManagers,
     githubAuthManager, agentRegistry,
     providerAccountManager,
     sseBroadcast, credentialsDir, sessionManager,
-    // docs/257 — the auth broadcasts wired here carry the harness-onboarding
-    // stamp as well as `canRunTurns`, and these handlers are exactly where a
-    // fresh install first becomes runnable.
     credentialStore,
     onCredentialReplaced: (agentId, accountId) => {
       const provider = limitsProviders.get(agentId);
       if (!provider) return;
       limitsRegistry?.markSignedOut(limitsModeKey(provider), accountId);
     },
-    // docs/179 §4 — never let the post-sign-in re-push rewrite credential
-    // topology under a live CLI process.
     hasLiveAgent: (sessionId) => sessionHasLiveAgent(runnerRegistry, sessionId),
   });
 
-  // ---- Claude OAuth refresher (docs/153) ----
-  //
-  // The orchestrator becomes the single entity that refreshes Claude OAuth
-  // tokens, eliminating the multi-session refresh stampede that was 429'ing
-  // every session ~8h after fresh auth (see docs/153 §Root cause). Skipped in
-  // test mode (no real auth, no per-session containers) and in local runtime
-  // (dogfood — no per-session containers either). The refresher iterates
-  // every Claude account, propagates a rotated token to all pinned sessions
-  // for that account via `repushProviderAccountToken` (or
-  // `repushAgentToken` for legacy sessions whose `provider_route_*` is null).
   if (!isTestMode) {
     const repushOAuthAccountToken = (logPrefix: string) => (agentId: AgentId, accountId: string): void => {
       let healed = 0;
       for (const session of sessionManager.list()) {
         if (!session.agentPinned || session.agentId !== agentId) continue;
-        // docs/260 — whose token a session's subtree holds is the subtree's
-        // own recorded identity (the account marker), never a session row.
-        // Sessions holding this account's copy get the rotated token; a
-        // pre-260 subtree with no marker keeps the legacy flat repush, which
-        // only overwrites a token file the session already has.
+        // Use the credential subtree's account marker; routing may have changed.
         const marked = readSessionAccountMarker(credentialsDir, session.id)[agentId];
         if (marked !== undefined && marked !== accountId) continue;
         try {
-          // docs/179 §4 — the refresher fires on a wall clock, so it can land
-          // mid-turn or under an idle-but-resident streaming process. Push the
-          // rotated token (that is the point), but never rewrite credential
-          // topology underneath a live CLI: the repair's unlink→copy window
-          // makes the process report itself unauthenticated.
+          // Credential repair unlinks files and would interrupt a live CLI.
           const opts = { repairLeakedSubtrees: !sessionHasLiveAgent(runnerRegistry, session.id) };
           const wrote =
             marked !== undefined
@@ -1221,9 +697,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         credentialStore,
       });
     });
-    // Recovery counterpart: when a revoked account's token rotates back to
-    // healthy, un-stick the `auth_failed` row + agent_list so the model
-    // selector stops showing a false "needs auth". See docs/195.
     refresher.on("account_reauthenticated", (accountId: string) => {
       markProviderAccountReauthenticated({
         agentId: "claude",
@@ -1234,9 +707,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         credentialStore,
       });
     });
-    // Rearm immediately on a fresh sign-in. `wireEventHandlers` also listens
-    // to this event for its own bookkeeping; EventEmitter supports multiple
-    // handlers so the two coexist without ordering constraints.
     authManager.on("auth_complete", () => {
       refresher.refreshNow().catch((err: unknown) => {
         console.error("[claude-oauth-refresh] post-auth refresh failed:", err);
@@ -1264,10 +734,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     }
     codexOAuthRefresherRef.ref = codexRefresher;
     codexRefresher.start();
-    // docs/150-multiple-provider-subscriptions req 3 — mirror Claude's wiring above. Without this, a revoked
-    // Codex account kept `status: "ready"`, so the router went on choosing it
-    // over a healthy secondary and every turn failed on the same dead token.
-    // Claude has had this listener since docs/195; Codex was simply missed.
     codexRefresher.on("account_unauthenticated", (accountId: string) => {
       markProviderAccountUnauthenticated({
         agentId: "codex",
@@ -1278,10 +744,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         credentialStore,
       });
     });
-    // Recovery counterpart (mirrors the Claude wiring above): a background
-    // rotation that heals a `auth_failed` Codex row clears the selector's
-    // stale "needs auth". `markProviderAccountReauthenticated` is a no-op when
-    // the row is already `ready`. See docs/195.
     codexRefresher.on("account_reauthenticated", (accountId: string) => {
       markProviderAccountReauthenticated({
         agentId: "codex",
@@ -1299,36 +761,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     });
   }
 
-  // ---- Subscription-limits poller ----
-  // One pill per fetchable provider in the header (see
-  // docs/135-subscription-limits-badge). Both Claude and Codex are
-  // event-fed: their numbers arrive on the agent's stream
-  // (`rate_limit_event` for Claude, `account/rateLimits/updated` for Codex)
-  // and the orchestrator routes them through `recordAgentRateLimits` into
-  // the matching provider (built above in `buildAgentRuntime()`). Skipped in
-  // test mode to keep integration tests deterministic.
-  // docs/252 req 10 — the registry is keyed by `(service, billing mode)`, so
-  // the per-`AgentId` provider table is re-indexed by what each provider
-  // declares it reports for. A harness is not a vendor: two harnesses could in
-  // principle report into the same mode, and one harness redirected elsewhere
-  // reports into none.
-  /**
-   * planning#339 — GLM's plan quota, and the first provider that is not a
-   * harness's.
-   *
-   * It is built here rather than in `buildAgentRuntime()` because that module's
-   * tables are per-`AgentId` and this subscription has no harness of its own:
-   * the plan is a SERVICE's, authenticated by a pasted key and delivered to
-   * whichever harness carries it. Registration is nevertheless the same seam —
-   * the provider declares `(zai, sub)` and the map below indexes it on that,
-   * exactly as it does for the two first-party readers.
-   *
-   * The credential store is the whole answer for both routes and secrets: a
-   * deployment-supplied `ZAI_CODING_PLAN_KEY` is adopted into an ordinary row
-   * at boot (`adoptEnvCredentials`, req 20), so there is no environment path to
-   * read separately. A row with no secret behind it is skipped rather than
-   * offered — fetching for it could only ever produce `no-credentials`.
-   */
   const zaiLimitsProvider = new ZaiLimitsProvider({
     listRouteIds: () =>
       credentialStore
@@ -1338,20 +770,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     secretForRoute: (routeId) => credentialStore.getCredentialSecret(routeId),
   });
 
-  /**
-   * planning#454 — SuperGrok's weekly pool. Built here for the same reason GLM's
-   * is: the allowance belongs to xAI's subscription, not to the Grok harness
-   * that happens to spend it.
-   *
-   * Unlike GLM's it is ACCOUNT-backed, so the credential is a directory rather
-   * than a stored string — the CLI rewrites `auth.json` in place every few
-   * hours, and the provider reads it per request so it always presents the same
-   * token the harness would.
-   *
-   * `list("xai")` takes the SERVICE id and `resolveCredentialRoot("grok", …)`
-   * the HARNESS id; the two differ here, which is exactly the conflation
-   * docs/252 req 10 removed.
-   */
   const xaiLimitsProvider = new XaiLimitsProvider({
     listRouteIds: () =>
       providerAccountManager
@@ -1364,13 +782,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         : undefined,
   });
 
-  /**
-   * The readers nothing PUSHES to — no harness event stream carries their
-   * numbers, so a reading only ever happens because something pulled one. That
-   * is what makes them the set seeded at boot below; the event-fed providers
-   * would spend an upstream call per account for a number their next turn
-   * supplies for free.
-   */
   const pulledLimitsProviders = [zaiLimitsProvider, xaiLimitsProvider];
 
   const limitsProvidersByMode = new Map(
@@ -1380,62 +791,22 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     ? new LimitsRegistry({ providers: limitsProvidersByMode, sseBroadcast })
     : null;
   if (limitsRegistry) {
-    // docs/150 — give the account router the live quota snapshot so it can skip
-    // spent accounts (reqs 6, 7) and report `all_exhausted` with a reset time
-    // (req 13). Late-bound because the registry needs the agent runtime, which
-    // is built after the account manager.
     providerAccountManager?.attachSubscriptionLimits(() => limitsRegistry.getSnapshot());
-    // One subscription per backend, keyed off the auth-manager map built
-    // above. Adding a new agent picks this up for free. The normalized
-    // `complete` event fires alongside each backend's legacy
-    // `auth_complete` / `codex_auth_complete` emit so existing per-agent SSE
-    // wiring is untouched. (docs/155 Phase 2)
-    // Pair each login flow with the quota provider for the SUBSCRIPTION it
-    // authenticates, matching on what both sides declare — the login's service
-    // and the provider's own `(serviceId, billingMode)`. The previous pairing
-    // went through a shared `AgentId` key, which only lined the two up because
-    // each harness happened to have one vendor.
     for (const [loginId, mgr] of authManagers) {
       const loginServiceId = serviceForLoginIntegration(loginId);
-      // Searched over EVERY registered reader, not just the per-`AgentId` ones.
-      // A reader built outside `buildAgentRuntime` is no less the reader for
-      // the subscription a login authenticates — and xAI's is exactly that, so
-      // the narrower search would have left a fresh SuperGrok sign-in with an
-      // empty pill until the next boot (planning#454).
       const provider = [...limitsProvidersByMode.values()].find(
         (candidate) => candidate.serviceId === loginServiceId && candidate.billingMode === "sub",
       );
       if (!provider) continue;
       const modeKey = limitsModeKey(provider);
       mgr.on("complete", () => {
-        // Every supported flow is account-scoped. Ignore a defensive second
-        // completion after the auth manager has cleared its scope; fanning a
-        // seed across all accounts would spend unrelated refresh budgets and
-        // cannot identify which credential was replaced.
         const accountId = mgr.getActiveAccountId() ?? undefined;
         if (!accountId) return;
         limitsRegistry.markAuthRefreshed(modeKey);
-        // docs/161 — seed one `/api/oauth/usage` baseline per sign-in so the
-        // Claude pill shows a low-usage number without waiting for the user to
-        // click refresh. Self-skips if an API snapshot already exists and is a
-        // no-op for providers without an on-demand path (Codex).
         void limitsRegistry.refreshNow(modeKey, "seed", accountId);
       });
     }
 
-    /**
-     * planning#339 — the same once-per-credential baseline for the PULLED
-     * readers, at boot.
-     *
-     * A sign-in seeds an account-backed reader, and it only fires once: a
-     * credential that was already connected when the process started has no
-     * sign-in to wait for, and a pasted key never had one — it is simply
-     * *there*. Nothing else would ever call these readers, since no event
-     * stream pushes their numbers during a turn, so without this the pill stays
-     * empty until the user presses refresh. Fire-and-forget on purpose; a
-     * failed baseline is one empty pill, not a boot that stalls on an outbound
-     * request.
-     */
     for (const provider of pulledLimitsProviders) {
       const modeKey = limitsModeKey(provider);
       for (const routeId of provider.routeIds()) {
@@ -1444,94 +815,43 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     }
   }
 
-  /**
-   * Push a fresh rate-limit snapshot for any agent into its provider and
-   * refresh the badge immediately. The dispatch is a one-line lookup against
-   * the `limitsProviders` map built above — adding a new backend means one
-   * `Map.set()` at construction, not a new branch here. (docs/155)
-   * No-op for unknown agents and in test mode (no registry).
-   */
   const recordAgentRateLimits: AppCtx["recordAgentRateLimits"] = (agentId, session, weekly, sessionId, explicitRouteId) => {
-    // docs/150 — attribute the snapshot to the route the reporting turn
-    // actually ran on. Resolving it here (rather than at each call site) keeps
-    // the callers a single line and puts the one place that knows how a
-    // session maps to a route next to the managers that own both. A turn from
-    // a session with no pinned route yet (or no session at all, e.g. a
-    // sub-agent spawn) falls back to whatever the router would pick now, which
-    // is the same account that turn would have used.
-    // A caller that resolved its OWN route (a sub-agent consult, which routes
-    // independently of the session's pin and can fail over mid-run) wins over
-    // both: re-deriving one would name a different credential, and req 10 files
-    // the snapshot against whatever owns the route.
     const routeId = explicitRouteId
       ?? providerAccountManager?.selectRouteForTurn(accountServiceForHarness(agentId))?.id;
-    // No resolvable route means we cannot say whose quota this is; recording it
-    // under a guess would attribute one subscription's usage to another.
     if (!routeId) return;
-    // docs/252 req 10 — the OWNER of that route decides where the snapshot
-    // goes, not the harness that reported it. A turn redirected to another
-    // service must not file its usage against the harness's own vendor, and a
-    // metered key has no allowance to report at all — req 10 keeps that slot
-    // empty rather than filling it with a placeholder.
     const owner = credentialOwnerForRouteId(routeId, credentialStore);
     if (owner?.billingMode !== "sub") return;
     const modeKey = limitsModeKey(owner);
     limitsProvidersByMode.get(modeKey)?.setRateLimits(session, weekly, routeId);
     limitsRegistry?.markAuthRefreshed(modeKey);
-    // docs/260-turn-level-account-routing req 9 — a healthy reading newer than a remembered refusal
-    // clears that memory immediately (the user's post-upgrade refresh, a
-    // fresh event from a probe turn). Both shapes are offered the reading;
-    // each clear no-ops unless the route is its own kind and blocked.
     const reading = { session, weekly, fetchedAt: Date.now() };
     providerAccountManager?.clearRefusalOnHealthyReading(owner.serviceId, routeId, reading);
     credentialStore.clearCredentialRefusalOnHealthyReading(routeId, reading);
   };
 
-  // ---- Session directory creation ----
   const createSessionDir = createSessionDirFactory({
     sessionsRoot, sessionManager,
   });
 
-  // ---- Warm preview pre-start (docs/288) ----
-  // Pre-starts the Compose stack into the SAME registry activation adopts from,
-  // so a warm claim inherits a running dev server. Named here rather than
-  // inlined into the pool because the periodic warm-tier sweep calls the very
-  // same function as its preview REPAIR (req 10) — two entry points, one
-  // implementation, which is the rule the standby half already follows
-  // (`ensureStandbyForWarmSession`). Only where there is a container runtime to
-  // start it on; local mode has no Compose at all, which is what
-  // `containerManager: null` says.
   const preStartWarmPreview = containerManager
     ? createWarmPreviewStarter({
         repoStore, sessionManager, serviceManagers, composeStopPromises,
         containerManager, secretStore, credentialStore, serviceEnvDir, logStore,
         ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
-        // Through the lazy holder: `runnerRegistry` is declared further down
-        // this function, and this only ever runs long after bootstrap.
         isSessionActive: (sessionId: string) => !!registryHolder.ref?.get(sessionId),
       })
     : undefined;
 
-  // ---- Warm session pool ----
   const { warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession } = createWarmPool({
     repoStore, sessionManager, createRepoGit,
     githubAuthManager, containerManager,
     credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
     oomBreaker,
     getMemoryStats: () => latestMemoryStats.value,
-    // docs/288 — the warm pool's last step.
     ...(preStartWarmPreview ? { preStartPreview: preStartWarmPreview } : {}),
   });
 
-  // ---- docs/262 req 19: drop remote credentials an earlier build stored ----
-  // Ordered BEFORE the repo migration: that migration derives repo rows from
-  // session rows, so scrubbing first stops a credentialed session URL from
-  // seeding a fresh credentialed repo row (the store would strip it, and the
-  // migration's own `setReady` would then address a row that never existed).
-  // `repoKeyedDirs` are the directories NAMED after a hash of the repo URL —
-  // when the URL is rewritten they must travel with it, or the repo's bare
-  // cache, its dependency cache and the agent's accumulated per-repo memory
-  // stay on disk under a name nothing looks up (independent review, finding 6).
+  // Scrub before migration creates repo rows; move directories keyed by the old URL hash too.
   await runRemoteCredentialScrub({
     repoStore, sessionManager, secretStore,
     repoKeyedDirs: [
@@ -1541,49 +861,19 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     ],
   });
 
-  // ---- Migration: derive RepoStore from existing sessions ----
   const migratedRepoUrls = await runRepoMigration({
     repoStore, sessionManager, getSharedRepoDir: getBareCacheDir,
   });
 
-  // ---- Startup: validate warm sessions + re-warm missing ----
-  // `credentialStore` enables the docs/088 Phase 2 MCP OAuth token refresh
-  // sweep — see `scheduleStartupTasks` for rationale.
   const startupTimer = scheduleStartupTasks({
     repoStore, sessionManager, chatHistoryManager, usageManager,
     containerManager, getBareCacheDir, warmSessionForRepo, credentialStore,
   }, migratedRepoUrls);
 
-  // ---- planning#309 / docs/249: finish consult cards the previous orchestrator couldn't ----
-  // `runSubAgent` holds the only handle that can flip a consult card out of
-  // `pending`, and that handle died with the previous process — so every pending
-  // card in the DB right now is orphaned, by construction (the sweep runs before
-  // any route can accept a new spawn). Ordered BEFORE the adoption sweep below on
-  // purpose: a consult spawned by a foreground `shipit agent run` is still inside
-  // its originating turn, so its row is `in_progress=1`, and the adopted turn's
-  // `replaceInProgress` would delete it outright. Synchronous and non-throwing.
+  // Finish consult cards before adopted turns replace their in-progress history rows.
   reconcileOrphanedConsultCards(chatHistoryManager);
 
-  // ---- docs/240: adopt agent turns that outlived the previous orchestrator ----
-  // Session containers survive an orchestrator crash/redeploy with their CLI
-  // still mid-turn. Reattach those turns now — rebuilding the agent proxy +
-  // listeners and replaying the turn's events — so the session comes back as
-  // running and its post-turn commit / push / PR flow still fires, instead of
-  // the turn silently evaporating until the user types "continue". Best-effort:
-  // probes are per-container and independently guarded.
-  // Await the sweep before returning the app so stale idle workers can be
-  // destroyed and registered for recreation before a reconnecting viewer races
-  // to attach to the old container.
-  //
-  // planning#261 (second half) — the notify-on-merge reconcile is CHAINED off this
-  // sweep rather than launched independently. Both used to be fire-and-forget
-  // with reconcile going first, so `reconcilePending` could redispatch a
-  // wake-turn for a watch still at `merge-observed` while the ORIGINAL turn was
-  // still running inside a surviving worker: the fresh `/agent/start` meets the
-  // live agent, retries, and can ultimately kill it as stale. Adopting first
-  // makes those runners report `running`, so a reconcile-issued wake-turn
-  // enqueues behind the surviving turn — or is skipped entirely, because the
-  // adopted turn's own completion advanced the watch.
+  // Adopt surviving turns before merge automation can mistake the empty registry for idle sessions.
   try {
     await reattachInFlightTurns({
       containerManager, runnerRegistry, sessionManager, defaultAgentId,
@@ -1592,14 +882,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   } catch (err: unknown) {
     console.error("[turn-reattach] startup sweep failed:", err);
   }
-  // docs/287-agent-merge-per-repo req 9 — the startup reconciliation trigger,
-  // the first of three. A claim left `merging` by a crash mid-merge is resolved
-  // from its own tuple.
-  //
-  // AFTER the adoption sweep, for the same reason the docs/196 reconcile below
-  // is: until those turns are adopted the registry is EMPTY, so "has an active
-  // turn?" answers no for everything and the guard passes vacuously — settling a
-  // surviving turn's claim while it is still editing and pushing.
   void reconcileAgentMergeClaims({
     claims: agentMergeClaims,
     sessionManager,
@@ -1610,11 +892,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     console.error("[agent-merge] startup reconciliation failed:", err);
   });
 
-  // docs/288 — carry out `gh pr merge --auto` requests. Started HERE, and not at
-  // construction, for the ordering: until the adoption sweep above completes the
-  // runner registry is EMPTY, so "is this session busy?" answers no for
-  // everything and a surviving turn's pre-turn head could be merged while that
-  // turn still holds uncommitted work. Same reason as the reconciliation above.
   const agentMergeExecutor = new AgentMergeExecutor({
     claims: agentMergeClaims,
     sessionManager,
@@ -1627,9 +904,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   agentMergeExecutor.start();
 
   void (async () => {
-    // docs/196 — re-derive any watch whose child PR reached a terminal state
-    // while the orchestrator was down. Ordered AFTER the sweep above, on
-    // purpose (planning#261).
     try {
       await mergeWatchManager.reconcilePending();
     } catch (err: unknown) {
@@ -1637,10 +911,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     }
   })();
 
-  // ---- Resolve each repo's real default branch (main / master / trunk / …) ----
-  // Reads the bare cache's HEAD — local, no network — so the UI can name the
-  // actual base branch instead of hard-coding "main". Off the boot path and
-  // best-effort: repos it can't resolve keep falling back to "main".
   void refreshAllRepoDefaultBranches({
     repoStore, createRepoGit, getBareCacheDir, sseBroadcast,
   }).catch((err: unknown) => {
@@ -1648,10 +918,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   });
 
   return {
-    // ---- Static metadata (threaded from index.ts) ----
     ...meta,
     deps,
-    // ---- Manager set (re-surfaced so consumers destructure off the runtime) ----
     defaultAgentId, workspaceDir, stateDir, credentialsDir, shouldServeStatic,
     autoPushDebounceMs, sessionsRoot, agentFactory, localAgentFactory,
     createGitManager, createRepoGit, databaseManager, sessionManager,
@@ -1661,7 +929,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     secretStore, reviewStore, egressAllowlistStore, presentStore,
     generateText: effectiveGenerateText,
     isTestMode, runtimeMode,
-    // ---- Wired collaborators ----
     containerManager, dockerProxyServer, dockerForStats,
     getBareCacheDir, getDepCacheDir,
     marketplaceStore,
@@ -1703,9 +970,4 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   };
 }
 
-/**
- * The full runtime context produced by {@link bootstrapManagers} and consumed
- * by the SSE endpoint, the startup monitors, and the route registry. Inferred
- * from the return value so the field list lives in one place.
- */
 export type OrchestratorRuntime = Awaited<ReturnType<typeof bootstrapManagers>>;

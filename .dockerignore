@@ -1,7 +1,6 @@
 node_modules
 dist
 
-# Test files — not needed in any Docker image
 **/*.test.ts
 **/*.test.tsx
 src/server/orchestrator/integration_tests/test-helpers.ts
@@ -9,17 +8,14 @@ src/client/test-setup.ts
 vitest.config.ts
 vitest-llm-reporter.ts
 
-# Documentation and metadata not needed at runtime
 docs/
 .git
 .github
 .gitignore
 .dockerignore
 
-# Linting config not needed at runtime
 eslint.config.js
 
-# Legacy root Dockerfile
 Dockerfile.session-worker
 Dockerfile.session-worker.dev
 Dockerfile.session-worker.prod

@@ -35,10 +35,6 @@ describe("pickCleanupProvider", () => {
     expect(await pickCleanupProvider(authStub(null), null)).toBeNull();
   });
 
-  // docs/150-multiple-provider-subscriptions req 19 — the unscoped read lands on the singleton config root,
-  // which holds nothing once the legacy aliases are retired. Cleanup has to
-  // name the account, or every migrated install silently loses the Claude
-  // cleanup path and drops to the OpenAI fallback.
   it("reads the OAuth bearer from the account root it was given", async () => {
     const auth = authStub("oauth-token");
     await pickCleanupProvider(auth, "openai-key", fetch, "/credentials/provider-accounts/claude/acct_work");
@@ -96,7 +92,6 @@ describe("cleanTranscript", () => {
     const provider = fakeProvider(
       () =>
         new Promise<string>((_resolve, reject) => {
-          // Never resolves before the timeout; reject as the abort would.
           setTimeout(() => {
             const e = new Error("aborted");
             e.name = "AbortError";

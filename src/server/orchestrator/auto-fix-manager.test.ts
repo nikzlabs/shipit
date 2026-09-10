@@ -15,8 +15,6 @@ import type { GraphQLPrNode } from "./pr-status-parser.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { RemediationArbiter } from "./auto-remediation-arbiter.js";
 
-// ---- Scaffolding ---------------------------------------------------------
-
 type RunnerStub = EventEmitter & {
   running: boolean;
   verifyRunningState: () => Promise<boolean>;
@@ -54,16 +52,6 @@ function makeNode(oid: string): GraphQLPrNode {
   return { commits: { nodes: [{ commit: { oid, statusCheckRollup: null } }] } } as unknown as GraphQLPrNode;
 }
 
-/**
- * Build a node whose rollup carries failed CHECK RUNS with real databaseIds, so
- * `extractFailedCheckRuns` returns a non-empty set (the dedup discriminator).
- * Each id becomes one FAILURE check run.
- *
- * `headRefOid` defaults to `oid` (the steady state — the rollup commit IS the
- * branch tip). Pass a distinct value to model the post-retrigger-push window
- * where `commits(last: 1)` (the failing rollup commit) lags behind the ref's
- * already-advanced tip (defect A — planning#64).
- */
 function makeNodeWithChecks(oid: string, checkIds: number[], headRefOid = oid): GraphQLPrNode {
   return {
     headRefOid,
@@ -90,9 +78,7 @@ function makeNodeWithChecks(oid: string, checkIds: number[], headRefOid = oid): 
 
 interface RecordingCb extends FetchAndFixCb {
   count: () => number;
-  /** The `failedChecks` array passed to the most recent invocation. */
   lastChecks: () => { databaseId: number }[];
-  /** Just the databaseIds of the most recent invocation, for terse assertions. */
   lastIds: () => number[];
 }
 
@@ -124,7 +110,7 @@ function makeFixture(opts?: { enabled?: boolean; runner?: RunnerStub; cb?: Recor
     cb,
     () => time,
     opts?.arbiter,
-    () => !paused, // docs/186 — per-session pause gate
+    () => !paused,
     opts?.ensureRunner
       ? async () => await opts.ensureRunner!() as unknown as SessionRunnerInterface | undefined
       : undefined,
@@ -148,8 +134,6 @@ function makeFixture(opts?: { enabled?: boolean; runner?: RunnerStub; cb?: Recor
 async function tick(): Promise<void> {
   await new Promise((r) => setImmediate(r));
 }
-
-// ---- Tests ---------------------------------------------------------------
 
 describe("AutoFixManager", () => {
   let fx: ReturnType<typeof makeFixture>;
@@ -190,8 +174,6 @@ describe("AutoFixManager", () => {
     await fx.fail();
     await tick();
     expect(fx.cb.count()).toBe(0);
-    // No state created — the gate returns before the first-seen init, same as
-    // the global-disabled case.
     expect(fx.manager.get("s1")).toBeUndefined();
   });
 
@@ -200,7 +182,6 @@ describe("AutoFixManager", () => {
     await fx.fail();
     await tick();
     expect(fx.cb.count()).toBe(0);
-    // User resumes; the gate now passes and the next poll fires.
     fx.setPaused(false);
     await fx.fail();
     await tick();
@@ -216,23 +197,19 @@ describe("AutoFixManager", () => {
   });
 
   it("re-arms after a fix turn completes — the 1-attempt-budget wedge is fixed", async () => {
-    // Attempt 1.
     await fx.fail();
     await tick();
     expect(fx.cb.count()).toBe(1);
-    // Post-turn: re-armed to idle with a cooldown (NOT stuck in running).
     const s = fx.manager.get("s1")!;
     expect(s.status).toBe("idle");
     expect(s.attemptCount).toBe(1);
     expect(s.nextEligibleAt).toBeDefined();
 
-    // Within cooldown — does not re-fire.
     fx.advance(AUTO_FIX_COOLDOWN_MS - 1);
     await fx.fail();
     await tick();
     expect(fx.cb.count()).toBe(1);
 
-    // After cooldown — re-fires (attempt 2). The old loop wedged here.
     fx.advance(2);
     await fx.fail();
     await tick();
@@ -247,7 +224,6 @@ describe("AutoFixManager", () => {
     }
     expect(fx.cb.count()).toBe(MAX_AUTO_FIX_ATTEMPTS);
     expect(fx.manager.get("s1")?.status).toBe("exhausted");
-    // Further FAILURE polls do not fire.
     await fx.fail();
     await tick();
     expect(fx.cb.count()).toBe(MAX_AUTO_FIX_ATTEMPTS);
@@ -261,12 +237,6 @@ describe("AutoFixManager", () => {
     expect(fx.manager.get("s1")).toBeUndefined();
   });
 
-  // The `running` terminal trap. The resolved-signal cleanup used to sit BEHIND
-  // the `status === "running"` short-circuit, and the ONLY other exit from
-  // `running` is the post-turn write — so an attempt that never completed left
-  // the card spinning on "Auto-fixing…" over a green CI forever, with the
-  // arbiter claim held (which silently disables managed auto-merge and
-  // auto-resolve for the session). Observed in production on PR #1904.
   it("a green-CI poll clears a state sitting in `running`", async () => {
     const cb = recordingCb(() => new Promise<AutoFixResult>(() => { /* never settles */ }));
     fx = makeFixture({ cb });
@@ -291,12 +261,9 @@ describe("AutoFixManager", () => {
     await tick();
     expect(arbiter.isClaimed("s1")).toBe(true);
 
-    // CI goes green while the fix turn is still in flight: the state goes...
     await fx.transition("success");
     await tick();
     expect(fx.manager.get("s1")).toBeUndefined();
-    // ...but the claim is still held by the attempt that hasn't finished yet —
-    // it is released by that attempt's own terminal path, not stolen here.
     expect(arbiter.isClaimed("s1")).toBe(true);
 
     settle({ outcome: "fixed" });
@@ -335,7 +302,6 @@ describe("AutoFixManager", () => {
     await tick();
     expect(fx.cb.count()).toBe(0);
     expect(fx.manager.get("s1")?.status).toBe("deferred");
-    // Agent finishes.
     runner.running = false;
     await fx.manager.onRunnerIdle("s1");
     await tick();
@@ -349,7 +315,6 @@ describe("AutoFixManager", () => {
     fx.advance(AUTO_FIX_COOLDOWN_MS + 1);
     await fx.fail("sha2");
     await tick();
-    // New head → reset → this is attempt 1 again on the new head.
     expect(fx.manager.get("s1")?.attemptCount).toBe(1);
     expect(fx.manager.get("s1")?.lastHeadSha).toBe("sha2");
   });
@@ -362,22 +327,16 @@ describe("AutoFixManager", () => {
     fx.manager.resetForUserActivity("s1");
     expect(fx.manager.get("s1")?.attemptCount).toBe(0);
     expect(fx.manager.get("s1")?.nextEligibleAt).toBeUndefined();
-    // No cooldown now → fires again.
     await fx.fail();
     await tick();
     expect(fx.cb.count()).toBe(2);
   });
 
-  // ---- Stale-verdict dedup (the retrigger-push bug) ----------------------
-
   it("does NOT re-fire the same failed check runs after the cooldown (stale re-send)", async () => {
-    // Attempt 1 sends runs {101, 102}.
     await fx.failChecks([101, 102]);
     await tick();
     expect(fx.cb.count()).toBe(1);
 
-    // Cooldown elapses and GitHub still reports the SAME run (the retrigger
-    // commit's checks haven't registered yet) — must NOT re-send.
     fx.advance(AUTO_FIX_COOLDOWN_MS + 1);
     await fx.failChecks([101, 102]);
     await tick();
@@ -389,7 +348,6 @@ describe("AutoFixManager", () => {
     await tick();
     expect(fx.cb.count()).toBe(1);
 
-    // New head + new check-run databaseIds = a fresh verdict → fire.
     fx.advance(AUTO_FIX_COOLDOWN_MS + 1);
     await fx.failChecks([201], "sha2");
     await tick();
@@ -402,8 +360,6 @@ describe("AutoFixManager", () => {
     expect(fx.cb.count()).toBe(1);
     expect(fx.cb.lastIds()).toEqual([101]);
 
-    // {101} already sent but {102} is new → the fire proceeds, but the payload is
-    // trimmed to {102} only — the agent must NOT see {101}'s log a second time.
     fx.advance(AUTO_FIX_COOLDOWN_MS + 1);
     await fx.failChecks([101, 102], "sha1");
     await tick();
@@ -412,18 +368,11 @@ describe("AutoFixManager", () => {
   });
 
   it("does NOT fire a failure on a superseded run once the ref tip advances (defect A — planning#64)", async () => {
-    // The current PR head has already advanced (headRefOid = sha2, e.g. an empty
-    // retrigger commit whose run is queued/passing), but GitHub's commits(last:1)
-    // still lags on the OLD failing commit (rollup oid = sha1) with its failed
-    // check runs. That failure is for a superseded commit — it must NOT inject.
     await fx.failChecks([101, 102], "sha1", "sha2");
     await tick();
     expect(fx.cb.count()).toBe(0);
-    // No fire ⇒ no auto-fix state was even created (suppressed like an ignore).
     expect(fx.manager.get("s1")).toBeUndefined();
 
-    // Once the rollup catches up to the current tip (sha2) with a genuine
-    // failure (rollup oid === headRefOid), the loop fires normally.
     await fx.failChecks([201], "sha2", "sha2");
     await tick();
     expect(fx.cb.count()).toBe(1);
@@ -437,22 +386,12 @@ describe("AutoFixManager", () => {
     expect(fx.cb.count()).toBe(1);
     expect(fx.manager.get("s1")?.status).toBe("deferred");
 
-    // Deferred cooldown elapses; same runs re-fire because the noop sent nothing.
     fx.advance(AUTO_FIX_DEFERRED_COOLDOWN_MS + 1);
     await fx.failChecks([101]);
     await tick();
     expect(fx.cb.count()).toBe(2);
   });
 
-  // The 2026-08-10 duplicate-CI-fix incident (session 1cfb9c2c, PR #2127), at
-  // this layer: the fix turn RAN and committed, its runner was then disposed
-  // inside the post-turn window, and the settlement nets reported the finished
-  // turn as `dropped`. `dropped` maps to "noop" — "couldn't even start" — so the
-  // check run was never recorded as dispatched and the identical prompt with the
-  // identical logs went out again on the next poll.
-  //
-  // `autoFixResultForOutcome` is the mapping that decides it; these pin both
-  // sides of the line it draws.
   describe("settlement → accounting (autoFixResultForOutcome)", () => {
     it("a turn that RAN counts, whatever it settled as", () => {
       for (const status of ["completed", "errored", "no-result", "interrupted"] as const) {
@@ -467,8 +406,6 @@ describe("AutoFixManager", () => {
   });
 
   it("a fix turn cut short AFTER it ran never re-dispatches the same check run", async () => {
-    // What the production settlement now reports for a completed turn whose
-    // runner was disposed mid-teardown.
     fx = makeFixture({
       cb: recordingCb(() => autoFixResultForOutcome(
         turnInterrupted("runner disposed mid-turn — after the turn produced its result"),
@@ -478,9 +415,6 @@ describe("AutoFixManager", () => {
     await tick();
     expect(fx.cb.count()).toBe(1);
 
-    // The poll a minute later sees the identical still-red rollup: same head,
-    // same check-run id, so the superseded guard (defect A) cannot help. The
-    // dedup record is the only thing standing between it and a second send.
     fx.advance(AUTO_FIX_COOLDOWN_MS + 1);
     await fx.failChecks([93522532864]);
     await tick();
@@ -491,10 +425,8 @@ describe("AutoFixManager", () => {
     await fx.failChecks([101]);
     await tick();
     expect(fx.cb.count()).toBe(1);
-    // Green drops state (and the dispatched set).
     await fx.transition("success");
     expect(fx.manager.get("s1")).toBeUndefined();
-    // A fresh failure — even reusing the id — fires, because the set was cleared.
     await fx.failChecks([101]);
     await tick();
     expect(fx.cb.count()).toBe(2);

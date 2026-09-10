@@ -5,19 +5,13 @@ import { wrapUntrustedContent } from "../shared/untrusted-input.js";
 import { getModel, getService, visionSupportFor } from "../shared/catalogue/index.js";
 import type { ModelSelection } from "../shared/catalogue/index.js";
 
-// Re-exported from shared for backward compatibility — prefer importing from "../shared/utils.js" directly.
 export { getErrorMessage } from "../shared/utils.js";
 
-// ---- Image validation constants ----
 const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB per image (decoded)
+const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 const MAX_IMAGES_PER_MESSAGE = 5;
-const MAX_TOTAL_PAYLOAD_BYTES = 20 * 1024 * 1024; // 20 MB total
+const MAX_TOTAL_PAYLOAD_BYTES = 20 * 1024 * 1024;
 
-/**
- * Validate an array of image attachments. Returns an error message string
- * if validation fails, or null if all images are valid.
- */
 export function validateImages(images: ImageAttachment[]): string | null {
   if (images.length > MAX_IMAGES_PER_MESSAGE) {
     return `Too many images (max ${MAX_IMAGES_PER_MESSAGE}, got ${images.length})`;
@@ -36,12 +30,11 @@ export function validateImages(images: ImageAttachment[]): string | null {
       return `Image ${i + 1}: unsupported type "${img.mediaType}" (allowed: PNG, JPEG, GIF, WebP)`;
     }
 
-    // Validate base64 and check decoded size
     let decodedSize: number;
     try {
       const buf = Buffer.from(img.data, "base64");
       decodedSize = buf.byteLength;
-      // Verify the base64 round-trips (catches invalid base64)
+      // Buffer.from tolerates invalid base64; require a round trip.
       if (buf.toString("base64") !== img.data.replace(/\s/g, "")) {
         return `Image ${i + 1}: invalid base64 encoding`;
       }
@@ -63,30 +56,15 @@ export function validateImages(images: ImageAttachment[]): string | null {
   return null;
 }
 
-// ---- File attachment validation constants ----
-const MAX_FILE_SIZE_BYTES = 100 * 1024; // 100 KB per file
-const MAX_TOTAL_FILE_SIZE_BYTES = 500 * 1024; // 500 KB total
+const MAX_FILE_SIZE_BYTES = 100 * 1024;
+const MAX_TOTAL_FILE_SIZE_BYTES = 500 * 1024;
 const MAX_FILES_PER_MESSAGE = 10;
 
-/**
- * Defang the `<file …>` / `</file>` delimiter inside attacker-influenced file
- * content so a malicious attached file can't fake a tag and break out of its
- * `<file>` element. Only the literal delimiter token is rewritten; everything
- * else is left byte-for-byte intact. Pairs with the envelope-marker defang in
- * `wrapUntrustedContent` (planning#100) for the same breakout class one level up.
- */
+// Prevent file content from closing its enclosing tag.
 function neutralizeFileTag(content: string): string {
   return content.replace(/<(\/?\s*file)\b/gi, "&lt;$1");
 }
 
-/**
- * Format file attachments for the agent's prompt context. Each file is a
- * `<file path="…">` element carrying its path/line metadata, and the whole
- * block is wrapped in the untrusted-input provenance envelope (planning#100 — Gap 4
- * of docs/172) so the agent treats attached file content (uploads and
- * cloned-repo files alike) as DATA, not instructions. See
- * `untrusted-input.ts` for the lens and its (deliberate) limits.
- */
 export function formatFileContext(files: FileAttachment[]): string {
   if (files.length === 0) return "";
   const inner = files.map(f => {
@@ -99,10 +77,6 @@ export function formatFileContext(files: FileAttachment[]): string {
   return wrapUntrustedContent({ source: "file", content: inner });
 }
 
-/**
- * Validate and read file attachments from disk. The client sends only paths;
- * the server reads the content and validates sizes.
- */
 export async function resolveFileAttachments(
   refs: FileContextRef[],
   sessionDir: string,
@@ -124,7 +98,6 @@ export async function resolveFileAttachments(
       return { files: [], error: "File path is required" };
     }
 
-    // Path traversal check
     const resolved = path.resolve(sessionDir, filePath);
     if (!resolved.startsWith(`${sessionDir  }/`) && resolved !== sessionDir) {
       return { files: [], error: `Invalid file path: ${filePath}` };
@@ -157,9 +130,6 @@ export async function resolveFileAttachments(
   return { files: validated, error: null };
 }
 
-// ---- Upload ref resolution ----
-
-/** Extensions for binary file detection based on extension. */
 const BINARY_EXTENSIONS = new Set([
   ".zip", ".gz", ".tar", ".bz2", ".7z", ".rar", ".xz",
   ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".svg",
@@ -170,13 +140,11 @@ const BINARY_EXTENSIONS = new Set([
   ".sqlite", ".db",
 ]);
 
-/** Check if a file path refers to a likely binary file based on its extension. */
 function isBinaryUpload(filePath: string): boolean {
   const ext = path.extname(filePath).toLowerCase();
   return BINARY_EXTENSIONS.has(ext);
 }
 
-/** Extension → MIME type mapping for image uploads. */
 const IMAGE_EXT_TO_MIME: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -185,30 +153,7 @@ const IMAGE_EXT_TO_MIME: Record<string, string> = {
   ".webp": "image/webp",
 };
 
-/**
- * planning#460 — refuse a message that attaches an image while the session is
- * pinned to a model the catalogue KNOWS cannot read one. Returns the message to
- * show, or `null` to let the message through.
- *
- * This is the half of planning#460 the user actually sees. Gating OpenCode's
- * modality declaration (`opencode-spawn-shaping.ts`) stops a malformed request,
- * but on its own it would hand the turn back to the failure planning#458 found:
- * the agent opens the file, the CLI reports success, the pixels never arrive,
- * and a turn is spent on a model answering that it cannot see the picture. The
- * issue asks for the opposite — refused by ShipIt, with something to act on.
- *
- * **Only a `"no"` refuses.** `"unverified"` — a model nobody has checked, a
- * session with no selection yet, a spawn ShipIt does not route — sends the image
- * exactly as it did before, so this can never block a turn on a guess. See
- * `VisionSupport` in `shared/catalogue/model-vision.ts`.
- *
- * Both attachment shapes count, because both end in the same
- * `<attached_images>` block: `images` is the API/dispatch shape, and `uploads`
- * is what the browser composer sends. An upload's kind is read from its
- * extension, the same rule {@link resolveUploadRefs} applies when it reads the
- * bytes — asked here without touching the disk, since this runs before a turn
- * exists.
- */
+/** Reject known text-only models; unknown vision support remains allowed. */
 export function imageAttachmentRefusal(
   selection: ModelSelection | undefined,
   images: ImageAttachment[] | undefined,
@@ -226,32 +171,22 @@ export function imageAttachmentRefusal(
   return `${where} cannot read images — it takes text only. Remove the attachment, or switch this session to a model that can see, and send again.`;
 }
 
-/**
- * Resolve upload refs into FileAttachment entries (for text files) or
- * reference-only entries (for binary files). Image uploads (PNG, JPEG, GIF,
- * WebP) are returned separately as ImageAttachment objects with base64 data
- * so they can be shown as inline thumbnails in chat history.
- */
 export async function resolveUploadRefs(
   uploads: UploadRef[],
   workspaceDir: string,
 ): Promise<{ files: FileAttachment[]; images: ImageAttachment[]; imageHostPaths: string[]; error: string | null }> {
-  // Uploads live as a sibling of the workspace dir inside the session dir:
-  // {sessionDir}/workspace/ (workspaceDir) and {sessionDir}/uploads/
   const uploadsDir = path.join(path.dirname(workspaceDir), "uploads");
   const fileResult: FileAttachment[] = [];
   const imageResult: ImageAttachment[] = [];
   const imageHostPaths: string[] = [];
 
   for (const ref of uploads) {
-    // Validate path format
     if (!ref.path.startsWith("/uploads/")) {
       return { files: [], images: [], imageHostPaths: [], error: `Invalid upload path: ${ref.path}` };
     }
     const filename = path.basename(ref.path);
     const hostPath = path.join(uploadsDir, filename);
 
-    // Path traversal check
     if (!hostPath.startsWith(`${uploadsDir}/`)) {
       return { files: [], images: [], imageHostPaths: [], error: `Invalid upload path: ${ref.path}` };
     }
@@ -260,14 +195,7 @@ export async function resolveUploadRefs(
     const imageMime = IMAGE_EXT_TO_MIME[ext];
 
     if (imageMime) {
-      // Image upload — read binary data and return as ImageAttachment.
-      // `existingPath` records the live on-disk location so the orchestrator
-      // doesn't re-save the image with a different name. If the image were
-      // re-saved under a randomized filename and the original deleted, the
-      // chat history's `uploadPaths` (which records the original `/uploads/`
-      // path) would no longer match the file actually present on disk —
-      // breaking `hydrateUploads`'s "is this upload already sent?" check
-      // and causing the image to reappear as attached on next reload.
+      // Preserve the upload path so history recognizes it as already sent.
       try {
         const buf = await fs.readFile(hostPath);
         imageResult.push({
@@ -281,16 +209,13 @@ export async function resolveUploadRefs(
         return { files: [], images: [], imageHostPaths: [], error: `Upload not found: ${ref.path}` };
       }
     } else if (isBinaryUpload(ref.path)) {
-      // Non-image binary files — include a reference the agent can use
       fileResult.push({
         path: ref.path,
         content: `[Binary file uploaded at ${ref.path} — use Bash tool to read/process this file inside the container]`,
       });
     } else {
-      // For text files, read and include content
       try {
         const content = await fs.readFile(hostPath, "utf-8");
-        // Cap at 100KB per file (same as workspace file refs)
         if (Buffer.byteLength(content, "utf-8") > MAX_FILE_SIZE_BYTES) {
           fileResult.push({
             path: ref.path,

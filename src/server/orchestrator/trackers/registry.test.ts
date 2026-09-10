@@ -3,7 +3,6 @@ import { buildTrackerRegistry } from "./registry.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { DeclaredTracker } from "../../shared/declared-tracker.js";
 
-/** Minimal CredentialStore stand-in — only the Linear token getter is consulted. */
 const store = (linearToken: string | null = null) =>
   ({ getLinearToken: () => linearToken }) as unknown as CredentialStore;
 
@@ -26,9 +25,6 @@ const build = (args: {
   });
 
 describe("buildTrackerRegistry — the registry is the declarations (req 1)", () => {
-  // The clean break: with no `kind: linear` declaration there is no Linear tab,
-  // even on a deployment that has a Linear credential. Requirement 1 removed the
-  // built-in tracker; the credential authorizes, it does not declare.
   it("registers only the session's own repository when nothing is declared", () => {
     const ids = build({ repo: { owner: "acme", repo: "app" }, linearToken: "lin_api_x" })
       .list()
@@ -47,8 +43,6 @@ describe("buildTrackerRegistry — the registry is the declarations (req 1)", ()
     expect(registry.list().map((t) => t.name)).toEqual([undefined, "planning", "roadmap"]);
   });
 
-  // req 9a — the declared `label` is what the tab shows; the `name` stays the
-  // address, so a labelled tracker is still referenced as `planning#42`.
   it("labels a tab with the declared label, falling back to the name", () => {
     const registry = build({
       repo: { owner: "acme", repo: "app" },
@@ -62,8 +56,6 @@ describe("buildTrackerRegistry — the registry is the declarations (req 1)", ()
     expect(registry.list().map((t) => t.name)).toEqual([undefined, "planning", "roadmap"]);
   });
 
-  // req 3 — a repository may declare two Linear trackers on different teams, and
-  // each gets its own destination id and its own tab.
   it("registers two linear declarations on different teams", () => {
     const registry = build({
       repo: null,
@@ -88,21 +80,16 @@ describe("buildTrackerRegistry — the registry is the declarations (req 1)", ()
     });
     const info = registry.get("github:other-owner/planning")!.info();
     expect(info.binding).toEqual({ key: "other-owner/planning", name: "other-owner/planning" });
-    // The session's own destination is untouched.
     expect(registry.get("github")!.info().binding).toEqual({ key: "acme/app", name: "acme/app" });
   });
 
-  // req 12 — a repository may declare its OWN repository in order to give it a
-  // name. That must not produce two tabs listing the same issues, and the bare
-  // `github` id must stay resolvable for the operations that name nothing.
   it("lets a repository name its own repository without minting a second tab", () => {
     const registry = build({
       repo: { owner: "acme", repo: "app" },
-      declared: [gh("Acme/App", "code")], // case-insensitive: GitHub slugs are
+      declared: [gh("Acme/App", "code")],
     });
     expect(registry.list().map((t) => t.id)).toEqual(["github:Acme/App"]);
     expect(registry.list().map((t) => t.name)).toEqual(["code"]);
-    // Still reachable unnamed — req 12's exception survives the self-declaration.
     expect(registry.get("github")).toBeDefined();
     expect(registry.get("github")!.info().binding).toEqual({ key: "acme/app", name: "acme/app" });
   });
@@ -114,11 +101,6 @@ describe("buildTrackerRegistry — the registry is the declarations (req 1)", ()
 });
 
 describe("buildTrackerRegistry — get() and list() agree (req 11)", () => {
-  // The pre-docs/248 registry deliberately synthesized a tracker for any
-  // well-formed `github:owner/repo`, so `--repo` could reach anything the
-  // credential could see. Requirement 11 forbids that: an address identifying no
-  // declared destination has nowhere to go, because req 1 leaves no destination
-  // outside the declarations.
   it("does NOT synthesize a tracker for an undeclared repository", () => {
     const registry = build({ repo: { owner: "acme", repo: "app" } });
     expect(registry.get("github:someone-else/private-notes")).toBeUndefined();
@@ -138,9 +120,6 @@ describe("buildTrackerRegistry — get() and list() agree (req 11)", () => {
   });
 
   it("returns undefined for an unknown tracker rather than falling back", () => {
-    // req 17 — ShipIt never substitutes one destination for another, so an
-    // unresolvable id is an error the caller surfaces, not a redirect to the
-    // session's repo.
     const registry = build({ repo: { owner: "acme", repo: "app" } });
     expect(registry.get("jira" as never)).toBeUndefined();
     expect(registry.get("github:not-a-slug" as never)).toBeUndefined();
@@ -148,17 +127,11 @@ describe("buildTrackerRegistry — get() and list() agree (req 11)", () => {
 });
 
 describe("buildTrackerRegistry — getRecorded() is the Undo carve-out (req 11)", () => {
-  // Reversing a write grants no access the write did not already have: the card
-  // could only exist if the destination was declared when it was written. So an
-  // Undo resolves against the recorded destination even after the repository
-  // stops declaring it — otherwise every recorded action would be stranded
-  // behind a config edit.
   it("resolves a destination the repository no longer declares", () => {
     const registry = build({ repo: { owner: "acme", repo: "app" } });
     const tracker = registry.getRecorded("github:acme/planning");
     expect(tracker).toBeDefined();
     expect(tracker!.info().binding).toEqual({ key: "acme/planning", name: "acme/planning" });
-    // ...and it stays absent from the tab list.
     expect(registry.list().map((t) => t.id)).not.toContain("github:acme/planning");
   });
 
@@ -169,10 +142,6 @@ describe("buildTrackerRegistry — getRecorded() is the Undo carve-out (req 11)"
     expect(tracker!.id).toBe("linear:SHI");
   });
 
-  // req 16's exception — Undo is NOT re-targeted by a re-pointed name. It acts on
-  // the destination the write actually reached, because the snapshot it restores
-  // belongs to that issue. `undoIssueWrite` uses `destinationForName` to detect
-  // the re-point and refuse; the registry itself simply never follows the name.
   it("resolves the recorded destination, not wherever the name points now", () => {
     const registry = build({
       repo: { owner: "acme", repo: "app" },
@@ -199,9 +168,6 @@ describe("buildTrackerRegistry — getRecorded() is the Undo carve-out (req 11)"
   });
 
   it("cannot resolve the retired bare `linear` id even on the undo path", () => {
-    // A card written before docs/248 recorded no destination beyond "Linear",
-    // which named the deployment's stored team — state this build no longer has.
-    // Requirement 20 permits that break; what matters is that it fails closed.
     const registry = build({ repo: null, linearToken: "lin_api_x" });
     expect(registry.getRecorded("linear")).toBeUndefined();
   });
@@ -225,18 +191,10 @@ describe("buildTrackerRegistry — destinations() is the resolution context", ()
       repo: { owner: "acme", repo: "app" },
       declared: [gh("acme/app", "code")],
     });
-    // Both are reachable — unnamed for req 12's exception, named for req 15's
-    // emitted references — even though only one renders as a tab.
     expect(registry.destinations().map((d) => d.id)).toEqual(["github", "github:acme/app"]);
   });
 });
 
-/**
- * docs/262 req 25 — a declared plugin repository is a feedback destination in
- * this same registry. Declaring the plugin is what grants the channel; what
- * distinguishes it from a tracker is that it renders no tab and carries
- * `origin: "plugin"`.
- */
 describe("buildTrackerRegistry — declared plugin repositories (docs/262 req 25)", () => {
   const tools = { name: "tools", owner: "acme", repo: "dev-tools", ref: "branch main", commit: "abc123" };
 
@@ -253,7 +211,6 @@ describe("buildTrackerRegistry — declared plugin repositories (docs/262 req 25
 
   it("is reachable by its declared name but renders no Issues tab", () => {
     const registry = withPlugins({ declared: [gh("acme/planning", "planning")], pluginRepos: [tools] });
-    // A plugin repository is a dependency, not one of the project's trackers.
     expect(registry.list().map((t) => t.id)).toEqual(["github", "github:acme/planning"]);
     expect(registry.destinations().map((d) => d.id)).toEqual([
       "github",
@@ -268,9 +225,6 @@ describe("buildTrackerRegistry — declared plugin repositories (docs/262 req 25
     });
   });
 
-  // The load-bearing case: a repository declared BOTH ways must stay ONE
-  // destination, or `acme/planning#42` becomes ambiguous and the tracker that
-  // already worked stops resolving.
   it("aliases onto a tracker declaration of the same repository instead of adding a second destination", () => {
     const registry = withPlugins({
       declared: [gh("acme/planning", "planning")],
@@ -279,7 +233,6 @@ describe("buildTrackerRegistry — declared plugin repositories (docs/262 req 25
     expect(registry.destinations().map((d) => d.id)).toEqual(["github", "github:acme/planning"]);
     const dest = registry.destinationFor("github:acme/planning");
     expect(dest).toMatchObject({ name: "planning", pluginNames: ["tools"] });
-    // It stays a tracker: it keeps its tab and is not stamped as plugin-origin.
     expect(dest?.origin).toBeUndefined();
     expect(registry.list().map((t) => t.id)).toEqual(["github", "github:acme/planning"]);
   });

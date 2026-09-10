@@ -1,19 +1,3 @@
-/**
- * Tests for the silent-death breadcrumbs added when an agent container
- * disappears. Two paths:
- *
- *   1. `handleContainerExited` — fires when the Docker event subscriber
- *      sees a `die`/`oom` event. Must write to the per-session log ring
- *      via `broadcastLog` BEFORE disposing the runner, otherwise the
- *      diagnostic snapshot 70 minutes later shows only "Agent process
- *      started" with no trace of the failure.
- *
- *   2. `createMissingContainerReconciler` — the periodic poll that
- *      catches runners whose container vanished without a `die` event
- *      reaching the orchestrator (daemon restart, missed event during
- *      the health-monitor reconnect window, external `docker rm`).
- */
-
 import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import {
@@ -52,8 +36,6 @@ function makeFakeRunner(sessionId: string, workerStreamDownSince = 0): FakeRunne
     disposed: false,
     wasInterrupted: false,
     chatMessageGroups: [] as ChatMessageGroup[],
-    // `persistTurnInProgress` interleaves these with the assistant groups;
-    // a fake without them silently persists nothing.
     steeredMessages: [],
     recordedCards: [],
     emitMessage: (msg: WsServerMessage) => { emitted.push(msg); },
@@ -112,17 +94,7 @@ function makeFakeRegistry(entries: Map<string, SessionRunnerInterface>): Session
 function makeFakeContainerManager(
   containers: Map<string, Partial<SessionContainer>>,
   standby: Set<string>,
-  /**
-   * Optional `adoptRunningContainer` stub. Receives the session id; when it
-   * returns `true` the reconciler treats the container as re-adopted and
-   * must NOT dispose the runner. `adoptCalls` records every invocation.
-   */
   adopt?: { impl: (sid: string) => Promise<boolean>; calls: string[] },
-  /**
-   * Optional `isTrackedContainerRunning` stub (docs/121 gap E). `undefined`
-   * models "Docker could not answer". Defaults to `true` — a tracked
-   * container that Docker agrees is alive, i.e. the pre-gap-E behavior.
-   */
   liveness?: { impl: (sid: string) => Promise<boolean | undefined>; calls: string[] },
 ): SessionContainerManager {
   const gone: string[] = [];
@@ -226,12 +198,6 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
     expect(calls[0]?.sid).toBe("sess-missing");
   });
 
-  // Regression: container OOM kills the worker without emitting an
-  // `agent_error` SSE event, so `wireAgentListeners`' partial-turn rescue
-  // never fires. The previous turn's in-flight assistant messages stay in
-  // the DB marked in_progress=1; the next turn's first `agent_tool_result`
-  // calls `replaceInProgress`, which DELETEs them. The user loses the
-  // entire pre-crash turn. handleContainerExited must finalize first.
   describe("partial-turn preservation (OOM mid-turn)", () => {
     it("finalizes in-flight chatMessageGroups before disposing the runner", () => {
       const { runner, setChatMessageGroups, setRunning } = makeFakeRunner("sess-oom");
@@ -250,8 +216,6 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
 
       handleContainerExited("sess-oom", 137, "OOMKilled", registry, undefined, manager);
 
-      // Wrote the partial-turn snapshot, then finalized, then appended a
-      // user-visible error message — same order as the agent.error rescue.
       expect(calls.replaceInProgress).toHaveLength(1);
       expect(calls.replaceInProgress[0]?.sessionId).toBe("sess-oom");
       expect(calls.replaceInProgress[0]?.messages).toHaveLength(2);
@@ -261,9 +225,6 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
       });
       expect(calls.finalizeInProgress).toEqual(["sess-oom"]);
       expect(calls.append).toHaveLength(1);
-      // A `system_notice` row, not a bare assistant error: `emitNoticePostTurn`
-      // both broadcasts and persists, so an attached viewer is told at the
-      // moment it happens rather than only on the next reload.
       expect(calls.append[0]?.message).toMatchObject({
         role: "assistant",
         notice: true,
@@ -273,11 +234,6 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
     });
 
     it("running runner still finalizes when there are no in-memory groups (preserves orphaned in_progress rows)", () => {
-      // The runner may have reconnected to a container whose prior turn
-      // left in_progress=1 rows in the DB; chatMessageGroups is empty in
-      // memory but the rows are still there. finalizeInProgress flips
-      // them to permanent so the next turn's replaceInProgress doesn't
-      // delete them.
       const { runner, setRunning } = makeFakeRunner("sess-oom2");
       const registry = makeFakeRegistry(new Map([["sess-oom2", runner]]));
       const { manager, calls } = makeFakeChatHistoryManager();
@@ -339,7 +295,6 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
     });
 
     it("still force-disposes the runner if chat-history persistence throws", () => {
-      // A persistence failure must not leak the runner — dispose still runs.
       const { runner, disposeCalls, setChatMessageGroups, setRunning } = makeFakeRunner("sess-oom4");
       const registry = makeFakeRegistry(new Map([["sess-oom4", runner]]));
       setRunning(true);
@@ -372,7 +327,6 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
   it("force-disposes a runner whose container has vanished and writes a log entry", async () => {
     const { runner, emitted, disposeCalls } = makeFakeRunner("sess-orphan");
     const registry = makeFakeRegistry(new Map([["sess-orphan", runner]]));
-    // No container for sess-orphan — simulates a missed `die` event.
     const containerManager = makeFakeContainerManager(new Map(), new Set());
     const calls: { sid: string; source: LogSource; text: string }[] = [];
 
@@ -413,8 +367,6 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
   it("skips standby sessions (warm pool transient race)", async () => {
     const { runner, disposeCalls } = makeFakeRunner("sess-warm");
     const registry = makeFakeRegistry(new Map([["sess-warm", runner]]));
-    // Container missing AND standby — the warm pool may have a registered
-    // runner briefly during claim; don't dispose it.
     const containerManager = makeFakeContainerManager(new Map(), new Set(["sess-warm"]));
 
     const reconcile = createMissingContainerReconciler({
@@ -436,7 +388,6 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
       ["sess-b", b.runner],
       ["sess-c", c.runner],
     ]));
-    // Only sess-b has a container.
     const containerManager = makeFakeContainerManager(
       new Map([["sess-b", { id: "c-b", sessionId: "sess-b" } as Partial<SessionContainer>]]),
       new Set(),
@@ -470,13 +421,9 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     expect(disposeCalls).toEqual([]);
   });
 
-  // ---- C3: re-adopt a live-but-untracked container before disposing ----
-
   it("re-adopts a live untracked container and does NOT dispose the runner", async () => {
     const { runner, emitted, disposeCalls } = makeFakeRunner("sess-adopt");
     const registry = makeFakeRegistry(new Map([["sess-adopt", runner]]));
-    // Container missing from the manager map, but `adoptRunningContainer`
-    // finds a live Docker container and re-adopts it.
     const adopt = { impl: async () => true, calls: [] as string[] };
     const containerManager = makeFakeContainerManager(new Map(), new Set(), adopt);
     const logged: { sid: string; text: string }[] = [];
@@ -485,17 +432,14 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
       containerManager,
       runnerRegistry: registry,
       broadcastLog: (sid, _source, text) => logged.push({ sid, text }),
-      // The resolver itself isn't exercised here (the stub ignores it) — its
-      // mere presence is what enables the adoption branch.
+      // Presence enables adoption; the stub does not call the resolver.
       sessionInfoResolver: (sid) => ({ workspaceDir: `/ws/${sid}`, dockerAccess: false }),
     });
     await reconcile();
 
     expect(adopt.calls).toEqual(["sess-adopt"]);
-    // Re-adopted → the runner is healed in place, NOT disposed.
     expect(disposeCalls).toEqual([]);
     expect(emitted.find((m) => m.type === "session_status")).toBeUndefined();
-    // A breadcrumb is still written so the recovery is visible in the log ring.
     expect(logged).toHaveLength(1);
     expect(logged[0]?.text).toMatch(/recovered/i);
   });
@@ -503,8 +447,6 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
   it("force-disposes the runner when adoption fails (no live container found)", async () => {
     const { runner, disposeCalls } = makeFakeRunner("sess-gone");
     const registry = makeFakeRegistry(new Map([["sess-gone", runner]]));
-    // `adoptRunningContainer` returns false — e.g. the resolver had no
-    // workspaceDir, or there genuinely is no live container.
     const adopt = { impl: async () => false, calls: [] as string[] };
     const containerManager = makeFakeContainerManager(new Map(), new Set(), adopt);
 
@@ -517,7 +459,6 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     await reconcile();
 
     expect(adopt.calls).toEqual(["sess-gone"]);
-    // Adoption failed → fall through to the original force-dispose path.
     expect(disposeCalls).toEqual([{ force: true }]);
   });
 
@@ -539,25 +480,12 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     await reconcile();
 
     expect(adopt.calls).toEqual(["sess-throw"]);
-    // A throwing adoption must not abort the reconcile — the runner is still
-    // force-disposed so the session doesn't hang forever.
     expect(disposeCalls).toEqual([{ force: true }]);
   });
 
-  // ---- docs/121 gap E: a map entry is not proof of life ----
-  //
-  // The manager map is corrected only by the Docker event stream. A `die`
-  // delivered while that stream was down (5s reconnect debounce, daemon
-  // restart) is never seen, so the entry keeps claiming `running` forever and
-  // the pre-gap-E loop skipped the session outright. The runner's `/events`
-  // stream then reconnects on a 10s-capped backoff for the life of the
-  // process, the session renders as alive, and a parked turn never resolves.
-
   const TRACKED = new Map([["sess-e", { id: "c-e", sessionId: "sess-e", workerUrl: "http://10.0.0.1:9100" } as Partial<SessionContainer>]]);
 
-  /** A stream that went down comfortably past WORKER_UNREACHABLE_MS. */
   const DOWN_LONG_AGO = (): number => Date.now() - 5 * 60_000;
-  /** Down, but not yet long enough to act on. */
   const DOWN_RECENTLY = (): number => Date.now() - 5_000;
 
   it("declares a tracked-but-dead container gone once the worker stops answering", async () => {
@@ -580,15 +508,10 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     expect(disposeCalls).toEqual([{ force: true }]);
     expect(logged[0]).toMatch(/container is gone/i);
     expect(emitted.find((m) => m.type === "session_status")).toBeDefined();
-    // The stale entry is dropped so the next activation creates a fresh
-    // container instead of "reconnecting" to the dead one.
     expect((containerManager as unknown as { _gone: string[] })._gone).toEqual(["sess-e"]);
   });
 
   it("does not probe Docker while the worker's stream is healthy", async () => {
-    // A connected stream keeps `workerStreamDownSince` at 0, so a healthy
-    // session can never reach the probe — the gate makes a false positive
-    // structurally impossible, and costs no Docker call per tick.
     const { runner, disposeCalls } = makeFakeRunner("sess-e", 0);
     const registry = makeFakeRegistry(new Map([["sess-e", runner]]));
     const liveness = { impl: async () => false, calls: [] as string[] };
@@ -627,7 +550,6 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
   });
 
   it("keeps a session whose container is running and whose worker answers", async () => {
-    // A stream that is merely between reconnects, on a worker that is fine.
     const { runner, disposeCalls } = makeFakeRunner("sess-e", DOWN_LONG_AGO());
     const registry = makeFakeRegistry(new Map([["sess-e", runner]]));
     const liveness = { impl: async () => true, calls: [] as string[] };
@@ -650,8 +572,6 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
   });
 
   it("reports a live container whose worker never answers, without forgetting it", async () => {
-    // Requirement 6 is about an unreachable WORKER, not only a missing
-    // container. The container being up is not evidence the worker is.
     const { runner, disposeCalls, emitted } = makeFakeRunner("sess-e", DOWN_LONG_AGO());
     const registry = makeFakeRegistry(new Map([["sess-e", runner]]));
     const liveness = { impl: async () => true, calls: [] as string[] };
@@ -670,18 +590,12 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
 
     expect(disposeCalls).toEqual([{ force: true }]);
     expect(emitted.find((m) => m.type === "session_status")).toBeDefined();
-    // Different fact, different remedy — a fresh message would reconnect to
-    // the same wedged worker, so the notice points at the restart action.
     expect(logged[0]).toMatch(/stopped responding/i);
     expect(logged[0]).toMatch(/restart/i);
-    // The container is alive: do NOT drop its tracking entry, or the next
-    // activation would create a second container beside it.
     expect((containerManager as unknown as { _gone: string[] })._gone).toEqual([]);
   });
 
   it("never declares a session dead when Docker cannot answer", async () => {
-    // A daemon outage makes every probe ambiguous. Reading `undefined` as
-    // death would reap every session in the fleet at once.
     const { runner, disposeCalls } = makeFakeRunner("sess-e", DOWN_LONG_AGO());
     const registry = makeFakeRegistry(new Map([["sess-e", runner]]));
     const liveness = { impl: async () => undefined, calls: [] as string[] };
@@ -700,8 +614,6 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
   });
 
   it("never probes a runner whose container is still being created", async () => {
-    // `awaitingContainer` is checked ahead of the liveness gate, so a
-    // half-created session can't be a probe candidate even transiently.
     const { runner, disposeCalls } = makeFakeRunner("sess-e", DOWN_LONG_AGO());
     (runner as unknown as { awaitingContainer: boolean }).awaitingContainer = true;
     const registry = makeFakeRegistry(new Map([["sess-e", runner]]));
@@ -738,22 +650,17 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     });
     await reconcile();
 
-    // Adoption would have "recovered" the very container Docker just called
-    // dead, leaving the session alive-looking again.
     expect(adopt.calls).toEqual([]);
     expect(disposeCalls).toEqual([{ force: true }]);
   });
 
   it("ignores a probe answer about a container that has since been replaced", async () => {
-    // Rescue can swap the container while the inspect is in flight; a late
-    // "not running" about the OLD one must not delete the healthy new entry.
     const { runner, disposeCalls } = makeFakeRunner("sess-e", DOWN_LONG_AGO());
     const registry = makeFakeRegistry(new Map([["sess-e", runner]]));
     const containers = new Map(TRACKED);
     const liveness = {
       calls: [] as string[],
       impl: async () => {
-        // The replacement lands during the await.
         containers.set("sess-e", { id: "c-e2", sessionId: "sess-e" } as Partial<SessionContainer>);
         return false;
       },
@@ -770,8 +677,6 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     expect(disposeCalls).toEqual([]);
     expect(containers.get("sess-e")?.id).toBe("c-e2");
   });
-
-  // ---- The vanished path must leave a mark in the transcript ----
 
   it("preserves an interrupted turn and appends a visible notice", async () => {
     const { runner, emitted, setRunning, setChatMessageGroups } = makeFakeRunner("sess-e", DOWN_LONG_AGO());
@@ -792,15 +697,10 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     });
     await reconcile();
 
-    // Without this the rows stay in_progress and the next turn's
-    // replaceInProgress deletes everything the agent produced.
     expect(calls.replaceInProgress[0]?.messages[0]?.text).toBe("half a turn");
     expect(calls.finalizeInProgress).toEqual(["sess-e"]);
-    // `session_status.error` is not rendered by the client, so this row and
-    // its live twin are the only places the user is actually told.
     expect(calls.append[0]?.message.text).toMatch(/container is gone/i);
     expect(calls.append[0]?.message.notice).toBe(true);
-    // …and the same text reached the attached viewer live.
     expect(emitted.find((m) => m.type === "system_notice")).toBeDefined();
   });
 
@@ -826,24 +726,10 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     });
     await reconcile();
 
-    // A persistence failure must never leak the runner.
     expect(disposeCalls).toEqual([{ force: true }]);
   });
 });
 
-// ---------------------------------------------------------------------------
-// setupContainerHealthMonitoring: OOM detection + loop force-trip
-// ---------------------------------------------------------------------------
-// Regression coverage for the bug where field diagnostics showed 3 container
-// exits in 3 minutes but breaker.countInWindow stuck at 1 — Docker emitted
-// `die` before `oom` for OOM-killed containers, the container-health handler
-// deleted the record on the first event, and the subsequent `oom` event hit
-// the "not found" early-out, losing the OOM signal entirely.
-
-/**
- * Minimal `SessionContainerManager` stub — just needs to be an EventEmitter
- * the wiring under test can subscribe to. We never invoke create/destroy.
- */
 function makeManagerEmitter(): SessionContainerManager {
   const emitter = new EventEmitter();
   return Object.assign(emitter, {
@@ -891,9 +777,6 @@ describe("setupContainerHealthMonitoring → oomBreaker integration", () => {
   });
 
   it("trips after 3 mixed OOM signals (1 explicit + 2 die-only with exit 137)", () => {
-    // Mirrors the user's prod diagnostic: 1 entry tagged "Out of memory",
-    // 2 tagged only by exit code. Pre-fix the breaker stuck at countInWindow=1
-    // and never tripped. With Fix A all three count and the 3rd trips.
     const { manager, fake, breaker, logs, sessionId } = setup();
     manager.emit("container_exited", sessionId, 137, "Out of memory");
     manager.emit("container_exited", sessionId, 137, undefined);
@@ -905,9 +788,6 @@ describe("setupContainerHealthMonitoring → oomBreaker integration", () => {
   });
 
   it("force-trips the breaker when the loop detector fires (Fix B)", () => {
-    // 3 container_started events in the same window — the loop detector
-    // fires, and we force-trip the breaker so the runner factory refuses
-    // the 4th create even when individual exits weren't tagged as OOM.
     const { manager, fake, breaker, logs, sessionId } = setup();
     manager.emit("container_started", sessionId);
     manager.emit("container_started", sessionId);
@@ -917,17 +797,6 @@ describe("setupContainerHealthMonitoring → oomBreaker integration", () => {
     expect(logs.some((l) => l.text.includes("LOOP DETECTED"))).toBe(true);
     expect(logs.some((l) => l.text.includes("Session disabled"))).toBe(true);
   });
-
-  // -------------------------------------------------------------------------
-  // Compose-service exits (`service_exited`). Same principle as
-  // "does not assume exit 137 is OOMKilled when no explicit error string is
-  // given" above, applied to the service path: 137 is SIGKILL, and inside
-  // ShipIt the most frequent sender is our own re-install teardown
-  // (`compose stop` → SIGTERM → 10s grace → SIGKILL) against a service that
-  // doesn't forward SIGTERM. Field report docs/239: every cycle of a 30s
-  // re-install loop was reported as an OOM on a service using 110 MiB of a
-  // 3 GiB limit, so the user was told to raise a limit that never bound.
-  // -------------------------------------------------------------------------
 
   it("does not report a compose service exit 137 as OOM when the event says oom: false", () => {
     const { manager, fake, logs, sessionId } = setup();
@@ -939,9 +808,7 @@ describe("setupContainerHealthMonitoring → oomBreaker integration", () => {
     expect(serviceLogs).toHaveLength(1);
     expect(serviceLogs[0]?.text).toContain("exited with code 137");
     expect(serviceLogs[0]?.text).not.toContain("OOM");
-    // No memory advice — raising the limit is inert for a plain SIGKILL.
     expect(serviceLogs[0]?.text).not.toContain("memory");
-    // And no `service_oom` card claiming an OOM that didn't happen.
     expect(fake.emitted.some((m) => m.type === "service_oom")).toBe(false);
   });
 
@@ -958,8 +825,6 @@ describe("setupContainerHealthMonitoring → oomBreaker integration", () => {
   });
 
   it("a compose service exit never touches the agent-container OOM breaker", () => {
-    // The agent container is fine; only a sibling died. A teardown-induced 137
-    // on a service must not count toward disabling the session.
     const { manager, breaker, sessionId } = setup();
     for (let i = 0; i < 5; i++) {
       manager.emit("service_exited", sessionId, {
@@ -970,26 +835,6 @@ describe("setupContainerHealthMonitoring → oomBreaker integration", () => {
     expect(breaker.isTripped(sessionId)).toBe(false);
   });
 
-  // -------------------------------------------------------------------------
-  // ShipIt's own session children (`session_child_exited`) — console only.
-  //
-  // Containment force-removes and relaunches a service's egress sidecars
-  // whenever that service starts or its policy changes, so a healthy startup
-  // produces a burst of these deaths.
-  // While they shared `service_exited` with the project's services, that burst
-  // reached the session's Logs panel as compose-service crashes: a field report
-  // recorded 19 of them during a normal two-minute startup of a session whose
-  // four services had `RestartCount=0` and had never exited.
-  // -------------------------------------------------------------------------
-
-  /**
-   * The whole chain, from a Docker event on the wire to what the user reads:
-   * `startHealthMonitor` → the manager's emitter → `setupContainerHealthMonitoring`
-   * → `broadcastLog`. The consumer-level tests below pin the listener's contract,
-   * but only this one can fail on the original defect — where the discrimination
-   * had to happen is inside the handler, and a test that emits `service_exited`
-   * by hand has already made the decision the bug got wrong.
-   */
   async function wireDockerEvents(manager: SessionContainerManager) {
     const eventStream = new EventEmitter();
     await startHealthMonitor(
@@ -1027,8 +872,6 @@ describe("setupContainerHealthMonitoring → oomBreaker integration", () => {
   });
 
   it("…while the project's own service still produces exactly that line", async () => {
-    // The no-lost-signal half, on the same wire. A fix that silenced Path 2
-    // wholesale would pass the test above and fail this one.
     const { manager, logs, sessionId } = setup();
     const die = await wireDockerEvents(manager);
 
@@ -1043,19 +886,11 @@ describe("setupContainerHealthMonitoring → oomBreaker integration", () => {
       containerId: "sidecar-1", exitCode: 137, oom: false, egressSidecar: true,
     });
 
-    // Nothing at all reaches the user's Logs panel — and in particular nothing
-    // shaped like the compose-service exit these used to be indistinguishable
-    // from, which is the line the ops surface counts under
-    // `compose: service exited`.
     expect(logs).toHaveLength(0);
     expect(logs.some((l) => /^\[compose\] \S+ exited with code/.test(l.text))).toBe(false);
   });
 
   it("still tells the OPERATOR, on the console", () => {
-    // The other half of "fewest false alarms AND no lost signal", and the half
-    // the tests around it cannot see: every assertion here is about silence, so
-    // deleting the listener outright would satisfy all of them. A genuine sidecar
-    // crash loop has to stay legible to whoever reads orchestrator stdout.
     const { manager, sessionId } = setup();
     const console_ = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
@@ -1065,8 +900,6 @@ describe("setupContainerHealthMonitoring → oomBreaker integration", () => {
       const line = console_.mock.calls.map((c) => String(c[0])).find((t) => t.includes("sidecar-1"));
       expect(line).toContain("egress sidecar exited");
       expect(line).toContain(sessionId);
-      // Not wearing the words that made this indistinguishable from the user's
-      // dev server dying.
       expect(line).not.toContain("compose");
     } finally {
       console_.mockRestore();
@@ -1074,11 +907,6 @@ describe("setupContainerHealthMonitoring → oomBreaker integration", () => {
   });
 
   it("sends no runner message for a dying egress sidecar, OOM included", () => {
-    // `service_oom`'s remediation is "increase memory limits in
-    // docker-compose.yml". A sidecar is ShipIt's container and has no entry in
-    // the user's compose file, so reaching that advice is the defect — not its
-    // wording. Asserted on the OOM path because that is the one that used to
-    // produce a card as well as a line.
     const { manager, fake, logs, sessionId } = setup();
     manager.emit("session_child_exited", sessionId, {
       containerId: "sidecar-1", exitCode: 137, oom: true, egressSidecar: true,
@@ -1101,14 +929,10 @@ describe("setupContainerHealthMonitoring → oomBreaker integration", () => {
   });
 
   it("emits session_memory_exhausted exactly once across both trip paths", () => {
-    // OOM record-tripped the breaker; a subsequent loop alert must NOT
-    // re-emit because forceTrip is idempotent (justTripped=false after
-    // the first trip).
     const { manager, fake, sessionId } = setup();
     manager.emit("container_exited", sessionId, 137, undefined);
     manager.emit("container_exited", sessionId, 137, undefined);
     manager.emit("container_exited", sessionId, 137, undefined);
-    // …then a 4th start somehow happens and would re-alert the loop:
     manager.emit("container_started", sessionId);
     manager.emit("container_started", sessionId);
     manager.emit("container_started", sessionId);

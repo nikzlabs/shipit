@@ -1,18 +1,3 @@
-/**
- * docs/150-multiple-provider-subscriptions req 21 — the account selection mode decides what a session pins,
- * and only at the moment it pins.
- *
- * These target `prepareSessionAgentEnvironment` rather than a full HTTP flow
- * because that function IS the pin point: it is where an unpinned session
- * resolves a route, and where an already-pinned one is honoured instead. A
- * buildApp-level test would drive a lot of transport to observe the same two
- * branches.
- *
- * Lives beside `session-agent-env.test.ts` rather than inside it because the
- * mode is one self-contained decision with its own harness, and that file is
- * already ~1200 lines across six unrelated concerns.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -38,11 +23,6 @@ function makeCredentialStore(): CredentialStore {
     listProviderAccounts: () => [],
     getAgentEnv: () => undefined,
     getAllAgentEnv: () => ({}),
-    // planning#353 — env-prep now asks what this install can run before it
-    // routes, so the store has to answer the credential-row questions too. An
-    // empty list is right for these tests: they drive the ACCOUNT walk through
-    // the injected `providerAccountManager`, so a session with no stored
-    // credential and no selection derives nothing and the walk is unchanged.
     listCredentialRoutes: () => [],
     getCredentialSecret: () => undefined,
     getCredentialRoute: () => undefined,
@@ -88,13 +68,6 @@ describe("account selection mode at turn time (docs/260-turn-level-account-routi
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  /**
-   * What a given mode selects for a turn. The ordering itself is unit-tested
-   * against the real implementation in
-   * `provider-account-selection-mode.test.ts`; what matters here is that
-   * env-prep asks, honours the answer, returns it as the turn route, and
-   * stamps it — persisting nothing on the session row (docs/260-turn-level-account-routing req 1).
-   */
   async function routeTurn(mode: "strict" | "balanced") {
     const accounts = [
       { id: "acct-first", lastUsedAt: 9_000 },
@@ -130,7 +103,6 @@ describe("account selection mode at turn time (docs/260-turn-level-account-routi
   it("strict routes the turn to the highest-ranked account even when it is the busiest", async () => {
     const { turnRoute, setProviderRouteCalls } = await routeTurn("strict");
     expect(turnRoute?.id).toBe("acct-first");
-    // docs/260-turn-level-account-routing req 1 — the choice is a VALUE; nothing lands on the session row.
     expect(setProviderRouteCalls).toHaveLength(0);
   });
 
@@ -141,18 +113,11 @@ describe("account selection mode at turn time (docs/260-turn-level-account-routi
   });
 
   it("stamps the account the turn resolved onto — the key balancing sorts by", async () => {
-    // Without this the mode is inert: `lastUsedAt` was declared on
-    // ProviderAccount from the start but written by nothing, so an LRU order
-    // over it would sort `undefined` against `undefined` forever.
     const { markAccountUsed } = await routeTurn("balanced");
     expect(markAccountUsed).toHaveBeenCalledWith("anthropic", "acct-second");
   });
 
   it("a warm-up call selects nothing at all (docs/260 §5b)", async () => {
-    // Warm-ups (child spawn, headless create, CI fix, wake) are
-    // account-neutral: they run before a turn exists, so they must not
-    // double-select against the real turn that follows, stamp bookkeeping, or
-    // persist anything.
     const selectAccountForTurn = vi.fn();
     const markAccountUsed = vi.fn();
     const { sm, setProviderRouteCalls } = makeSessionManager({ agentPinned: true });

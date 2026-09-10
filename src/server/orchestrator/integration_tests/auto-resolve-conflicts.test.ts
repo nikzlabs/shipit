@@ -1,12 +1,3 @@
-/**
- * Integration tests for docs/146 auto-resolve-conflicts-on-idle.
- *
- * These bypass the GraphQL polling layer and drive
- * `prStatusPoller.autoConflictResolveManager.handleTransition` directly so we
- * exercise the manager → rebase wrapper → rebase-driver → runner → fake agent
- * wiring end-to-end. The polling layer is covered by `pr-status.test.ts`.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -70,7 +61,7 @@ beforeEach(async () => {
   const addr = app.server.address();
   port = typeof addr === "object" && addr ? addr.port : 0;
   client = await TestClient.connect(port);
-  await client.receive(); // initial preview_status
+  await client.receive();
 });
 
 afterEach(async () => {
@@ -226,12 +217,10 @@ describe("auto-resolve-conflicts integration", () => {
     const messages = await collectMessages(1500);
     expect(messages.find((m) => m.type === "auto_resolve_started")).toBeUndefined();
     expect(messages.find((m) => m.type === "rebase_started")).toBeUndefined();
-    // No new agent was created beyond the setup one.
     expect(latestClaude).toBe(claudeBefore);
   });
 
   it("3. no GitHub auth → wrapper short-circuits deferred; agent NOT spawned, no budget burn", { timeout: 10_000 }, async () => {
-    // No setToken() — wrapper sees authenticated=false.
     credentialStore.setAutoResolveConflicts(true);
     const { sessionId, sessionDir } = await createSession();
     setupConflictingDivergence(sessionDir);
@@ -240,7 +229,6 @@ describe("auto-resolve-conflicts integration", () => {
     const manager = app.prStatusPoller?.autoConflictResolveManager;
     await manager!.handleTransition(sessionId, makeConflictingSummary(sessionId), "main", "sha-1");
 
-    // Give the wrapper microtasks time to land.
     await new Promise((r) => setTimeout(r, 200));
     expect(latestClaude).toBe(claudeBefore);
     expect(manager!.get(sessionId)?.attemptCount).toBe(0);
@@ -255,28 +243,15 @@ describe("auto-resolve-conflicts integration", () => {
     setupConflictingDivergence(sessionDir);
 
     const manager = app.prStatusPoller?.autoConflictResolveManager;
-    // Drive three errored attempts. We simulate "agent errors" by having the
-    // FakeClaudeProcess emit an error event right after spawn — that lands as
-    // a real-work error (didSpawn=true).
     for (let i = 0; i < MAX_AUTO_RESOLVE_ATTEMPTS; i++) {
       const claudeBefore = latestClaude;
-      // Bypass cooldown between attempts so the test runs fast.
       const state = manager!.get(sessionId);
       if (state) delete state.nextEligibleAt;
       await manager!.handleTransition(sessionId, makeConflictingSummary(sessionId), "main", "sha-1");
 
-      // Wait for the agent to be spawned, then crash it.
       const agent = await waitForClaude(() => latestClaude, claudeBefore);
-      // Force-error by emitting error event directly. The rebase-driver
-      // surfaces this to the wrapper as a post-spawn throw.
       agent.emit("error", new Error("boom"));
-      // Wait for writeBack to land rather than betting on a fixed 200 ms.
-      // `writeBack` is the ONLY place `attemptCount` is incremented, so the
-      // counter reaching i+1 is the exact "this attempt is fully accounted
-      // for" signal — and it must land before the next iteration calls
-      // `handleTransition`, or that call short-circuits against a still-
-      // `running` state and no agent spawns (the "Timed out waiting for
-      // ClaudeProcess.run()" flake).
+      // Wait for accounting before starting another attempt.
       await waitFor(
         () => manager!.get(sessionId)?.attemptCount === i + 1,
         `attempt ${i + 1} written back`,
@@ -285,11 +260,7 @@ describe("auto-resolve-conflicts integration", () => {
 
     expect(manager!.get(sessionId)?.status).toBe("exhausted");
     expect(manager!.get(sessionId)?.attemptCount).toBe(MAX_AUTO_RESOLVE_ATTEMPTS);
-    // Snapshot should reflect exhausted.
     const summary = app.prStatusPoller!.getAllStatuses().find((s) => s.sessionId === sessionId);
-    // Snapshot might be undefined if status was never set via lastKnown — in that
-    // case the manager state is the source of truth (the snapshot path requires
-    // the GraphQL poll to have run, which we skip here).
     if (summary?.autoResolve) {
       expect(summary.autoResolve.status).toBe("exhausted");
       expect(summary.autoResolve.attemptCount).toBe(MAX_AUTO_RESOLVE_ATTEMPTS);
@@ -302,9 +273,6 @@ describe("auto-resolve-conflicts integration", () => {
     const { sessionId, sessionDir } = await createSession();
     setupConflictingDivergence(sessionDir);
 
-    // Override the wrapper's timeout via a per-call deps shim. We do this by
-    // replacing the manager's rebaseAndResolveCb with one that wraps the real
-    // attempt at a 1s timeout for this test.
     const manager = app.prStatusPoller?.autoConflictResolveManager;
     const { runAutoResolveAttempt } = await import("../services/rebase-driver.js");
     const claudeBefore = latestClaude;
@@ -322,8 +290,7 @@ describe("auto-resolve-conflicts integration", () => {
           chatHistoryManager: app.chatHistoryManager,
           usageManager: app.usageManager,
           sseBroadcast: () => { /* noop */ },
-          // Match the production wrapper closure: in-process runners need
-          // the fallback factory because they don't supply `createAgent`.
+          // In-process runners need this fallback factory.
           agentFactory: () => {
             const c = new FakeClaudeProcess();
             latestClaude = c;
@@ -337,16 +304,11 @@ describe("auto-resolve-conflicts integration", () => {
 
     await manager!.handleTransition(sessionId, makeConflictingSummary(sessionId), "main", "sha-1");
 
-    // Wait for the agent to spawn, but never finish it — the timeout fires.
     await waitForClaude(() => latestClaude, claudeBefore);
-    // The wrapper's timeout fires after 800 ms and then writes back. Poll for
-    // the write-back instead of sleeping 1500 ms: the fixed sleep only left
-    // 700 ms of slack for the teardown to land, which a loaded machine eats.
     await waitFor(() => manager!.get(sessionId)?.lastError !== undefined, "timeout written back");
 
     const state = manager!.get(sessionId);
     expect(state?.lastError).toBe("timeout");
-    // Runner state is reset by the teardown.
     const runner = app.runnerRegistry.get(sessionId);
     expect(runner?.running).toBe(false);
     expect(runner?.systemTurnInProgress).toBe(false);
@@ -358,7 +320,6 @@ describe("auto-resolve-conflicts integration", () => {
     credentialStore.setAutoResolveConflicts(true);
     const { sessionId, sessionDir } = await createSession();
     setupConflictingDivergence(sessionDir);
-    // Make the tree dirty so the pre-flight defers.
     fs.writeFileSync(path.join(sessionDir, "uncommitted.txt"), "uncommitted\n");
 
     const claudeBefore = latestClaude;
@@ -378,26 +339,19 @@ describe("auto-resolve-conflicts integration", () => {
     setupConflictingDivergence(sessionDir);
     const manager = app.prStatusPoller?.autoConflictResolveManager;
 
-    // Force runner.running = true to simulate a user turn in flight.
     const runner = app.runnerRegistry.get(sessionId)!;
     runner.running = true;
 
     await manager!.handleTransition(sessionId, makeConflictingSummary(sessionId), "main", "sha-1");
     expect(manager!.get(sessionId)?.status).toBe("deferred");
 
-    // Capture the pre-trigger agent BEFORE firing "idle" — reading it after
-    // would race a synchronous spawn and compare the new agent against itself.
+    // Capture before idle can trigger a synchronous spawn.
     const claudeBefore = latestClaude;
 
-    // Simulate the user turn finishing — runner emits "idle".
     runner.running = false;
     runner.onAgentFinished();
 
-    // Wait for onRunnerIdle to land and spawn the resolution turn's agent.
-    // This is a positive assertion despite the `not.toBe` phrasing — a NEW
-    // agent must appear — so it polls rather than betting on a fixed 300 ms.
     const resolveAgent = await waitForClaude(() => latestClaude, claudeBefore);
-    // A new agent was spawned for the resolution turn.
     expect(resolveAgent).not.toBe(claudeBefore);
   });
 });

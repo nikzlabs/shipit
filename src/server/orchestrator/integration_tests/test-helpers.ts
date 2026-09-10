@@ -1,11 +1,3 @@
-/**
- * Shared test helpers for integration tests.
- *
- * Provides TestClient (message-buffering WebSocket wrapper), stub/fake
- * implementations of external dependencies, and the waitForClaude() poll
- * helper used across all integration test files.
- */
-
 import { EventEmitter } from "node:events";
 import crypto from "node:crypto";
 import { execSync } from "node:child_process";
@@ -22,28 +14,10 @@ import { CredentialStore } from "../credential-store.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { repoUrlToHash } from "../git-utils.js";
 
-// ---------------------------------------------------------------------------
-// TestClient
-// ---------------------------------------------------------------------------
-
-/**
- * WebSocket test client that buffers all incoming messages from the moment
- * the connection opens. This avoids the race condition where the server sends
- * a message (e.g. preview_status) before the test sets up a listener.
- *
- * Usage:
- *   const client = await TestClient.connect(port);       // auto-creates session
- *   const client = await TestClient.connect(port, sid);  // connect to existing session
- *   const msg = await client.receive();   // first buffered or next message
- *   client.send({ type: "send_message", text: "hello" });
- *   const resp = await client.receive();
- *   client.close();
- */
 export class TestClient {
   private ws: WebSocket;
   private queue: WsServerMessage[] = [];
   private waiters: ((msg: WsServerMessage) => void)[] = [];
-  /** The session ID this client is connected to. */
   public readonly sessionId: string;
 
   private constructor(ws: WebSocket, sessionId: string) {
@@ -51,14 +25,6 @@ export class TestClient {
     this.sessionId = sessionId;
     ws.on("message", (data: WebSocket.Data) => {
       const msg = JSON.parse((data as Buffer).toString()) as WsServerMessage;
-      // Auto-skip informational messages that tests don't care about.
-      //
-      // The server seeds the agent Logs channel with a `log_snapshot` at the
-      // start of every WS connect (docs/192 — it RESETS the client model, so a
-      // reconnect can't duplicate the backlog). When the session has no logs
-      // yet the snapshot is empty; auto-skip those so existing receive-order
-      // assertions still hold. A non-empty snapshot (the terminal-logs-relay
-      // tests) is left for the test to assert on.
       if (msg.type === "compose_not_configured") return;
       if (msg.type === "log_snapshot" && msg.records.length === 0) return;
       const waiter = this.waiters.shift();
@@ -70,13 +36,6 @@ export class TestClient {
     });
   }
 
-  /**
-   * Connect to a per-session WebSocket.
-   * If sessionId is provided, connects to /ws/sessions/:id directly.
-   * If not, creates a new session via the test-only POST /api/_test/sessions endpoint.
-   * `query` appends WS query params (e.g. `{ model, agent }`) — these mirror the
-   * localStorage-derived params the real client sends on connect.
-   */
   static async connect(port: number, sessionId?: string, query?: Record<string, string>): Promise<TestClient> {
     if (!sessionId) {
       const http = await import("node:http");
@@ -101,14 +60,13 @@ export class TestClient {
     const qs = query && Object.keys(query).length ? `?${new URLSearchParams(query).toString()}` : "";
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}${qs}`);
-      // Create client before open so message listener is attached early
+      // Attach before open to capture messages sent immediately on connection.
       const client = new TestClient(ws, sessionId);
       ws.on("open", () => resolve(client));
       ws.on("error", reject);
     });
   }
 
-  /** Get the next message — returns from buffer or waits for one. */
   receive(timeoutMs = 3000): Promise<WsServerMessage> {
     const buffered = this.queue.shift();
     if (buffered) return Promise.resolve(buffered);
@@ -124,7 +82,6 @@ export class TestClient {
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        // Remove the stale waiter so it doesn't consume future messages
         const idx = this.waiters.indexOf(waiter);
         if (idx !== -1) this.waiters.splice(idx, 1);
         reject(new Error(`TestClient.receive() timed out after ${timeoutMs}ms`));
@@ -133,7 +90,6 @@ export class TestClient {
     });
   }
 
-  /** Collect exactly N messages. */
   async receiveN(count: number): Promise<WsServerMessage[]> {
     const msgs: WsServerMessage[] = [];
     for (let i = 0; i < count; i++) {
@@ -142,7 +98,6 @@ export class TestClient {
     return msgs;
   }
 
-  /** Get the next message that is NOT a log message or agent_event — useful for tests that predate the terminal and multi-agent features. */
   async receiveSkipLogs(timeoutMs = 3000): Promise<WsServerMessage> {
     const deadline = Date.now() + timeoutMs;
     while (true) {
@@ -153,7 +108,6 @@ export class TestClient {
     }
   }
 
-  /** Keep receiving until a message of the given type arrives (skips intermediate messages). */
   async receiveType(type: string, timeoutMs = 3000): Promise<WsServerMessage> {
     const deadline = Date.now() + timeoutMs;
     while (true) {
@@ -164,22 +118,6 @@ export class TestClient {
     }
   }
 
-  /**
-   * Drain messages until the stream is quiet for `quietMs` (default 250 ms),
-   * capped at `maxMs` (default 3000 ms) total wait.
-   *
-   * The naive `for (;;) { receive(T_remaining) }` pattern that lots of tests
-   * use ends up waiting the FULL remaining timeout after the last message —
-   * a tail message at t=200ms with maxMs=3000 forces every drain to sit on
-   * a 2.8s timeout. This variant bounds the per-iteration wait by `quietMs`
-   * so the drain finishes ~250 ms after the last message regardless of how
-   * much headroom is left.
-   *
-   * Use this for "did NOT happen" assertions and for collecting a known
-   * burst of messages whose count isn't fixed. For "wait for one specific
-   * message" use {@link receiveType} instead — it returns the moment the
-   * match arrives without paying for the quiet period.
-   */
   async drain(opts: { quietMs?: number; maxMs?: number } = {}): Promise<WsServerMessage[]> {
     const { quietMs = 250, maxMs = 3000 } = opts;
     const messages: WsServerMessage[] = [];
@@ -195,19 +133,7 @@ export class TestClient {
     return messages;
   }
 
-  /**
-   * Collect messages until `predicate` matches one, then keep draining until
-   * the stream is quiet for `quietMs`. Returns everything collected.
-   *
-   * This is the right shape for a test that asserts BOTH that something
-   * happened AND that something else did not — e.g. "the push-failure log was
-   * emitted, and no successful `github_push_result` was". {@link drain} alone
-   * can't express that: it stops after the first quiet gap, so the awaited
-   * message is simply missing from the buffer if the work ran slow, and the
-   * positive half of the assertion fails under load. Waiting for the anchor
-   * first makes the positive half deterministic, while the quiet tail
-   * preserves the negative half's "let time pass with nothing happening".
-   */
+  /** Wait for the anchor before draining; drain alone can end before slow work emits it. */
   async collectUntil(
     predicate: (msg: WsServerMessage) => boolean,
     opts: { timeoutMs?: number; quietMs?: number } = {},
@@ -230,17 +156,14 @@ export class TestClient {
     return messages;
   }
 
-  /** Send a typed client message. */
   send(msg: WsClientMessage): void {
     this.ws.send(JSON.stringify(msg));
   }
 
-  /** Send raw string data (for invalid-JSON tests). */
   sendRaw(data: string): void {
     this.ws.send(data);
   }
 
-  /** Close the connection. */
   close(): void {
     this.ws.close();
   }
@@ -250,33 +173,16 @@ export class TestClient {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Stubs
-// ---------------------------------------------------------------------------
-
-/**
- * Stub AuthManager that never spawns a process.
- * checkCredentials() always returns false.
- */
 export class StubAuthManager extends EventEmitter {
-  // The auth-manager map is keyed off this (`buildAgentRuntime`), so a stub
-  // without it registers under `undefined` and every lookup 500s.
   readonly loginId = "anthropic-oauth" as const;
-  authenticated = true; // Tests assume auth is already done
+  authenticated = true;
   checkCredentials() { return this.authenticated; }
   startOAuthFlow() { /* no-op */ }
   sendCode(_code: string) { /* no-op */ }
   signOut() { this.authenticated = false; }
   kill() { /* no-op */ }
-  // docs/155 Phase 2 — AgentAuthManager surface. Aliases mirror the real
-  // `AuthManager` so the stub satisfies the interface the orchestrator
-  // dispatches through (e.g. agent-listeners' auth_required handler).
   start(opts?: { accountId?: string }) {
     this.startOAuthFlow();
-    // docs/150 — the real managers run ONE login per provider and claim the
-    // account scope for its duration; `cancel()` releases it. Model that here
-    // or the stub can't exercise the ownership guards (submit-code and
-    // start-while-busy both key off `getActiveAccountId()`).
     this.activeAccountId = opts?.accountId ?? null;
   }
   cancel() { this.kill(); this.activeAccountId = null; }
@@ -287,18 +193,12 @@ export class StubAuthManager extends EventEmitter {
   getActiveAccountId(): string | null { return this.activeAccountId; }
 }
 
-/**
- * Stub GitHubAuthManager for testing GitHub auth flow.
- * Does not make real API calls or touch the filesystem.
- */
 export class StubGitHubAuthManager extends EventEmitter {
   private _authenticated = false;
   private _username: string | null = null;
   private _token: string | null = null;
   checkCredentials() { return this._authenticated; }
   get authenticated() { return this._authenticated; }
-  /** Mirrors `GitHubAuthManager.getToken()` — used by the Issues route to build
-   *  the GitHub tracker context. Null until a token is set. */
   getToken(): string | null { return this._token; }
   getStatus() {
     return {
@@ -307,15 +207,8 @@ export class StubGitHubAuthManager extends EventEmitter {
       avatarUrl: undefined,
     };
   }
-  /**
-   * Mirrors `GitHubAuthManager.listPullRequests`, backing `GET /pr/list`.
-   * Records the resolved `state` because that is the thing under test: the
-   * route used to coerce every unrecognised value to "open", so a fake that
-   * dropped the argument could not fail on the wrong state being listed.
-   */
   listPullRequestsCalls: { owner: string; repo: string; state: string; limit: number | undefined }[] = [];
   private _listPrFailure: string | null = null;
-  /** Make the next reads fail, so a test can tell a failed read from an empty repo. */
   setListPrFailure(error: string | null): void { this._listPrFailure = error; }
   async listPullRequests(owner: string, repo: string, state = "open", limit?: number) {
     this.listPullRequestsCalls.push({ owner, repo, state, limit });
@@ -327,7 +220,6 @@ export class StubGitHubAuthManager extends EventEmitter {
       this.emit("auth_failed", "Token cannot be empty");
       return false;
     }
-    // Accept any non-empty token in tests
     this._authenticated = true;
     this._username = "test-user";
     this._token = token;
@@ -339,16 +231,6 @@ export class StubGitHubAuthManager extends EventEmitter {
     this._username = null;
     this._token = null;
   }
-  /**
-   * Mirrors `GitHubAuthManager.markTokenInvalid` — called by the
-   * orchestrator when a git push/fetch surfaces "Authentication failed".
-   * No-op when no token is configured (matches the real implementation's
-   * guard so tests running without auth don't trip an unexpected emit).
-   *
-   * Async to match the real signature — the production version verifies
-   * the token against `GET /user` before clearing, so callers must await.
-   * The stub has no network call and resolves synchronously.
-   */
   async markTokenInvalid(reason: string): Promise<boolean> {
     if (!this._authenticated) return false;
     this.clearCredentials();
@@ -358,15 +240,8 @@ export class StubGitHubAuthManager extends EventEmitter {
   configureGitCredentials() { /* no-op */ }
   async loadUserInfo() { /* no-op */ }
 
-  /**
-   * Mirrors `GitHubAuthManager.appTokensEnabled()` — used by the git-credential
-   * broker to decide whether to mint a repo-scoped App token. Tests run with the
-   * PAT path (no GitHub App), so this is false and `getRepoScopedGitCredential`
-   * falls back to the stub's `getToken()`.
-   */
   appTokensEnabled(): boolean { return false; }
 
-  /** docs/162 — toggle whether `checkRepoWriteAccess` reports write access. */
   private _canWriteRepo = true;
   setRepoWriteAccess(canWrite: boolean) { this._canWriteRepo = canWrite; }
   async checkRepoWriteAccess(_owner: string, _repo: string): Promise<{ canWrite: boolean; reason?: string }> {
@@ -374,7 +249,6 @@ export class StubGitHubAuthManager extends EventEmitter {
       ? { canWrite: true }
       : { canWrite: false, reason: "the connected account has read-only access" };
   }
-  /** Calls to `createRepo`, in order. Inspect owner routing from tests. */
   public createRepoCalls: { name: string; options: { description?: string; isPrivate?: boolean; owner?: string } }[] = [];
 
   async createRepo(name: string, options: { description?: string; isPrivate?: boolean; owner?: string } = {}) {
@@ -389,7 +263,6 @@ export class StubGitHubAuthManager extends EventEmitter {
     };
   }
 
-  /** Orgs returned by `listOrgs`. Override per-test via `setOrgs`. */
   private _orgs: { login: string; avatarUrl: string }[] = [];
   setOrgs(orgs: { login: string; avatarUrl: string }[]) {
     this._orgs = orgs;
@@ -399,7 +272,6 @@ export class StubGitHubAuthManager extends EventEmitter {
     return this._orgs;
   }
 
-  /** Calls to `createPullRequest`, in order. Inspect from tests. */
   public createPullRequestCalls: {
     owner: string;
     repo: string;
@@ -430,12 +302,10 @@ export class StubGitHubAuthManager extends EventEmitter {
     };
   }
 
-  /** Calls to `createIssue`, in order (docs/164). Inspect from tests. */
   public createIssueCalls: { owner: string; repo: string; title: string; body: string; labels?: string[] }[] = [];
   private _createIssueResult:
     | { success: boolean; url?: string; number?: number; message?: string; scopeError?: boolean }
     | null = null;
-  /** Override what `createIssue` returns (e.g. a scope error). */
   setCreateIssueResult(
     result: { success: boolean; url?: string; number?: number; message?: string; scopeError?: boolean } | null,
   ) {
@@ -485,7 +355,6 @@ export class StubGitHubAuthManager extends EventEmitter {
     url: string; number: number; base: string; head: string; title: string; body: string;
     state: "open" | "closed"; isDraft: boolean; merged: boolean; additions: number; deletions: number;
   } | null = null;
-  /** Set what `viewPullRequest(owner, repo, number)` returns for tests. */
   setViewPrResult(result: typeof this._viewPrResult) {
     this._viewPrResult = result;
   }
@@ -493,9 +362,7 @@ export class StubGitHubAuthManager extends EventEmitter {
     return this._viewPrResult;
   }
 
-  /** docs/255 — the failure-distinguishing read behind `gh pr view`. */
   private _viewPrError: string | null = null;
-  /** Make the PR read fail (a 403/5xx), as opposed to returning "no such PR". */
   setViewPrError(error: string | null) {
     this._viewPrError = error;
   }
@@ -504,10 +371,6 @@ export class StubGitHubAuthManager extends EventEmitter {
     return { ok: true as const, pr: this._viewPrResult };
   }
 
-  /**
-   * docs/255 — `gh pr view --comments`. Defaults to an empty-but-successful
-   * conversation; `setConversationResult` injects comments or a failed read.
-   */
   private _conversationResult: { ok: true; conversation: unknown } | { ok: false; error: string } = {
     ok: true,
     conversation: { comments: [], reviews: [], reviewThreads: [], reviewDecision: null },
@@ -519,14 +382,8 @@ export class StubGitHubAuthManager extends EventEmitter {
     return this._conversationResult;
   }
 
-  /** Calls to `addLabelsToPullRequest`, in order. Inspect from tests. */
   public addLabelsCalls: { owner: string; repo: string; pullNumber: number; labels: string[] }[] = [];
   private _addLabelsResult: { success: boolean; message?: string } | null = null;
-  /**
-   * Override what `addLabelsToPullRequest` returns — e.g. simulate a label name
-   * that doesn't exist on the repo (best-effort labeling must still leave the
-   * PR created).
-   */
   setAddLabelsResult(result: { success: boolean; message?: string } | null) {
     this._addLabelsResult = result;
   }
@@ -537,14 +394,8 @@ export class StubGitHubAuthManager extends EventEmitter {
     return { success: true };
   }
 
-  /** Calls to `removeLabelFromPullRequest`, in order. Inspect from tests. */
   public removeLabelCalls: { owner: string; repo: string; pullNumber: number; label: string }[] = [];
   private _removeLabelResult: { success: boolean; message?: string } | null = null;
-  /**
-   * Override what `removeLabelFromPullRequest` returns — e.g. simulate a token
-   * without Issues:write (best-effort label removal must still leave the PR
-   * updated).
-   */
   setRemoveLabelResult(result: { success: boolean; message?: string } | null) {
     this._removeLabelResult = result;
   }
@@ -555,7 +406,6 @@ export class StubGitHubAuthManager extends EventEmitter {
     return { success: true };
   }
 
-  /** Records the last issue comment posted (docs/133 Phase 4). */
   lastIssueComment: { pullNumber: number; body: string } | null = null;
   async addPullRequestComment(_owner: string, _repo: string, pullNumber: number, body: string) {
     this.lastIssueComment = { pullNumber, body };
@@ -565,7 +415,6 @@ export class StubGitHubAuthManager extends EventEmitter {
     };
   }
 
-  /** docs/287 — every merge call, so a test can assert WHICH commit was pinned. */
   mergePullRequestCalls: {
     owner: string; repo: string; pullNumber: number; method: string; expectedSha?: string;
   }[] = [];
@@ -579,7 +428,6 @@ export class StubGitHubAuthManager extends EventEmitter {
     return this._mergeResult ?? { success: true, message: "Pull request merged" };
   }
 
-  /** docs/287 — the three-way attempt, recorded in the same list as the wrapper. */
   async mergePullRequestAttempt(
     owner: string, repo: string, pullNumber: number, method = "merge", expectedSha?: string,
   ) {
@@ -598,12 +446,10 @@ export class StubGitHubAuthManager extends EventEmitter {
     | { outcome: "indeterminate"; message: string }
     | null = null;
 
-  /** Set the three-way outcome the agent merge sees. */
   setMergeAttempt(attempt: typeof this._mergeAttempt) {
     this._mergeAttempt = attempt;
   }
 
-  /** docs/287 — the by-number terminal facts settlement promotes from. */
   private _prByNumber: Record<number, unknown> = {};
   setPullRequestByNumber(number: number, facts: unknown) {
     this._prByNumber[number] = facts;
@@ -624,11 +470,9 @@ export class StubGitHubAuthManager extends EventEmitter {
     return this._checkStatus ?? { state: "none" as const, total: 0, passed: 0, failed: 0, pending: 0 };
   }
 
-  /** docs/171 — release read for the release lifecycle card. */
   private _releaseByTag: {
     name: string; body: string; htmlUrl: string; prerelease: boolean; publishedAt: string | null; tagName: string;
   } | null = null;
-  /** Set what getReleaseByTag returns for tests (null = no Release yet). */
   setReleaseByTag(release: {
     name: string; body: string; htmlUrl: string; prerelease: boolean; publishedAt: string | null; tagName: string;
   } | null) {
@@ -638,36 +482,24 @@ export class StubGitHubAuthManager extends EventEmitter {
     return this._releaseByTag;
   }
 
-  // ---- Test control methods ----
-
   private _prData: { url: string; number: number; base: string; title: string; body: string } | null = null;
   private _mergeResult: { success: boolean; message: string } | null = null;
   private _checkStatus: { state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number } | null = null;
 
-  /** Set what findPullRequest returns for tests. `body` defaults to "". */
   setPrData(data: { url: string; number: number; base: string; title: string; body?: string } | null) {
     this._prData = data === null ? null : { ...data, body: data.body ?? "" };
   }
 
-  /** Set what mergePullRequest returns for tests. */
   setMergeResult(result: { success: boolean; message: string } | null) {
     this._mergeResult = result;
   }
 
-  /** Set what getCheckStatus returns for tests. */
   setCheckStatus(status: { state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number } | null) {
     this._checkStatus = status;
   }
 
-  /**
-   * docs/287 — the merge gate's query gets its own slot, dispatched on the query
-   * text: it and the poller's bulk read want opposite-shaped answers, and a stub
-   * aliasing them cannot fail a test that wires the wrong one.
-   */
   async graphqlQuery<T>(query: string, _variables: Record<string, unknown>): Promise<T> {
     if (query.includes("MergeGate")) {
-      // Runs INSIDE the gate's round trip, which is the window the merge route
-      // has to survive. Mutating state before the request cannot reach it.
       await this._onMergeGateRead?.();
       return this._mergeGateResult as T;
     }
@@ -675,7 +507,6 @@ export class StubGitHubAuthManager extends EventEmitter {
   }
 
   private _onMergeGateRead: (() => void | Promise<void>) | null = null;
-  /** Do something while the merge gate's GraphQL read is in flight. */
   setOnMergeGateRead(fn: (() => void | Promise<void>) | null) {
     this._onMergeGateRead = fn;
   }
@@ -683,15 +514,10 @@ export class StubGitHubAuthManager extends EventEmitter {
   private _graphqlResult: unknown = null;
   private _mergeGateResult: unknown = null;
 
-  /** Set what graphqlQuery returns for tests. */
   setGraphqlResult(result: unknown) {
     this._graphqlResult = result;
   }
 
-  /**
-   * docs/287 — answer the merge gate's read. Pass the pull request's fields;
-   * the envelope is built here so tests state only what they are varying.
-   */
   setMergeGateResult(pr: {
     state?: string;
     isDraft?: boolean;
@@ -729,8 +555,6 @@ export class StubGitHubAuthManager extends EventEmitter {
     };
   }
 
-  // ---- Rate-limit state (mirrors the real GitHubAuthManager surface) ----
-
   private _rateLimit: { limited: boolean; resetAt: number | null; remaining: number | null } = {
     limited: false,
     resetAt: null,
@@ -739,12 +563,9 @@ export class StubGitHubAuthManager extends EventEmitter {
   getRateLimitState() {
     return { ...this._rateLimit };
   }
-  /** Set the rate-limit state returned by `getRateLimitState`. */
   setRateLimitState(state: { limited: boolean; resetAt: number | null; remaining: number | null }) {
     this._rateLimit = state;
   }
-
-  // ---- REST verify probe ----
 
   private _findPrAnyStateResult: {
     url: string; number: number; base: string; title: string; body: string;
@@ -754,14 +575,10 @@ export class StubGitHubAuthManager extends EventEmitter {
   async findPullRequestAnyState(_owner: string, _repo: string, _head: string) {
     return this._findPrAnyStateResult;
   }
-  /** Set what `findPullRequestAnyState` returns for the poller's REST verify. */
   setFindPrAnyStateResult(result: typeof this._findPrAnyStateResult) {
     this._findPrAnyStateResult = result;
   }
 
-  // ---- Review-thread mutations (docs/102) ----
-
-  /** Calls to review-thread mutation methods, in order. Inspect from tests. */
   public reviewThreadReplyCalls: { threadId: string; body: string }[] = [];
   public reviewThreadResolveCalls: { threadId: string }[] = [];
   public reviewThreadUnresolveCalls: { threadId: string }[] = [];
@@ -771,11 +588,6 @@ export class StubGitHubAuthManager extends EventEmitter {
     body?: string;
   }[] = [];
 
-  /**
-   * Per-call result overrides. Set to a non-null value to make the next call
-   * return failure (and subsequent calls keep returning failure until reset).
-   * Default is success — matches what real GitHub would return.
-   */
   private _reviewThreadResult: { success: boolean; message: string } = {
     success: true,
     message: "ok",
@@ -824,17 +636,6 @@ export class StubGitHubAuthManager extends EventEmitter {
   }
 }
 
-/**
- * Fake AgentProcess for testing the send_message flow.
- * The test controls this object: call emit("event", ...) or emit("done", ...)
- * to simulate the real CLI producing output.
- *
- * Tests emit events in raw Claude CLI format (type: "system", "assistant",
- * "result", etc.) for convenience. The emit() override automatically
- * translates them to AgentEvent format (agent_init, agent_assistant,
- * agent_result) — the same translation that ClaudeAdapter performs in
- * production. Events already in AgentEvent format pass through unchanged.
- */
 export class FakeClaudeProcess extends EventEmitter {
   public readonly agentId = "claude";
   public readonly capabilities = {
@@ -859,57 +660,24 @@ export class FakeClaudeProcess extends EventEmitter {
   public lastImages: { data: string; mediaType: string; filename?: string }[] | undefined;
   public lastCwd: string | undefined;
   public lastPermissionMode: string | undefined;
-  /**
-   * docs/140 — captures the `useStreaming` flag the orchestrator passed at
-   * spawn time, so live-steering tests can assert the streaming spawn was
-   * actually requested (without depending on the real streaming process
-   * machinery). The fake itself stays one-shot.
-   */
   public lastUseStreaming = false;
-  /** docs/149 — captures full AgentRunParams the orchestrator handed to `run()`. */
   public lastSettingsPath: string | undefined;
   public lastModel: string | undefined;
-  /**
-   * docs/217 — the reasoning level this spawn was shaped with. Captured
-   * alongside the model because the two are separate halves of one selection:
-   * a child session can inherit the right model at the wrong depth.
-   */
   public lastReasoningEffort: string | undefined;
   public lastMcpServers: unknown[] | undefined;
   public lastAutoCreatePr: boolean | undefined;
-  /**
-   * docs/252 phase 4 — the `ServiceRouting` this spawn was shaped with: which
-   * service the turn goes to, at which endpoint, on which credential variable.
-   * A mid-session switch across services keeps the model id, so `lastModel`
-   * alone cannot tell a switched spawn from a reused one.
-   */
   public lastServiceRouting: { serviceId: string; billingMode: string; baseUrl: string } | undefined;
   public killed = false;
   public interrupted = false;
   public stdinData: string[] = [];
-  /** docs/178 — captures the `compact` run-param + any `compact()` call. */
   public lastCompact: boolean | undefined;
   public compactCalled = false;
   public lastCompactInstructions: string | undefined;
   public readonly isStreaming = false;
-  /**
-   * docs/140 Phase 6.7 — model the STREAMING interrupt when set true: a
-   * `control_request` that ends the turn WITHOUT exiting the process (no
-   * `done`, no force-kill / exit-143). The turn instead ends when the test
-   * emits a subsequent `result`, and the persistent process stays resident so
-   * the next turn can reuse it via `sendUserMessage`. Default `false` keeps the
-   * PTY one-shot behavior (interrupt → process exits → `done`) that the
-   * disconnect-resilience and one-shot tests rely on.
-   */
+  /** Suppress done on interrupt; the test must emit the streaming result. */
   public streamingInterrupt = false;
-  /**
-   * docs/138 — every `setPermissionMode` call the orchestrator made on this
-   * agent, in order. Lets tests assert that a mid-stream mode toggle
-   * actually pushes a control_request instead of being silently swallowed.
-   */
   public permissionModeCalls: (string | undefined)[] = [];
 
-  /** Override emit to auto-translate raw Claude events → AgentEvent. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   emit(eventName: string | symbol, ...args: any[]): boolean {
     if (eventName === "event" && args[0] && typeof args[0] === "object") {
@@ -918,7 +686,6 @@ export class FakeClaudeProcess extends EventEmitter {
       if (mapped) {
         return super.emit("event", mapped);
       }
-      // Already an AgentEvent or unrecognized — pass through
       return super.emit("event", raw);
     }
     // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
@@ -964,11 +731,7 @@ export class FakeClaudeProcess extends EventEmitter {
 
   interrupt() {
     this.interrupted = true;
-    // docs/140 Phase 6.7 — a streaming interrupt is graceful: the
-    // `control_request` ends the turn (the test emits a `result`) but the
-    // persistent process does NOT exit, so no `done` and no force-kill.
     if (this.streamingInterrupt) return;
-    // Simulate the PTY process exiting after interrupt (non-zero exit code)
     setTimeout(() => super.emit("done", 1), 10);
   }
 
@@ -980,7 +743,6 @@ export class FakeClaudeProcess extends EventEmitter {
     this.writeStdin(text);
   }
 
-  /** docs/178 — record a compaction trigger on the resident process. */
   compact(instructions?: string) {
     this.compactCalled = true;
     this.lastCompactInstructions = instructions;
@@ -990,31 +752,16 @@ export class FakeClaudeProcess extends EventEmitter {
     this.permissionModeCalls.push(mode);
   }
 
-  /**
-   * Simulate the real Claude CLI emitting a `system/init` event as soon
-   * as the process is up — the first event of every turn, before any
-   * user-visible output. The orchestrator maps this through
-   * `mapClaudeEvent` to an `agent_init` AgentEvent, which triggers the
-   * "Agent process started" log entry in agent-listeners.ts. Tests that
-   * assert on that log (or rely on `session_started` being broadcast)
-   * should call this right after `waitForClaude(...)` returns.
-   */
   initSession(sessionId = "test-session") {
     this.emit("event", { type: "system", subtype: "init", session_id: sessionId });
   }
 
-  /**
-   * Simulate a normal Claude turn completion: emit a result event then done.
-   * This matches the real Claude CLI behavior where a `result` event always
-   * precedes process exit on success.
-   */
   finish(sessionId = "test-session", code = 0) {
     this.emit("event", { type: "result", subtype: "success", session_id: sessionId });
     super.emit("done", code);
   }
 }
 
-/** Shape of raw Claude CLI events used in tests. */
 interface RawClaudeEvent {
   type: string;
   session_id?: string;
@@ -1040,19 +787,11 @@ interface RawClaudeEvent {
   duration_ms?: number;
   result?: string;
   parent_tool_use_id?: string;
-  // docs/140 — --replay-user-messages echo flag.
   isReplay?: boolean;
-  // docs/138 — guarded-mode signals.
   permissionMode?: string;
   permission_denials?: { tool_name: string; tool_use_id?: string; tool_input?: unknown }[];
 }
 
-/**
- * Translate raw Claude CLI events to AgentEvent format.
- * Same mapping as ClaudeAdapter.mapEvent() — kept here so tests can emit
- * events in the familiar Claude format without depending on session code.
- * Returns null for events already in AgentEvent format.
- */
 function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
   switch (raw.type) {
     case "system":
@@ -1071,9 +810,6 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
         parentToolUseId: raw.parent_tool_use_id,
       };
     case "user":
-      // docs/140 — mirror ClaudeAdapter: a replayed user message (the
-      // --replay-user-messages echo) surfaces as a delivery ack, not a tool
-      // result.
       if (raw.isReplay) {
         const content = raw.message?.content ?? [];
         const text = Array.isArray(content)
@@ -1094,10 +830,7 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
       };
     case "result": {
       const u = raw.usage;
-      // Mirror ClaudeAdapter's result-only path: extract real per-turn context
-      // from the last iteration's input + cache. This stateless test mapper
-      // cannot retain the adapter's latest-assistant fallback for providers
-      // that omit iterations.
+      // This stateless fake lacks the adapter's latest-assistant fallback for context tokens.
       let contextTokens: number | undefined;
       const lastIter = u?.iterations?.length ? u.iterations[u.iterations.length - 1] : undefined;
       if (lastIter) {
@@ -1114,7 +847,6 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
           }
         }
       }
-      // Mirrors ClaudeAdapter: `is_error` (not `subtype`) is the failure flag.
       const errored = raw.is_error === true || (raw.subtype !== undefined && raw.subtype !== "success");
       return {
         type: "agent_result",
@@ -1143,21 +875,11 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
       };
     }
     default:
-      // Already an AgentEvent or unrecognized — pass through
       return null;
   }
 }
 
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Create a test session with a git-initialized workspace directory.
- * Used by integration tests now that `POST /api/sessions` is removed.
- * @param workspaceDir — the app's workspaceDir (sessions are placed in workspaceDir/sessions/UUID)
- */
 export async function createTestSession(
   sessionManager: SessionManager,
   workspaceDir: string,
@@ -1173,25 +895,6 @@ export async function createTestSession(
   return { sessionId, sessionDir };
 }
 
-/**
- * Poll a condition until it becomes true, or throw at the deadline.
- *
- * WHY THIS EXISTS — the integration suite is full of `await new Promise((r) =>
- * setTimeout(r, N))` followed by an assertion. A fixed sleep is a *bet* that
- * the work lands within N ms: it passes on an idle machine and fails under
- * load, which is exactly the intermittent-flake signature. Polling instead
- * makes the test wait for the observable it actually cares about, so a slow
- * machine costs latency rather than a red build.
- *
- * Use this ONLY when there is a condition to poll for. A test asserting that
- * something did NOT happen ("no second turn was dispatched", "no event was
- * emitted") legitimately needs a fixed sleep to let time pass with nothing
- * occurring — converting one of those to a condition-wait silently makes it
- * assert nothing. Those sleeps are load-bearing and must stay.
- *
- * The predicate may be sync or async; a throwing predicate is treated as
- * "not yet true" so callers can dereference optional chains freely.
- */
 export async function waitFor(
   fn: () => boolean | Promise<boolean>,
   label = "condition",
@@ -1211,14 +914,6 @@ export async function waitFor(
   }
 }
 
-/**
- * Poll until the most recent FakeClaudeProcess has been started.
- * Replaces fixed `setTimeout(50)` waits which are flaky because
- * `createSessionDir()` adds async I/O overhead (mkdir).
- *
- * @param notInstance — if provided, waits for a DIFFERENT instance
- *   (useful when a previous Claude from another test still has runCalled=true)
- */
 export async function waitForClaude(
   getClaude: () => FakeClaudeProcess | null,
   notInstance?: FakeClaudeProcess | null,
@@ -1233,105 +928,31 @@ export async function waitForClaude(
   }
 }
 
-/**
- * Deterministically let `buildApp()`'s one-shot startup sweep run to completion.
- *
- * WHY THIS EXISTS — `buildApp()` schedules a `setTimeout(0)` startup sweep via
- * `scheduleStartupTasks()` (`startup-tasks.ts:147-174`). That sweep DELETES any
- * session that is `warm: true` (or carries the default "Warm session" title and
- * isn't archived) AND is not registered in the warm pool
- * (`repoStore.warmSessionId`). Its production intent is correct: clean up zombie
- * ungraduated warm sessions left over after a crash.
- *
- * The trap for tests: a test that creates a session, marks it `warm: true` via
- * `sessionManager.setWarm(id, true)`, then makes an HTTP request expecting the
- * session to still exist will RACE that sweep. When the `setTimeout(0)` fires at
- * or before the request, the session is deleted out from under it and the route
- * returns 404/409-on-missing instead of the expected status — a ~2-3/5 flake.
- *
- * Call this AFTER `buildApp()` and BEFORE marking any fixture session warm. Two
- * properties make it deterministic:
- *  - The sweep timer is registered DURING `buildApp()`, i.e. strictly before the
- *    timer this helper schedules. Node's timer phase runs due timers in
- *    insertion order, so awaiting a single macrotask tick guarantees the sweep
- *    has already fired by the time we resume.
- *  - The sweep is ONE-SHOT. Running it here — while the fixture session is still
- *    non-warm, so the sweep ignores it — consumes the timer for good, so it
- *    cannot fire again later to race the request under test.
- *
- * We await two ticks rather than one purely as a margin of safety (a second
- * macrotask boundary costs effectively nothing and absorbs any future change
- * that defers a step of the sweep onto a follow-up microtask/timer).
- */
+// Yield after buildApp and before marking fixture sessions warm, to let startup pruning run.
 export async function flushStartupTasks(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-/**
- * Create a CredentialStore for tests and configure global git identity.
- * Sets GIT_CONFIG_GLOBAL to a temp-dir-scoped file so tests don't
- * interfere with each other or with real config.
- */
 export function createTestCredentialStore(tmpDir: string): CredentialStore {
   const credDir = path.join(tmpDir, "credentials");
   initGlobalGitConfig(credDir);
   setGitIdentity("Test User", "test@test.com");
   const store = new CredentialStore(credDir);
-  // Production defaults `liveSteering` ON (persistent streaming process). The
-  // broad integration suite asserts the one-shot / `done`-based turn flow, so
-  // pin the fixture OFF to keep that path under test. The streaming path has
-  // dedicated coverage in live-steering.test.ts / ask-user-question.test.ts,
-  // which opt in via `setLiveSteering(true)`.
+  // Default fixtures exercise one-shot completion; streaming tests opt in.
   store.setLiveSteering(false);
   return store;
 }
 
-/** Create an in-memory DatabaseManager for tests. */
 export function createTestDatabaseManager(): DatabaseManager {
   return new DatabaseManager(":memory:");
 }
 
-/**
- * Default cache directory layout used by `buildApp({ workspaceDir: tmpDir })`:
- * `${tmpDir}/repo-cache/<hash(url)>`. Tests that need to compute this path
- * before the cache is populated (e.g. to assert on it) can call this directly;
- * `seedRepoCacheWithLocalBare` uses it internally.
- */
 export function getRepoCacheDir(tmpDir: string, repoUrl: string): string {
   return path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl));
 }
 
-/**
- * Stand up the bare cache the warm pool + claim service expect, plus register
- * `url.file://<cache>.insteadOf <repoUrl>` in the test's `GIT_CONFIG_GLOBAL`
- * so every `git fetch <repoUrl>` resolves to the same on-disk cache.
- *
- * The trick: every warming/claim call site fires `git fetch <repoUrl>` against
- * the workspace clone (and the cache itself). Without redirect those go to
- * github.com — locally `GIT_TERMINAL_PROMPT=0` makes them fail in <500ms, but
- * in CI the TLS + DNS round trips push each fetch past a couple of seconds
- * and tests routinely blow past `waitFor("warm session", 10s)` and the spawn
- * tests' 15s per-test timeouts.
- *
- * Pointing `insteadOf` at the cache itself (rather than a separate bare
- * mirror) keeps each fetch on local disk AND a no-op (the workspace clone's
- * `origin/*` refs already match the source). Skipping the mirror also saves
- * the `git clone --bare` round trip — ~50 ms per test, which adds up across
- * dozens of warming tests. The cache is non-bare but `git fetch` against a
- * working tree is fine since we never push back.
- *
- * Must be called AFTER {@link createTestCredentialStore} (which sets
- * `GIT_CONFIG_GLOBAL` to a per-test path) — this helper writes the
- * `insteadOf` config into that file.
- *
- * @param opts.tmpDir    The test's scratch dir (also `buildApp`'s workspaceDir).
- * @param opts.repoUrl   Logical URL stored in `repoStore` / session metadata.
- * @param opts.seedFiles Extra files to commit into the cache (e.g.
- *                       `{"shipit.yaml": "agent:\n  memory: 3072\n"}`).
- *                       `README.md` is always seeded with a default body
- *                       unless the caller overrides it here.
- */
+// Call after createTestCredentialStore; redirect the logical remote to this local fixture.
 export function seedRepoCacheWithLocalBare(opts: {
   tmpDir: string;
   repoUrl: string;
@@ -1353,8 +974,6 @@ export function seedRepoCacheWithLocalBare(opts: {
   execSync(`git remote add origin ${repoUrl}`, { cwd: repoDir, stdio: "ignore" });
   execSync("git update-ref refs/remotes/origin/main HEAD", { cwd: repoDir, stdio: "ignore" });
 
-  // Wire `url.<cache-dir>.insteadOf <repoUrl>` so every git operation that
-  // would target `repoUrl` resolves to this on-disk repo.
   const gitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
   if (!gitConfigGlobal) {
     throw new Error("GIT_CONFIG_GLOBAL not set — call createTestCredentialStore() first");
@@ -1365,25 +984,6 @@ export function seedRepoCacheWithLocalBare(opts: {
   );
 }
 
-/**
- * Pin git's own transport allowlist to local paths for the duration of a suite,
- * and return the restore function to call in `afterEach`.
- *
- * Several routes fetch or clone the workspace's `origin` for real —
- * `fetchAndResolveDefaultBranch` behind the warm pool, `ensureBareCache` on the
- * claim-session slow path — and neither is covered by the usual `push` /
- * `fetchCache` stubs. The URLs in tests are fake, so the request always fails;
- * the question is only how expensively. On a dev box a DNS + TLS round-trip to
- * github.com costs ~230 ms and hides; on a shared CI runner it is unbounded, and
- * it is why these suites time out in CI and never locally.
- *
- * `GIT_ALLOW_PROTOCOL=file` makes git refuse https/ssh in ~5 ms with
- * `transport 'https' not allowed`, before any packet leaves. Local paths and
- * `file://` remotes — what every legitimate git operation in the server suite
- * uses, including `seedRepoCacheWithLocalBare`'s `insteadOf` redirect — are
- * untouched. `GIT_TERMINAL_PROMPT=0` rides along so a fetch can't stall on a
- * credential prompt either.
- */
 export function pinGitToLocalTransports(): () => void {
   const origAllowProtocol = process.env.GIT_ALLOW_PROTOCOL;
   const origTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
@@ -1397,31 +997,10 @@ export function pinGitToLocalTransports(): () => void {
   };
 }
 
-// ---------------------------------------------------------------------------
-// POST /api/repos (create-with-template) — fast git stand-ins
-// ---------------------------------------------------------------------------
-
-/**
- * `createRepoWithTemplate` mkdtemp's its throwaway scaffold worktree as
- * `${os.tmpdir()}/shipit-template-XXXXXX` (see `services/templates.ts`). The
- * factories below key off that prefix so only the scaffold's git is faked and
- * every other directory — session workspaces, the bare cache clone the warm
- * pool cuts from — keeps a real {@link GitManager}.
- */
 function isTemplateScaffoldDir(dir: string): boolean {
   return path.basename(dir).startsWith("shipit-template-");
 }
 
-/**
- * A tiny bare repo with one commit on `main`, built once per worker process and
- * reused by every {@link createTemplateRepoGitFactories} stub. Stands in for the
- * `git clone --bare <scaffold>` the create-with-template path performs, so the
- * clone becomes an `fs.cpSync` instead of a subprocess.
- *
- * Shape matches what `RepoGit.cloneBare` leaves behind: bare, `main` present,
- * and `remote.origin.fetch` set (the refspec `ensureFetchRefspec` writes, without
- * which a later cache fetch never advances `refs/heads/*`).
- */
 let cachedBareFixtureDir: string | null = null;
 function templateBareFixture(): string {
   if (cachedBareFixtureDir && fs.existsSync(cachedBareFixtureDir)) return cachedBareFixtureDir;
@@ -1443,32 +1022,7 @@ function templateBareFixture(): string {
   return bareDir;
 }
 
-/**
- * `createGitManager` / `createRepoGit` factories for suites that drive
- * `POST /api/repos` with a `templateId`.
- *
- * That route runs ~13 real `git` subprocesses (scaffold `init` + `addRemote` +
- * `autoCommit`, then `clone --bare` into the shared cache) purely to produce a
- * bare cache the warm pool can clone from — none of which any HTTP-level
- * assertion inspects. `services/templates.test.ts` already covers that git work
- * end-to-end against a real local origin (bare-ness, pushed refs, origin URL,
- * owner threading), so replaying it per integration test buys nothing and costs
- * ~380 ms a test — enough to blow Vitest's default timeout on a CI runner under
- * full-suite load.
- *
- * So: the scaffold's git is a no-op and `cloneBare` copies {@link
- * templateBareFixture} into the cache dir. Everything downstream stays real —
- * `setRemoteUrl` still points the cache at the created repo, and the warm pool
- * still cuts a genuine `git clone` + `checkout -b` from that cache, which is
- * what makes the route's `sessionId` in the response meaningful.
- *
- * The warm pool's own workspace fetch is a separate cost — pair this with
- * {@link pinGitToLocalTransports} to keep that off the network too.
- *
- * Caveat for future assertions: the cache carries the fixture's commit, not the
- * requested template's files. A suite that needs to inspect what the template
- * actually scaffolded belongs in `services/templates.test.ts`, against real git.
- */
+// The copied cache contains fixture files, not the requested template's output.
 export function createTemplateRepoGitFactories(): {
   createGitManager: (dir: string) => GitManager;
   createRepoGit: (dir: string) => RepoGit;
@@ -1476,7 +1030,6 @@ export function createTemplateRepoGitFactories(): {
   return {
     createGitManager: (dir: string) => {
       const gm = new GitManager(dir);
-      // Stub push so it doesn't attempt a real remote push
       gm.push = async () => "pushed (stub)";
       if (isTemplateScaffoldDir(dir)) {
         gm.init = async () => {};
@@ -1492,7 +1045,6 @@ export function createTemplateRepoGitFactories(): {
     },
     createRepoGit: (dir: string) => {
       const rg = new RepoGit(dir);
-      // Stub fetchCache to avoid network calls to fake GitHub URLs
       rg.fetchCache = async () => {};
       rg.cloneBare = async () => {
         fs.cpSync(templateBareFixture(), dir, { recursive: true });

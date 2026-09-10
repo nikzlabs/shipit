@@ -1,11 +1,3 @@
-/**
- * Unit tests for ServiceRequestQueue.
- *
- * The per-request timeout (docs/238) is the interesting part: a single flat
- * deadline for every action broke `start` for exactly the heavy services that
- * need it, so the queue must honor a caller-chosen deadline and a caller-chosen
- * timeout message rather than baking in one of each.
- */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ServiceRequestQueue } from "./service-request-queue.js";
@@ -43,7 +35,6 @@ describe("ServiceRequestQueue", () => {
     let settled = false;
     void promise.catch(() => { settled = true; });
 
-    // Past the queue default, well short of the per-request deadline.
     await vi.advanceTimersByTimeAsync(5_000);
     expect(settled).toBe(false);
 
@@ -85,7 +76,6 @@ describe("ServiceRequestQueue", () => {
     queue.cancelAll("shutting down");
     await assertions;
 
-    // Entries are gone, so a late callback is a no-op.
     expect(queue.resolve(a.requestId, {})).toBe(false);
   });
 });

@@ -68,12 +68,6 @@ describe("GitManager: log", () => {
   });
 });
 
-/**
- * The primitive the diverged-push notice uses to NAME the commits that exist
- * only on the remote (`services/push-divergence.ts`). A count alone reads as
- * bookkeeping; a subject line is what a reader recognises as their own work,
- * and this notice's whole job is to say what a force-push would destroy.
- */
 describe("GitManager: commitSubjects", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
@@ -123,8 +117,6 @@ describe("GitManager: commitSubjects", () => {
   });
 
   it("returns an empty list rather than throwing on an unresolvable range", async () => {
-    // The caller is already reporting a failure; a second one must degrade the
-    // notice, not replace it with an error.
     const git = new GitManager(tmpDir);
     await git.init();
     fs.writeFileSync(path.join(tmpDir, "a.txt"), "a");

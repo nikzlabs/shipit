@@ -1,15 +1,3 @@
-/**
- * Drives the REAL unit sync (deployment/lib/sync-systemd-units.sh) against a
- * throwaway "installed units" directory and a fake `systemctl` on PATH.
- *
- * Why it exists: setup.sh installs the systemd units at PROVISIONING time only.
- * Every unit change since — the self-updater's `TimeoutStartSec=` among them —
- * therefore sat in the repo and never reached the running production host, no
- * matter how many times it updated itself. deploy.sh calls this on every deploy
- * to close that gap, so what must hold is that it installs a drifted unit,
- * reloads systemd exactly once, and stays completely silent when there is
- * nothing to do or nowhere to write.
- */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -35,7 +23,6 @@ describe("deployment/lib/sync-systemd-units.sh", () => {
     reloadLog = path.join(root, "reloads");
     fs.mkdirSync(unitDir);
     fs.mkdirSync(binDir);
-    // Fake systemctl: records each invocation instead of talking to a real init.
     fs.writeFileSync(
       path.join(binDir, "systemctl"),
       `#!/bin/bash\necho "$@" >> "${reloadLog}"\n`,
@@ -45,11 +32,7 @@ describe("deployment/lib/sync-systemd-units.sh", () => {
 
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
-  /**
-   * Source the helper and run it against the temp dirs, returning stdout AND
-   * stderr — the warnings this thing emits when it cannot install a unit go to
-   * stderr, so a stdout-only assertion could not fail on them.
-   */
+  // Include stderr so warnings fail the silence assertions.
   const sync = (dir = unitDir): string =>
     execFileSync(
       "bash",
@@ -69,21 +52,17 @@ describe("deployment/lib/sync-systemd-units.sh", () => {
     );
     expect(fs.existsSync(path.join(unitDir, "shipit-restarter.path"))).toBe(true);
     expect(out).toContain("Updated systemd unit shipit-updater.service");
-    // One reload for the batch, not one per unit.
     expect(reloads()).toBe(1);
   });
 
   it("replaces a unit that drifted from the checkout", () => {
     const service = path.join(unitDir, "shipit-updater.service");
     sync();
-    // An old install: same unit, missing the bound the checkout now carries.
     fs.writeFileSync(service, "[Service]\nExecStart=/opt/shipit/deployment/vps/update.sh\n");
     fs.rmSync(reloadLog);
 
     sync();
 
-    // Anchored: `toContain("TimeoutStartSec=")` would also match the comment
-    // that explains the setting, so deleting the directive left it green.
     expect(fs.readFileSync(service, "utf8")).toMatch(/^TimeoutStartSec=90min$/m);
     expect(reloads()).toBe(1);
   });
@@ -94,9 +73,7 @@ describe("deployment/lib/sync-systemd-units.sh", () => {
 
     const out = sync();
 
-    expect(out).toBe(""); // no churn, no log line on the common path
-    // The reload is unconditional on purpose: one that failed on an earlier run
-    // would otherwise never be retried, since the files already match.
+    expect(out).toBe("");
     expect(reloads()).toBe(1);
   });
 
@@ -105,15 +82,12 @@ describe("deployment/lib/sync-systemd-units.sh", () => {
     const service = path.join(unitDir, "shipit-updater.service");
     const good = fs.readFileSync(service, "utf8");
     fs.writeFileSync(service, "stale\n");
-    // Block the atomic rename's destination name, so the install cannot finish.
     fs.mkdirSync(path.join(unitDir, ".shipit-updater.service.new"));
 
     const out = sync();
 
     expect(out).toContain("WARNING: could not install shipit-updater.service");
-    // Either the old unit or the new one — never a truncated file.
     expect(fs.readFileSync(service, "utf8")).toBe("stale\n");
-    // The other units still installed; one bad unit does not abort the sweep.
     expect(fs.readFileSync(path.join(unitDir, "shipit-restarter.path"), "utf8")).toBe(
       fs.readFileSync(path.join(UNIT_SRC, "shipit-restarter.path"), "utf8"),
     );
@@ -121,8 +95,6 @@ describe("deployment/lib/sync-systemd-units.sh", () => {
   });
 
   it("is a silent no-op when there is nowhere to install units", () => {
-    // A host with no such directory: the deploy must carry on rather than fail
-    // on a path it was never meant to touch.
     const out = sync(path.join(root, "no-such-dir"));
 
     expect(out).toBe("");
@@ -130,8 +102,6 @@ describe("deployment/lib/sync-systemd-units.sh", () => {
   });
 
   it("is a silent no-op when the unit directory is read-only", () => {
-    // `bash deploy.sh` as a normal user. Separate from the missing-directory
-    // case: one guard covers each, and neither alone covers both.
     const readOnly = path.join(root, "read-only");
     fs.mkdirSync(readOnly, { mode: 0o500 });
 
@@ -143,7 +113,6 @@ describe("deployment/lib/sync-systemd-units.sh", () => {
   });
 
   describe("wiring into deploy.sh", () => {
-    // Comment-stripped, so a mention in prose cannot stand in for the call.
     const deploySrc = fs
       .readFileSync(fileURLToPath(new URL("../../../deployment/vps/deploy.sh", import.meta.url)), "utf8")
       .split("\n")
@@ -159,8 +128,6 @@ describe("deployment/lib/sync-systemd-units.sh", () => {
       const restart = deploySrc.indexOf("up -d --no-build shipit");
       const marker = deploySrc.indexOf("SHIPIT_RESTART_MARKER");
       expect(restart).toBeGreaterThan(-1);
-      // update.sh treats the marker as "the new container is running". Written
-      // any earlier, it would suppress a rollback that must still happen.
       expect(marker).toBeGreaterThan(restart);
     });
   });

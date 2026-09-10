@@ -4,11 +4,7 @@ import {
   createAgentStderrTail,
 } from "./agent-stderr-tail.js";
 
-/**
- * A synthetic Anthropic-shaped key, assembled at runtime so this file carries no
- * literal for a secret scanner to flag. Only its *shape* matters — it is what
- * `redactStage1`'s `sk-ant-…` pattern matches on.
- */
+// Assemble the fake key at runtime to avoid secret-scanner matches.
 const KEY_PREFIX = ["sk", "ant"].join("-");
 const fakeAnthropicKey = (body: string): string => `${KEY_PREFIX}-${body}`;
 
@@ -38,7 +34,6 @@ describe("createAgentStderrTail", () => {
 
   it("surfaces the Codex cold-start failure that motivated this", () => {
     const tail = createAgentStderrTail();
-    // Verbatim from sessions/<id>/logs/agent.jsonl for the reported incident.
     tail.record(
       "codex-stderr",
       "Error: failed to initialize sqlite state runtime under "
@@ -47,10 +42,7 @@ describe("createAgentStderrTail", () => {
         + "/workspace/.inner-shipit/credentials/provider-accounts/codex/acct_a8250731/.codex",
     );
     const detail = tail.describe();
-    // The fault is still named after redaction — that is the whole point of
-    // putting it in the row instead of only the exit code.
     expect(detail).toContain("failed to initialize sqlite state runtime");
-    // …and the account path it leaked is gone.
     expect(detail).not.toContain("acct_a8250731");
     expect(detail).not.toContain("/workspace/");
   });
@@ -67,7 +59,6 @@ describe("createAgentStderrTail", () => {
   it("redacts before truncating so a cut cannot smuggle a token fragment", () => {
     const tail = createAgentStderrTail();
     const secret = fakeAnthropicKey("a".repeat(60));
-    // Pad so the secret sits inside the retained tail window.
     tail.record("stderr", `${"noise ".repeat(40)}${secret}`);
     const detail = tail.describe() ?? "";
     expect(detail).not.toContain(secret.slice(0, 8));

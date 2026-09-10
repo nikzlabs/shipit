@@ -1,13 +1,3 @@
-/**
- * AutoMergeManager — auto-merge state machine extracted from PrStatusPoller.
- *
- * Owns the per-session auto-merge state map and the "ShipIt-managed" merge
- * loop that runs when GitHub native auto-merge isn't available (no branch
- * protection rules configured). The poller drives `handleManaged()` on
- * every observed PR update; this module decides whether to call the merge
- * REST API and updates state in place.
- */
-
 import { noteMergePerformed } from "./services/merge-attribution.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
@@ -20,34 +10,10 @@ import type {
 } from "../shared/types/github-types.js";
 
 export class AutoMergeManager {
-  /** sessionId → auto-merge state */
   private states = new Map<string, AutoMergeState>();
-  /**
-   * Sessions currently parked at the busy gate, so the "waiting for the session"
-   * line is logged once per wait rather than once per poll tick. Cleared when
-   * the gate opens (or the arming is retired), which is what makes the next wait
-   * log again.
-   */
   private busyLogged = new Set<string>();
-  /**
-   * The same once-per-wait latch for the branch-sync gate. Separate from
-   * {@link busyLogged} because the two holds have different causes and different
-   * remedies, and one set would let whichever fires first silence the other.
-   */
   private syncLogged = new Set<string>();
 
-  /**
-   * @param getRunner resolves the session's runner for the busy gate. Optional —
-   *   degraded setups (and tests) that wire no runner registry pass nothing, and
-   *   an unresolvable runner reads as "not busy" so the merge still happens. The
-   *   contract is deliberate: an absent registry must never turn into a merge
-   *   that never runs.
-   * @param resolveSync the authoritative branch-sync read (it fetches), called
-   *   once per merge ATTEMPT rather than once per tick. Optional: without it the
-   *   loop falls back to the summary's cheap per-tick reading, which is right in
-   *   every ordinary case and blind only to the remote moving under a stale
-   *   tracking ref.
-   */
   constructor(
     private readonly githubAuth: GitHubAuthManager,
     private readonly onChange: (sessionId: string) => void,
@@ -58,19 +24,16 @@ export class AutoMergeManager {
     ) => Promise<BranchSyncStatus | undefined>,
   ) {}
 
-  /** Get auto-merge state for a session. */
   get(sessionId: string): AutoMergeState | undefined {
     return this.states.get(sessionId);
   }
 
-  /** Drop state for a session (untrack). */
   delete(sessionId: string): void {
     this.states.delete(sessionId);
     this.busyLogged.delete(sessionId);
     this.syncLogged.delete(sessionId);
   }
 
-  /** Set auto-merge enabled/disabled for a session. */
   setEnabled(sessionId: string, enabled: boolean): AutoMergeState {
     let state = this.states.get(sessionId);
     if (!state) {
@@ -78,20 +41,12 @@ export class AutoMergeManager {
       this.states.set(sessionId, state);
     } else {
       state.enabled = enabled;
-      // A toggle ends the current wait, whatever it was: drop the "already told
-      // you it is holding" latch so a re-enable that hits the gate again says so
-      // rather than staying silent.
       this.busyLogged.delete(sessionId);
       this.syncLogged.delete(sessionId);
-      // A deliberate user toggle resets the managed-merge lifecycle, so clear
-      // the `completed` short-circuit either way (a re-enable must be able to
-      // merge again; a disable shouldn't leave stale bookkeeping behind).
       delete state.completed;
       if (enabled) {
-        // Clear any previous error when re-enabling
         delete state.error;
       } else {
-        // Clear managed flag when disabling
         state.managed = false;
         delete state.managedReason;
         delete state.settingsUrl;
@@ -103,20 +58,6 @@ export class AutoMergeManager {
     return state;
   }
 
-  /**
-   * Mark auto-merge as ShipIt-managed — ShipIt's own merge loop owns this PR
-   * instead of GitHub's native auto-merge.
-   *
-   * `opts.managedReason` says WHY, and the two reasons read very differently to
-   * the user (docs/266): `native-unavailable` is a repo misconfiguration the
-   * card explains and links to settings, `session-live` is a normal wait. It
-   * defaults to `native-unavailable` so the pre-existing call sites — all of
-   * which are the GitHub-refused fallback — keep their meaning unchanged.
-   *
-   * `opts.reason` is the real GitHub error that blocked native auto-merge,
-   * surfaced verbatim in the managed-merge tooltip so the user sees the actual
-   * missing precondition.
-   */
   setManaged(
     sessionId: string,
     managed: boolean,
@@ -144,7 +85,6 @@ export class AutoMergeManager {
     this.onChange(sessionId);
   }
 
-  /** Set an auto-merge error (toggle reverts to OFF). */
   setError(sessionId: string, error: PrAutoMergeError): void {
     let state = this.states.get(sessionId);
     if (!state) {
@@ -157,7 +97,6 @@ export class AutoMergeManager {
     this.onChange(sessionId);
   }
 
-  /** Set the preferred merge method for a session. */
   setMergeMethod(sessionId: string, method: "squash" | "merge" | "rebase"): void {
     let state = this.states.get(sessionId);
     if (!state) {
@@ -170,7 +109,6 @@ export class AutoMergeManager {
     this.onChange(sessionId);
   }
 
-  /** Handle ShipIt-managed auto-merge: merge via REST when CI passes. */
   async handleManaged(
     sessionId: string,
     summary: PrStatusSummary,
@@ -180,26 +118,10 @@ export class AutoMergeManager {
     const mergeState = this.states.get(sessionId);
     if (!mergeState?.enabled || !mergeState.managed) return;
 
-    // A prior tick's REST merge already succeeded — the poller just hasn't
-    // observed the merged state yet. Don't re-attempt (GitHub rejects an
-    // already-merged PR, which would set a spurious sticky error) and don't
-    // touch the state: auto-merge stays "in charge" until `prState` flips to
-    // merged. Released by the poller's terminal-state branch (`verifyMissingPr`)
-    // the moment that merged state is observed.
     if (mergeState.completed) return;
 
-    // Merge when CI passes, or when there are no required checks at all.
-    // Mirrors the client's `isCiPassed || isCiNone` mergeability rule
-    // (docs/113) so a docs-only PR with path-filtered CI ("none") isn't left
-    // stuck: native auto-merge falls back to managed, the manual button hides,
-    // and this executor must finish the merge. `pending`/`failure` stay excluded.
     if (summary.checks.state !== "success" && summary.checks.state !== "none") return;
 
-    // Wait for required review approval. `review_required`/`changes_requested`
-    // mean the base branch's protection rule isn't satisfied — GitHub's REST
-    // merge would reject every tick, so bail and re-evaluate next poll once an
-    // approval lands. Unlike the conflict case we set no sticky error: awaiting
-    // approval is a normal transient wait, not a misconfiguration. docs/174.
     if (
       summary.reviewDecision === "review_required" ||
       summary.reviewDecision === "changes_requested"
@@ -207,12 +129,6 @@ export class AutoMergeManager {
       return;
     }
 
-    // A conflict already has its own dedicated surface on the card — the
-    // "Merge conflicts" indicator + Resolve button (and, when enabled, the
-    // auto-resolve loop). Setting a sticky auto-merge error here would render a
-    // redundant second "PR has merge conflicts" line. So, like the review gate
-    // above, bail without a sticky error and re-evaluate next poll once the
-    // branch is rebased clean. Clear any stale error from a prior tick.
     if (summary.mergeable === "conflicting") {
       if (mergeState.error) {
         delete mergeState.error;
@@ -221,26 +137,11 @@ export class AutoMergeManager {
       return;
     }
 
-    // "unknown" — GitHub hasn't computed mergeability yet. Wait for the next
-    // poller tick rather than racing into a merge attempt that would fail.
     if (summary.mergeable !== "mergeable") return;
 
-    // The branch on GitHub is behind what the session holds, so merging now
-    // ships the last successful push and silently drops the rest. The busy gate
-    // below covers the ordinary window (a turn's commit and its debounced push
-    // both run inside `agentBusy`) — this covers the window it cannot: a push
-    // that FAILED. The hold then outlives the turn, `agentBusy` goes false, and
-    // nothing else here can tell that the green checks describe an old commit.
-    //
-    // Like the review and conflict gates: no sticky error. The auto-push
-    // scheduler retries, re-arms, and posts its own transcript notice naming
-    // the remedy, so this is a wait rather than a misconfiguration. `behind`
-    // and an absent reading both merge — see `services/branch-sync.ts`.
+    // A failed push can leave unshipped commits after agentBusy clears.
     const syncState = summary.branchSync?.state;
     if (syncState === "ahead" || syncState === "diverged") {
-      // Its own latch, not `busyLogged`: sharing one would let a sync hold
-      // swallow the busy line that follows it (and vice versa), and the two
-      // waits have different remedies.
       if (!this.syncLogged.has(sessionId)) {
         this.syncLogged.add(sessionId);
         console.log(
@@ -252,26 +153,7 @@ export class AutoMergeManager {
     }
     this.syncLogged.delete(sessionId);
 
-    // docs/266 — the PR is ready to merge, but the session is still working.
-    // Auto-commit fires AFTER the turn ends, so a merge now ships a PR whose
-    // remaining edits land on a branch with a closed PR: `merged-push-guard`
-    // then correctly refuses the push and the work never reaches CI. This is the
-    // same rule the UI merge route has always enforced, on the path that had no
-    // guard at all.
-    //
-    // `agentBusy`, never bare `running`: the terminal sequence and the debounced
-    // auto-push it arms both run once `running` is false (see the runner
-    // interface + `services/auto-push-scheduler.ts`), so a `running` check would
-    // still merge inside that window — the same bug with a smaller mouth.
-    //
-    // Like the review gate (docs/174) and the conflict branch, bail WITHOUT a
-    // sticky error and re-evaluate on the next poll tick: being busy is a normal
-    // transient wait, not a misconfiguration.
-    // `systemTurnInProgress` rides alongside `agentBusy` rather than inside it:
-    // a system flow runs with `running` false and is deliberately excluded from
-    // the runner's own busy getter, but the rebase driver holds it while it
-    // rebases, commits and FORCE-PUSHES the branch (`services/rebase-driver.ts`)
-    // — merging a branch mid-rewrite is exactly what this gate exists to stop.
+    // agentBusy covers post-turn commits and pushes; systemTurnInProgress covers branch rewrites.
     const runner = this.getRunner?.(sessionId);
     if (runner?.agentBusy || runner?.systemTurnInProgress) {
       if (!this.busyLogged.has(sessionId)) {
@@ -284,13 +166,7 @@ export class AutoMergeManager {
     }
     this.busyLogged.delete(sessionId);
 
-    // Last check before the irreversible one, and the only one that asks the
-    // remote rather than this clone's refs. The per-tick reading above is
-    // computed from `refs/remotes/origin/<branch>`, which nothing updates when
-    // the remote branch moves in ANOTHER clone — a force-push from the user's
-    // laptop leaves the tracking ref and HEAD both at the old tip, which reads
-    // as `in-sync` while GitHub holds a history this session has never had.
-    // Affordable here because it runs once per merge ATTEMPT, not once per tick.
+    // Fetch before merging: another clone can move the remote without updating our tracking ref.
     if (this.resolveSync) {
       const fresh = await this.resolveSync(sessionId, summary.headBranch)
         .catch(() => undefined);
@@ -303,43 +179,20 @@ export class AutoMergeManager {
       }
     }
 
-    // Attempt the merge via REST API
     const result = await this.githubAuth.mergePullRequest(
       owner, repo, summary.prNumber, mergeState.mergeMethod,
     );
 
     if (result.success) {
-      // Merge REST succeeded — the PR is merging. Keep `enabled`/`managed` as
-      // they are so the client keeps treating auto-merge as owning the next
-      // move and stays SILENT until the merged state lands. Flipping
-      // `enabled=false` here is what caused the spurious chime: the poller
-      // re-broadcasts `lastKnown` (still `prState:"open"`, `checks:"success"`)
-      // via this onChange, and an open+green+auto-merge-disabled summary reads
-      // as "Waiting for your input" → an attention notification fires a beat
-      // before the PR is observed merged. `completed` short-circuits further
-      // attempts; the whole state is dropped by the poller's terminal-state
-      // branch as soon as the merged PR is observed, so `completed` can never
-      // outlive its PR and wedge auto-merge for the session's next one.
+      // Keep enabled until the merged poll arrives, or the open PR briefly asks for attention.
       mergeState.completed = true;
       delete mergeState.error;
-      // docs/266 — the merge record. Without it an incident review cannot tell
-      // whether a PR was merged by a human, by GitHub native auto-merge, or by
-      // this loop (the merge routes and this manager logged nothing at all).
-      //
-      // The note is the same record in machine-readable form: the poller
-      // observes this merge moments later and must not report it as an outside
-      // one. It logs nothing itself, so the line below stays the only line this
-      // path emits.
       noteMergePerformed(owner, repo, summary.prNumber);
       console.log(
         `[auto-merge] Merged PR #${summary.prNumber} (${owner}/${repo}) for ${sessionId}`
         + ` via managed merge (${mergeState.mergeMethod}, reason=${mergeState.managedReason ?? "native-unavailable"})`,
       );
-      // The gate is read before an awaited round-trip, so a turn can start
-      // inside it. That is a sub-second window instead of the incident's four
-      // minutes, and nothing here can close it without a turn-admission lock —
-      // but when it does happen the next push is refused by
-      // `merged-push-guard`, and this line is what explains why.
+      // A turn can start during the awaited merge; report why its later push will be refused.
       if (this.getRunner?.(sessionId)?.agentBusy) {
         console.warn(
           `[auto-merge] PR #${summary.prNumber} for ${sessionId} merged as a turn began`
@@ -348,7 +201,6 @@ export class AutoMergeManager {
       }
       this.onChange(sessionId);
     } else {
-      // Merge failed — surface error, stays enabled for retry next poll
       mergeState.error = {
         code: "no_branch_protection",
         message: result.message,

@@ -1,7 +1,3 @@
-/**
- * File and documentation read services — file tree, file content, docs, uploads.
- */
-
 import path from "node:path";
 import fs from "node:fs/promises";
 import { scanFileTree } from "../../shared/file-tree.js";
@@ -11,14 +7,13 @@ import { ServiceError } from "./types.js";
 import type { UploadedFile } from "../../shared/types.js";
 import { chownToSessionWorker } from "../session-worker-uid.js";
 
-/** Get file tree for a directory. */
 export async function getFileTree(dir: string) {
   return scanFileTree(dir);
 }
 
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
-const MAX_IMAGE_SIZE = 10 * 1_048_576; // 10 MB
-export const MAX_TEXT_SIZE = 1_048_576; // 1 MB
+const MAX_IMAGE_SIZE = 10 * 1_048_576;
+export const MAX_TEXT_SIZE = 1_048_576;
 
 function getMimeType(ext: string): string {
   if (ext === "svg") return "image/svg+xml";
@@ -26,7 +21,6 @@ function getMimeType(ext: string): string {
   return `image/${ext}`;
 }
 
-/** Resolve a file path safely and return the absolute path + filename for downloads. */
 export function getRawFilePath(
   dir: string,
   filePath: string,
@@ -38,7 +32,6 @@ export function getRawFilePath(
   return { safePath, filename: path.basename(safePath) };
 }
 
-/** Get file content with safety checks (path traversal, binary, size). */
 export async function getFileContent(
   dir: string,
   filePath: string,
@@ -50,7 +43,6 @@ export async function getFileContent(
   const stat = await fs.stat(safePath);
   const ext = path.extname(filePath).slice(1).toLowerCase();
 
-  // Image files: return base64 data URI
   if (IMAGE_EXTENSIONS.has(ext)) {
     if (stat.size > MAX_IMAGE_SIZE) {
       return {
@@ -66,7 +58,6 @@ export async function getFileContent(
     };
   }
 
-  // Text files
   if (stat.size > MAX_TEXT_SIZE) {
     return {
       content: `File is too large to display (${(stat.size / 1_048_576).toFixed(1)} MB). Maximum supported size is 1 MB.`,
@@ -80,7 +71,6 @@ export async function getFileContent(
   return { content: buf.toString("utf-8") };
 }
 
-/** Write UTF-8 content to an existing workspace text file. */
 export async function writeFileContent(
   dir: string,
   filePath: string,
@@ -127,12 +117,10 @@ export async function writeFileContent(
   return { path: filePath, size: Buffer.byteLength(content, "utf8") };
 }
 
-/** List markdown documentation files with optional status metadata. */
 export async function listDocs(dir: string): Promise<DocEntry[]> {
   return findMarkdownFiles(dir);
 }
 
-/** Get a single doc file's content. */
 export async function getDocContent(
   dir: string,
   docPath: string,
@@ -144,38 +132,19 @@ export async function getDocContent(
   return fs.readFile(safePath, "utf-8");
 }
 
-// ---------------------------------------------------------------------------
-// Upload service functions
-// ---------------------------------------------------------------------------
-
-/** Maximum file size per upload: 50 MB. */
 export const MAX_UPLOAD_FILE_SIZE = 50 * 1024 * 1024;
-/** Maximum files per upload request. */
 export const MAX_UPLOAD_FILES_PER_REQUEST = 20;
-/** Maximum total upload storage per session: 500 MB. */
 export const MAX_UPLOAD_SESSION_QUOTA = 500 * 1024 * 1024;
 
-/**
- * Sanitize a filename for safe storage. Strips path traversal, null bytes,
- * and control characters. Returns a flat filename (no subdirectories).
- */
 export function sanitizeFilename(raw: string): string {
-  // Take only the basename (strip any path components)
   let name = path.basename(raw);
-  // Remove null bytes and control characters (eslint-disable-next-line no-control-regex)
   // eslint-disable-next-line no-control-regex
   name = name.replace(/[\0\u0001-\u001f\u007f]/g, "");
-  // Remove leading dots to prevent hidden files from traversal
   name = name.replace(/^\.+/, "");
-  // Fallback for empty names
   if (!name) name = "upload";
   return name;
 }
 
-/**
- * Generate a collision-free filename by appending a numeric suffix.
- * e.g. "data.csv" → "data-1.csv" → "data-2.csv"
- */
 export async function deduplicateFilename(
   uploadsDir: string,
   filename: string,
@@ -188,19 +157,14 @@ export async function deduplicateFilename(
   while (true) {
     try {
       await fs.access(path.join(uploadsDir, candidate));
-      // File exists — try next suffix
       counter++;
       candidate = `${base}-${counter}${ext}`;
     } catch {
-      // File doesn't exist — this name is available
       return candidate;
     }
   }
 }
 
-/**
- * Calculate the total size of existing uploads in a directory.
- */
 export async function getUploadsDirSize(uploadsDir: string): Promise<number> {
   try {
     const entries = await fs.readdir(uploadsDir);
@@ -215,15 +179,10 @@ export async function getUploadsDirSize(uploadsDir: string): Promise<number> {
     }
     return total;
   } catch {
-    // Directory doesn't exist yet — 0 usage
     return 0;
   }
 }
 
-/**
- * Save an uploaded file to the session's uploads directory.
- * Validates per-file size and session quota. Sanitizes filename.
- */
 export async function saveUploadedFile(
   uploadsDir: string,
   rawFilename: string,
@@ -233,22 +192,14 @@ export async function saveUploadedFile(
     throw new ServiceError(413, `File "${rawFilename}" exceeds ${MAX_UPLOAD_FILE_SIZE / 1024 / 1024} MB limit`);
   }
 
-  // Check session quota
   const currentUsage = await getUploadsDirSize(uploadsDir);
   if (currentUsage + data.byteLength > MAX_UPLOAD_SESSION_QUOTA) {
     throw new ServiceError(413, `Upload would exceed session quota of ${MAX_UPLOAD_SESSION_QUOTA / 1024 / 1024} MB`);
   }
 
-  // Ensure uploads directory exists
   await fs.mkdir(uploadsDir, { recursive: true });
 
-  // docs/293 — claim the name by CREATING it exclusively, and retry the next
-  // suffix on a collision. `deduplicateFilename` only reports a name that was
-  // free a moment ago: two concurrent requests both got the same answer, both
-  // wrote, and one silently overwrote the other. That became worse once the
-  // route learned to roll its own writes back, since the rollback would then
-  // delete a file the *other* request had successfully stored. An exclusive
-  // create is what makes "this request wrote it" true enough to undo.
+  // Reserve names by exclusive creation; a prior existence check races other uploads.
   const sanitized = sanitizeFilename(rawFilename);
   let finalName: string;
   let filePath: string;
@@ -258,20 +209,15 @@ export async function saveUploadedFile(
     finalName = attempt === 0 ? sanitized : `${base}-${attempt}${ext}`;
     filePath = path.join(uploadsDir, finalName);
     try {
-      // "wx" — create, and fail if it already exists.
       await fs.writeFile(filePath, data, { flag: "wx" });
       break;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "EEXIST") continue;
-      // A write that created the file and then failed (a full disk) leaves a
-      // partial file the caller has no name for. Clean up our own mess.
+      // Remove a partial file before failing; the caller has not received its name.
       await fs.unlink(filePath).catch(() => {});
       throw err;
     }
   }
-  // docs/150 §7 — the orchestrator (root) writes into the per-session uploads
-  // mount; chown so the agent's `shipit` user can read its own attachments.
-  // No-op unless SHIPIT_SESSION_WORKER_UID is set.
   chownToSessionWorker(filePath);
 
   return {
@@ -282,11 +228,6 @@ export async function saveUploadedFile(
   };
 }
 
-/**
- * Delete an uploaded file from the session's uploads directory.
- * Returns true if the file was deleted, false if it didn't exist.
- * Throws on path traversal attempts.
- */
 export async function deleteUpload(uploadsDir: string, filename: string): Promise<boolean> {
   const safePath = path.resolve(uploadsDir, filename);
   if (!safePath.startsWith(`${path.resolve(uploadsDir)}/`)) {
@@ -304,9 +245,6 @@ export async function deleteUpload(uploadsDir: string, filename: string): Promis
   }
 }
 
-/**
- * List all uploaded files in a session's uploads directory.
- */
 export async function listUploads(uploadsDir: string): Promise<UploadedFile[]> {
   try {
     const entries = await fs.readdir(uploadsDir);
@@ -328,7 +266,6 @@ export async function listUploads(uploadsDir: string): Promise<UploadedFile[]> {
     }
     return files;
   } catch {
-    // Directory doesn't exist — no uploads
     return [];
   }
 }

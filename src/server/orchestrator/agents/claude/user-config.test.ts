@@ -52,7 +52,6 @@ describe("claude user-config defaults", () => {
       expect(config.theme).toBe("dark");
       expect(config.numStartups).toBe(7);
       expect(config.projects).toEqual({
-        // Existing per-project state survives; only the trust flag is added.
         "/workspace": { history: ["a", "b"], mcpServers: { x: {} }, hasTrustDialogAccepted: true },
         "/some/other/dir": { history: ["c"] },
         "/app": { hasTrustDialogAccepted: true },
@@ -91,16 +90,11 @@ describe("claude user-config defaults", () => {
     });
 
     it("never throws when the path is unwritable", () => {
-      // A directory where the file should be — write fails, call must not throw.
       fs.mkdirSync(configPath);
       expect(ensureClaudeUserConfigDefaults(configPath)).toBe(false);
     });
   });
 
-  // docs/118 (planning#61) — the `RUNTIME_MODE=local` branch. Trust is keyed by the enclosing
-  // git root of the CLI's cwd, so a dogfood session's
-  // `<dataDir>/sessions/<id>/workspace` needs its own key; `/workspace` (an
-  // ancestor) grants it nothing.
   describe("claudeTrustKey", () => {
     it("resolves to the enclosing git repository root", () => {
       const repo = path.join(dir, "sessions", "abc", "workspace");
@@ -125,7 +119,6 @@ describe("claude user-config defaults", () => {
   });
 
   describe("ensureClaudeWorkspaceTrusted", () => {
-    /** A local session workspace at `<dir>/sessions/<id>/workspace`, git-inited. */
     function makeWorkspace(id: string): string {
       const ws = path.join(dir, "sessions", id, "workspace");
       fs.mkdirSync(path.join(ws, ".git"), { recursive: true });
@@ -221,10 +214,6 @@ describe("claude user-config defaults", () => {
       expect(ensureClaudeWorkspaceTrusted(configPath, ws)).toBe(false);
     });
 
-    // The regression that would matter: the containerized posture is real
-    // security (a container session can hold an arbitrary user repo), so the
-    // local-mode writer must not weaken it and `CLAUDE_PRE_TRUSTED_DIRS` must
-    // keep meaning exactly what it means today.
     it("does not change what the containerized writer produces", () => {
       const containerConfig = path.join(dir, "container.json");
       ensureClaudeUserConfigDefaults(containerConfig);

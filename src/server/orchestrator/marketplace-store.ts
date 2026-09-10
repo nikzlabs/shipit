@@ -1,21 +1,3 @@
-/**
- * Persistence for the marketplaces table (docs/149 — skill install UX).
- *
- * App-wide state: one catalog list shared across every session. Each row pairs
- * a short id (`claude-plugins-official`) with a {@link MarketplaceSource} and
- * the agent backend the catalog applies to. The Discover sub-tab filters by
- * the active session's agent so a Claude session never sees a Codex catalog.
- *
- * v1 seeds one row at startup (the official Claude catalog) and never inserts
- * or deletes after that. The fetch-status columns (`status`, `last_fetched_at`,
- * `fetch_error`) are written by the marketplace service on each background
- * pre-clone / on-demand refresh.
- *
- * Matches the SQLite-via-DatabaseManager pattern used by `repo-store.ts` and
- * `secret-store.ts`. Marketplaces are queryable domain data, not credentials,
- * so this is the right layer — not a JSON-file store like `credential-store.ts`.
- */
-
 import type { DatabaseManager } from "../shared/database.js";
 import type {
   AgentId,
@@ -54,7 +36,6 @@ export class MarketplaceStore {
     return info;
   }
 
-  /** List every marketplace, optionally filtered by agent. Sorted by id. */
   list(agentId?: AgentId): MarketplaceInfo[] {
     const rows = (agentId
       ? this.db.prepare("SELECT * FROM marketplaces WHERE agent_id = ? ORDER BY id").all(agentId)
@@ -69,11 +50,6 @@ export class MarketplaceStore {
     return row ? this.fromRow(row) : undefined;
   }
 
-  /**
-   * Insert a new marketplace, or no-op if the id already exists. Used at
-   * startup to seed the official catalogs without overwriting prior fetch
-   * state. v2 will add a true `add` verb for user-added marketplaces.
-   */
   seedIfMissing(info: Pick<MarketplaceInfo, "id" | "source" | "agentId" | "autoUpdate">): void {
     this.db.prepare(
       `INSERT OR IGNORE INTO marketplaces (id, source, agent_id, auto_update, status)
@@ -81,7 +57,6 @@ export class MarketplaceStore {
     ).run(info.id, JSON.stringify(info.source), info.agentId, info.autoUpdate ? 1 : 0);
   }
 
-  /** Record the outcome of a catalog fetch attempt. */
   setFetchStatus(
     id: string,
     status: MarketplaceStatus,

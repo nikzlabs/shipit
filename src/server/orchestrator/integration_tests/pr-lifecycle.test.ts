@@ -1,8 +1,3 @@
-/**
- * Integration tests for the PR lifecycle flow:
- * - POST /api/sessions/:id/pr/quick (one-click PR creation)
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -37,7 +32,6 @@ beforeEach(async () => {
 
   githubAuth = new StubGitHubAuthManager();
 
-  // Create a session with a git repo + initial commit
   sessionId = crypto.randomUUID();
   sessionDir = path.join(tmpDir, "sessions", sessionId);
   fs.mkdirSync(sessionDir, { recursive: true });
@@ -46,7 +40,6 @@ beforeEach(async () => {
   const git = new GitManager(sessionDir);
   await git.init();
 
-  // Create an initial commit so the repo has a branch
   fs.writeFileSync(path.join(sessionDir, "README.md"), "# Test\n");
   execSync("git add README.md && git commit -m 'initial'", {
     cwd: sessionDir,
@@ -134,7 +127,6 @@ describe("POST /api/sessions/:id/pr/quick", () => {
   it("creates a new PR when none exists", async () => {
     await githubAuth.setToken("test-token");
 
-    // Set origin to a GitHub URL and create a feature branch
     const git = new GitManager(sessionDir);
     await git.addRemote("origin", "https://github.com/test-user/test-repo.git");
 
@@ -148,10 +140,8 @@ describe("POST /api/sessions/:id/pr/quick", () => {
       env: { ...process.env, HOME: tmpDir },
     });
 
-    // No existing PR
     githubAuth.setPrData(null);
 
-    // Rebuild app with a createGitManager that stubs push and listRemoteBranches
     await app.close();
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),

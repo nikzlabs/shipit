@@ -1,10 +1,7 @@
-// ---- Review comment types (unified surface, server-persisted per session/file) ----
-
 export type ReviewStatus = "draft" | "sent";
 
 export type FileReviewType = "code" | "markdown";
 
-/** A line-anchored comment inside a code file review. */
 export interface LineReviewComment {
   id: string;
   kind: "line";
@@ -12,14 +9,7 @@ export interface LineReviewComment {
   text: string;
 }
 
-/**
- * A selection-anchored comment inside a markdown file review. The comment is
- * anchored to a specific run of text the user highlighted; `contextBefore` and
- * `contextAfter` are small windows of surrounding text used to disambiguate
- * when the same `quotedText` appears multiple times in the document. When the
- * doc drifts so that `quotedText` can no longer be located, the comment is
- * rendered as orphaned rather than silently re-anchored to the wrong place.
- */
+/** Context disambiguates repeated quotes; missing quotes render orphaned, not re-anchored. */
 export interface SelectionReviewComment {
   id: string;
   kind: "selection";
@@ -31,37 +21,18 @@ export interface SelectionReviewComment {
 
 export type ReviewComment = LineReviewComment | SelectionReviewComment;
 
-/**
- * docs/203 — the persisted payload of a plain-text AI review card. One card per
- * review run, keyed by `reviewId`; the parent's re-review patches the same
- * record in place (it never stacks a second card). The reviewer returns
- * `markdown` only — no line/selection anchoring, no immutable snapshot — and the
- * card renders it verbatim. `legacy` rows are degraded mappings of the
- * pre-docs/203 `agent_review` column (file + finding count, no markdown).
- */
+/** Re-review updates the same reviewId. Legacy rows have no markdown. */
 export interface AiReviewCard {
   reviewId: string;
   filePath: string;
-  /** The reviewer's full review as markdown (rendered verbatim in the card). */
   markdown: string;
-  /** Short attribution, e.g. "Reviewed by Codex" / "Reviewed by Claude". */
   reviewerLabel: string;
-  /** True once the parent's re-review patched this card. */
   reReviewed?: boolean;
-  /** True for a degraded legacy `agent_review` row (no markdown available). */
   legacy?: boolean;
-  /** Finding count — only meaningful for a degraded legacy row. */
   findingCount?: number;
   createdAt: string;
 }
 
-/**
- * A review of a single file inside one session. Drafts collect comments from
- * the user; sending freezes the draft and dispatches a structured prompt to
- * the agent. Every comment is human-authored — the AI write path
- * (`submit_review_comments`) was removed in docs/203 + docs/220, so a review
- * has no author discriminator.
- */
 export interface FileReview {
   id: string;
   sessionId: string;
@@ -69,23 +40,15 @@ export interface FileReview {
   fileType: FileReviewType;
   status: ReviewStatus;
   comments: ReviewComment[];
-  /** SHA-256 of the file content at the time the draft was created. */
+  /** SHA-256 when the draft was created. */
   docSnapshotHash: string;
   createdAt: string;
   updatedAt: string;
   sentAt?: string;
-  /**
-   * docs/260 — the free-text note the user attached in the send dialog: the
-   * feedback that belongs to no single line (a summary, a constraint, why the
-   * review is happening). Composed at send time, so it is absent on a draft and
-   * set only on a sent review; absent too when the user sent without one.
-   */
+  /** Optional user note added when sending; absent on drafts. */
   note?: string;
 }
 
-// ---- Legacy client-side file comment types (DiffPanel only) ----
-
-/** Line-anchored comment used by DiffPanel for per-staged-change feedback. */
 export interface LineComment {
   id: string;
   kind: "line";

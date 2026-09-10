@@ -16,11 +16,6 @@ import {
 } from "./shipit-source.js";
 import { ServiceError } from "./types.js";
 
-/**
- * A scriptable fake `git` that maps `args.join(" ")` → stdout, or throws when
- * the key maps to an Error. Lets us exercise the source service without a real
- * checkout.
- */
 function fakeGit(map: Record<string, string | Error>): ShipitSourceDeps["runGit"] {
   return async (_dir, args) => {
     const key = args.join(" ");
@@ -54,7 +49,6 @@ describe("isRedactedSourcePath", () => {
     expect(isRedactedSourcePath("home/.netrc")).toBe(true);
     expect(isRedactedSourcePath("id_rsa")).toBe(true);
 
-    // Source files that merely mention "credential"/"env" must stay readable.
     expect(isRedactedSourcePath("src/server/orchestrator/credential-store.ts")).toBe(false);
     expect(isRedactedSourcePath("src/server/env-config.ts")).toBe(false);
     expect(isRedactedSourcePath("README.md")).toBe(false);
@@ -114,7 +108,6 @@ describe("getShipitSourceStatus", () => {
       }),
     );
     expect(status.remoteUrl).toBe("https://github.com/acme/shipit.git");
-    // The PAT must never survive into the displayed/stored status.
     expect(JSON.stringify(status)).not.toContain("github_pat_SECRET123");
   });
 
@@ -442,9 +435,6 @@ describe("ensureShipitSourceRepoReady", () => {
   });
 
   it("reuses the user's existing entry instead of adding a duplicate for a credentialed URL", async () => {
-    // The user already added the clean URL via the home screen; the host
-    // checkout's origin carries an embedded PAT (and the same repo, different
-    // casing / `.git`). The credentialed URL must resolve to the SAME entry.
     const userUrl = "https://github.com/acme/shipit.git";
     const store = new Map<string, { status: string }>([[userUrl, { status: "ready" }]]);
     const added: string[] = [];
@@ -461,8 +451,8 @@ describe("ensureShipitSourceRepoReady", () => {
         ensureBareCache: async () => { throw new Error("should not clone — already ready"); },
       },
     );
-    expect(added).toEqual([]); // no duplicate add
-    expect(key).toBe(userUrl); // reuses the user's clean entry verbatim
+    expect(added).toEqual([]);
+    expect(key).toBe(userUrl);
   });
 
   it("registers a credential-free key (never the embedded PAT) when no entry exists", async () => {
@@ -484,7 +474,6 @@ describe("ensureShipitSourceRepoReady", () => {
     );
     expect(key).toBe("https://github.com/acme/shipit.git");
     expect(added).toEqual(["https://github.com/acme/shipit.git"]);
-    // Nothing the store/cache ever sees may contain the PAT.
     expect(JSON.stringify({ key, added, clonedFrom })).not.toContain("github_pat_SECRET");
   });
 });

@@ -1,17 +1,3 @@
-/**
- * planning#380 — `reloadEgress` answers for the AGENT, not for whatever it
- * happened to touch.
- *
- * The method has two halves: it relaunches the agent's Tier B resolver + Tier C
- * proxy (only possible while the agent container is running), and it refreshes
- * every running Compose service's sidecar. It used to return `true` whenever it
- * reached the second half, so a session whose agent container was stopped got
- * "reloaded" for a reload that never touched an agent. Its one reporting caller
- * (`computeEgressGrantOutcome`'s `reloaded`) was insulated by a check that runs
- * first — but the value was still a claim nothing backed, and the docstring
- * promised it.
- */
-
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const { reloadEgressSidecars, containComposeServices } = vi.hoisted(() => ({
@@ -85,10 +71,7 @@ describe("reloadEgress — the return value is the agent's reload (planning#380)
     manager.get(SESSION_ID)!.status = "stopped";
 
     await expect(manager.reloadEgress(SESSION_ID)).resolves.toBe(false);
-    // Nothing was relaunched for the agent — the honest half of the old `true`.
     expect(reloadEgressSidecars).not.toHaveBeenCalled();
-    // The services still get the new allowlist; that half is unchanged, and it
-    // reports its own failures by throwing rather than through this value.
     expect(containComposeServices).toHaveBeenCalledTimes(1);
   });
 

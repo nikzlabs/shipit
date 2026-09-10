@@ -74,8 +74,6 @@ describe("isTitleLockedAgainst — the whole precedence rule (docs/250 reqs 4, 7
   });
 
   it("leaves an automatic or born-with title replaceable by everyone (req 7)", () => {
-    // No source is what an `explicitTitle` from the seeding issue / a parent
-    // agent records, so those must NOT lock — they describe the starting task.
     expect(isTitleLockedAgainst({}, "agent")).toBe(false);
     expect(isTitleLockedAgainst({}, undefined)).toBe(false);
   });
@@ -109,8 +107,6 @@ describe("renameSessionByAgent", () => {
     expect(emitted.type).toBe("session_renamed_card");
     expect(emitted.sessionId).toBe("s1");
     expect(emitted.card).toMatchObject({ from: "Old", to: "New" });
-    // emitChatCard persists in the same call — a card that only emitted would
-    // render live and disappear on the next history load.
     expect(spies.replaceInProgress).toHaveBeenCalled();
   });
 
@@ -122,7 +118,6 @@ describe("renameSessionByAgent", () => {
       renameSessionByAgent(deps, "s1", "Agent's idea");
     } catch (err) {
       expect((err as ServiceError).statusCode).toBe(409);
-      // The message has to name the winning title so the agent stops trying.
       expect((err as ServiceError).message).toContain("My name for this");
     }
     expect(state.title).toBe("My name for this");
@@ -143,7 +138,6 @@ describe("renameSessionByAgent", () => {
 
     renameSessionByAgent(deps, "s1", "Completely different work");
 
-    // A PR is usually already open on this branch; moving it would strand the PR.
     expect(spies.setBranch).not.toHaveBeenCalled();
     expect(state.branch).toBe("shipit/keep-me-abc123");
   });
@@ -153,7 +147,6 @@ describe("renameSessionByAgent", () => {
     const tooLong = "x".repeat(MAX_SESSION_TITLE_LENGTH + 1);
 
     expect(() => renameSessionByAgent(deps, "s1", tooLong)).toThrow(/maximum is 60/);
-    // Silent truncation would leave the agent believing it set the long title.
     expect(state.title).toBe("Old");
   });
 
@@ -179,12 +172,6 @@ describe("renameSessionByAgent", () => {
     expect(spies.sseBroadcast).not.toHaveBeenCalled();
   });
 
-  // CLAUDE.md — a card firing after its turn finalized MUST NOT take the
-  // in-progress path: `persistTurnInProgress` would revive the finished turn as a
-  // duplicate in_progress set, which the next turn's first `replaceInProgress`
-  // deletes wholesale, card included. `emitChatCard` branches on `runner.running`
-  // to pick `append` instead; this pins that we hand it a real runner so that
-  // branch can actually be taken.
   it("appends the card as a final row when no turn is running", () => {
     const { deps, spies } = buildDeps({ id: "s1", title: "Old" }, { running: false });
 

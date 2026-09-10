@@ -1,11 +1,3 @@
-/**
- * docs/262 req 20 — the card's copy for a command that cannot be surfaced.
- *
- * The property under test is that this is a pure re-derivation: it reads the
- * declaration and the live manifests off disk and activates nothing, so a
- * declaration that cannot work says so before any round has run.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -25,14 +17,6 @@ afterEach(() => {
   fs.rmSync(stateDir, { recursive: true, force: true });
 });
 
-/**
- * Publish a live generation, record included. The record is not decoration
- * here: every reader through the `active` symlink checks the generation's
- * recorded `source` against the declaration, so a generation without one reads
- * as absent and this collector would correctly surface no commands at all.
- * `source` is the lowercased `owner/repo` (`destinationKey`), which is why it
- * is passed separately from the directory's own spelling.
- */
 function publish(repoName: string, manifest: string, source = "acme/tools"): void {
   const dir = path.join(stateDir, "plugins", repoName, "generations", "abc");
   fs.mkdirSync(dir, { recursive: true });
@@ -73,9 +57,6 @@ plugins:
     expect(result.size).toBe(0);
   });
 
-  // `from:` matches case-insensitively while the checkout directory carries the
-  // declaration's own spelling — the defect the skills path had to fix, and the
-  // reason this goes through the resolver rather than through `use.from`.
   it("reads a tracked repo's live manifest under the DECLARATION's spelling", () => {
     publish("Tools", "exports:\n  plugins:\n    a:\n      cli:\n        git: cli\n");
     const result = issues(`
@@ -116,8 +97,6 @@ exports:
   });
 
   it("stays silent for a repository that has not been fetched yet", () => {
-    // No manifest means no surfaced commands, so nothing can collide — and a
-    // pending fetch must not read as a declaration problem (req 13).
     const result = issues(`
 plugins:
   repos:

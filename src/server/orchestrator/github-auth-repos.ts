@@ -1,28 +1,14 @@
-/**
- * GitHub repository operations — extracted from GitHubAuthManager.
- * Functions in this module handle repo creation, listing, and search.
- */
-
 import type { GitHubRepoResult } from "./github-auth.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { fetchGitHub, parseGitHubError } from "./github-api.js";
 
-/**
- * Create a new GitHub repository via the API.
- * Returns repo details on success, error message on failure.
- */
 export async function createRepo(
   token: string,
   name: string,
   options: { description?: string; isPrivate?: boolean; owner?: string } = {},
 ): Promise<GitHubRepoResult> {
   try {
-    // `owner` selects an organization: POST /orgs/{org}/repos creates the repo
-    // inside that org, whereas the bare POST /user/repos endpoint creates it
-    // under the authenticated user's personal account. Callers omit `owner`
-    // (or pass the personal login) for a personal repo. If the user lacks
-    // repo-creation rights in the org, GitHub answers 403 and the message is
-    // surfaced verbatim via parseGitHubError below.
+    // Omit owner for a personal repo; a supplied owner selects an organization.
     const endpoint = options.owner
       ? `https://api.github.com/orgs/${encodeURIComponent(options.owner)}/repos`
       : "https://api.github.com/user/repos";
@@ -65,10 +51,6 @@ export async function createRepo(
   }
 }
 
-/**
- * List the authenticated user's repos, sorted by most recently pushed.
- * Used to populate the repo selector before the user types a search query.
- */
 export async function listUserRepos(token: string): Promise<{
   fullName: string;
   description: string | null;
@@ -97,12 +79,6 @@ export async function listUserRepos(token: string): Promise<{
   }
 }
 
-/**
- * List the organizations the authenticated user belongs to, for the new-repo
- * owner picker. Returns every membership — including orgs where the user may
- * lack repo-creation rights; the create call surfaces GitHub's 403 if so.
- * Never throws (returns `[]` on error) so the dialog degrades to personal-only.
- */
 export async function listOrgs(token: string): Promise<{ login: string; avatarUrl: string }[]> {
   try {
     const res = await fetchGitHub("https://api.github.com/user/orgs?per_page=100", token);
@@ -114,14 +90,6 @@ export async function listOrgs(token: string): Promise<{ login: string; avatarUr
   }
 }
 
-/**
- * docs/162 — check whether the authenticated user can push to `owner/repo`.
- *
- * Uses `GET /repos/{owner}/{repo}`, whose `permissions` block reflects the
- * *authenticated* user's effective access (push / maintain / admin all imply
- * write). Returns `{ canWrite, reason }` — never throws, so the Ops fix-session
- * spawn can degrade to a structured incident report instead of erroring.
- */
 export async function checkRepoWriteAccess(
   token: string,
   owner: string,
@@ -151,9 +119,6 @@ export async function checkRepoWriteAccess(
   }
 }
 
-/**
- * Search the user's accessible repos by name.
- */
 export async function searchRepos(token: string, query: string): Promise<{
   fullName: string;
   description: string | null;

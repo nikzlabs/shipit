@@ -7,7 +7,6 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** Helper: render the banner after a successful connection so banners become visible. */
 function renderAfterConnect(
   props: Parameters<typeof ConnectionBanner>[0],
 ) {
@@ -17,8 +16,6 @@ function renderAfterConnect(
 }
 
 describe("ConnectionBanner", () => {
-  // --- Initial load: nothing visible ---
-
   it("renders nothing when status is open", () => {
     const { container } = render(<ConnectionBanner status="open" />);
     expect(container.innerHTML).toBe("");
@@ -40,12 +37,9 @@ describe("ConnectionBanner", () => {
     expect(screen.queryByText("Reconnected")).not.toBeInTheDocument();
   });
 
-  // --- Grace period: banner hidden during delay ---
-
   it("does not show disconnect banner immediately after drop", () => {
     vi.useFakeTimers();
     const { rerender } = renderAfterConnect({ status: "closed" });
-    // Before grace period fires, nothing visible
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     rerender(<ConnectionBanner status="closed" />);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -73,7 +67,6 @@ describe("ConnectionBanner", () => {
   it("cancels disconnect banner if reconnected within grace period", () => {
     vi.useFakeTimers();
     const { rerender } = renderAfterConnect({ status: "closed" });
-    // Reconnect before the grace period fires
     act(() => {
       vi.advanceTimersByTime(500);
     });
@@ -83,8 +76,6 @@ describe("ConnectionBanner", () => {
     });
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
-
-  // --- Styling ---
 
   it("uses yellow styling for connecting state", () => {
     vi.useFakeTimers();
@@ -106,8 +97,6 @@ describe("ConnectionBanner", () => {
     expect(banner.className).toContain("error");
   });
 
-  // --- Attempt count ---
-
   it("shows attempt number when reconnectAttempt > 1", () => {
     vi.useFakeTimers();
     renderAfterConnect({ status: "closed", reconnectAttempt: 3 });
@@ -125,8 +114,6 @@ describe("ConnectionBanner", () => {
     });
     expect(screen.queryByText(/attempt/)).not.toBeInTheDocument();
   });
-
-  // --- Reconnect button ---
 
   it("renders Reconnect now button when closed and onReconnect provided", () => {
     vi.useFakeTimers();
@@ -166,8 +153,6 @@ describe("ConnectionBanner", () => {
     expect(screen.queryByText("Reconnect now")).not.toBeInTheDocument();
   });
 
-  // --- Reconnected flash ---
-
   it("shows 'Reconnected' when transitioning from closed to open", () => {
     vi.useFakeTimers();
     const { rerender } = renderAfterConnect({ status: "closed" });
@@ -197,17 +182,13 @@ describe("ConnectionBanner", () => {
     expect(banner.className).toContain("success");
   });
 
-  // --- Compact mode (mobile) ---
-
   it("uses short copy and label in compact mode", () => {
     vi.useFakeTimers();
     renderAfterConnect({ status: "closed", reconnectAttempt: 3, onReconnect: vi.fn(), compact: true });
     act(() => {
       vi.advanceTimersByTime(1500);
     });
-    // Short message without the "waiting to reconnect" verbiage.
     expect(screen.getByText("Connection lost (3)")).toBeInTheDocument();
-    // Short button label so it fits a narrow screen.
     expect(screen.getByText("Reconnect")).toBeInTheDocument();
     expect(screen.queryByText("Reconnect now")).not.toBeInTheDocument();
   });

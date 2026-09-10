@@ -1,7 +1,3 @@
-/**
- * Barrel for the voice provider/cache modules (docs/144).
- */
-
 export * from "./providers/types.js";
 export { createWhisperProvider } from "./providers/whisper.js";
 export { createOpenAiTtsProvider } from "./providers/openai-tts.js";

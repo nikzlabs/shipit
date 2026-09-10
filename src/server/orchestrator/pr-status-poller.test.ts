@@ -33,8 +33,6 @@ vi.mock("./workflow-loader.js", async (importOriginal: () => Promise<typeof impo
 
 const mockLoadWorkflows = vi.mocked(workflowLoader.loadAndParseWorkflows);
 
-// ---- Tests ----
-
 describe("parsePrNode", () => {
   it("parses a successful PR node into PrStatusSummary", () => {
     const node = makeGraphQLPrNode();
@@ -147,9 +145,6 @@ describe("parsePrNode", () => {
     expect(result.mergeable).toBe("unknown");
   });
 
-  // docs/174 — review decision mapping. `null` (no review requirement) and any
-  // unexpected value collapse to "none" so the merge gate treats them as
-  // non-blocking.
   it.each([
     ["APPROVED", "approved"],
     ["CHANGES_REQUESTED", "changes_requested"],
@@ -399,7 +394,6 @@ describe("buildPrStatusQuery (docs/155 Phase 1)", () => {
   it("emits a bulk pullRequests connection with light fields only", () => {
     const query = buildPrStatusQuery({ first: 7 });
     expect(query).toContain("pullRequests(first: 7, states: [OPEN]");
-    // Conversation fields live on focused aliases, never in the bulk view.
     expect(query).not.toContain("reviewThreads");
     expect(query).not.toContain("focused");
     expect(query).not.toContain("coverage");
@@ -414,8 +408,6 @@ describe("buildPrStatusQuery (docs/155 Phase 1)", () => {
     const query = buildPrStatusQuery({ first: 5, focusedPrNumbers: [42, 99] });
     expect(query).toContain("focused0: pullRequest(number: 42)");
     expect(query).toContain("focused1: pullRequest(number: 99)");
-    // Conversation fields are on the focused aliases (we asked for two, so the
-    // selection appears twice — once per alias).
     const reviewThreadOccurrences = query.match(/reviewThreads/g)?.length ?? 0;
     expect(reviewThreadOccurrences).toBe(2);
   });
@@ -424,18 +416,13 @@ describe("buildPrStatusQuery (docs/155 Phase 1)", () => {
     const query = buildPrStatusQuery({ first: 5, coveragePrNumbers: [7, 8] });
     expect(query).toContain("coverage0: pullRequest(number: 7)");
     expect(query).toContain("coverage1: pullRequest(number: 8)");
-    // Coverage aliases are light-only — conversation stays on focused aliases.
     expect(query).not.toContain("reviewThreads");
   });
 
   it("does not emit a duplicate coverage alias for a PR already focused", () => {
-    // A PR-tab-active session is both focused (conversation) and tracked
-    // (coverage). It must get exactly one alias — the conversation-carrying
-    // focused one — not a redundant light coverage alias.
     const query = buildPrStatusQuery({ first: 5, focusedPrNumbers: [42], coveragePrNumbers: [42, 99] });
     expect(query).toContain("focused0: pullRequest(number: 42)");
     expect(query).toContain("coverage0: pullRequest(number: 99)");
-    // Only one alias mentions number 42 (the focused one), not a coverage dup.
     const occurrences42 = query.match(/pullRequest\(number: 42\)/g)?.length ?? 0;
     expect(occurrences42).toBe(1);
   });
@@ -516,7 +503,6 @@ describe("PrStatusPoller", () => {
     poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
     poller.trackSession("s1", "https://github.com/owner/repo");
 
-    // Initial poll fires immediately
     await vi.advanceTimersByTimeAsync(0);
 
     expect(githubAuth.graphqlQuery).toHaveBeenCalled();
@@ -546,11 +532,9 @@ describe("PrStatusPoller", () => {
     poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
     poller.trackSession("s1", "https://github.com/owner/repo");
 
-    // First poll
     await vi.advanceTimersByTimeAsync(0);
     expect(sseBroadcast).toHaveBeenCalledTimes(1);
 
-    // Second poll — same data, no broadcast
     await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
     expect(sseBroadcast).toHaveBeenCalledTimes(1);
   });
@@ -600,9 +584,6 @@ describe("PrStatusPoller", () => {
   });
 
   it("emits a focused alias only for the active-PR-tab session (docs/155 Phase 1b)", async () => {
-    // The bulk view is always light. Conversation fields appear in a
-    // `focused${i}: pullRequest(number: N)` alias when (and only when) that
-    // session's PR tab is active.
     const graphqlResult = {
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode(CONVERSATION_OVERRIDES)] } } },
     };
@@ -616,24 +597,18 @@ describe("PrStatusPoller", () => {
 
     const calls = githubAuth.graphqlQuery as ReturnType<typeof vi.fn>;
 
-    // Initial poll: PR tab is closed, query is light-only.
     await vi.advanceTimersByTimeAsync(0);
     const initialQuery = calls.mock.calls.at(-1)?.[0] as string;
     expect(initialQuery).toMatch(/pullRequests\(first: \d+, states: \[OPEN\]/);
     expect(initialQuery).not.toContain("focused");
     expect(initialQuery).not.toContain("reviewThreads");
 
-    // Opening the PR tab kicks an immediate poll. `lastKnown` already has
-    // the PR number from the initial bulk poll, so the focused alias lands
-    // on this call.
     poller.setPrTabActive("s1", true);
     await vi.advanceTimersByTimeAsync(0);
     const focusedQuery = calls.mock.calls.at(-1)?.[0] as string;
     expect(focusedQuery).toContain("focused0: pullRequest(number: 42)");
     expect(focusedQuery).toContain("reviewThreads");
 
-    // Closing the PR tab drops the focused alias on the next tick. The PR is
-    // settled, so the next poll lands at slow cadence (120 s).
     poller.setPrTabActive("s1", false);
     await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
     const settledQuery = calls.mock.calls.at(-1)?.[0] as string;
@@ -642,9 +617,6 @@ describe("PrStatusPoller", () => {
   });
 
   it("caps bulk first:N to tracked-session count with a discovery floor (docs/155 Phase 1a)", async () => {
-    // Single tracked session → first:N hits the discovery floor (5), not the
-    // hard cap (30). Confirms we don't pay for 30 PRs of light data when
-    // there's only one session being watched.
     githubAuth = makeGitHubAuth({ data: { repository: { pullRequests: { nodes: [] } } } });
     sessionManager = makeSessionManager([
       { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
@@ -660,8 +632,6 @@ describe("PrStatusPoller", () => {
   });
 
   it("scales bulk first:N up with tracked-session count (docs/155 Phase 1a)", async () => {
-    // Ten tracked sessions on one repo → first:N follows the count, bounded
-    // below by the floor and above by the cap (30).
     githubAuth = makeGitHubAuth({ data: { repository: { pullRequests: { nodes: [] } } } });
     const sessions = Array.from({ length: 10 }, (_, i) => ({
       id: `s${i}`,
@@ -680,8 +650,6 @@ describe("PrStatusPoller", () => {
   });
 
   it("caps bulk first:N at 30 even when tracked sessions exceed it (docs/155 Phase 1a)", async () => {
-    // 50 tracked sessions → first:N pinned at 30; the rest fall through to
-    // verifyMissingPr if their PRs aren't in the response.
     githubAuth = makeGitHubAuth({ data: { repository: { pullRequests: { nodes: [] } } } });
     const sessions = Array.from({ length: 50 }, (_, i) => ({
       id: `s${i}`,
@@ -700,9 +668,6 @@ describe("PrStatusPoller", () => {
   });
 
   it("aliases every tracked session's known PR by number for coverage (discovery fix)", async () => {
-    // Two tracked sessions whose PRs have both been observed once. Every
-    // subsequent poll must alias them by number so neither can be windowed
-    // out of the bulk view on a busy repo.
     githubAuth = makeGitHubAuth({
       data: {
         repository: {
@@ -723,10 +688,8 @@ describe("PrStatusPoller", () => {
     poller.trackSession("s1", "https://github.com/owner/repo");
     poller.trackSession("s2", "https://github.com/owner/repo");
 
-    // Poll 1 learns both PR numbers.
     await vi.advanceTimersByTimeAsync(0);
 
-    // Poll 2 must carry coverage aliases for both known PRs.
     await poller.forceRefreshSession("s1");
     const calls = githubAuth.graphqlQuery as ReturnType<typeof vi.fn>;
     const secondQuery = calls.mock.calls.at(-1)?.[0] as string;
@@ -735,7 +698,6 @@ describe("PrStatusPoller", () => {
   });
 
   it("surfaces a tracked open PR via its coverage alias when it falls outside the bulk window (discovery fix)", async () => {
-    // Poll 1: s1's PR is in the bulk view, so its number (42) is learned.
     githubAuth = makeGitHubAuth({
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
     });
@@ -752,10 +714,6 @@ describe("PrStatusPoller", () => {
 
     const calls = githubAuth.graphqlQuery as ReturnType<typeof vi.fn>;
 
-    // Poll 2: the repo now has more open PRs than the window, and s1's PR
-    // sorts out of the bulk `first: N` view entirely. It comes back ONLY as a
-    // coverage alias (a different, more-recently-updated PR fills the bulk
-    // view). The title changes so a successful match produces a broadcast.
     (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: {
         repository: {
@@ -769,12 +727,9 @@ describe("PrStatusPoller", () => {
 
     await poller.forceRefreshSession("s1");
 
-    // The forced poll aliased s1's known PR by number...
     const secondQuery = calls.mock.calls.at(-1)?.[0] as string;
     expect(secondQuery).toContain("coverage0: pullRequest(number: 42)");
 
-    // ...and s1 stays open: never routed to the REST merged/closed verify,
-    // never promoted, and re-broadcast from the coverage node.
     expect(githubAuth.findPullRequestAnyState).not.toHaveBeenCalled();
     expect(sseBroadcast).toHaveBeenLastCalledWith("pr_status", expect.objectContaining({
       updates: expect.arrayContaining([
@@ -789,7 +744,6 @@ describe("PrStatusPoller", () => {
   });
 
   it("does not surface a merged PR through its coverage alias — merged detection still owns terminal state (discovery fix)", async () => {
-    // Poll 1: s1's PR is open and in the bulk view → number learned.
     githubAuth = makeGitHubAuth({
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
     });
@@ -800,10 +754,6 @@ describe("PrStatusPoller", () => {
     poller.trackSession("s1", "https://github.com/owner/repo");
     await vi.advanceTimersByTimeAsync(0);
 
-    // Poll 2: the PR merged. It's gone from the OPEN bulk view, and the
-    // coverage alias (fetched by number, any state) reports state MERGED. The
-    // coverage path must NOT treat a non-OPEN alias as a live match — the PR
-    // must fall through to verifyMissingPr, which owns terminal promotion.
     (githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mockResolvedValue({
       number: 42,
       url: "https://github.com/owner/repo/pull/42",
@@ -826,15 +776,11 @@ describe("PrStatusPoller", () => {
 
     await poller.forceRefreshSession("s1", { waitForMissingVerify: true });
 
-    // The merged alias did NOT short-circuit the verify path...
     expect(githubAuth.findPullRequestAnyState).toHaveBeenCalled();
-    // ...and the session was promoted to merged, not left/re-broadcast as open.
     expect(poller.getStatus("s1")?.prState).toBe("merged");
   });
 
   describe("docs/218: merged head SHA capture (auto-reset anchor)", () => {
-    // The PR is absent from the OPEN bulk view (it merged), so the session
-    // routes through the REST verify which owns terminal promotion.
     function mergedRestResult(headSha: string | null) {
       return {
         number: 42,
@@ -881,25 +827,13 @@ describe("PrStatusPoller", () => {
 
       await poller.forceRefreshSession("s1", { waitForMissingVerify: true });
 
-      // Still promoted to merged — the missing anchor must not block merge
-      // detection; it only disables the later auto-reset for this session.
       expect(poller.getStatus("s1")?.prState).toBe("merged");
       expect(sessionManager.setMergedHeadSha).not.toHaveBeenCalled();
     });
   });
 
-  // A GitHub repo transfer/rename (e.g. nicolasalt/shipit → nikzlabs/shipit)
-  // leaves the cached owner stale. The live open-PR view still resolves via
-  // GitHub's redirect, but the REST merge probe filters head=<owner>:<branch>
-  // and silently stops detecting merges. The poller targets the REST calls at
-  // the canonical `nameWithOwner` WITHOUT mutating any persisted identity — so
-  // sessions never get orphaned from their repo record.
   describe("repo transfer canonical-owner targeting", () => {
     it("uses the canonical owner for the REST merge probe and detects the merge", async () => {
-      // The repo was transferred to `nikzlabs`. GitHub resolves the old owner
-      // through its redirect and reports the canonical nameWithOwner. The PR is
-      // no longer in the OPEN bulk view (it merged), so the session routes to the
-      // REST verify — which must target the NEW owner.
       githubAuth = makeGitHubAuth({
         data: {
           repository: {
@@ -928,26 +862,16 @@ describe("PrStatusPoller", () => {
       poller.trackSession("s1", "https://github.com/nicolasalt/shipit.git");
       await poller.forceRefreshSession("s1", { waitForMissingVerify: true });
 
-      // The REST merge probe used the NEW owner — without the canonical retarget
-      // it would have queried `nicolasalt` and matched nothing.
       expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledWith(
         "nikzlabs",
         "shipit",
         "shipit/abc-feature",
       );
-      // The merge was detected and promoted.
       expect(poller.getStatus("s1")?.prState).toBe("merged");
-      // CRITICAL: no persisted identity was mutated — the session keeps its
-      // original remoteUrl so the client still groups it under its repo record.
-      // (Rewriting it here is what previously orphaned every session.)
       expect(sessionManager.setRemoteUrl).not.toHaveBeenCalled();
     });
 
     it("uses the canonical owner for the post-merge fast-path verify (forceVerifySessionPrState)", async () => {
-      // planning#161: the post-merge fast path bypasses pollRepo (it must, to avoid
-      // the lagging OPEN bulk view), so it has to resolve the canonical owner
-      // itself. Without that, findPullRequestAnyState filters on the OLD owner
-      // and the just-merged PR is missed until the next regular poll.
       githubAuth = makeGitHubAuth({
         data: {
           repository: {
@@ -974,19 +898,14 @@ describe("PrStatusPoller", () => {
 
       poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
       poller.trackSession("s1", "https://github.com/nicolasalt/shipit.git");
-      // Drive the merge through the post-merge fast path, not forceRefreshSession.
       await poller.forceVerifySessionPrState("s1");
 
-      // The REST merge probe used the NEW owner — without the canonical retarget
-      // it would have queried `nicolasalt` and matched nothing.
       expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledWith(
         "nikzlabs",
         "shipit",
         "shipit/abc-feature",
       );
-      // The merge was detected and promoted via the fast path alone.
       expect(poller.getStatus("s1")?.prState).toBe("merged");
-      // No persisted identity was mutated — the session keeps its original remoteUrl.
       expect(sessionManager.setRemoteUrl).not.toHaveBeenCalled();
     });
 
@@ -1012,7 +931,6 @@ describe("PrStatusPoller", () => {
     });
   });
 
-  // docs/202 — superseded-PR suppression makes re-arm stick.
   describe("re-arm superseded-PR suppression", () => {
     const SUPERSEDED_MERGED = {
       number: 42,
@@ -1027,8 +945,6 @@ describe("PrStatusPoller", () => {
     };
 
     it("does NOT re-promote the superseded merged PR after reArm (suppression holds)", async () => {
-      // The branch's only PR is the OLD merged one; the OPEN bulk view is empty
-      // and the REST verify returns the merged PR — exactly the re-promotion trap.
       githubAuth = makeGitHubAuth(
         { data: { repository: { pullRequests: { nodes: [] } } } },
         SUPERSEDED_MERGED,
@@ -1038,13 +954,10 @@ describe("PrStatusPoller", () => {
       ]);
       poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
 
-      // Re-arm records #42 as superseded and resumes tracking (fires a poll).
       poller.reArm("s1", 42);
       await vi.advanceTimersByTimeAsync(0);
-      // Force the REST verify path explicitly to await it.
       await poller.forceVerifySessionPrState("s1");
 
-      // The session must NOT have been re-promoted to merged.
       expect(poller.getStatus("s1")).toBeUndefined();
       const promotedMerged = sseBroadcast.mock.calls.some(
         ([event, payload]) =>
@@ -1069,7 +982,6 @@ describe("PrStatusPoller", () => {
       await poller.forceVerifySessionPrState("s1");
       expect(poller.getStatus("s1")).toBeUndefined();
 
-      // The NEW PR (#99, open) shows up in the bulk view — different number.
       (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
         data: {
           repository: {
@@ -1085,16 +997,6 @@ describe("PrStatusPoller", () => {
     });
 
     it("converges to merged when the NEW PR opens and merges between polls (never seen open)", async () => {
-      // The bug: a re-armed session (superseded #42) opens a NEW PR via the gh
-      // shim, the user merges it manually on GitHub, and the poller never
-      // observes it OPEN (e.g. tab closed, or it opens-and-merges between
-      // polls). The new PR is therefore absent from the OPEN bulk view forever.
-      //
-      // Before the fix, the re-arm-time verify found only the superseded #42,
-      // returned early (suppression), and the missing-PR branch ARMED
-      // `verifiedAbsent` — so every subsequent periodic poll skipped the REST
-      // verify and the merge of the different-numbered new PR was never caught.
-      // The session stayed stuck with no PR snapshot — the gray "Branch" badge.
       githubAuth = makeGitHubAuth(
         { data: { repository: { pullRequests: { nodes: [] } } } },
         SUPERSEDED_MERGED,
@@ -1104,15 +1006,11 @@ describe("PrStatusPoller", () => {
       ]);
       poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
 
-      // Re-arm: the immediate forced poll's REST verify finds only the old #42
-      // (suppressed) — no card, and the debounce must NOT be armed.
       poller.reArm("s1", 42);
       await vi.advanceTimersByTimeAsync(0);
       await vi.advanceTimersByTimeAsync(0);
       expect(poller.getStatus("s1")).toBeUndefined();
 
-      // The NEW PR (#99) is opened then merged externally — REST now returns it
-      // merged. It never appeared in the OPEN bulk view, which stays empty.
       (githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mockResolvedValue({
         url: "https://github.com/owner/repo/pull/99",
         number: 99,
@@ -1127,8 +1025,6 @@ describe("PrStatusPoller", () => {
         deletions: 1,
       });
 
-      // A later periodic poll (NOT a forced refresh) must re-verify and promote
-      // the session to merged, clearing the superseded suppression on the way.
       await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
       await vi.advanceTimersByTimeAsync(0);
 
@@ -1159,10 +1055,6 @@ describe("PrStatusPoller", () => {
   });
 
   it("preserves cached conversation when the PR tab loses focus mid-cycle (docs/155 Phase 1b)", async () => {
-    // While the PR tab is open we get conversation via the focused alias.
-    // After the tab closes, subsequent polls drop the alias — the cached
-    // issueComments/reviewThreads must carry forward, otherwise the UI sees
-    // the conversation disappear on the next light poll.
     const heavyNode = makeGraphQLPrNode(CONVERSATION_OVERRIDES);
     const lightNode = makeGraphQLPrNode();
 
@@ -1182,14 +1074,11 @@ describe("PrStatusPoller", () => {
     poller.trackSession("s1", "https://github.com/owner/repo");
     await vi.advanceTimersByTimeAsync(0);
 
-    // Tab opens → focused alias delivers conversation.
     poller.setPrTabActive("s1", true);
     await vi.advanceTimersByTimeAsync(0);
     expect(poller.getStatus("s1")?.issueComments).toHaveLength(1);
     expect(poller.getStatus("s1")?.reviewThreads).toHaveLength(1);
 
-    // Tab closes → next poll has no focused alias. Switch the fake to a
-    // light-only response.
     (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: { repository: { pullRequests: { nodes: [lightNode] } } },
     });
@@ -1214,12 +1103,10 @@ describe("PrStatusPoller", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(sseBroadcast).toHaveBeenCalledTimes(1);
 
-    // Title edited upstream — equality must NOT swallow the change.
     (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode({ title: "Updated title" })] } } },
     });
 
-    // Settled PR runs at slow cadence; the next poll lands at 120s.
     await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
     expect(sseBroadcast).toHaveBeenCalledTimes(2);
     expect(sseBroadcast).toHaveBeenLastCalledWith("pr_status", expect.objectContaining({
@@ -1243,12 +1130,10 @@ describe("PrStatusPoller", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(sseBroadcast).toHaveBeenCalledTimes(1);
 
-    // Description edited upstream.
     (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode({ body: "New description" })] } } },
     });
 
-    // Settled PR runs at slow cadence; the next poll lands at 120s.
     await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
     expect(sseBroadcast).toHaveBeenCalledTimes(2);
     expect(sseBroadcast).toHaveBeenLastCalledWith("pr_status", expect.objectContaining({
@@ -1259,10 +1144,6 @@ describe("PrStatusPoller", () => {
   });
 
   it("overrides GitHub additions/deletions with locally-computed diff stats when createGitManager is wired", async () => {
-    // GitHub reports 100/20 (lagging post-push), but local git diff shows
-    // 250/50 — the freshly committed numbers the user sees in the diff
-    // dialog. The broadcast must carry the local numbers so the +N/-N
-    // button on the PR card stays consistent with the click-through view.
     githubAuth = makeGitHubAuth({
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode({ additions: 100, deletions: 20 })] } } },
     });
@@ -1319,13 +1200,9 @@ describe("PrStatusPoller", () => {
   });
 
   it("promotes to merged via REST verify when PR disappears from OPEN results", async () => {
-    // First poll: PR exists.
     const withPr = {
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
     };
-    // REST verify mock confirms the PR was actually merged (avoids the false
-    // promotion path where a partial GraphQL response would wrongly mark
-    // every tracked session merged).
     const mergedRestResult = {
       url: "https://github.com/owner/repo/pull/42",
       number: 42,
@@ -1348,16 +1225,12 @@ describe("PrStatusPoller", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(sseBroadcast).toHaveBeenCalledTimes(1);
 
-    // Second poll: PR disappeared from the bulk view. The poller now fires a
-    // REST verify rather than promoting to merged synchronously.
     const withoutPr = {
       data: { repository: { pullRequests: { nodes: [] } } },
     };
     (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue(withoutPr);
 
-    // Settled PR cadence is slow (120s); advance past that for the next poll.
     await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
-    // Flush the REST verify's pending microtasks.
     await vi.advanceTimersByTimeAsync(0);
     expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
 
@@ -1393,7 +1266,6 @@ describe("PrStatusPoller", () => {
     poller.trackSession("s1", "https://github.com/owner/repo");
     await vi.advanceTimersByTimeAsync(0);
 
-    // PR drops out of the OPEN bulk view → REST verify sees merged → callback.
     (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: { repository: { pullRequests: { nodes: [] } } },
     });
@@ -1411,16 +1283,6 @@ describe("PrStatusPoller", () => {
     );
   });
 
-  // docs/194 regression — a viewer reconnect calls trackSession() again, which
-  // wipes the poller's in-memory `mergedSessions` fire-once edge and forces a
-  // poll that re-promotes the already-merged PR. This used to re-invoke the
-  // terminal callbacks on every re-track (the re-entrancy behind duplicate
-  // issue-status cards AND the unbounded "Post-merge: marked <id> as merged"
-  // repeats / git-refetch fan-out seen in prod). The poller now guards on the
-  // persisted last-known terminal state (which survives the trackSession wipe),
-  // so onMergedPr fires exactly once across re-tracks. The consumer's persisted
-  // natural-identity guard (issue-lifecycle's `hasAppliedMergeIssueEffect`)
-  // remains as belt-and-suspenders and is exercised by issue-lifecycle.test.ts.
   it("does NOT re-fire the merge callback after trackSession re-attaches an already-merged session (docs/194)", async () => {
     const withPr = {
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
@@ -1449,7 +1311,6 @@ describe("PrStatusPoller", () => {
     poller.trackSession("s1", "https://github.com/owner/repo");
     await vi.advanceTimersByTimeAsync(0);
 
-    // PR drops out of the OPEN bulk view → REST verify sees merged → effect once.
     (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: { repository: { pullRequests: { nodes: [] } } },
     });
@@ -1458,14 +1319,11 @@ describe("PrStatusPoller", () => {
     expect(effectRuns).toBe(1);
     const callsAfterMerge = onMergedPr.mock.calls.length;
 
-    // Reconnect → re-track wipes mergedSessions + forces an immediate poll. The
-    // poller's persisted-terminal-state guard keeps the callback from re-firing,
-    // so the merge side effects don't re-run on reconnect.
     poller.trackSession("s1", "https://github.com/owner/repo");
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(onMergedPr.mock.calls.length).toBe(callsAfterMerge); // poller did NOT re-fire
-    expect(effectRuns).toBe(1); // effect still ran exactly once
+    expect(onMergedPr.mock.calls.length).toBe(callsAfterMerge);
+    expect(effectRuns).toBe(1);
   });
 
   it("fires onPrTerminalState with outcome 'merged' when a PR merges (docs/196)", async () => {
@@ -1500,11 +1358,6 @@ describe("PrStatusPoller", () => {
     );
   });
 
-  // docs/266 req 7 — nothing in ShipIt performs a merge done in GitHub's own web
-  // UI, on a laptop, or by native auto-merge GitHub executed itself, so the
-  // attribution has to come from the observer. The ops review of PR #2327 had
-  // only "[pr-poller] Post-merge: marked <s> as merged", which records that the
-  // merge was OBSERVED, not who performed it.
   describe("the merge record for a merge performed outside ShipIt", () => {
     function mergeLines(log: { mock: { calls: unknown[][] } }): string[] {
       return log.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("Merged PR #"));
@@ -1526,7 +1379,6 @@ describe("PrStatusPoller", () => {
       poller.trackSession("s1", "https://github.com/owner/repo");
       await vi.advanceTimersByTimeAsync(0);
 
-      // The PR drops out of the OPEN bulk view → the REST verify sees it merged.
       (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
         data: { repository: { pullRequests: { nodes: [] } } },
       });
@@ -1548,9 +1400,6 @@ describe("PrStatusPoller", () => {
       }
     });
 
-    // A merge ShipIt performed is observed here moments later. Claiming an
-    // outside actor for it would contradict the line the merge path already
-    // wrote, and would make "we did not merge it" worthless.
     it("stays silent when a ShipIt path performed this merge", async () => {
       resetMergeAttribution();
       noteMergePerformed("owner", "repo", 42);
@@ -1563,9 +1412,6 @@ describe("PrStatusPoller", () => {
       }
     });
 
-    // A re-track wipes `mergedSessions` and forces an immediate re-verify — the
-    // same re-entrancy that once repeated "Post-merge: marked <id> as merged"
-    // dozens of times for one session. One merge, one record.
     it("records the merge once across a re-track", async () => {
       resetMergeAttribution();
       const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
@@ -1577,8 +1423,6 @@ describe("PrStatusPoller", () => {
         poller.trackSession("s1", "https://github.com/owner/repo");
         await vi.advanceTimersByTimeAsync(0);
 
-        // The re-track really did re-enter the terminal branch — otherwise this
-        // case would pass for the wrong reason, proving only that nothing ran.
         expect((githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mock.calls.length)
           .toBeGreaterThan(verifiesAfterMerge);
         expect(mergeLines(log)).toHaveLength(1);
@@ -1587,7 +1431,6 @@ describe("PrStatusPoller", () => {
       }
     });
 
-    // Closed-without-merge is terminal too, and it is not a merge.
     it("records nothing when the PR was closed unmerged", async () => {
       resetMergeAttribution();
       const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
@@ -1648,11 +1491,6 @@ describe("PrStatusPoller", () => {
     );
   });
 
-  // docs/266 — the wiring guard. The gate lives in AutoMergeManager (unit-tested
-  // there); what can silently break is the poller handing it a way to see the
-  // runner. Without the registry callback the manager reads every session as
-  // idle and this test merges PR #42 four minutes into a live turn, exactly as
-  // production did.
   describe("managed auto-merge and a busy session", () => {
     async function pollGreenPr(opts: { busy: boolean }) {
       const githubAuth = makeGitHubAuth({
@@ -1663,8 +1501,7 @@ describe("PrStatusPoller", () => {
       ]);
       const registry = makeFakeRegistry();
       registry.setViewers("s1", 1);
-      // The incident's shape: the turn has ended, the reviewer feedback the
-      // agent applied is not committed yet. `running` false, busy true.
+      // Model post-turn work: running is false while uncommitted edits keep it busy.
       registry.setRunning("s1", false);
       registry.setBusy("s1", opts.busy);
       const poller = new PrStatusPoller({
@@ -1681,11 +1518,6 @@ describe("PrStatusPoller", () => {
       return { poller, registry, mergePullRequest: githubAuth.mergePullRequest as ReturnType<typeof vi.fn> };
     }
 
-    // An archived session is filtered out of `SessionManager.list()`, which the
-    // poll loop iterates — so before docs/266 an armed managed PR on an archived
-    // session was never merged by anything, while the polling gate stayed open
-    // for it forever. Under native arming GitHub merged it with no help from us,
-    // so redirecting live sessions to managed made this reachable.
     it("still merges an armed PR after its session is archived", async () => {
       vi.useFakeTimers();
       const githubAuth = makeGitHubAuth({
@@ -1718,7 +1550,6 @@ describe("PrStatusPoller", () => {
       const { poller, registry, mergePullRequest } = await pollGreenPr({ busy: true });
 
       expect(mergePullRequest).not.toHaveBeenCalled();
-      // No sticky error, still armed — it is a wait, not a failure.
       expect(poller.getAutoMergeState("s1")?.enabled).toBe(true);
       expect(poller.getAutoMergeState("s1")?.error).toBeUndefined();
 
@@ -1732,13 +1563,6 @@ describe("PrStatusPoller", () => {
     });
   });
 
-  // Auto-merge is armed for ONE pull request, not for the session forever. When
-  // the PR it was armed for goes terminal the state must be released, or (a) the
-  // session's NEXT PR gets silently armed by `activatePendingAutoMergeForPr`
-  // reading the leftover `enabled`, and (b) the docs/077 `completed`
-  // short-circuit rides along and wedges the managed loop so the still-ON toggle
-  // never merges anything. Nothing calls `untrackSession` in production, so this
-  // terminal branch is the only release point.
   describe("clears auto-merge arming when the PR goes terminal", () => {
     async function pollUntilTerminal(restResult: unknown) {
       const withPr = { data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } } };
@@ -1750,7 +1574,6 @@ describe("PrStatusPoller", () => {
       poller.trackSession("s1", "https://github.com/owner/repo");
       await vi.advanceTimersByTimeAsync(0);
 
-      // Arm auto-merge on the open PR, the way the toggle route does.
       poller.setAutoMergeEnabled("s1", true);
       poller.setAutoMergeManaged("s1", true, {
         settingsUrl: "https://github.com/owner/repo/settings",
@@ -1758,7 +1581,6 @@ describe("PrStatusPoller", () => {
       });
       expect(poller.getAutoMergeState("s1")?.enabled).toBe(true);
 
-      // The PR drops out of the OPEN bulk view → REST verify sees it terminal.
       (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
         data: { repository: { pullRequests: { nodes: [] } } },
       });
@@ -1775,8 +1597,6 @@ describe("PrStatusPoller", () => {
       });
 
       expect(poller.getStatus("s1")?.prState).toBe("merged");
-      // Not merely `enabled: false` — the whole entry is gone, so a stale
-      // `completed`/`managed` can't survive with it either.
       expect(poller.getAutoMergeState("s1")).toBeUndefined();
     });
 
@@ -1794,10 +1614,6 @@ describe("PrStatusPoller", () => {
   });
 
   it("does NOT promote to merged when REST verify reports the PR is still open (rate-limit poisoning)", async () => {
-    // Scenario: GraphQL returns an empty PR list (e.g. due to a rate-limit
-    // response that slipped past header detection, or a transient hiccup).
-    // The bulk view says "no PRs," REST verify says "still open." This is
-    // the corruption case that previously wedged sessions until restart.
     const withPr = {
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
     };
@@ -1823,16 +1639,13 @@ describe("PrStatusPoller", () => {
     await vi.advanceTimersByTimeAsync(0);
     sseBroadcast.mockClear();
 
-    // PR disappears from bulk view.
     (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: { repository: { pullRequests: { nodes: [] } } },
     });
 
-    // Settled PR cadence is slow (120s); advance past that for the next poll.
     await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
     await vi.advanceTimersByTimeAsync(0);
 
-    // REST verify ran but did NOT promote — no merge broadcast at all.
     expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
     const promotedToMerged = sseBroadcast.mock.calls.some(([, payload]) => {
       const updates = (payload as { updates?: { prState?: string }[] }).updates;
@@ -1864,25 +1677,16 @@ describe("PrStatusPoller", () => {
     poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
     poller.trackSession("s1", "https://github.com/owner/repo");
 
-    // First poll fires verify (the catch-up case — no prior bulk record).
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(0);
     expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
 
-    // Subsequent polls with the PR still missing should NOT re-verify —
-    // `verifiedAbsent` is sticky until the PR reappears in a bulk response.
     await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
     await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
     expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces a brand-new open PR from REST when the bulk GraphQL view hasn't indexed it yet", async () => {
-    // The exact failure users hit: the agent runs `gh pr create`, the route
-    // force-refreshes, but GitHub's bulk GraphQL view hasn't indexed the new
-    // PR yet (eventual consistency). The forced poll falls through to the REST
-    // verify, which confirms the PR is open. Previously this returned without
-    // broadcasting, so the card only appeared on a later poll (up to 120s).
-    // Now the open PR is surfaced immediately.
     const withoutPr = {
       data: { repository: { pullRequests: { nodes: [] } } },
     };
@@ -1908,8 +1712,6 @@ describe("PrStatusPoller", () => {
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(0);
 
-    // The PR is surfaced immediately — persisted and broadcast — without
-    // waiting for GraphQL to index it.
     expect(sessionManager.setPrStatus).toHaveBeenCalledWith(
       "s1",
       expect.objectContaining({ sessionId: "s1", prNumber: 99, prState: "open" }),
@@ -1924,10 +1726,6 @@ describe("PrStatusPoller", () => {
   });
 
   it("REST verify surfaces the open PR when lastKnown is stale-merged but the PR is actually open", async () => {
-    // Setup: persisted snapshot says "merged" (the bug we're recovering
-    // from), but REST verify confirms the PR is still open. The poller now
-    // surfaces the open PR directly from the REST result (no remove-then-
-    // repopulate flicker) — the next GraphQL poll enriches it.
     const persistedMerged = {
       sessionId: "s1",
       prNumber: 42,
@@ -1979,8 +1777,6 @@ describe("PrStatusPoller", () => {
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(0);
 
-    // The stale "merged" snapshot is replaced by an "open" summary built from
-    // the REST result, persisted, and broadcast immediately.
     expect(sessionManager.setPrStatus).toHaveBeenCalledWith(
       "s1",
       expect.objectContaining({ sessionId: "s1", prNumber: 42, prState: "open" }),
@@ -1991,7 +1787,6 @@ describe("PrStatusPoller", () => {
         updates: [expect.objectContaining({ sessionId: "s1", prNumber: 42, prState: "open" })],
       }),
     );
-    // The false-merged promotion is cleared so the session is polled again.
     expect(poller.getStatus("s1")).toMatchObject({ prState: "open" });
   });
 
@@ -2049,11 +1844,6 @@ describe("PrStatusPoller", () => {
       expect(all[0]).toMatchObject({ sessionId: "archived-1", prState: "merged" });
     });
 
-    // docs/077 — an arming belongs to ONE pull request and is dropped when that
-    // PR goes terminal. This is the belt-and-suspenders half, mirroring the
-    // auto-fix "never attach over a green rollup" guard: should the state ever
-    // outlive its PR, no client may be told a merged PR is still waiting to
-    // auto-merge — that is what strands the toggle ON in the UI.
     it.each(["merged", "closed"] as const)(
       "never attaches auto-merge state onto a %s summary",
       (prState) => {
@@ -2132,7 +1922,6 @@ describe("PrStatusPoller", () => {
         checks: { state: "none" as const, total: 0, passed: 0, failed: 0, pending: 0 },
         mergeable: "unknown" as const,
         autoMergeEnabled: false,
-        // These should NOT survive into runtime — they live in their own maps
         autoFix: { enabled: true, status: "running" as const, attemptCount: 1, maxAttempts: 3 },
         autoMerge: { enabled: true, mergeMethod: "squash" as const },
       }];
@@ -2203,7 +1992,6 @@ describe("PrStatusPoller", () => {
 
     poller.untrackSession("s1");
 
-    // Advance time — no more polls should happen
     await vi.advanceTimersByTimeAsync(10000);
     expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
   });
@@ -2223,8 +2011,6 @@ describe("PrStatusPoller", () => {
   });
 
 });
-
-// ---- Phase 2: failedChecks and auto-fix ----
 
 describe("parsePrNode — failedChecks details", () => {
   it("populates failedChecks array from failing CheckRun nodes", () => {
@@ -2362,10 +2148,6 @@ describe("PrStatusPoller — auto-fix state", () => {
     pollerAF.destroy();
   });
 
-  // docs/169 follow-up — the manual "Fix CI" button no longer touches the
-  // auto-fix state machine (it's a plain agent turn), so the only thing that
-  // sets `status: "running"` is the automatic loop. These tests drive that loop
-  // through a failing-CI poll rather than the removed `markAutoFixRunning`.
   function makeFailingNode() {
     return makeGraphQLPrNode({
       commits: {
@@ -2386,7 +2168,6 @@ describe("PrStatusPoller — auto-fix state", () => {
     });
   }
 
-  /** The same PR, now passing — used to drive the red → green transition. */
   function makePassingNode() {
     return makeGraphQLPrNode({
       commits: {
@@ -2407,12 +2188,10 @@ describe("PrStatusPoller — auto-fix state", () => {
     });
   }
 
-  /** A poller wired so the auto-fix loop fires and parks in `running`. */
   function makeRunningAutoFixPoller() {
     return makeRunningAutoFixHarness().poller;
   }
 
-  /** As above, but exposes the GitHub stub so a test can change the CI verdict. */
   function makeRunningAutoFixHarness() {
     const githubAuth = makeGitHubAuth({
       data: { repository: { pullRequests: { nodes: [makeFailingNode()] } } },
@@ -2421,15 +2200,14 @@ describe("PrStatusPoller — auto-fix state", () => {
       { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
     ]);
     const registry = makeFakeRegistry();
-    registry.setViewers("s1", 1); // open the poll gate
-    registry.setRunning("s1", false); // idle runner → pre-attempt gate passes
+    registry.setViewers("s1", 1);
+    registry.setRunning("s1", false);
     const poller = new PrStatusPoller({
       githubAuth,
       sessionManager,
       sseBroadcast: sseBroadcastAF,
       runnerRegistry: registry,
       isAutoFixEnabled: () => true,
-      // Never resolves → the attempt stays in flight, so status stays "running".
       fetchAndFixCb: () => new Promise<never>(() => { /* hang */ }),
     });
     return { poller, githubAuth };
@@ -2459,18 +2237,12 @@ describe("PrStatusPoller — auto-fix state", () => {
     vi.useRealTimers();
   });
 
-  // `attemptCount` is incremented POST-turn (`completeTurn`), so publishing it
-  // raw made the card read "Auto-fixing (attempt 0/3)…" for the whole first
-  // attempt. The state machine already knows the 1-based number — it passes
-  // `attemptCount + 1` to `fireAttempt` — so the wire carries the displayed
-  // number rather than each of the two client render sites reconstructing it.
   it("publishes the 1-BASED in-flight attempt number, not the completed count", async () => {
     vi.useFakeTimers();
     const poller2 = makeRunningAutoFixPoller();
     poller2.trackSession("s1", "https://github.com/owner/repo");
     await vi.advanceTimersByTimeAsync(0);
 
-    // The loop is on its FIRST attempt and has completed none.
     expect(poller2.getAutoFixState("s1")).toMatchObject({ status: "running", attemptCount: 0 });
     expect(poller2.getAllStatuses()[0].autoFix).toMatchObject({ attemptCount: 1, maxAttempts: 3 });
 
@@ -2485,9 +2257,6 @@ describe("PrStatusPoller — auto-fix state", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(poller2.getAllStatuses()[0].autoFix).toBeDefined();
 
-    // CI goes green while the fix turn is still in flight (the callback above
-    // never resolves). The card must not keep spinning on "Auto-fixing…" — and
-    // the state machine itself settles on the resolved signal.
     (githubAuth.graphqlQuery as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: { repository: { pullRequests: { nodes: [makePassingNode()] } } },
     });
@@ -2500,8 +2269,6 @@ describe("PrStatusPoller — auto-fix state", () => {
     vi.useRealTimers();
   });
 });
-
-// ---- Phase 3: Catch-up probe for already-merged PRs ----
 
 describe("PrStatusPoller — catch-up probe", () => {
   beforeEach(() => {
@@ -2536,26 +2303,19 @@ describe("PrStatusPoller — catch-up probe", () => {
     const poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, onMergeDetectedCb: onMergeDetected });
     poller.trackSession("s1", "https://github.com/owner/repo");
 
-    // First poll: no open PR → triggers catch-up probe
     await vi.advanceTimersByTimeAsync(0);
-    // Allow catch-up probe promise to resolve
     await vi.advanceTimersByTimeAsync(0);
 
-    // The probe should have broadcast a merged status
     expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
       updates: [expect.objectContaining({ sessionId: "s1", prState: "merged", prNumber: 99 })],
     }));
 
-    // Should trigger post-merge archive
     expect(onMergeDetected).toHaveBeenCalledWith("s1");
 
     poller.destroy();
   });
 
   it("fires the post-merge handler exactly once across repeated polls and a re-track", async () => {
-    // Regression for the production repeat: a merged-but-not-archived session
-    // re-ran the full post-merge handler (archive prune + session_list SSE
-    // fan-out + bare-cache git refetch) on every poll cycle / reconnect.
     const withPr = { data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } } };
     const mergedRest = {
       url: "https://github.com/owner/repo/pull/42",
@@ -2574,7 +2334,6 @@ describe("PrStatusPoller — catch-up probe", () => {
     poller.trackSession("s1", "https://github.com/owner/repo");
     await vi.advanceTimersByTimeAsync(0);
 
-    // PR drops out of the OPEN bulk view → REST verify promotes to merged → fires once.
     (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: { repository: { pullRequests: { nodes: [] } } },
     });
@@ -2582,15 +2341,12 @@ describe("PrStatusPoller — catch-up probe", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(onMergeDetected).toHaveBeenCalledTimes(1);
 
-    // Several more steady-state poll cycles while the session stays merged.
     for (let i = 0; i < 5; i++) {
       await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
       await vi.advanceTimersByTimeAsync(0);
     }
     expect(onMergeDetected).toHaveBeenCalledTimes(1);
 
-    // A viewer reconnect / session activation re-tracks (wiping mergedSessions)
-    // and forces an immediate refresh — must still not re-fire.
     poller.trackSession("s1", "https://github.com/owner/repo");
     await vi.advanceTimersByTimeAsync(0);
     await poller.forceRefreshSession("s1");
@@ -2618,7 +2374,6 @@ describe("PrStatusPoller — catch-up probe", () => {
     const sessionManager = makeSessionManager([
       { id: "s1", branch: "shipit/closed-branch", remoteUrl: "https://github.com/owner/repo" },
     ]);
-    // Real transition: markClosed stamps closed_at and returns true on first call.
     (sessionManager.markClosed as ReturnType<typeof vi.fn>).mockReturnValue(true);
     const sseBroadcast = vi.fn();
     const onMergeDetected = vi.fn().mockResolvedValue(undefined);
@@ -2629,21 +2384,14 @@ describe("PrStatusPoller — catch-up probe", () => {
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(0);
 
-    // Should broadcast closed status
     expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
       updates: [expect.objectContaining({ sessionId: "s1", prState: "closed", prNumber: 88 })],
     }));
 
-    // Should NOT trigger archive for closed (not merged) PRs
     expect(onMergeDetected).not.toHaveBeenCalled();
 
-    // Should stamp closed_at so the session sinks into "Recently resolved".
     expect(sessionManager.markClosed).toHaveBeenCalledWith("s1");
 
-    // And broadcast the updated session list so viewers demote the session into
-    // "Recently resolved" live — same effect as a merge (which broadcasts
-    // session_list via onMergeDetectedCb). Without this the close only reaches
-    // the client on a full reload.
     expect(sseBroadcast).toHaveBeenCalledWith("session_list", expect.objectContaining({
       sessions: expect.arrayContaining([expect.objectContaining({ id: "s1" })]),
     }));
@@ -2653,7 +2401,7 @@ describe("PrStatusPoller — catch-up probe", () => {
 
   it("fires catch-up probe only once per session", async () => {
     const noPrs = { data: { repository: { pullRequests: { nodes: [] } } } };
-    const githubAuth = makeGitHubAuth(noPrs, null); // probe returns null (no PR found)
+    const githubAuth = makeGitHubAuth(noPrs, null);
     const sessionManager = makeSessionManager([
       { id: "s1", branch: "shipit/no-pr-branch", remoteUrl: "https://github.com/owner/repo" },
     ]);
@@ -2662,11 +2410,9 @@ describe("PrStatusPoller — catch-up probe", () => {
     const poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
     poller.trackSession("s1", "https://github.com/owner/repo");
 
-    // First poll — triggers catch-up
     await vi.advanceTimersByTimeAsync(0);
     expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
 
-    // Second poll — no catch-up (already consumed)
     await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
     expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
 
@@ -2688,16 +2434,11 @@ describe("PrStatusPoller — catch-up probe", () => {
 
     await vi.advanceTimersByTimeAsync(0);
 
-    // Probe should NOT have been called since the GraphQL query found an open PR
     expect(githubAuth.findPullRequestAnyState).not.toHaveBeenCalled();
 
     poller.destroy();
   });
 });
-
-// ---- Workflow detection: none → pending override ----
-
-// ---- docs/282: the merge-state probe the pre-turn recheck runs ----
 
 describe("PrStatusPoller — turn-admission merge probe", () => {
   beforeEach(() => { vi.useFakeTimers(); });
@@ -2721,12 +2462,6 @@ describe("PrStatusPoller — turn-admission merge probe", () => {
     return { githubAuth, sessionManager, sseBroadcast: vi.fn() };
   }
 
-  /**
-   * `merged_at` is stamped by `onMergeDetectedCb`, which the poll loop fires and
-   * forgets. The pre-turn recheck decides against `mergedAt`, so it must be able
-   * to wait for that half — otherwise it reads the session one beat too early
-   * and answers "not merged" for a merge it just discovered itself.
-   */
   it("awaitMergeHandling resolves only once the merge bookkeeping has settled", async () => {
     const { githubAuth, sessionManager, sseBroadcast } = makeHarness(mergedRest);
     let release!: () => void;
@@ -2746,26 +2481,19 @@ describe("PrStatusPoller — turn-admission merge probe", () => {
       settled = true;
     })();
     await vi.advanceTimersByTimeAsync(0);
-    expect(settled).toBe(false); // the callback is still running
+    expect(settled).toBe(false);
 
     release();
     await waiting;
     expect(settled).toBe(true);
 
-    // Nothing in flight afterwards, so a later turn's wait is free.
     await poller.awaitMergeHandling("s1");
     poller.destroy();
   });
 
-  /**
-   * A handler that never settles would otherwise sit in the map for the life of
-   * the process, and it is not memory that makes that expensive: the pre-turn
-   * recheck would wait out its whole budget on it, on every qualifying turn,
-   * for a merge the session has long since been re-armed out of.
-   */
   it("drops a never-settling merge handler when the session is re-armed", async () => {
     const { githubAuth, sessionManager, sseBroadcast } = makeHarness(mergedRest);
-    const onMergeDetected = vi.fn(() => new Promise<void>(() => {})); // never settles
+    const onMergeDetected = vi.fn(() => new Promise<void>(() => {}));
     const poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, onMergeDetectedCb: onMergeDetected });
     poller.trackSession("s1", "https://github.com/owner/repo");
     await vi.advanceTimersByTimeAsync(0);
@@ -2775,7 +2503,6 @@ describe("PrStatusPoller — turn-admission merge probe", () => {
 
     poller.reArm("s1", 101);
 
-    // The wait is free again — without the clear this would hang forever.
     let settled = false;
     const waiting = (async () => {
       await poller.awaitMergeHandling("s1");
@@ -2787,13 +2514,6 @@ describe("PrStatusPoller — turn-admission merge probe", () => {
     poller.destroy();
   });
 
-  /**
-   * The recheck probes a pull request it expects to still be OPEN, on every
-   * qualifying turn. Arming `verifiedAbsent` there would leave the debounce set
-   * when that PR merges moments later and drops out of the OPEN bulk view — so
-   * the poll would skip its REST verify and merge detection would stop until a
-   * forced refresh.
-   */
   it("leaves the missing-PR debounce un-armed when asked, so the next poll still verifies", async () => {
     const openRest = { ...mergedRest, state: "open" as const, merged_at: null };
     const { githubAuth, sessionManager, sseBroadcast } = makeHarness(openRest);
@@ -2805,8 +2525,6 @@ describe("PrStatusPoller — turn-admission merge probe", () => {
     await poller.forceVerifySessionPrState("s1", { armAbsentDebounce: false });
     const probesAfterRecheck = (githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mock.calls.length;
 
-    // The PR merges right after the recheck: it is absent from the OPEN bulk
-    // view, and the poll must be free to REST-verify it.
     (githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mockResolvedValue(mergedRest);
     await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
     await vi.advanceTimersByTimeAsync(0);
@@ -2822,8 +2540,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     mockLoadWorkflows.mockReset();
-    // Default: workflow detection fails (no workflows). Individual tests
-    // override this to simulate parsed workflow files.
     mockLoadWorkflows.mockResolvedValue(null);
   });
 
@@ -2881,8 +2597,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     ]);
     const sseBroadcast = vi.fn();
 
-    // mockLoadWorkflows defaults to null (no workflow dir).
-
     const poller = new PrStatusPoller({
       githubAuth,
       sessionManager,
@@ -2904,7 +2618,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
   });
 
   it("does not override when checks already reported", async () => {
-    // PR with actual checks (state: "success")
     const graphqlResult = {
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
     };
@@ -2927,7 +2640,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
 
     await vi.advanceTimersByTimeAsync(0);
 
-    // Should remain "success", not overridden to "pending"
     expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
       updates: [expect.objectContaining({
         checks: expect.objectContaining({ state: "success" }),
@@ -2938,10 +2650,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
   });
 
   it("skips grace immediately when no workflow's filters match the PR's changed files (docs-only PR case)", async () => {
-    // Reproduces the bug: workflows exist with `paths-ignore: ['**.md']`,
-    // PR changes only .md files, GitHub never registers a check. Pre-fix,
-    // the user saw a 60-second spinning CI badge. With workflow parsing,
-    // we know upfront that no workflow applies and skip grace entirely.
     const noCiNode = makeGraphQLPrNode({
       commits: { nodes: [{ commit: { oid: "sha-1", statusCheckRollup: null } }] },
       files: { nodes: [{ path: "README.md" }, { path: "docs/intro.md" }] },
@@ -2956,7 +2664,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     ]);
     const sseBroadcast = vi.fn();
 
-    // Workflow with paths-ignore that excludes the PR's changed files.
     mockLoadWorkflows.mockResolvedValue([
       {
         unparseable: false,
@@ -2981,7 +2688,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
 
     await vi.advanceTimersByTimeAsync(0);
 
-    // No spinner — state should stay "none" and merge button should appear.
     expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
       updates: [expect.objectContaining({
         sessionId: "s1",
@@ -2993,8 +2699,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
   });
 
   it("still forces pending when at least one workflow's filters match the PR's changed files", async () => {
-    // Same as above but the PR also touches a src file, which matches the
-    // include-list. At least one workflow would run → grace is justified.
     const noCiNode = makeGraphQLPrNode({
       commits: { nodes: [{ commit: { oid: "sha-1", statusCheckRollup: null } }] },
       files: { nodes: [{ path: "README.md" }, { path: "src/index.ts" }] },
@@ -3044,11 +2748,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
   });
 
   it("skips grace when the repo's only workflow has no PR-relevant trigger (nikzlabs/shipit#1730)", async () => {
-    // The reported repro: one workflow, manual dispatch plus a push trigger
-    // scoped to a single non-default branch. A session-branch PR into main
-    // matches nothing, so GitHub creates zero check runs — permanently. Pre-
-    // fix this went through the time-based grace and rendered a spinner for a
-    // result that was never coming.
     const noCiNode = makeGraphQLPrNode({
       commits: { nodes: [{ commit: { oid: "sha-1", statusCheckRollup: null } }] },
       files: { nodes: [{ path: "src/index.ts" }] },
@@ -3063,8 +2762,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     ]);
     const sseBroadcast = vi.fn();
 
-    // Parsed from the real workflow YAML so the test exercises the same path
-    // production does, not a hand-built stub.
     mockLoadWorkflows.mockResolvedValue([
       workflowLoader.parseWorkflowContent(
         "on:\n  workflow_dispatch:\n  push:\n    branches:\n      - deploy\njobs: {}\n",
@@ -3081,7 +2778,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
 
     await vi.advanceTimersByTimeAsync(0);
 
-    // Terminal from the very first poll — no spinner, no grace window.
     expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
       updates: [expect.objectContaining({
         sessionId: "s1",
@@ -3093,8 +2789,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
   });
 
   it("publishes a grace deadline alongside a forced-pending state", async () => {
-    // The client uses `graceUntil` to retire the spinner on its own if polling
-    // pauses (last viewer detached) before the poller observes the expiry.
     const noCiNode = makeGraphQLPrNode({
       commits: { nodes: [{ commit: { oid: "sha-1", statusCheckRollup: null } }] },
     });
@@ -3130,10 +2824,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
   });
 
   it("retries workflow detection when first inspection finds no files (negative results not cached)", async () => {
-    // Repo where workflow files appear after the first poll (e.g., shared
-    // clone fetched the workflow files between polls). Our PR has no checks
-    // reported yet, so the override path is the only thing standing between
-    // the user and a falsely-mergeable button.
     const noCiNode = makeGraphQLPrNode({
       commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
     });
@@ -3147,7 +2837,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     ]);
     const sseBroadcast = vi.fn();
 
-    // First load: bare cache has no workflows yet (fetch in progress).
     mockLoadWorkflows.mockResolvedValueOnce(null);
 
     const poller = new PrStatusPoller({
@@ -3160,7 +2849,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
 
     await vi.advanceTimersByTimeAsync(0);
 
-    // First poll: state stays "none" because no workflows AND no observed checks.
     expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
       updates: [expect.objectContaining({
         sessionId: "s1",
@@ -3168,16 +2856,11 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
       })],
     }));
 
-    // Workflow files appear before the next poll.
     sseBroadcast.mockClear();
     mockLoadWorkflows.mockResolvedValue([ALWAYS_APPLIES]);
 
-    // Advance to the next poll tick. A PR observed as "none" sits at slow
-    // cadence (120 s); the workflow-retry discovery is therefore at most
-    // SLOW_INTERVAL_MS late — that's the deliberate cost of cadence scaling.
     await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
 
-    // Now the override should fire — state flips to "pending".
     expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
       updates: [expect.objectContaining({
         sessionId: "s1",
@@ -3189,10 +2872,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
   });
 
   it("treats 'none' as 'pending' when another PR in the same repo has observed checks (external CI)", async () => {
-    // Repo with no local .github/workflows files, but an existing PR that
-    // already has checks (e.g., from an external CI provider like Vercel or
-    // a third-party status check). A newly opened PR shouldn't show the
-    // merge button just because its workflows haven't registered yet.
     const newPrNoChecks = makeGraphQLPrNode({
       number: 100,
       headRefName: "shipit/abc-feature",
@@ -3224,8 +2903,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     ]);
     const sseBroadcast = vi.fn();
 
-    // No local workflow files — only the external-CI signal matters here.
-
     const poller = new PrStatusPoller({
       githubAuth,
       sessionManager,
@@ -3236,8 +2913,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
 
     await vi.advanceTimersByTimeAsync(0);
 
-    // Override should fire because the OTHER PR in the same repo has checks
-    // — that's enough signal that the repo runs CI.
     expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
       updates: [expect.objectContaining({
         sessionId: "s1",
@@ -3249,8 +2924,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
   });
 
   it("keeps 'none' for repos that genuinely run no CI (no workflows, no observed checks anywhere)", async () => {
-    // The legitimate case: a personal sandbox repo with no CI configured at
-    // all. The merge button SHOULD appear here — nothing to wait for.
     const noCiNode = makeGraphQLPrNode({
       commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
     });
@@ -3263,8 +2936,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
       { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
     ]);
     const sseBroadcast = vi.fn();
-
-    // mockLoadWorkflows defaults to null (no workflows).
 
     const poller = new PrStatusPoller({
       githubAuth,
@@ -3287,10 +2958,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
   });
 
   it("reverts pending → none after grace window when GitHub never registers checks (paths-filter no-op)", async () => {
-    // Reproduces the docs-only PR case from the *workflow-load-failed* path:
-    // workflows couldn't be parsed (bare cache empty, YAML error, etc.) but
-    // some other PR in the repo has observed checks, so we conservatively
-    // force pending. Without a timeout, the spinner would run forever.
     const noCiNode = makeGraphQLPrNode({
       commits: { nodes: [{ commit: { oid: "sha-1", statusCheckRollup: null } }] },
     });
@@ -3304,8 +2971,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     ]);
     const sseBroadcast = vi.fn();
 
-    // Parsed workflows say "always applies" so the changed-files short-
-    // circuit doesn't fire — we exercise the time-based fallback.
     mockLoadWorkflows.mockResolvedValue([ALWAYS_APPLIES]);
 
     const poller = new PrStatusPoller({
@@ -3316,7 +2981,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     });
     poller.trackSession("s1", "https://github.com/owner/repo");
 
-    // First poll inside grace window — state forced to "pending".
     await vi.advanceTimersByTimeAsync(0);
     expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
       updates: [expect.objectContaining({
@@ -3327,9 +2991,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
 
     sseBroadcast.mockClear();
 
-    // Advance well past the (20s) grace window. GitHub still reports no
-    // checks. The override should drop and we should broadcast the flip to
-    // "none", which unblocks the merge button on the client.
     await vi.advanceTimersByTimeAsync(31_000);
 
     const noneCall = sseBroadcast.mock.calls.find(([, payload]) => {
@@ -3342,9 +3003,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
   });
 
   it("resets grace window when head SHA changes (new push gives GitHub fresh time)", async () => {
-    // PR starts with sha-1 / no checks, then a new commit lands at sha-2 with
-    // still no checks. The grace timer should restart so we don't immediately
-    // declare the new commit "no CI" — GitHub may yet register workflows.
     const sha1Node = makeGraphQLPrNode({
       commits: { nodes: [{ commit: { oid: "sha-1", statusCheckRollup: null } }] },
     });
@@ -3367,11 +3025,8 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     });
     poller.trackSession("s1", "https://github.com/owner/repo");
 
-    // First poll: pending (within grace, observedAt=0).
     await vi.advanceTimersByTimeAsync(0);
 
-    // 10s in — still within sha-1's 20s grace. Switch the GraphQL response
-    // to return sha-2 so the next poll observes a new head SHA.
     await vi.advanceTimersByTimeAsync(10_000);
     const sha2Node = makeGraphQLPrNode({
       commits: { nodes: [{ commit: { oid: "sha-2", statusCheckRollup: null } }] },
@@ -3380,14 +3035,10 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
       data: { repository: { pullRequests: { nodes: [sha2Node] } } },
     });
 
-    // Trigger a poll on the new SHA — grace resets to observedAt=15s.
     await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
 
     sseBroadcast.mockClear();
 
-    // 10s after the SHA change (~25s wall time, but only 10s into sha-2's
-    // 20s grace) — should still be "pending" because the SHA-change reset
-    // the grace timer. This is the regression we want to guard against.
     await vi.advanceTimersByTimeAsync(10_000);
 
     const flippedToNone = sseBroadcast.mock.calls.some(([, payload]) => {
@@ -3396,7 +3047,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     });
     expect(flippedToNone, "should not flip to none yet — SHA changed, grace restarted").toBe(false);
 
-    // Advance past sha-2's grace window — now flip should fire.
     await vi.advanceTimersByTimeAsync(20_000);
     const flippedNow = sseBroadcast.mock.calls.some(([, payload]) => {
       const updates = (payload as { updates?: { checks?: { state?: string } }[] }).updates;
@@ -3408,9 +3058,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
   });
 
   it("clears grace tracker when checks finally arrive — normal pending/success flow resumes", async () => {
-    // PR opens with no checks (override fires), then GitHub registers a
-    // pending check, then it succeeds. The grace tracker should not interfere
-    // with the normal lifecycle.
     const noCiNode = makeGraphQLPrNode({
       commits: { nodes: [{ commit: { oid: "sha-1", statusCheckRollup: null } }] },
     });
@@ -3433,9 +3080,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     poller.trackSession("s1", "https://github.com/owner/repo");
 
     await vi.advanceTimersByTimeAsync(0);
-    // Pending (override).
-
-    // GitHub registers an in-progress check.
     const pendingNode = makeGraphQLPrNode({
       commits: {
         nodes: [{
@@ -3455,11 +3099,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
 
     await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
 
-    // Then the check succeeds, well past the original grace window. If the
-    // tracker hadn't been cleared when checks first arrived, a stale "grace
-    // expired" comparison could in theory misclassify state — but since
-    // state !== "none" we now skip the override path entirely, so success
-    // should propagate cleanly.
     const successNode = makeGraphQLPrNode({
       commits: {
         nodes: [{
@@ -3524,15 +3163,11 @@ describe("PrStatusPoller — GitHub rate-limit handling", () => {
 
     await vi.advanceTimersByTimeAsync(0);
 
-    // No GraphQL call because the poller saw `limited: true` first.
     expect(githubAuth.graphqlQuery).not.toHaveBeenCalled();
-    // Banner event fired exactly once on entering limited state.
     const rateLimitedCalls = sseBroadcast.mock.calls.filter(([event]) => event === "gh_rate_limited");
     expect(rateLimitedCalls).toHaveLength(1);
     expect(rateLimitedCalls[0][1]).toMatchObject({ resetAt: expect.any(Number) });
 
-    // Subsequent ticks while still limited should NOT re-broadcast (debounce
-    // on entering the state).
     await vi.advanceTimersByTimeAsync(10_000);
     const stillOnceRateLimited = sseBroadcast.mock.calls.filter(([event]) => event === "gh_rate_limited");
     expect(stillOnceRateLimited).toHaveLength(1);
@@ -3562,21 +3197,16 @@ describe("PrStatusPoller — GitHub rate-limit handling", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(sseBroadcast.mock.calls.some(([event]) => event === "gh_rate_limited")).toBe(true);
 
-    // Limit lifts — next tick should clear and resume.
     limited = false;
     await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
 
     const clearedCalls = sseBroadcast.mock.calls.filter(([event]) => event === "gh_rate_limited_cleared");
     expect(clearedCalls).toHaveLength(1);
-    // And a normal pr_status broadcast follows.
     const prStatusCalls = sseBroadcast.mock.calls.filter(([event]) => event === "pr_status");
     expect(prStatusCalls.length).toBeGreaterThan(0);
   });
 
   it("loadPersisted does NOT seed mergedSessions from a persisted merged snapshot", async () => {
-    // This is the key recovery behavior: if the previous process wrote a
-    // merged status (potentially from a rate-limit-induced false promotion),
-    // we don't trust it. The first poll's REST verify gets the final say.
     const persistedMerged = {
       sessionId: "s1",
       prNumber: 42,
@@ -3629,8 +3259,6 @@ describe("PrStatusPoller — GitHub rate-limit handling", () => {
     poller.loadPersisted();
     poller.trackSession("s1", "https://github.com/owner/repo");
 
-    // First poll iterates s1 (not skipped — it's not in mergedSessions anymore),
-    // sees PR missing from bulk, fires verify.
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(0);
 

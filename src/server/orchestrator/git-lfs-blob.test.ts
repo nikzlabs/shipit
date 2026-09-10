@@ -1,17 +1,3 @@
-/**
- * Unit tests for LFS pointer resolution in the diff viewer.
- *
- * The bug being guarded is specific: the diff viewer reads *committed blobs*,
- * which in an LFS repo are always pointer stubs, so an LFS-tracked PNG rendered
- * as its sha256 text. The assertions that matter most are therefore the negative
- * ones — a pointer must never survive into rendered content, and a failed fetch
- * must return `null` rather than the pointer git-lfs echoes back on stdout.
- *
- * Object-store reads run against a real store layout rather than a mock: the
- * two-level `ab/cd/abcd…` fanout (with the *full* oid as the filename) is
- * git-lfs's own convention, and getting it subtly wrong is exactly the kind of
- * mistake a mock would happily agree with.
- */
 import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -36,7 +22,6 @@ afterEach(() => {
   for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 });
 
-/** A git repo with an LFS object store, optionally seeded with `content`. */
 function makeRepo(content?: Buffer): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-lfs-blob-"));
   dirs.push(dir);
@@ -73,7 +58,6 @@ describe("parseLfsPointer", () => {
   });
 
   it("rejects content that merely mentions LFS", () => {
-    // A doc or .gitattributes quoting the spec URL must keep its text diff.
     expect(parseLfsPointer("See version https://git-lfs.github.com/spec/v1 for details")).toBeNull();
     expect(parseLfsPointer("*.png filter=lfs diff=lfs merge=lfs -text\n")).toBeNull();
   });
@@ -84,8 +68,6 @@ describe("parseLfsPointer", () => {
   });
 
   it("rejects a malformed oid rather than trusting it as a store filename", () => {
-    // Guards the object-store path build: a short or non-hex oid must never
-    // become `.git/lfs/objects/../…`.
     expect(parseLfsPointer("version https://git-lfs.github.com/spec/v1\noid sha256:../../etc\nsize 1\n")).toBeNull();
     expect(parseLfsPointer(`version https://git-lfs.github.com/spec/v1\noid sha256:${"z".repeat(64)}\nsize 1\n`)).toBeNull();
   });
@@ -109,7 +91,6 @@ describe("createLfsBlobResolver", () => {
   it("returns content from the clone's own LFS object store", async () => {
     const content = Buffer.from("\x89PNG\r\n\x1a\n real image bytes");
     const dir = makeRepo(content);
-    // git-lfs unavailable, so a hit here proves the read was purely local.
     const resolve = createLfsBlobResolver(dir, neverAvailable);
     expect(await resolve(pointerFor(content), "a.png", 2 * MB)).toEqual(content);
   });
@@ -123,7 +104,6 @@ describe("createLfsBlobResolver", () => {
   it("treats a size mismatch as a miss rather than serving a truncated image", async () => {
     const content = Buffer.from("full content");
     const dir = makeRepo();
-    // Same oid, half-written file — what an interrupted download leaves behind.
     const oid = crypto.createHash("sha256").update(content).digest("hex");
     const objPath = lfsObjectPath(dir, oid);
     fs.mkdirSync(path.dirname(objPath), { recursive: true });
@@ -138,8 +118,6 @@ describe("createLfsBlobResolver", () => {
     const dir = makeRepo(content);
     const oid = crypto.createHash("sha256").update(content).digest("hex");
     const resolve = createLfsBlobResolver(dir, neverAvailable);
-    // The pointer's declared size is what we screen on — the whole point is to
-    // avoid downloading a 40 MB asset only to discard it.
     const huge = `version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\nsize ${40 * MB}\n`;
     expect(await resolve(huge, "a.png", 2 * MB)).toBeNull();
   });
@@ -160,12 +138,9 @@ describe("createLfsBlobResolver", () => {
         return false;
       },
     });
-    // Distinct oids so nothing is deduped; all miss the empty local store.
     for (let i = 0; i < 5; i++) {
       await resolve(pointerFor(Buffer.from(`asset-${i}`)), `a${i}.png`, 2 * MB);
     }
-    // The availability probe is memoized, so the budget shows up as fetches
-    // attempted, not probes — but past the budget we must not even get that far.
     expect(probes).toBe(1);
   });
 });
@@ -180,15 +155,12 @@ describe("createLfsBlobResolver with the real git-lfs binary", () => {
         return false;
       }
     })();
-    if (!hasLfs) return; // orchestrator image ships git-lfs; a dev box may not
+    if (!hasLfs) return;
 
     const dir = makeRepo();
     execSync("git lfs install --local", { cwd: dir, stdio: "ignore" });
     fs.writeFileSync(path.join(dir, ".gitattributes"), "*.png filter=lfs diff=lfs merge=lfs -text\n");
 
-    // A resolver whose local store is empty and whose remote doesn't exist: the
-    // real `git lfs smudge` exits non-zero AND echoes the pointer back on
-    // stdout. Returning that would re-embed the checksum as image bytes.
     const resolve = createLfsBlobResolver(dir);
     const missing = await resolve(pointerFor(Buffer.from("never uploaded")), "a.png", 2 * MB);
     expect(missing).toBeNull();

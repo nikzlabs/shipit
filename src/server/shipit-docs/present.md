@@ -57,12 +57,9 @@ new path appends to the carousel, so showing N distinct artifacts is just N
 calls — each to its own file:
 
 ```
-// Three design variants, all shown together in the Present tab
-// (after writing each file)
 present({ file: "/persist/variant-a.html", title: "Variant A — minimal" })
 present({ file: "/persist/variant-b.html", title: "Variant B — bold" })
 present({ file: "/persist/variant-c.html", title: "Variant C — playful" })
-// → three entries the user can flip between
 ```
 
 Give each a distinct `title` so the carousel headings tell them apart. Add vs.
@@ -83,7 +80,6 @@ reading your reply. Pass **`inline: true`** and the artifact renders as a card
 **in the chat transcript itself**:
 
 ```
-// A small chart, right where you talk about it
 present({ file: "/persist/latency.svg", title: "Latency by region", inline: true })
 ```
 
@@ -213,27 +209,19 @@ what the user sees and would defeat the point of the check.
 ## Examples
 
 ```
-// Throwaway diagram — write to /persist, present, never touches git
-// (survives a container restart; after Write to /persist/component-graph.svg)
 present({ file: "/persist/component-graph.svg", title: "Component graph" })
 // → { status: "presented", viewUrl: "http://127.0.0.1:9100/present-files/pres_abc..." }
 ```
 
 ```
-// Tracked mockup — write into the workspace so it's committed AND rendered
-// (after Write to docs/mockups/release-notes.md)
 present({ file: "docs/mockups/release-notes.md", title: "Draft release notes" })
 ```
 
 ```
-// Update a mockup in place: edit the SAME file, then re-present it.
-// Same path → same entry refreshes (no replaceId, no version flag).
-// (after editing /persist/landing.html)
 present({ file: "/persist/landing.html", title: "Landing page v2" })
 ```
 
 ```
-// Show several distinct artifacts at once: one call per file (distinct paths).
 present({ file: "/persist/variant-a.html", title: "Variant A" })
 present({ file: "/persist/variant-b.html", title: "Variant B" })
 ```

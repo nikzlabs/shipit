@@ -6,7 +6,6 @@ import {
   withPluginFeedbackContext,
 } from "./plugin-feedback.js";
 
-/** Parse a consumer block the way `shipit-config.ts` does. */
 function parse(raw: unknown) {
   const warnings: string[] = [];
   return parsePluginRepos(raw, [], warnings);
@@ -19,8 +18,6 @@ describe("pluginFeedbackRepos (docs/262 req 25)", () => {
         { repo: "acme/dev-tools", name: "tools", branch: "main" },
         { repo: "acme/design", name: "design", pin: "v1.2.0" },
       ],
-      // Two plugins from one repository is still ONE feedback destination: the
-      // repository is what would have to fix the report.
       use: [
         { plugin: "requirements", from: "tools" },
         { plugin: "probe", from: "tools" },
@@ -37,8 +34,6 @@ describe("pluginFeedbackRepos (docs/262 req 25)", () => {
     expect(pluginFeedbackRepos(config)[0].ref).toBe("default branch");
   });
 
-  // req 27 — a self-declared repository's issues ARE this session's own
-  // repository's issues, which every session already reaches without a name.
   it("registers nothing for `repo: self`", () => {
     const config = parse({ repos: [{ repo: "self", name: "me" }] });
     expect(pluginFeedbackRepos(config)).toEqual([]);
@@ -61,8 +56,6 @@ describe("withPluginFeedbackContext (docs/262 reqs 15, 25)", () => {
     expect(body).toContain("The reqs CLI drops --root.");
     expect(body).toContain("plugin repository `tools`");
     expect(body).toContain("branch main @ `9f2a1b3c4d5e6f708192a3b4c5d6e7f809a1b2c3`");
-    // The report's own content comes first — the context is a footer, not a
-    // preamble that pushes the reproduction below the fold.
     expect(body.indexOf("The reqs CLI")).toBeLessThan(body.indexOf("Version in use"));
   });
 
@@ -76,8 +69,6 @@ describe("withPluginFeedbackContext (docs/262 reqs 15, 25)", () => {
     expect(withPluginFeedbackContext("", { ...repo, commit: "abc123" })).toContain("Version in use");
   });
 
-  // A diff in the body is req 25's "proposed fix" — the footer must not land
-  // inside the fence and break it.
   it("keeps a trailing diff fence intact", () => {
     const report = "Fix:\n\n```diff\n-a\n+b\n```";
     const body = withPluginFeedbackContext(report, { ...repo, commit: "abc123" });

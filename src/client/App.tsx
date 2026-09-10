@@ -10,8 +10,6 @@ import {
 } from "react";
 /* eslint-enable no-restricted-imports */
 import { Dialog, DialogContent } from "./components/ui/dialog.js";
-// The mobile Chat/Workspace rule, from the component that implements it — so
-// "is the preview on screen?" has one definition rather than two that drift.
 import { mobileChatInFront } from "./components/MobileContentPanels.js";
 import { TooltipProvider } from "./components/ui/tooltip.js";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
@@ -99,7 +97,7 @@ import type { TurnDiffData } from "./components/DiffPanel.js";
 import type { TurnUsage } from "../server/shared/types.js";
 import { deriveEffectivePreviewStatus } from "./utils/preview-status.js";
 
-/** Stable empty fallback so the zustand selector never returns a fresh array. */
+// Zustand selectors need a stable fallback reference.
 const EMPTY_TURN_USAGE: TurnUsage[] = [];
 
 const DiffPanel = lazy(() => {
@@ -176,17 +174,13 @@ export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Detect /repo/{slug}/new URL pattern (e.g. /repo/owner/repo/new)
   const newSessionRepoSlug = parseNewSessionSlug(location.pathname);
   const isNewSessionRoute = newSessionRepoSlug !== undefined;
 
-  // SSE for global push (session list, repos, auth, activity dots) — always active
   useServerEvents();
 
-  // ── Store selectors ──
   const sessionId = useSessionStore((s) => s.sessionId);
 
-  // Per-session WS — connects using URL param, or store sessionId when on /{slug}/new route
   const wsSessionId =
     urlSessionId ?? (isNewSessionRoute ? sessionId : undefined);
   const {
@@ -206,16 +200,10 @@ export default function App() {
   const sessions = useSessionStore((s) => s.sessions);
   const queuedMessages = useSessionStore((s) => s.queuedMessages);
   const historyLoaded = useSessionStore((s) => s.historyLoaded);
-  // Per-turn usage for the active session — feeds the UsageModal's per-turn
-  // breakdown. Sourced from `usage_turns` via `/history` so reload-time data
-  // is complete (not just turns observed during the current WS connection).
   const turnUsageForActiveSession = useSessionStore((s) =>
     sessionId ? (s.turnUsage[sessionId] ?? EMPTY_TURN_USAGE) : EMPTY_TURN_USAGE,
   );
 
-  // Upload chips, the "+" attach button, and drop-zone behavior live inside
-  // MessageInput now (docs/145) — the chat parent only needs the session-wide
-  // upload list for the side panel (file tree → attached uploads section).
   const sessionUploads = useFileStore((s) => s.sessionUploads);
 
   const gitCommits = useGitStore((s) => s.commits);
@@ -241,11 +229,7 @@ export default function App() {
   const editSaving = useFileStore((s) => s.editSaving);
   const editError = useFileStore((s) => s.editError);
 
-  // Direct file editing is only offered once a session has graduated (left the
-  // warm pool). The graduated-sessions list excludes warm sessions, so a
-  // current session present in it has taken its first turn; a brand-new,
-  // not-yet-started session is absent and edits stay disabled. The server
-  // enforces this authoritatively too (PUT /files rejects warm sessions).
+  // Warm sessions are excluded from the session list.
   const sessionGraduated = useSessionStore((s) =>
     s.sessions.some((x) => x.id === s.sessionId),
   );
@@ -260,9 +244,6 @@ export default function App() {
   const shellStarted = useTerminalStore((s) => s.shellStarted);
 
   const importSearchResults = usePrStore((s) => s.importSearchResults);
-  // The PR tab is shown only when the active session actually has a PR (open,
-  // merged, or closed) — mirroring how the Services tab is conditional on
-  // composeServices. The ready/creating/error phases have no PR to detail.
   const hasPr = usePrStore((s) => {
     if (!wsSessionId) return false;
     const card = s.cardBySession[wsSessionId];
@@ -273,10 +254,6 @@ export default function App() {
         card.phase === "closed")
     );
   });
-  // Permission mode is keyed per-session (with a fallback to the pre-session
-  // default). This subscription recomputes whenever wsSessionId or any
-  // settings-store field changes, so toggling plan mode in one session never
-  // leaks into the toggle/Accept-button state of another session.
   const permissionMode = useSettingsStore((s) =>
     wsSessionId && wsSessionId in s.permissionModeBySession
       ? s.permissionModeBySession[wsSessionId]
@@ -296,33 +273,15 @@ export default function App() {
 
   const rightTabRaw = useUiStore((s) => s.rightTab);
   const runtimeMode = useUiStore((s) => s.runtimeMode);
-  // Feature 118 (local mode): the Preview and Terminal panels are
-  // container-backed and don't function in the in-process orchestrator, so we
-  // hide their tabs. Coerce a persisted "preview"/"terminal" selection to a
-  // panel that does work, so the right panel never lands on a dead tab.
   const isLocalMode = runtimeMode === "local";
-  // docs/128 — an ops session has no app preview and no PR lifecycle, so those
-  // tabs are hidden; a dedicated read-only "Host" tab takes their place. Coerce
-  // a persisted preview/pr selection to Host so the panel never lands on a tab
-  // that isn't rendered for this kind of session.
   const isOpsSession = useMemo(
     () => sessions.find((s) => s.id === wsSessionId)?.kind === "ops",
     [sessions, wsSessionId],
   );
-  // docs/211 — a sandbox session has no app preview and no PR lifecycle, so those
-  // tabs are REMOVED (not just disabled — there is no Host replacement either).
-  // Coerce a persisted preview/pr selection to Files so the panel never lands on
-  // a tab that isn't rendered for this kind of session.
   const isSandboxSession = useMemo(
     () => sessions.find((s) => s.id === wsSessionId)?.kind === "sandbox",
     [sessions, wsSessionId],
   );
-  // docs/262 — the Plugins tab is gated on plugin intent (a `plugins:` block in
-  // shipit.yaml, even an invalid one). Session-scoped store; seeded by the
-  // sessionId-keyed effect below and by the files-changed shipit.yaml hook.
-  // Read through `snapshotForSession`: the store holds one slot, so pairing
-  // the snapshot with its owning session is what keeps a switch from showing
-  // the previous session's tab, dot and cards (review finding).
   const pluginSnapshot = usePluginReposStore((s) => snapshotForSession(s, sessionId));
   const showPluginsTab = pluginsTabVisible(pluginSnapshot);
   const rightTab = (() => {
@@ -336,9 +295,6 @@ export default function App() {
       (rightTabRaw === "preview" || rightTabRaw === "terminal")
     )
       {return "files";}
-    // docs/262 — the tab disappears when the declaration is edited away or the
-    // session switches to a plugin-less repo; coerce so the panel never lands
-    // on a tab that isn't rendered.
     if (rightTabRaw === "plugins" && !showPluginsTab) {
       return isLocalMode || isOpsSession || isSandboxSession ? "files" : "preview";
     }
@@ -389,33 +345,11 @@ export default function App() {
     liveSteering &&
     (agentList.find((a) => a.id === activeAgentId)?.supportsSteering ?? false);
 
-  // GitHub is the only blocking door left (docs/257). The manual git-identity /
-  // sandbox fallback was removed, so gate on GitHub auth rather than git
-  // identity: a user with a legacy/manual identity (set in Settings) but no
-  // GitHub token must still pass Connect-GitHub. Gate on `bootstrapLoaded` so
-  // the default `githubStatus.authenticated: false` can't flash the gate before
-  // the real status arrives from bootstrap.
-  //
-  // docs/257 — the harness half is NOT here any more. `noAgentReady` used to
-  // join this disjunction and summon the wizard; connecting a harness is now
-  // `HarnessOnboardingPanel`, in the conversation view, covering nothing.
   const githubNeeded = bootstrapLoaded && !githubStatus.authenticated;
-  // The trigger latch stays, and it is not caution — it is what "the GitHub step
-  // is unchanged" costs. See `useGitHubGateLatch`, which owns and tests the one
-  // row where it differs from a direct `githubNeeded` gate. Dismissal now fires
-  // when GitHub connects, the same shape as before: the old step 1 advanced
-  // rather than closing only because a second step was waiting behind it.
   const { showGitHubGate, dismiss: dismissGitHubGate } = useGitHubGateLatch(githubNeeded);
-  // docs/211 — sandbox create is in flight; disables the dialog controls. The
-  // dialog itself is rendered once here (not in SessionSidebar) so the empty
-  // HomeScreen can open it on mobile, where the sidebar unmounts when closed.
   const [creatingSandbox, setCreatingSandbox] = useState(false);
-  // docs/257 req 9 — the historical condition, plus the explicit exclusion that
-  // keeps the panel from mounting behind the gate's backdrop. See
-  // `utils/chat-runnable.ts`.
   const showHarnessOnboarding = useHarnessOnboardingPanelVisible(showGitHubGate);
 
-  // ── Non-store hooks ──
   const { fraction, isDragging, onMouseDown, onTouchStart, containerRef } =
     useResizablePanel({
       initialFraction: 0.5,
@@ -423,9 +357,6 @@ export default function App() {
       storageKey: "vibe-panel-split",
     });
   const isMobile = useIsMobile();
-  // Keeps the shell's height matched to the real viewport. Load-bearing on
-  // mobile: the tab bar is the shell's bottom child and `overflow: hidden`
-  // makes anything past that edge unreachable. See the hook.
   useAppViewportHeight();
   const {
     searchOpen,
@@ -435,17 +366,10 @@ export default function App() {
     githubOrgs,
     setGithubOrgs,
   } = useAppModals();
-  // Derive the repo URL from the /{slug}/new URL pattern (replaces useState)
   const newSessionRepoUrl = useMemo(() => {
     if (!newSessionRepoSlug) return undefined;
     return repos.find((r) => parseRepoLabel(r.url) === newSessionRepoSlug)?.url;
   }, [newSessionRepoSlug, repos]);
-  // A freshly-claimed session stays *warm* (warm=1) until its first turn
-  // graduates it, and warm sessions are excluded from the broadcast session
-  // list — so `currentSession` is undefined during that window. Fall back to
-  // the /{slug}/new route's repo so trust-banner / preview wiring keyed on the
-  // repo URL works before graduation (otherwise the RepoTrustBanner only
-  // appears after the first agent turn — see docs/178).
   const currentRepoUrl = currentSession?.remoteUrl ?? newSessionRepoUrl;
   const currentRepo = currentRepoUrl
     ? repos.find(
@@ -457,8 +381,6 @@ export default function App() {
     currentRepoUrl,
     currentRepo,
   );
-  // docs/257 req 3 — "this install cannot run anything", the one case where the
-  // composer is disabled as a whole and says why in its own placeholder.
   const chatDisabledReason = useChatDisabledReason();
   const search = useSearch(messages);
   const { notify, requestPermission } = useNotification();
@@ -473,11 +395,6 @@ export default function App() {
     status,
   });
 
-  // App bootstrap wiring (per-session WS connect handling, delayed bootstrap
-  // spinner, WS message dispatcher, restore-rewind browser-event bridge). The
-  // global SSE (`useServerEvents`) and per-session WS (`useSessionWebSocket`)
-  // stay above so their effects register first and their handles flow through
-  // the rest of App.
   const { showBootstrapSpinner } = useAppBootstrap({
     status,
     send,
@@ -488,33 +405,9 @@ export default function App() {
     reconnect,
   });
 
-  /**
-   * docs/285 — the composer's network-mode state.
-   *
-   * `wsSessionId` rather than the store's `sessionId` because it is the id the
-   * composer is actually bound to, and `isNewSessionRoute` is what tells the
-   * hook a claim is expected: a pick made before the claim lands is held as a
-   * draft and written when it arrives, but only when this composer is the thing
-   * that claimed it (req 8).
-   *
-   * `beforeFirstTurn` — whether the server will still reconcile this session's
-   * container for the picked mode, which is true exactly while the session is
-   * WARM. The two footers say opposite things ("in force from the first turn"
-   * vs "applies on the next container start") and each is true at its own
-   * moment, so the test has to match the server's.
-   *
-   * Read from session membership, not from `messages.length`. Warm sessions are
-   * excluded from the broadcast session list, so an absent `currentSession` IS
-   * the warm signal — whereas `messages` is per-session and momentarily empty
-   * right after switching to an existing session, which made the control
-   * promise a reconciliation the server was never going to run.
-   */
   const composerNetworkState = useComposerNetworkMode(
     wsSessionId ?? null,
     isNewSessionRoute,
-    // req 8 — the draft belongs to THIS new-session route. Navigating from one
-    // repo's `/new` to another's before the first claim lands must abandon the
-    // pick, not carry it into the session that arrives next.
     newSessionRepoSlug ?? null,
   );
   const composerNetwork = useMemo(
@@ -531,32 +424,15 @@ export default function App() {
     [composerNetworkState, currentSession],
   );
 
-  // docs/285 — this session's runner was replaced (its container was rebuilt by
-  // a network-mode rebuild, or by Rescue in another tab), so this
-  // socket is attached to a runner that no longer has listeners and will never
-  // deliver another event. Reattach.
-  //
-  // It lives here for the same reason the preview-link effect below does: `App`
-  // owns the socket, and `reconnect` is not reachable from the SSE hook that
-  // learns about the replacement.
   const staleRunnerNonce = useSessionStore((s) => s.staleRunnerNonce);
   // eslint-disable-next-line no-restricted-syntax -- external system sync: reattach the WebSocket after the server replaced this session's runner
   useEffect(() => {
-    // Zero is the initial value, not an event — reconnecting on mount would
-    // throw away the connection that was just established.
+    // Zero is the initial value, not a replacement event.
     if (staleRunnerNonce > 0) reconnect();
   }, [staleRunnerNonce, reconnect]);
 
-  // docs/258 — an agent-authored `shipit-preview://` pointer records where it
-  // wants the panel to go; this starts the named service if it isn't running
-  // (req 12) and selects its port. It lives here because `start_service` is a
-  // WebSocket message and `App` owns the socket.
   usePreviewLinkIntent(sessionId, send);
 
-  // Session resume/claim/routing: the four route-sync effects + the
-  // new-session claim handlers. Effect ordering and dependency arrays are
-  // preserved exactly (race-condition sensitive). `useAppKeyboardShortcuts`
-  // below consumes `handleNewSessionShortcut` returned here.
   const {
     handleNewSessionForRepo,
     handleNewSessionShortcut,
@@ -573,10 +449,6 @@ export default function App() {
     navigate,
   });
 
-  // ── Callback helpers ──
-  // docs/293 req 4 — the send decision itself lives in `runSend`, so it can be
-  // tested without rendering App. Everything React-shaped is passed in; the rest
-  // it reads from the stores. This wrapper is only the dependency binding.
   const handleSend = useCallback(
     (payload: SendPayload): boolean =>
       runSend(
@@ -609,10 +481,6 @@ export default function App() {
     [send],
   );
 
-  // docs/150 — one in-flight ref per converted callsite swallows rapid
-  // double-clicks (compose-error overlays can flicker as services restart).
-  // The ref is set true at dispatch start and cleared in `.finally`; the
-  // existing `isLoading` flag also disables most buttons.
   const sendErrorsInFlight = useRef(false);
   const createPrInFlight = useRef(false);
   const composeErrorInFlight = useRef(false);
@@ -658,11 +526,6 @@ export default function App() {
     [requestPermission, apiPost],
   );
 
-  // "Create PR" on the PR lifecycle card dispatches a turn to the agent (via
-  // the docs/150 HTTP dispatch route) instead of calling the orchestrator's
-  // quick-create route. The agent has the turn-by-turn context (what changed,
-  // why, which files), so it picks a better title and writes a more accurate
-  // Summary/Changes/Test plan body than the server-side LLM call could.
   const handleCreatePr = useCallback(() => {
     if (createPrInFlight.current) return;
     const sid = useSessionStore.getState().sessionId;
@@ -694,14 +557,9 @@ export default function App() {
     if (!sid) return;
     const text = `Docker Compose failed to start:\n\n\`\`\`\n${composeError.trim()}\n\`\`\`\n\nPlease fix this error so the services can start successfully.`;
     requestPermission();
-    // On /{slug}/new route — graduate: transition URL to /session/{id}, same as
-    // handleSend. The dispatch makes the session real; without this the URL
-    // stays stuck on .../new and the next "New Session" recycles this one.
     if (isNewSessionRoute) {
       void navigate(`/session/${sid}`, { replace: true });
     }
-    // Mobile: the error overlay lives in the preview panel, which shows nothing
-    // useful until the agent finishes. Switch to chat so the turn is visible.
     useUiStore.getState().setMobilePanel("chat");
     composeErrorInFlight.current = true;
     void dispatchAgentMessage({
@@ -722,20 +580,11 @@ export default function App() {
     if (composeHintInFlight.current) return;
     const sid = useSessionStore.getState().sessionId;
     if (!sid) return;
-    // Goal-shaped, not mechanism-shaped, and held to the same no-jargon bar as
-    // the invite that offers it — this text is appended as a visible user
-    // bubble. Defined beside that copy; see PREVIEW_SETUP_PROMPT.
     const text = PREVIEW_SETUP_PROMPT;
     requestPermission();
-    // On /{slug}/new route — graduate: transition URL to /session/{id}, same as
-    // handleSend. The dispatch makes the session real; without this the URL
-    // stays stuck on .../new and the next "New Session" recycles this one.
     if (isNewSessionRoute) {
       void navigate(`/session/${sid}`, { replace: true });
     }
-    // Mobile: the hint overlay lives in the preview panel, which has nothing to
-    // show until the agent finishes. Switch to chat so the dispatched turn is
-    // visible instead of leaving the user staring at the empty preview.
     useUiStore.getState().setMobilePanel("chat");
     composeHintInFlight.current = true;
     void dispatchAgentMessage({
@@ -764,24 +613,14 @@ export default function App() {
         lines.push("```", logs, "```", "");
       }
       lines.push("Please investigate and fix the issue.");
-      // Prefill the composer instead of dispatching directly: service logs are
-      // noisy and the user usually wants to trim them or add context before
-      // sending (same edit-then-send pattern as "Start Session from doc").
       useSessionStore.getState().setPrefillText(lines.join("\n"));
       useUiStore.getState().setMobilePanel("chat");
     },
     [],
   );
 
-  // Returns whether the answer reached the wire — AskUserQuestion gates its
-  // answered-state lock on this, so it must not swallow the boolean.
   const handleAnswerQuestion = useCallback(
     (toolUseId: string, answers: Record<string, string>, text: string, dictated?: boolean): boolean => {
-      // Forward the session's current permission mode so answering a clarifying
-      // question stays in the same mode it was asked in. Without this, an answer
-      // given in plan mode resumes the CLI in default mode and the agent starts
-      // implementing — silently "exiting plan mode" the user never approved.
-      // Mirrors handleSendFollowUp's permission-mode plumbing.
       const session = useSessionStore.getState();
       const pm = useSettingsStore
         .getState()
@@ -797,7 +636,6 @@ export default function App() {
             answers,
             text,
             ...(pm !== "auto" ? { permissionMode: pm } : {}),
-            // docs/144 — an "Other" answer that was spoken rather than typed.
             ...(dictated ? { dictated: true } : {}),
           }),
       });
@@ -805,8 +643,6 @@ export default function App() {
     [send],
   );
 
-  // Returns whether the message reached the wire — the action-checklist card
-  // gates its "Submitted" ack on this, so it must not swallow the boolean.
   const handleSendFollowUp = useCallback(
     (text: string): boolean => {
       const session = useSessionStore.getState();
@@ -829,17 +665,6 @@ export default function App() {
     [send],
   );
 
-  // docs/171 — confirm/cancel a proposed release. These send a chat message
-  // (answering the agent's proposal) through the same user-message surface as
-  // any other reply — NOT a shell command (CLAUDE.md §5). The agent's follow-up
-  // turn performs the bump/PR-or-tag and the release flow advances the card.
-  //
-  // The confirm wording is mechanism-aware (docs/214): a `release-branch` repo
-  // (ShipIt's own) is released by merging a version-bump PR into the maintenance
-  // branch — CI tags + publishes — so the message must NOT tell the agent to
-  // push a tag (a hand-pushed tag collides with CI). Only a `tag-triggered` repo
-  // pushes the tag. Anything else (absent/unknown/brokered) defaults to the
-  // tag-triggered wording, matching the platform default.
   const handleReleaseConfirm = useCallback(
     (version: string, mechanism: ReleaseMechanism) => {
       const session = useSessionStore.getState();
@@ -882,10 +707,6 @@ export default function App() {
     [send],
   );
 
-  // App-level keyboard wiring (shortcuts overlay + new-session chord, text and
-  // voice quick-capture hotkeys). Lives at this position so its keydown effects
-  // register in the same order as before. The resolved chords stay selected
-  // above so their `useKeybinding` selectors keep their original positions.
   useAppKeyboardShortcuts({
     setShortcutsOpen,
     handleNewSessionShortcut,
@@ -895,8 +716,6 @@ export default function App() {
   });
 
   const handleTabChange = useCallback(
-    // RightTab itself, not a re-spelled union — an inline copy drifts the
-    // moment a tab is added (docs/262's "plugins" caught it doing exactly that).
     (tab: RightTab) => {
       useUiStore.getState().setRightTab(tab);
       const sid = useSessionStore.getState().sessionId;
@@ -925,10 +744,6 @@ export default function App() {
     [],
   );
 
-  // docs/189 — open an issue's inline detail view from a chat card (the agent's
-  // read/write cards). Switches the right panel to the Issues tab (and reveals
-  // it on mobile), then loads the issue into the master-detail view. The
-  // rightTab change also fires the fetch-on-open effect below for the list.
   const handleOpenIssue = useCallback(
     (ref: {
       tracker: TrackerId;
@@ -945,14 +760,6 @@ export default function App() {
     [],
   );
 
-  // Fetch-on-open for the Issues tab (docs/170): trackers (for the sub-tabs)
-  // then the active list. This lives in an effect rather than handleTabChange
-  // because a page reload restores rightTab from localStorage WITHOUT going
-  // through handleTabChange — so a reload directly onto the Issues tab would
-  // otherwise never fetch and render an empty "Not connected" panel until the
-  // user bounced to another tab and back. Keyed on rightTab so it also covers
-  // the click-to-open path; the prior inline fetch in handleTabChange was
-  // removed to avoid a double fetch.
   // eslint-disable-next-line no-restricted-syntax -- external system sync: fetch issues when the tab becomes active (incl. reload-restored tab)
   useEffect(() => {
     if (rightTab !== "issues") return;
@@ -962,26 +769,6 @@ export default function App() {
     })();
   }, [rightTab]);
 
-  // Warm the tracker-connected state independently of the Issues tab so that a
-  // Linear/GitHub *issue* link clicked in chat/PR markdown can decide whether to
-  // open the in-app viewer vs. link out (see `MarkdownLink`). Without this the
-  // `trackers` list is cold until the user first opens the Issues tab, and a
-  // click would wrongly link out. Keyed on `sessionId` because the GitHub
-  // tracker's `configured` state resolves against the active session's repo
-  // binding; Linear ignores it. `fetchTrackers` is idempotent and cheap.
-  //
-  // `warmTrackers`, not `fetchTrackers`: a switch to a *different repository*
-  // clears the declared set (`setRepoScope`), and if the single refill lands
-  // while the incoming session's checkout is still being re-cloned it caches
-  // "declares nothing" — leaving every inline `planning#147` badge in the
-  // transcript as plain text until the user opened the Issues tab, which was
-  // the only other refetch. It retries only while the server says the answer
-  // isn't readable yet, so the ordinary case is still one request.
-  // docs/262 — seed the Plugins tab's snapshot on session change. Keyed on
-  // `sessionId` because the tab's *visibility* (and its warn dot) derives from
-  // the snapshot, so it must exist while the pane is closed. Cheap: the server
-  // reads one local file. The files-changed handler refetches on shipit.yaml
-  // edits; a session with no id (fresh app) has nothing to declare plugins.
   // eslint-disable-next-line no-restricted-syntax -- external system sync: seed plugin declarations for tab gating
   useEffect(() => {
     if (!sessionId) return;
@@ -992,22 +779,12 @@ export default function App() {
   useEffect(() => {
     void (async () => {
       await useIssuesStore.getState().warmTrackers();
-      // planning#327 — the list is repo-scoped too: the GitHub tracker resolves
-      // against the session's repo binding, so the same tracker id yields
-      // different issues per session. Refetch whenever the tab is showing one
-      // (the fetch-on-open effect above is keyed on `rightTab`, so it does NOT
-      // re-run for a session change while the tab stays open).
       if (useUiStore.getState().rightTab === "issues") {
         await useIssuesStore.getState().fetchIssues();
       }
     })();
   }, [sessionId]);
 
-  // docs/133 Phase 4: tell the server whether the PR tab is the active
-  // right-panel tab for this session, so the poller fetches the heavier
-  // conversation fields (issue comments + review threads) only while the panel
-  // is open. Keyed on connection status so it re-emits across reconnects and
-  // session switches; `send` no-ops when the socket is closed.
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!wsSessionId || status !== "open") return;
@@ -1034,9 +811,7 @@ export default function App() {
       try {
         const data = await apiGet<{
           settings: {
-            /** docs/257 req 8 — server-computed "this install can run a turn". */
             canRunTurns?: boolean;
-            /** docs/257 req 9 — when harness onboarding was first completed (ISO). */
             harnessOnboardingCompletedAt?: string;
             gitIdentity: { name: string; email: string };
             systemPrompt: string;
@@ -1053,11 +828,8 @@ export default function App() {
             voiceDeliveryMode?: "native" | "external" | "both";
             voiceWebhookConfigured?: boolean;
             providerAccounts?: CredentialRoute[];
-            /** docs/150-multiple-provider-subscriptions reqs 4-6 — per-provider proactive failover cutoffs. */
             failoverCutoffs?: Record<string, { session: number; weekly: number }>;
-            /** docs/150-multiple-provider-subscriptions req 21 — per-provider account selection mode. */
             accountSelectionMode?: Record<string, "strict" | "balanced">;
-            /** docs/252 phase 7 (req 9) — the pinned non-turn model + what it resolves to. */
             nonTurnModel?: { serviceId: string; billingMode: "sub" | "key"; modelId: string };
             nonTurnModelResolved?: {
               serviceId: string;
@@ -1068,22 +840,13 @@ export default function App() {
               harnessId: string;
               source: "pinned" | "default";
             };
-            /** docs/261 phase 3 (req 8) — both reviewer slots, pinned or auto-configured. */
             reviewers?: ReviewerSlotView[];
-            /** docs/264 phase 2 — every agent role, each resolved by the server. */
             roles?: RoleView[];
           };
         }>("/api/bootstrap");
         useGitStore.getState().setIdentity(data.settings.gitIdentity);
-        // docs/257 req 8 — this reader copies named fields too, so the runnable
-        // signal has to be listed here or opening Settings would leave the
-        // composer reading a value this refetch never refreshed.
         if (data.settings.canRunTurns !== undefined)
           {useSettingsStore.getState().setCanRunTurns(data.settings.canRunTurns);}
-        // docs/257 req 9 — same reasoning as `canRunTurns` above: a named-field
-        // reader has to list the field or opening Settings leaves the panel
-        // reading a value this refetch never refreshed. `?? null` because this
-        // is a full settings read.
         useSettingsStore.getState()
           .setHarnessOnboardingCompletedAt(data.settings.harnessOnboardingCompletedAt ?? null);
         useSettingsStore
@@ -1146,19 +909,12 @@ export default function App() {
           {useSettingsStore
             .getState()
             .setVoiceWebhookConfigured(data.settings.voiceWebhookConfigured);}
-        // docs/252 phase 7 (req 9) — applied unconditionally: absent means "no
-        // pin" / "nothing runnable", both real states rather than a reason to
-        // keep a stale value from a previous read.
         useSettingsStore.getState().setNonTurnModel(
           data.settings.nonTurnModel ?? null,
           data.settings.nonTurnModelResolved ?? null,
         );
-        // docs/261 phase 3 (req 8) — guarded on presence: an absent array only
-        // ever means an older server, and clearing it would empty the Reviewer
-        // tab rather than report anything.
         if (data.settings.reviewers)
           {useSettingsStore.getState().setReviewers(data.settings.reviewers);}
-        // docs/264 phase 2 — guarded on presence for the same reason.
         if (data.settings.roles) {useSettingsStore.getState().setRoles(data.settings.roles);}
         if (data.settings.providerAccounts)
           {useSettingsStore
@@ -1197,17 +953,9 @@ export default function App() {
     [],
   );
 
-  // `handleDocStartSession` is referenced only inside the deferred `onClick`
-  // below, and is declared further down this component — naming it in the
-  // dependency array would evaluate the binding during render, before its
-  // `const` initializer has run (TDZ). It is a `useCallback`, so the closure
-  // captured here stays correct.
   const handleOpenDoc = useCallback((filePath: string, doc?: DocEntry) => {
     const sid = useSessionStore.getState().sessionId;
     if (!sid) return;
-    // docs/168: status was removed from docs, so gate the seed-a-session
-    // action on the structural "this is a work doc" signal instead — a
-    // feature-directory plan.md or a doc carrying an issue: pointer.
     const isWorkDoc =
       !!doc && (isPlanPath(doc.path) || doc.issue !== undefined);
     const actions = isWorkDoc
@@ -1225,11 +973,6 @@ export default function App() {
 
   const handleOpenFilePreview = useCallback((filePath: string) => {
     const sid = useSessionStore.getState().sessionId;
-    // Edit and Download are no longer passed in here — the preview modal
-    // renders both itself, so every surface that opens a file (PR card, docs
-    // panel, diff block, a `path:line` link in chat) gets them, not just this
-    // one. The modal applies the same gates: an editable path in a graduated
-    // session, and a file that exists on disk.
     if (sid) void useFileStore.getState().openPreview(sid, filePath);
   }, []);
 
@@ -1238,15 +981,10 @@ export default function App() {
       useFileStore.getState().closePreview();
 
       const { messages, sessions, sessionId } = useSessionStore.getState();
-      // Prefer the current session's repo — the doc was opened from this
-      // session's workspace, so a fresh session for it must land in the same
-      // repo. `activeRepoUrl` is only a fallback because it can drift away
-      // from the current session on URL-based navigation.
       const repoUrl =
         sessions.find((s) => s.id === sessionId)?.remoteUrl ??
         useRepoStore.getState().activeRepoUrl;
 
-      // If the current session already has messages, switch to a fresh session first
       if (messages.length > 0 && repoUrl) {
         await handleNewSessionForRepo(repoUrl);
       }
@@ -1258,9 +996,6 @@ export default function App() {
     [handleNewSessionForRepo],
   );
 
-  // Issues tab "Start session" (docs/170) mirrors handleDocStartSession: rather
-  // than firing a headless session that auto-sends, it seeds the chat input with
-  // the issue's context so the user can edit/augment the prompt before sending.
   const handleIssueStartSession = useCallback(
     async (issue: TrackerIssue, tracker: TrackerId, pickedRepoUrl?: string) => {
       const { messages, sessions, sessionId } = useSessionStore.getState();
@@ -1268,37 +1003,17 @@ export default function App() {
         sessions.find((s) => s.id === sessionId)?.remoteUrl ??
         useRepoStore.getState().activeRepoUrl;
 
-      // docs/236: the Start-session split button can name an explicit repo, so
-      // an issue that belongs to another project doesn't have to be routed
-      // through "switch repo in the sidebar → new session → find the issue
-      // again". Absent a pick, this is the pre-existing implicit target.
       const repoUrl = pickedRepoUrl ?? defaultRepoUrl;
       const switchingRepo = Boolean(repoUrl) && repoUrl !== defaultRepoUrl;
 
-      // A fresh session is needed when the current one already has messages (so
-      // the prefilled prompt doesn't append to an unrelated thread) — and
-      // always when switching repos, since the current session is checked out
-      // on the wrong project no matter how empty it is.
       if (repoUrl && (switchingRepo || messages.length > 0)) {
-        // Follow the pick in the sidebar too, so the app's notion of "the repo
-        // I'm working in" doesn't lag behind the session we're about to open.
         if (switchingRepo) useRepoStore.getState().setActiveRepoUrl(repoUrl);
         await handleNewSessionForRepo(repoUrl);
       }
 
-      // Same prompt the server's seedFromIssueRef sends — shared so the two
-      // can't drift — but here it lands in the composer, editable. It names the
-      // issue and nothing more: the agent fetches the body itself, and a short
-      // seed leaves room for the user to append what they actually want done
-      // before sending, instead of scrolling past a pasted description.
       useSessionStore.getState().setPrefillText(buildIssueSeedPrompt(issue));
 
-      // planning#322 — the prompt above is not enough for the server to know this
-      // session came from an issue, and inferring it from the text would be
-      // guesswork (the user is free to rewrite it). Park the ref against the
-      // session we just landed in; `handleSend` attaches it to the first
-      // message, which is where the branch gets pinned to the pointer
-      // (docs/248-declared-issue-trackers req 22) and the issue moves to started.
+      // Keep provenance separate from the editable prompt.
       const seededSessionId = useSessionStore.getState().sessionId;
       useSessionStore.getState().setPendingIssueRef(
         seededSessionId
@@ -1345,13 +1060,6 @@ export default function App() {
     [send],
   );
 
-  // docs/203 — "Ask agent to review": start a chat-native review turn. Distinct
-  // from send_message so the orchestrator authorizes the review tool for this
-  // file. The review MODE (brokered role vs fresh subagent) is resolved here at
-  // click time from the settings store, then baked into the prompt; WHO reviews
-  // is ShipIt's own setting, resolved server-side at spawn admission (docs/261).
-  // Closing the modal shifts focus to the chat; the review lands in chat
-  // (a consult card for the role, prose for same-model — docs/220).
   const handleAskAgentReview = useCallback(
     (reviewFilePath: string) => {
       const sid = useSessionStore.getState().sessionId;
@@ -1362,9 +1070,6 @@ export default function App() {
           activeAgentId: useUiStore.getState().activeAgentId,
         }),
       );
-      // On /{slug}/new route — graduate: transition URL to /session/{id}, same
-      // as handleSend. Without this the session becomes real but the URL stays
-      // stuck on .../new.
       if (sid && isNewSessionRoute) {
         void navigate(`/session/${sid}`, { replace: true });
       }
@@ -1388,8 +1093,6 @@ export default function App() {
     [handleOpenDoc],
   );
 
-  // Sibling tabs for the preview modal: only computed for markdown previews
-  // (the tab strip is meaningful for docs, not arbitrary code/binary files).
   const previewSiblings = useMemo(() => {
     if (!previewFile || previewType !== "markdown") return undefined;
     const inDir = siblingsOf(previewFile, docFiles);
@@ -1412,16 +1115,6 @@ export default function App() {
 
   const handleAgentChange = useCallback(
     (agentId: AgentId) => {
-      // The harness AND the model seed it has to agree with. Writing only
-      // `vibe-agent-id` here is what made this pick evaporate: the seed is what
-      // `newSessionAgentId` derives the harness from, and `useUiStore.reset()`
-      // re-derives it on every new session and session switch — so a pick made
-      // while the saved model belonged to the other harness lasted exactly as
-      // long as the page did. `set_agent` below still owns THIS session's model
-      // (the server conforms it); this owns the next session's.
-      // The live session model when the composer has one, so "keep the model if
-      // the new harness runs it" keeps what the user is looking at rather than
-      // whatever the slot last held. With none, the helper reads the seed.
       const liveModel = useUiStore.getState().modelInfo?.model;
       persistHarnessPick({
         agentId,
@@ -1430,8 +1123,6 @@ export default function App() {
       });
       useUiStore.getState().setActiveAgentId(agentId);
       send({ type: "set_agent", agentId });
-      // Skills are per-backend (Claude scans .claude/skills, Codex .codex/skills),
-      // so re-fetch when the active agent switches.
       const sid = useSessionStore.getState().sessionId;
       if (sid)
         {void useFileStore
@@ -1442,15 +1133,8 @@ export default function App() {
     [send],
   );
 
-  // docs/252 phase 3 — the picker sends the whole `(service, billing mode,
-  // model)` selection. A bare id was ambiguous the moment two services could
-  // offer the same one: the server would re-resolve it to whichever service
-  // sorts first, which is the silent mis-billing req 11 exists to prevent. The
-  // browser's own seed slot stores the triple for the same reason.
   const handleModelChange = useCallback(
     (selection: ModelChoice) => {
-      // A model pick names a harness too (the harness is derived from it), so it
-      // is the user overruling any redirect that is parked — see `ParkedHarness`.
       clearParkedHarness();
       if (selection.serviceId) {
         saveModelSelection({
@@ -1472,9 +1156,6 @@ export default function App() {
     [send],
   );
 
-  // docs/217 — Control B: per-session reasoning effort for the active agent's
-  // own turns. The seed save (per-agent localStorage) happens inside the
-  // ReasoningSelector; here we just push it to the server for this session.
   const handleReasoningChange = useCallback(
     (effort: string | null) => {
       send({ type: "set_reasoning", effort });
@@ -1482,44 +1163,13 @@ export default function App() {
     [send],
   );
 
-  /**
-   * docs/272-user-selectable-roles reqs 1, 12 — start this session on a configured role.
-   *
-   * Two writes, and they answer different questions. `set_role` is what applies
-   * the role to THIS session: the server resolves it, writes the harness, model
-   * and level onto the row, and records the name — nothing is guessed here,
-   * because a second implementation of "can this role run" in the browser is
-   * exactly what docs/264 kept out of it. The seed is what makes the NEXT new
-   * session start on the same role (req 12), the way the model and harness seeds
-   * already work.
-   *
-   * The seed is written optimistically and the session is not: a refused role
-   * comes back as an error and leaves the session untouched, while the seed is
-   * only ever a starting point the user can change in the same place.
-   *
-   * **Nothing here clears the seed**, and that is deliberate. Leaving a role
-   * happens when a parameter moves, and only the server knows whether one
-   * actually did — re-selecting the harness a role already set is not a change
-   * (req 15), and "Adjust parameters…" opens those very controls holding the
-   * role's own values. So the seed follows the server's answer, in
-   * `model-selection-changed.ts`, rather than being cleared by the three
-   * handlers on the way out. Clearing it here re-implemented the comparison and
-   * got it wrong in the one case the rule exists for.
-   */
   const handleRoleChange = useCallback(
     (roleName: string | undefined) => {
       saveRoleName(roleName);
-      // req 18 — "No role" clears the name and the standing instructions, and
-      // leaves the parameters alone. So there are no seeds to apply: the three
-      // pickers go on displaying what the role set, which is what the session
-      // goes on running.
       if (roleName === undefined) {
         send({ type: "set_role", roleName: null });
         return;
       }
-      // req 15 — the seeds the three pickers display become the role's, so
-      // "Adjust parameters…" shows what the role actually set rather than what
-      // some earlier session left behind. See `utils/role-seed.ts`.
       applyRoleSeeds(useSettingsStore.getState().roles.find((r) => r.name === roleName));
       clearParkedHarness();
       send({ type: "set_role", roleName });
@@ -1535,12 +1185,6 @@ export default function App() {
     useUiStore.getState().setSettingsOpen(false);
   }, []);
 
-  // ── Computed values ──
-  // Derive an effective preview status from the union of `preview_status` and
-  // `service_status`. The orchestrator emits both whenever a compose service
-  // changes state, but `preview_status` can lag `service_status` in some
-  // races (most visibly when dogfooding ShipIt-in-ShipIt with a manual `dev`
-  // service) — see `utils/preview-status.ts` for the full rationale.
   const effectivePreviewStatus = deriveEffectivePreviewStatus(
     previewStatus,
     composeServices,
@@ -1551,64 +1195,26 @@ export default function App() {
   const showHomeScreen =
     !showNewSessionView &&
     (!sessionId || (showTemplates && messages.length === 0 && !isLoading));
-  // On mobile, the homepage's primary content is the session list — open the
-  // drawer on the home route and close it on any other route. URL-driven so
-  // the brief pre-hydration window on a session URL doesn't count as "home"
-  // and spuriously open the drawer; mirroring the route also guarantees the
-  // drawer can't linger over the session view after a navigation.
   const isHomeRoute = !urlSessionId && !isNewSessionRoute;
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!isMobile) return;
     useUiStore.getState().setMobileSidebarOpen(isHomeRoute);
   }, [isMobile, isHomeRoute]);
-  // Empty-state rocket: no messages yet, not mid-turn. We gate on historyLoaded
-  // so we don't briefly flash the rocket on session switches before history
-  // arrives — except for a brand-new-session route, where there's no history to
-  // load and the rocket should appear the moment the route mounts.
   const showRocket =
     messages.length === 0 &&
     !isLoading &&
     (historyLoaded || showNewSessionView);
-  // MessageInput's per-session draft persistence is keyed on focusKey. While the
-  // user is on the new-session view (`/{slug}/new`) we MUST keep this stable
-  // across `claimSession()` resolving and `wsSessionId` becoming the real
-  // session ID. Otherwise focusKey flips mid-typing and the draft-swap logic
-  // loads the (empty) draft for the brand-new session, wiping whatever the user
-  // has typed. The graduation to the real session ID happens when the URL
-  // transitions to `/session/{id}` inside handleSend — at that point the
-  // textarea has already been cleared by setText("") so there's nothing to lose.
-  //
-  // docs/259 req 4 — scoped to the ROUTE'S REPO rather than a single constant
-  // "new", so a draft written for one repo doesn't follow the user into the
-  // next one when they switch repos from the new-session repo bar.
-  // `useMessageDraft` already saves the outgoing key and loads the incoming one,
-  // so the swap is that hook's existing behavior, not new machinery.
-  //
-  // Keyed on the SLUG, never on `newSessionRepoUrl`: the URL is resolved against
-  // the loaded repo list and is `undefined` until it arrives, so a URL-derived
-  // key would flip from `new:undefined` to `new:owner/repo` mid-typing — exactly
-  // the draft-wipe the paragraph above exists to prevent. The slug comes
-  // straight off the pathname and only changes on a deliberate repo switch.
+  // The route slug stays stable through claim and repo-list loading, preserving drafts.
   const messageInputFocusKey = showNewSessionView
     ? `new:${newSessionRepoSlug}`
     : wsSessionId;
 
-  // ── Right panel ──
-  // Whether the always-mounted PreviewFrame (+ Services drawer) is the visible
-  // tab. The `pr && !hasPr` case keeps the preview up while a PR is pending.
   const previewVisible =
     !isLocalMode && (rightTab === "preview" || (rightTab === "pr" && !hasPr));
-  // Whether that pane is actually ON SCREEN. `previewVisible` only answers "is
-  // it the selected right-panel tab" — on mobile the whole workspace tree sits
-  // behind the Chat tab as well, and a preview hidden either way must stop
-  // rendering and be told it is hidden (nikzlabs/shipit#2418, second site).
   const previewOnScreen =
     previewVisible &&
     !(isMobile && mobileChatInFront({ showHomeScreen, showNewSessionView, activePanel: mobilePanel }));
-  // Re-measure the tab bar whenever the set of visible tabs changes so the
-  // icon-only collapse adapts to the actual tab count, not a fixed worst-case
-  // width. (See useTabLabelCollapse.)
   const tabBarRef = useTabLabelCollapse(
     [
       isLocalMode,
@@ -1622,12 +1228,6 @@ export default function App() {
   );
   const rightPanel = (
     <>
-      {/* Tabs collapse to icon-only when they'd overflow the bar (driven by
-          useTabLabelCollapse via data-collapsed). When even the icons don't fit
-          — narrow phones with PR + Present present — the bar scrolls
-          horizontally so every tab stays reachable instead of clipping off the
-          right edge. Persistent views sit on the left; transient Present/PR are
-          grouped to the right. */}
       <div
         ref={tabBarRef}
         className="group/tabs flex h-10.25 min-w-0 overflow-x-auto no-scrollbar border-b border-(--color-border-primary) bg-(--color-bg-secondary)"
@@ -1674,8 +1274,6 @@ export default function App() {
             onClick={() => handleTabChange("plugins")}
             badge={
               pluginsAttention(pluginSnapshot) ? (
-                // docs/262 — urgency escapes a closed tab as a warn dot; the
-                // accessible label carries the meaning for screen readers.
                 <span
                   role="img"
                   aria-label="Plugins — attention required"
@@ -1733,8 +1331,6 @@ export default function App() {
         )}
       </div>
       <div className="flex-1 min-h-0 relative">
-        {/* PreviewFrame is always rendered to preserve iframe state; hidden via CSS when another tab is active.
-            The Services drawer (docs/175) docks below it in the same flex column so a log tail can sit under the live render. */}
         <div
           className={`absolute inset-0 flex flex-col ${previewVisible ? "" : "invisible pointer-events-none"}`}
         >
@@ -1755,9 +1351,6 @@ export default function App() {
               onSendComposeHintToAgent={handleSendComposeHintToAgent}
               onAgentInterfaceMessage={handleAgentInterfaceMessage}
             />
-            {/* docs/178 — restricted empty state overlaying the (empty) preview
-                frame when the repo is untrusted. Inside the preview wrapper, so
-                it only shows on the Preview tab. */}
             <RepoTrustBanner key={currentRepoUrl} repoUrl={currentRepoUrl} />
           </div>
           <PreviewServicesDrawer
@@ -1862,11 +1455,6 @@ export default function App() {
                   }
                 : undefined
             }
-            /* docs/257 req 3 — the composer "does not accept input that could
-               not run", and a file attached from the Files panel is input. The
-               handler goes undefined rather than no-op so FileTree hides the
-               affordance entirely instead of offering a button that does
-               nothing. */
             onAddToChat={
               chatDisabledReason
                 ? undefined
@@ -1886,23 +1474,9 @@ export default function App() {
             uploads={sessionUploads}
             onDeleteUpload={(u) => {
               const sid = useSessionStore.getState().sessionId;
-              // docs/294 req 7 — the panel is the other explicit removal, so it
-              // records the same intent the composer's Remove does. Without it, a
-              // still-uploading row deleted here would be read as a session
-              // switch when its POST lands, and kept.
               noteUploadDismissed(u.id);
               if (u.path) markUploadDeleted(u.path);
               if (sid && u.path) {
-                // docs/294 req 1 — the same brokered delete the composer's chips
-                // use, so this writer invalidates an in-flight listing too. It
-                // used to hand-roll the fetch and note no change, leaving a
-                // stale listing free to restore the file it had just removed.
-                //
-                // And retire the draft path, which the composer's Remove has
-                // always done: hydration no longer prunes a path merely because
-                // a listing lacks it, so an explicit delete has to say so or the
-                // path lingers and another tab's older listing can rebuild the
-                // chip for a file that is gone.
                 removeDraftUploads(sid, [u.path]);
                 void deleteUploadFromServer(sid, u.path);
               }
@@ -1925,7 +1499,6 @@ export default function App() {
     </>
   );
 
-  // ── Chat panel ──
   const chatPanel = (
     <>
       {searchOpen && (
@@ -1942,22 +1515,6 @@ export default function App() {
           }}
         />
       )}
-      {/*
-        docs/156 — the PR lifecycle card IS the chat panel's top chrome.
-        It always renders for an active session (even pre-PR) so search and
-        the overflow menu have a stable home. The previous `SessionTopBar`
-        is gone; rename/archive moved to the sidebar row overflow.
-      */}
-      {/* docs/211 — for a sandbox session the PR-card slot holds the orientation
-          banner instead (derived chrome from kind/capabilities — never a chat
-          card). Other sessions keep the PR lifecycle card as their top chrome. */}
-      {/* docs/259 — and before the session exists, the same slot names the repo
-          the session will be created in. Mutually exclusive with the card below
-          (whose condition already includes `!showNewSessionView`), so the slot
-          never has two occupants and the handover at graduation needs no extra
-          state. Every viewport: the desktop sidebar names the repo too, but the
-          composer is where the user is looking, and the bar is also the switcher
-          (req 3) — so it earns its place on both. */}
       {showNewSessionView && newSessionRepoSlug && (
         <NewSessionRepoBar
           repoSlug={newSessionRepoSlug}
@@ -1999,22 +1556,6 @@ export default function App() {
           </div>
         </div>
       )}
-      {/* docs/257 reqs 1, 2, 9 — the setup panel takes the chat pane, and it
-          replaces BOTH branches of this ternary rather than only the
-          conversation: on a fresh install with no repositories the branch that
-          renders is `HomeScreen`, so replacing only the conversation would mean
-          the brand-new user this feature exists for never sees the panel until
-          they have created a session. `HomeScreen`'s only affordance is
-          add-repo, which stays reachable from the sidebar and the repo switcher
-          (and returns intact the moment the flow finishes).
-
-          `showHomeScreen`'s LAYOUT effects are deliberately left alone: on the
-          home route there is no session, so the preview / files / Present /
-          terminal panes are suppressed because they would be empty, not because
-          onboarding is unfinished. Forcing them to render beside the panel would
-          be a layout change no requirement asks for. In a session — the state
-          req 1 describes — the panel replaces only the conversation and every
-          one of those panes is live beside it. */}
       {showHarnessOnboarding ? (
         <HarnessOnboardingPanel agentList={agentList} />
       ) : showHomeScreen ? (
@@ -2024,10 +1565,6 @@ export default function App() {
           hasRepos={repos.length > 0}
         />
       ) : (
-        // Wrapping the message list + bottom-stack (status bar / attachments / rebase / PR card) in a single
-        // flex-1 container gives the rocket overlay stable bounds. Anything that grows here (e.g. attachments
-        // appearing) just shrinks MessageList inside the wrapper — the wrapper itself, and so the rocket
-        // anchored to its bottom, stays put.
         <div className="flex-1 min-h-0 flex flex-col relative isolate">
           {showRocket && (
             <div
@@ -2072,23 +1609,9 @@ export default function App() {
             onReleaseConfirm={handleReleaseConfirm}
             onReleaseCancel={handleReleaseCancel}
           />
-          {/*
-            Bottom stack: thinking indicator, rebase banner, queue indicator.
-            `gap-2` gives a consistent 8px gap between every rendered sibling, so
-            spacing no longer has to be encoded as `mt-2`/`mb-2` on each individual
-            card. Each child uses `last:pb-2` (or `last:mb-2`) to add the 8px to
-            MessageInput when nothing renders below it.
-            docs/156 — the PR lifecycle card is no longer rendered above the
-            input; it lives at the top of the chat panel as the session's top
-            chrome, so the destructive Merge button is no longer adjacent to the
-            send button.
-          */}
           <div className="flex flex-col gap-2">
             {isLoading && <AgentStatusBar activity={activity} />}
             {wsSessionId && <RebaseBanner sessionId={wsSessionId} />}
-            {/* planning#317 — sits directly under the rebase banner: both render a
-                live "your work is not landing" condition, and neither is
-                dismissible. */}
             <SecretBlockBanner />
             {queuedMessages.length > 0 && (
               <QueueIndicator
@@ -2102,17 +1625,9 @@ export default function App() {
           </div>
         </div>
       )}
-      {/* docs/178 + docs/243 — the consent that unblocks the composer, rendered
-          next to the composer it blocks. It used to be a line of text pointing
-          at the Preview tab, which local mode doesn't render at all, leaving
-          dogfood sessions with a disabled composer and nowhere to grant trust. */}
       {agentMessagingBlocked && (!showHomeScreen || showNewSessionView) && (
         <RepoTrustNotice repoUrl={currentRepoUrl} />
       )}
-      {/* docs/257 req 3 — the composer renders under the panel too. Left as it
-          was, a first-run user on the home route would meet the panel with no
-          composer beneath it and therefore no placeholder saying why chat is
-          unavailable, which is the one state req 3 was written for. */}
       {(showHarnessOnboarding || !showHomeScreen || showNewSessionView) && (
         <MessageInput
           onSend={handleSend}
@@ -2122,12 +1637,6 @@ export default function App() {
               ? status !== "open" && !sessionId
               : status !== "open")
           }
-          /* docs/257 req 3 — set ONLY for the not-runnable case, and *in
-             addition to* the expression above rather than folded into it: the
-             other conditions keep today's behaviour, and repo trust in
-             particular renders its own inline notice next to the composer
-             (`RepoTrustNotice`), which suits a consent better than a
-             placeholder. */
           disabledReason={chatDisabledReason}
           isLoading={isLoading}
           onInterrupt={() => send({ type: "interrupt_agent" })}
@@ -2143,12 +1652,6 @@ export default function App() {
           fileTree={fileTree}
           skills={skills}
           sessionId={wsSessionId}
-          /* docs/285 reqs 1, 3, 5, 6 — the session's network mode, rendered as
-             the second section of the permission-mode control.
-
-             Omitted for a SANDBOX session: its network access is one of its
-             capability grants (docs/211, docs/279), and offering this as well
-             would put two controls over one session's egress. */
           {...(currentSession?.kind === "sandbox" ? {} : { network: composerNetwork })}
           agents={agentList}
           activeAgentId={activeAgentId}
@@ -2158,13 +1661,6 @@ export default function App() {
           sessionReasoning={currentSession?.reasoningEffort}
           {...(currentSession?.roleName ? { sessionRoleName: currentSession.roleName } : {})}
           onRoleChange={handleRoleChange}
-          // docs/272 req 4 — a role can be CHOSEN until the session's first turn
-          // and not after. What the role set goes on applying for the session's
-          // whole life, and stays adjustable (req 4, second half): this locks the
-          // choice alone. `agentPinned` IS that moment — set when the first turn
-          // provisions per-agent credentials, the same fact that makes the
-          // harness irreversible. Server-side `set_role` refuses on it too; this
-          // only stops the user reaching for a control that would be refused.
           roleLocked={!!currentSession?.agentPinned}
           modelInfo={modelInfo}
           contextTokens={contextTokens}
@@ -2177,7 +1673,6 @@ export default function App() {
     </>
   );
 
-  // ── Bootstrap loading gate ──
   if (!bootstrapLoaded) {
     return (
       <div className="flex h-(--app-height) items-center justify-center bg-(--color-bg-primary)">
@@ -2348,12 +1843,7 @@ export default function App() {
                 } catch {
                   return;
                 }
-                // docs/262 req 23 — the key just typed may be the one a plugin
-                // was missing, and the Plugins card resolves satisfaction
-                // server-side. Nothing else refetches it: `secrets_status`
-                // feeds the preview store only, and a project with no compose
-                // stack never emits one — so without this the card and its warn
-                // dot keep naming a gap the user has already closed.
+                // Repos without Compose emit no secrets_status event to trigger this refresh.
                 const id = useSessionStore.getState().sessionId;
                 if (id) await usePluginReposStore.getState().fetchSnapshot(id);
               })();
@@ -2427,8 +1917,6 @@ export default function App() {
           showNewSessionView={showNewSessionView}
           mobilePanel={mobilePanel}
           onMobilePanelChange={(p) => {
-            // Selecting a content tab also dismisses the session drawer — the
-            // three form one mutually-exclusive segmented control.
             useUiStore.getState().setMobilePanel(p);
             useUiStore.getState().setMobileSidebarOpen(false);
           }}
@@ -2481,9 +1969,6 @@ export default function App() {
           repos={repos}
           onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
           onCreateNewRepo={() => {
-            // Creating a repo is GitHub-backed. Without a connected account the
-            // NewRepoDialog would dead-end on a 401, so route to the AddRepoDialog
-            // (which shows an inline Connect GitHub prompt) instead.
             if (!githubStatus.authenticated) {
               useRepoStore.getState().setAddRepoDialogOpen(true);
               return;
@@ -2556,8 +2041,6 @@ export default function App() {
           }
           sessions={allSessions}
           repos={repos}
-          // The repo the dialog was opened FROM wins; the current session's
-          // repo is only the fallback for openers that name none.
           initialRepoUrl={allSessionsDialogRepoUrl ?? currentRepoUrl}
           onFetch={() => useSessionStore.getState().fetchAllSessions()}
           onResume={(sid) => handleSessionResume(sid, navigate)}
@@ -2639,21 +2122,8 @@ export default function App() {
             }
           }}
         />
-        {/* docs/279 — rendered at App level, not inside the sidebar's SessionItem
-            where it used to live. It has two entry points now (the session
-            overflow menu and the sandbox banner), and on mobile the sidebar is an
-            unmounted drawer — so a dialog owned by a sidebar row would be
-            unreachable from the banner on a phone. */}
         {wsSessionId && (
           <SessionSettingsDialog
-            /* Keyed by session: this component is now persistent (it used to be
-               mounted per sidebar row and unmounted with the menu), so without a
-               key its state — the loaded capability set, the selected mode —
-               would survive a session switch. The dialog would then show session
-               A's grants, enabled, while B's fetch was still in flight, and one
-               click would PUT A's whole set onto B. Remounting is the fix rather
-               than clearing state in the effects, because it cannot be partially
-               forgotten when a field is added. (Review finding.) */
             key={wsSessionId}
             sessionId={wsSessionId}
             open={sessionSettingsDialogOpen}

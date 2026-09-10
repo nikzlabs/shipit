@@ -63,15 +63,13 @@ describe("Integration: File context attachments", () => {
     }
   });
 
-  /** Get the session's workspace directory (files are resolved relative to it). */
   const getSessionDir = (client: TestClient) =>
     path.join(tmpDir, "sessions", client.sessionId, "workspace");
 
   it("sends file context prepended to the prompt", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // initial status
+    await client.receive();
 
-    // Create a file in the session's workspace directory
     const sessionDir = getSessionDir(client);
     fs.writeFileSync(path.join(sessionDir, "hello.ts"), "const x = 42;");
 
@@ -82,15 +80,11 @@ describe("Integration: File context attachments", () => {
     });
 
     const claude = await waitForClaude(() => latestClaude);
-    // The prompt should contain the file content in <file> tags
     expect(claude.lastPrompt).toContain('<file path="hello.ts">');
     expect(claude.lastPrompt).toContain("const x = 42;");
     expect(claude.lastPrompt).toContain("</file>");
-    // planning#100 — attached file content is wrapped in the untrusted-input envelope
-    // so the agent treats it as data, not instructions.
     expect(claude.lastPrompt).toContain("<<UNTRUSTED FILE CONTENT>>");
     expect(claude.lastPrompt).toContain("<<END UNTRUSTED FILE CONTENT>>");
-    // Original text should follow
     expect(claude.lastPrompt).toContain("Explain this file");
 
     claude.finish();
@@ -157,7 +151,6 @@ describe("Integration: File context attachments", () => {
     const client = await TestClient.connect(port);
     await client.receive();
 
-    // Create a file over 100KB in the session's workspace
     const sessionDir = getSessionDir(client);
     const bigContent = "x".repeat(101 * 1024);
     fs.writeFileSync(path.join(sessionDir, "big.ts"), bigContent);
@@ -209,7 +202,6 @@ describe("Integration: File context attachments", () => {
     });
 
     const claude = await waitForClaude(() => latestClaude);
-    // No file tags in the prompt
     expect(claude.lastPrompt).toBe("Hello");
     expect(claude.lastPrompt).not.toContain("<file");
 

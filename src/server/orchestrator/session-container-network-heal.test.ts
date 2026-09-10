@@ -1,28 +1,5 @@
-/**
- * docs/128 — regression test for the *stranded ops agent after a proxy/network
- * recreate*.
- *
- * The agent reaches the ops `docker-socket-proxy` over the per-session compose
- * network. It is attached to that network imperatively, and that attachment is
- * normally only re-established on an orchestrator-driven `docker compose up`. But
- * when the proxy is recreated by its own `restart: unless-stopped` policy (or a
- * host/daemon restart, or a network prune), the compose network/bridge is rebuilt
- * out from under the long-lived agent: the new proxy joins the NEW bridge while
- * the agent stays bolted to the OLD, now-empty bridge — same IPAM subnet,
- * different L2 segment → ARP blackhole, so `DOCKER_HOST=tcp://docker-socket-proxy`
- * is permanently unreachable for the rest of the session.
- *
- * `ensureConnectedToSessionNetwork` is the condition-based heal that closes that
- * gap (driven by the service-poll heartbeat). These tests assert it is a cheap
- * membership-gated no-op while the agent is correctly attached, and that it
- * force-disconnects + reconnects (re-opening egress) when the agent has been
- * stranded off the live network.
- */
-
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// Observe the egress hole-punch and stub the subnet extraction so the test
-// doesn't need a real IPAM block.
 const { allowEgressToSubnets } = vi.hoisted(() => ({
   allowEgressToSubnets: vi.fn(async () => ["172.19.0.0/16"]),
 }));
@@ -42,10 +19,6 @@ const ORCH_NETWORK = "shipit-test";
 const COMPOSE_NETWORK = `shipit-session-${SESSION_ID}`;
 const AGENT_ID = "agent-container-1";
 
-/**
- * Build a mock Docker whose compose-network inspect reports `members` as the
- * connected container set (keyed by container id, as Docker does).
- */
 function createMockDocker(members: Record<string, unknown>) {
   const connect = vi.fn(async () => {});
   const disconnect = vi.fn(async () => {});
@@ -113,15 +86,12 @@ describe("ensureConnectedToSessionNetwork — heal stranded agent (docs/128)", (
   });
 
   it("force-disconnects the stale endpoint and reconnects (re-opening egress) when the agent is stranded off the live network", async () => {
-    // Live network has only the recreated proxy — the agent was left on the old bridge.
     const { docker, manager } = await buildManager({ "proxy-container-9": { Name: "docker-socket-proxy" } });
 
     const healed = await manager.ensureConnectedToSessionNetwork(SESSION_ID, COMPOSE_NETWORK);
 
     expect(healed).toBe(true);
-    // Clears any dangling endpoint Docker still tracks under this name first...
     expect(docker._disconnect).toHaveBeenCalledWith({ Container: AGENT_ID, Force: true });
-    // ...then reconnects the agent and re-opens egress to the (recreated) subnet.
     expect(docker._connect).toHaveBeenCalledWith({ Container: AGENT_ID });
     expect(allowEgressToSubnets).toHaveBeenCalledTimes(1);
     expect(allowEgressToSubnets).toHaveBeenCalledWith(
@@ -132,7 +102,6 @@ describe("ensureConnectedToSessionNetwork — heal stranded agent (docs/128)", (
 
   it("no-ops when the network does not exist yet (a later compose-up join creates the attachment)", async () => {
     const docker = createMockDocker({});
-    // Network inspect rejects → network absent.
     docker.getNetwork = vi.fn(() => ({
       connect: docker._connect,
       disconnect: docker._disconnect,

@@ -18,8 +18,6 @@ import {
   type OverlaySpec,
 } from "./overlay-volume.js";
 
-// A minimal dockerode stand-in: records createVolume calls and lets each test
-// script getVolume(name) behaviour (inspect / remove).
 function makeFakeDocker(opts: {
   inspect?: (name: string) => Promise<{ Mountpoint?: string }>;
   remove?: (name: string) => Promise<void>;
@@ -48,7 +46,6 @@ function notFound(): Error & { statusCode: number } {
   return e;
 }
 
-/** Poll until `pred()` is true, or throw after `timeoutMs`. */
 async function waitFor(pred: () => boolean, timeoutMs = 2000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!pred()) {
@@ -62,7 +59,6 @@ describe("overlay naming helpers", () => {
     const sessionId = "abcdef012345-6789-...";
     const name = overlayVolumeName(sessionId);
     expect(name).toBe("shipit-abcdef012345_overlay");
-    // The sweep regex in disk-janitor.ts:
     expect(/^shipit-([a-f0-9-]{12})_/.exec(name)?.[1]).toBe("abcdef012345");
   });
 
@@ -78,22 +74,18 @@ describe("overlay naming helpers", () => {
   });
 
   it("overlayScopeHash is not separator-confusable across the repo/runtime boundary", () => {
-    // Without the NUL separator, ("ab","c") and ("a","bc") would collide.
     expect(overlayScopeHash("ab", "c")).not.toBe(overlayScopeHash("a", "bc"));
   });
 
   it("overlayScopeHash mixes in the dep dir, and omitting it reproduces the legacy hash", () => {
     const repo = "https://github.com/o/r";
     const rt = "img|x64";
-    // Omitting depDir is byte-for-byte the old 2-arg hash (publish CAS unaffected).
     expect(overlayScopeHash(repo, rt, undefined)).toBe(overlayScopeHash(repo, rt));
-    // A dep dir produces a distinct base, and different dep dirs don't collide.
     const nm = overlayScopeHash(repo, rt, "node_modules");
     const pkg = overlayScopeHash(repo, rt, "packages/app/node_modules");
     expect(nm).not.toBe(overlayScopeHash(repo, rt));
     expect(nm).not.toBe(pkg);
     expect(nm).toHaveLength(16);
-    // Not separator-confusable on the dep-dir boundary either.
     expect(overlayScopeHash(repo, "a", "b")).not.toBe(overlayScopeHash(repo, "ab", ""));
   });
 
@@ -102,9 +94,8 @@ describe("overlay naming helpers", () => {
     const nm = overlayVolumeName(sessionId, "node_modules");
     const pkg = overlayVolumeName(sessionId, "packages/app/node_modules");
     expect(nm).toMatch(/^shipit-abcdef012345_overlay-[a-f0-9]{8}$/);
-    expect(nm).toBe(overlayVolumeName(sessionId, "node_modules")); // stable
-    expect(nm).not.toBe(pkg); // distinct per dep dir
-    // Still matches the disk-janitor orphan-volume sweep regex.
+    expect(nm).toBe(overlayVolumeName(sessionId, "node_modules"));
+    expect(nm).not.toBe(pkg);
     expect(/^shipit-([a-f0-9-]{12})_/.exec(nm)?.[1]).toBe("abcdef012345");
   });
 
@@ -135,22 +126,11 @@ function conflict(msg = "volume is in use"): Error & { statusCode: number } {
   return e;
 }
 
-/**
- * A Docker double that models the daemon's ACTUAL volume semantics, which is the
- * whole subject of the 2026-08-19 ops finding: `docker volume create` against a
- * name that already exists returns the EXISTING volume and silently ignores the
- * new driver opts. A double that just records the call cannot see that bug.
- *
- * `heldBy` names volumes a container still mounts — their removal 409s, exactly as
- * the daemon's does.
- */
 function makeVolumeStore(opts: {
   seed?: Record<string, { o: string; labels?: Record<string, string> }>;
   heldBy?: Record<string, string[]>;
   onCreate?: (name: string) => Promise<void>;
-  /** Ids whose `remove` throws with this status — models a holder we cannot evict. */
   unremovableHolders?: Record<string, number>;
-  /** Called after each holder removal — the hook a test uses to re-take a volume. */
   onHolderRemoved?: (id: string, held: Map<string, string[]>) => void;
 } = {}) {
   interface Vol { Options: Record<string, string>; Labels: Record<string, string> }
@@ -170,7 +150,7 @@ function makeVolumeStore(opts: {
     createVolume: vi.fn(async (config: { Name: string; DriverOpts?: Record<string, string>; Labels?: Record<string, string> }) => {
       created.push(config);
       if (opts.onCreate) await opts.onCreate(config.Name);
-      // The silent no-op that made the bug invisible.
+      // Docker ignores new driver options when the name already exists.
       if (store.has(config.Name)) return;
       store.set(config.Name, { Options: config.DriverOpts ?? {}, Labels: config.Labels ?? {} });
     }),
@@ -246,9 +226,6 @@ describe("createOverlayVolume", () => {
     expect(created).toHaveLength(1);
   });
 
-  // A volume that is ALREADY exactly what the spec asks for is left alone —
-  // removing it would need every container mounting it torn down first, and the
-  // no-rotation restart (docs/127) exists precisely to keep those running.
   it("leaves an already-correct volume alone", async () => {
     const { docker, created, removed } = makeVolumeStore({
       seed: { [spec.volumeName]: { o: optsOf(spec) } },
@@ -258,10 +235,6 @@ describe("createOverlayVolume", () => {
     expect(created).toEqual([]);
   });
 
-  // Labels are stamped for parity with the sweeps, which key on the volume NAME.
-  // A label drift must NOT be treated as a mismatch: the recreate it would trigger
-  // costs the session's whole Compose stack a teardown for a volume that mounts
-  // exactly the same three directories.
   it("leaves a correct volume alone even when its labels drifted", async () => {
     const { docker, created, removed } = makeVolumeStore({
       seed: { [spec.volumeName]: { o: optsOf(spec), labels: {} } },
@@ -271,11 +244,6 @@ describe("createOverlayVolume", () => {
     expect(removed).toEqual([]);
   });
 
-  // The recreate above is what lets the driver opts follow a since-rotated base.
-  // It only tells the truth if the SPEC moved on every axis: the ops finding of
-  // 2026-08-17 was a recreated volume whose lowerdir advanced a generation while
-  // its upperdir/workdir stayed put, so the daemon remounted an upper built
-  // against a different lower. Both halves must rotate together.
   it("recreates with a lowerdir AND upper/work that rotate together on a generation bump", async () => {
     const { docker, created } = makeVolumeStore();
     const gen = (n: number): OverlaySpec => ({
@@ -292,17 +260,9 @@ describe("createOverlayVolume", () => {
       "upperdir=/data/sessions/s1/overlay/h1/g262/upper," +
       "workdir=/data/sessions/s1/overlay/h1/g262/work",
     );
-    // No path from the previous generation survives into the new mount.
     expect(created[1].DriverOpts?.o).not.toContain("g262");
   });
 
-  // --- THE regression of 2026-08-19 -----------------------------------------
-  //
-  // Four production sessions ran on an overlay whose upperdir and workdir had been
-  // reaped: the pre-create removal 409'd (a Compose sibling still mounted the
-  // volume), `createVolume` returned the existing volume with its stale opts, and
-  // NOTHING said so. Writes into the unlinked upper then failed ENOENT, which took
-  // `agent.install` and the gated compose services down with them.
   const STALE = "lowerdir=/data/overlay-base/h1/g2," +
     "upperdir=/data/sessions/s1/overlay/h1/g2/upper," +
     "workdir=/data/sessions/s1/overlay/h1/g2/work";
@@ -317,7 +277,6 @@ describe("createOverlayVolume", () => {
     const { docker, store } = makeVolumeStore({
       seed: { [rotated.volumeName]: { o: STALE } },
       heldBy: { [rotated.volumeName]: ["dev-1"] },
-      // The holder cannot be evicted, so every attempt re-finds the 409.
       unremovableHolders: { "dev-1": 500 },
     });
     vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -325,8 +284,6 @@ describe("createOverlayVolume", () => {
     await expect(createOverlayVolume(docker, rotated, {}, { releaseHolders: true })).rejects.toThrow(
       /could not be recreated with the requested driver opts/,
     );
-    // And the daemon still holds the stale one — the point being that the caller
-    // now KNOWS, rather than starting a container over it.
     expect(store.get(rotated.volumeName)?.Options.o).toBe(STALE);
   });
 
@@ -345,19 +302,12 @@ describe("createOverlayVolume", () => {
     expect(store.get(rotated.volumeName)?.Options.o).toBe(overlayDriverOpts(rotated));
   });
 
-  // The operator's field finding: the holder set is DYNAMIC. While a production
-  // session was being repaired, an unrelated `refreshSecrets` reconcile re-created
-  // its `dev-1` and `assetgen-1` containers mid-window. Tearing holders down and
-  // then creating only shrinks that race — so the create has to re-derive the
-  // holders and verify its own result, round after round, rather than once.
   it("converges when a compose reconcile re-takes the volume mid-recreate", async () => {
     let retaken = false;
     const store = makeVolumeStore({
       seed: { [rotated.volumeName]: { o: STALE } },
       heldBy: { [rotated.volumeName]: ["dev-1"] },
       onHolderRemoved: (_id, held) => {
-        // Exactly once: a reconcile mints a fresh holder the instant the old one
-        // goes, so this attempt's removal 409s and its create is a silent no-op.
         if (retaken) return;
         retaken = true;
         held.set(rotated.volumeName, ["dev-2"]);
@@ -368,13 +318,10 @@ describe("createOverlayVolume", () => {
 
     const result = await createOverlayVolume(store.docker, rotated, {}, { releaseHolders: true });
 
-    // Round 1 evicted dev-1 and still failed; round 2 evicted dev-2 and won.
     expect(result.releasedHolders).toEqual(["dev-1", "dev-2"]);
     expect(store.store.get(rotated.volumeName)?.Options.o).toBe(overlayDriverOpts(rotated));
   });
 
-  // `releaseHolders` is opt-in: the plugin runtime overlay is shared between a
-  // service and a CLI container by design, so that path must never evict them.
   it("does not touch holders unless asked to", async () => {
     const { docker, removedContainers } = makeVolumeStore({
       seed: { [rotated.volumeName]: { o: STALE } },
@@ -387,7 +334,6 @@ describe("createOverlayVolume", () => {
   });
 
   it("serializes concurrent creates (no interleaving)", async () => {
-    // Track entry/exit order of createVolume to prove serialization.
     const order: string[] = [];
     let resolveFirst!: () => void;
     const firstGate = new Promise<void>((r) => { resolveFirst = r; });
@@ -395,20 +341,16 @@ describe("createOverlayVolume", () => {
     const { docker } = makeVolumeStore({
       onCreate: async (name) => {
         order.push(`enter:${name}`);
-        if (call++ === 0) await firstGate; // hold the first create open
+        if (call++ === 0) await firstGate;
         order.push(`exit:${name}`);
       },
     });
 
     const p1 = createOverlayVolume(docker, { ...spec, volumeName: "vol-1" });
     const p2 = createOverlayVolume(docker, { ...spec, volumeName: "vol-2" });
-    // Wait until vol-1 has entered createVolume (it is now held open).
     await waitFor(() => order.includes("enter:vol-1"));
-    // Snapshot while vol-1 is held: vol-2 must not have entered yet.
     const whileHeld = [...order];
-    // Release the chain and let both settle BEFORE asserting, so a failed
-    // expectation never leaves the module-level serialization chain pending
-    // (which would hang the next test).
+    // Release before assertions so a failure cannot block the next test's create.
     resolveFirst();
     await Promise.all([p1, p2]);
     expect(whileHeld).toEqual(["enter:vol-1"]);
@@ -424,7 +366,6 @@ describe("createOverlayVolume", () => {
     });
 
     await expect(createOverlayVolume(docker, { ...spec, volumeName: "v1" })).rejects.toThrow("boom");
-    // Second create still runs.
     await expect(createOverlayVolume(docker, { ...spec, volumeName: "v2" }))
       .resolves.toEqual({ unchanged: false, releasedHolders: [] });
   });
@@ -444,8 +385,6 @@ describe("overlayVolumeState", () => {
       makeVolumeStore({ seed: { [spec.volumeName]: { o: overlayDriverOpts(spec) } } }).docker,
       spec,
     )).toBe("match");
-    // The production shape: the base advanced to g3 but the volume still names g2,
-    // whose upper/work `prepareOverlayDirs` has already deleted.
     expect(await overlayVolumeState(
       makeVolumeStore({
         seed: { [spec.volumeName]: { o: overlayDriverOpts({ ...spec, lowerdir: "/data/overlay-base/h1/g2" }) } },
@@ -471,10 +410,6 @@ describe("overlayVolumeState", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// assertOverlayVolumesMatch — the post-createContainer re-verification (#2495)
-// ---------------------------------------------------------------------------
-
 describe("assertOverlayVolumesMatch (nikzlabs/shipit#2495)", () => {
   const nodeModules: OverlaySpec & { depDir: string } = {
     depDir: "node_modules",
@@ -491,12 +426,6 @@ describe("assertOverlayVolumesMatch (nikzlabs/shipit#2495)", () => {
     workdir: "/data/sessions/s1/overlay/h2/g1/work",
   };
 
-  /**
-   * A volume store that can hold the shape `makeVolumeStore` cannot: a volume
-   * with NO driver options. That is not a hypothetical — it is exactly what the
-   * production host held for `…_overlay-dba27c31` (`Options: null`), because
-   * Docker auto-created it when the container referenced a name that had gone.
-   */
   function daemonHolding(vols: Record<string, { Options: Record<string, string> | null }>): Docker {
     return {
       getVolume: (name: string) => ({
@@ -525,9 +454,6 @@ describe("assertOverlayVolumesMatch (nikzlabs/shipit#2495)", () => {
     await expect(assertOverlayVolumesMatch(daemonHolding({}), [])).resolves.toBeUndefined();
   });
 
-  // THE production shape: the overlay-intended name, no driver options at all.
-  // A container built on this mounts an empty root-owned dir the session uid
-  // cannot write — `npm ci` EACCES, no `.install-done`, gated services down.
   it("refuses a volume Docker implicitly auto-created (no driver options)", async () => {
     const docker = daemonHolding({
       [nodeModules.volumeName]: { Options: null },
@@ -535,8 +461,6 @@ describe("assertOverlayVolumesMatch (nikzlabs/shipit#2495)", () => {
     });
     await expect(assertOverlayVolumesMatch(docker, [nodeModules, dist], { sessionId: "sess-x" }))
       .rejects.toThrow(OVERLAY_VERIFY_FAILURE);
-    // The message has to be diagnosable on its own: which volume, which dep dir,
-    // and that Docker's implicit creation is what leaves this shape.
     await expect(assertOverlayVolumesMatch(docker, [nodeModules], { sessionId: "sess-x" }))
       .rejects.toThrow(/node_modules/);
     await expect(assertOverlayVolumesMatch(docker, [nodeModules], { sessionId: "sess-x" }))
@@ -564,8 +488,6 @@ describe("assertOverlayVolumesMatch (nikzlabs/shipit#2495)", () => {
     await expect(assertOverlayVolumesMatch(docker, [nodeModules])).rejects.toThrow(stale);
   });
 
-  // The reported session had ONE bad dep dir out of two, so a check that stops
-  // at the first spec (or only looks at one) would have passed it through.
   it("catches a broken spec that is not the first one", async () => {
     const docker = daemonHolding({
       [nodeModules.volumeName]: overlayOpts(nodeModules),
@@ -597,7 +519,6 @@ describe("releaseOverlayVolumeHolders", () => {
 
     expect(released.sort()).toEqual(["assetgen-1", "dev-1"]);
     expect(removedContainers.sort()).toEqual(["assetgen-1", "dev-1"]);
-    // The removal that used to 409 now succeeds.
     await expect(docker.getVolume(volumeName).remove({ force: true })).resolves.toBeUndefined();
   });
 
@@ -623,8 +544,6 @@ describe("releaseOverlayVolumeHolders", () => {
     });
     vi.spyOn(console, "log").mockImplementation(() => {});
 
-    // The 404 is not reported as released (we did not remove it) and is not an
-    // error either — the volume is free, which is the outcome we wanted.
     expect(await releaseOverlayVolumeHolders(docker, [volumeName])).toEqual(["dev-1"]);
   });
 });

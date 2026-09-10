@@ -1,20 +1,3 @@
-/**
- * PR lifecycle card emission (docs/149).
- *
- * Consolidates the post-commit "emit a PR lifecycle update" flow that was
- * previously duplicated between the streaming and non-streaming branches of
- * `runAgentWithMessage`. Pulled out so:
- *
- *   1. The two WS-handler branches share one implementation, and
- *   2. The system-turn path (`runDispatchedTurn` — used by spawned sessions and
- *      CI auto-fix) can invoke the same flow via a single optional hook.
- *
- * The helper only fires when the session has a remote, hasn't been merged,
- * and no PR is currently tracked by the poller. It auto-creates the PR when
- * the user's `autoCreatePr` setting + GitHub auth are both on; otherwise
- * emits a "ready" card with diff stats for the user to click "open PR".
- */
-
 import type { WsServerMessage } from "../../shared/types.js";
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
@@ -38,15 +21,6 @@ export interface PrLifecycleDeps {
   createGitManager: (dir: string) => GitManager;
 }
 
-/**
- * Emit a PR lifecycle update after a commit lands on a session that has a
- * remote. No-op when the session lacks a remote, was merged, has a renamed
- * branch, or already has a PR tracked by the poller.
- *
- * Either fires an auto-create flow (creating → open/error) when the
- * `autoCreatePr` toggle + GitHub auth are both on, or emits a "ready" card
- * with diff stats so the user can pick up from there.
- */
 export async function emitPrLifecycleAfterCommit(args: {
   deps: PrLifecycleDeps;
   sessionId: string;
@@ -60,38 +34,11 @@ export async function emitPrLifecycleAfterCommit(args: {
   if (session.branchRenamed === false) return;
   if (session.mergedAt) return;
 
-  // docs/202 — when this session was re-armed (un-merged after a rebase), its
-  // row carries a `previousMergedPr` breadcrumb. We thread it onto every card we
-  // emit here (so the client renders the "previously merged #N" note AND so
-  // `updateCard` lets the card override a stale terminal merged card), use its
-  // base for the ready diff + new-PR base, and force-push past the surviving
-  // diverged remote branch. `clearMerged` runs in the shared re-arm helper
-  // *before* this function, so by now `session.mergedAt` is already null.
+  // This record lets new cards replace a stale merged card and retain its base branch.
   const previousMergedPr = session.previousMergedPr;
 
   try {
-    // Refresh the changed-docs strip on EVERY post-turn commit — unconditionally,
-    // exactly like the diff stat refreshes via the always-emitted `git_committed`.
-    // The strip's `notableFiles` is git-derived locally and the poller never
-    // recomputes it (it preserves the last-known list), so it has to be re-pushed
-    // here or it goes stale (docs/210).
-    //
-    // This recompute USED to live inside the `if (prStatus)` branch below, which
-    // coupled it to the PR-lifecycle state machine: a turn that took the
-    // PR-recovery early-return (poller had no status cached yet — right after the
-    // PR was created, or after an orchestrator restart, where `getStatus` is
-    // briefly null while `forceRefreshSession` repopulates it) committed new docs
-    // but never re-emitted the strip. It stayed frozen until the next qualifying
-    // turn or a session-switch re-seed (`activateSession`) — the reported "docs
-    // aren't visible until I switch sessions, but the diff numbers update
-    // immediately." Hoisting it above the branching decouples the strip refresh
-    // from which lifecycle path runs, so it tracks the branch turn-by-turn.
-    //
-    // Base resolution mirrors the session-switch re-seed: the tracked PR's base,
-    // else a re-armed session's prior base, else the repo's own default branch
-    // (main / master / trunk — read from the clone, not assumed). A
-    // notableFiles-only patch merges into the live card without touching the
-    // poller-owned fields.
+    // Refresh before every early return; the poller preserves but never recomputes this list.
     try {
       const stripGit = deps.createGitManager(sessionDir);
       const base =
@@ -106,27 +53,17 @@ export async function emitPrLifecycleAfterCommit(args: {
         notableFiles,
       });
     } catch {
-      // Best-effort — a git error just leaves the last-known strip in place.
+      // Keep the last-known list on a git error.
     }
 
     const prStatus = deps.prStatusPoller.getStatus(sessionId);
     if (prStatus) {
-      // The poller drives phase/status/CI for an existing PR over SSE, and the
-      // strip was already refreshed above, so the lifecycle-update path stops here.
-      return; // poller drives the rest via SSE
+      return;
     }
 
     const git = deps.createGitManager(sessionDir);
 
-    // Recovery: the poller has no PR for this session, but one may already
-    // exist on GitHub — the agent ran `gh pr create` and the route's track /
-    // force-refresh didn't stick (HTTP blip, orchestrator restart mid-create,
-    // remoteUrl not yet persisted at startup), or the PR was opened
-    // out-of-band. Track the session and force a single refresh so the poller
-    // discovers the PR by branch name and broadcasts it. Bounded to branches
-    // that have actually been pushed (checked via the local remote-tracking
-    // ref — no network) so un-pushed / no-PR sessions add zero GitHub calls.
-    // If a PR surfaces, return: the poller now drives the card over SSE.
+    // Recover an existing PR only for a branch with a remote-tracking ref.
     if (deps.githubAuthManager.authenticated) {
       try {
         const branch = session.branch || await git.getCurrentBranch();
@@ -137,7 +74,7 @@ export async function emitPrLifecycleAfterCommit(args: {
           if (deps.prStatusPoller.getStatus(sessionId)) return;
         }
       } catch {
-        // Best-effort recovery — fall through to the normal ready/create flow.
+        // Fall through to the ready/create flow.
       }
     }
 
@@ -166,8 +103,6 @@ export async function emitPrLifecycleAfterCommit(args: {
             ? { baseBranch: previousMergedPr.baseBranch, forceWithLease: true }
             : undefined,
         );
-        // docs/287 — a witnessed create. The recovery branch above finds one by
-        // branch name, which may be a person's, so it records nothing.
         recordWitnessedPrCreate(deps.sessionManager, sessionId, result);
         if (session.remoteUrl) {
           deps.prStatusPoller.trackSession(sessionId, session.remoteUrl);
@@ -180,8 +115,6 @@ export async function emitPrLifecycleAfterCommit(args: {
           );
         }
         const autoMerge = deps.prStatusPoller.getAutoMergeState(sessionId);
-        // docs/205 — the changed-docs strip's notable-file list, derived from
-        // the same base...HEAD diff that produced the PR.
         const notableFiles = await notableFilesForBranch(git, result.baseBranch);
         emit({
           type: "pr_lifecycle_update",
@@ -204,9 +137,6 @@ export async function emitPrLifecycleAfterCommit(args: {
                 enabled: autoMerge.enabled,
                 mergeMethod: autoMerge.mergeMethod,
                 managed: autoMerge.managed,
-                // docs/266 — without the reason the client falls back to the
-                // repo-misconfiguration tooltip, so an agent-opened PR would
-                // show a false error until the next poll corrected it.
                 managedReason: autoMerge.managedReason,
                 settingsUrl: autoMerge.settingsUrl,
                 reason: autoMerge.reason,
@@ -229,16 +159,9 @@ export async function emitPrLifecycleAfterCommit(args: {
       return;
     }
 
-    // Ready card: diff stats vs. the base branch so the user can click "open
-    // PR". For a re-armed session use the prior PR's base (re-arm knows it);
-    // otherwise the repo's own default branch. Hard-coding "main" here made the
-    // ready card report 0 changed files on any `master`/`trunk` repo, because
-    // `diffStatVsBranch` had no ref to diff against.
     const headBranch = session.branch || await git.getCurrentBranch();
     const readyBase = previousMergedPr?.baseBranch ?? await git.getDefaultBranch();
     const { insertions: totalInsertions, deletions: totalDeletions } = await git.diffStatVsBranch(readyBase);
-    // docs/205 — notable files (docs + config) changed vs the base, for the
-    // card's collapsible changed-docs strip.
     const notableFiles = await notableFilesForBranch(git, readyBase);
     const autoMerge = deps.prStatusPoller.getAutoMergeState(sessionId);
     emit({

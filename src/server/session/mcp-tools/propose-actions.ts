@@ -1,19 +1,3 @@
-/**
- * propose_actions tool — action checklist cards (docs/207 / planning#155).
- *
- * Pure transport: POSTs the proposed actions to the worker's
- * `/agent-ops/propose-actions` broker, which relays to the orchestrator. The
- * orchestrator validates the payload, stamps emit-time provenance, and renders a
- * reusable batch-resolve card in the transcript. The tool is NON-BLOCKING —
- * unlike `AskUserQuestion` it does not interrupt the turn: it posts the card and
- * returns, and the turn ends normally. The card is a message composer with no
- * connection to this turn; the user resolves it later (now, or a week from now)
- * with a single submit that arrives as a fresh user turn.
- *
- * A malformed call is rejected with a model-readable message (fail-fast
- * pre-check, plus the orchestrator's authoritative 400) so the model
- * self-corrects within the turn rather than emitting a broken card.
- */
 
 import type { ToolDescriptor } from "./types.js";
 import {
@@ -100,11 +84,6 @@ const inputSchema = {
   required: ["actions"],
 };
 
-// Server-level guidance — surfaced to either agent's tool index so it reaches for
-// `propose_actions` when it would otherwise suggest follow-ups in prose. This
-// governs FORM only (button/checklist vs typing the answer); the bar for
-// *whether* to suggest is unchanged and lives in the existing prompts. Kept
-// concise (Claude truncates instructions at ~2 KB).
 const INSTRUCTIONS = [
   "When you would suggest one or more concrete, optional follow-up actions the",
   "user can accept or decline, render them with `propose_actions` instead of",
@@ -125,10 +104,6 @@ export const proposeActionsTool: ToolDescriptor = {
   async call(args, { workerUrl }) {
     const a = args as { title?: unknown; actions?: unknown };
 
-    // Fail-fast pre-check with the SAME validator the orchestrator runs, so a
-    // rejection costs no round trip and the model can repair the call inside the
-    // turn that authored it. (It used to check only "is `actions` non-empty",
-    // which let every length violation travel to the orchestrator and back.)
     const pre = validateProposeActions(a);
     if ("error" in pre) {
       return {

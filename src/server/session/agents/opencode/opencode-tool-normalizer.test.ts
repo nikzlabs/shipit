@@ -1,17 +1,3 @@
-/**
- * Guards for the OpenCode → transcript-vocabulary normalization (planning#432).
- *
- * These tests assert TREATMENTS against the real registries, not spellings
- * against a copy — the planning#337 lesson (two hand-kept lists can agree and
- * be jointly wrong). If a registry migrates its vocabulary out from under the
- * normalizer, the surface-treatment guards below go red naming the surface,
- * instead of the transcript silently degrading to generic rows.
- *
- * The `diffStats` guard (DIFF_INPUT_TOOLS is orchestrator-private) lives in
- * `orchestrator/integration_tests/opencode-recognition-projection.test.ts` —
- * the layer boundary keeps it out of this file.
- */
-
 import { describe, it, expect } from "vitest";
 import { CLAUDE_TOOL_NAMES, OPENCODE_TOOL_NAMES } from "../../../shared/agent-tool-names.js";
 import { isTaskListTool } from "../../../shared/task-list-tools.js";
@@ -35,9 +21,6 @@ describe("OPENCODE_TRANSCRIPT_TOOL_NAMES", () => {
   });
 
   it("maps each tool onto the Claude tool with the same meaning", () => {
-    // The semantic oracle, spelled out: a mapping that renames a shell tool
-    // into a file tool (or onto a name Claude's registry doesn't know) passes
-    // every treatment guard below and still puts the wrong card on screen.
     expect(OPENCODE_TRANSCRIPT_TOOL_NAMES).toEqual({
       bash: "Bash",
       edit: "Edit",
@@ -64,8 +47,6 @@ describe("normalizeOpencodeToolCall — surface treatments (the planning#432 rec
       todos: [{ content: "first", status: "pending" }],
     });
     expect(isTaskListTool(name)).toBe(true);
-    // inputKeyTreatment's default is `drop` with NO fetch path back — the
-    // exact registry whose miss stripped every todos array off the wire.
     expect(inputKeyTreatment(name, "todos", input)).toBe("keep");
     expect(input.todos).toEqual([{ content: "first", status: "pending" }]);
   });
@@ -97,7 +78,6 @@ describe("normalizeOpencodeToolCall — surface treatments (the planning#432 rec
     });
     expect(SUBAGENT_TOOL_NAMES.has(name)).toBe(true);
     expect(SUBAGENT_REPORT_TOOL_NAMES.has(name)).toBe(true);
-    // `false` here empties the result body that IS the subagent's report.
     expect(rendersResultContentInline(name)).toBe(true);
     expect(inputKeyTreatment(name, "description", input)).toBe("keep");
     expect(inputKeyTreatment(name, "subagent_type", input)).toBe("keep");
@@ -109,10 +89,6 @@ describe("normalizeOpencodeToolCall — surface treatments (the planning#432 rec
   });
 
   it("skill carries its name in the client's key, not the wire's", () => {
-    // OpenCode's skill tool names the skill in `input.name` (Schema.Struct({
-    // name })); the client's Skill card and the projection keep-list read
-    // Claude's `input.skill` — an untranslated `name` rendered "Skill:
-    // unknown" and would be dropped by inputKeyTreatment's default.
     const { name, input } = normalizeOpencodeToolCall("skill", { name: "commit" });
     expect(name).toBe("Skill");
     expect(input).toEqual({ skill: "commit" });
@@ -120,8 +96,6 @@ describe("normalizeOpencodeToolCall — surface treatments (the planning#432 rec
   });
 
   it("passes unknown names through untouched, camelCase keys and all", () => {
-    // MCP and future tools: renaming keys on a tool we don't know would
-    // corrupt its modal display, so the call must come back as-is.
     const input = { filePath: "/x", other: 1 };
     const result = normalizeOpencodeToolCall("mcp_shipit_present", input);
     expect(result.name).toBe("mcp_shipit_present");
@@ -136,9 +110,7 @@ describe("normalizeOpencodeToolCall — surface treatments (the planning#432 rec
 });
 
 describe("normalizeOpencodeToolResult — the task wrapper (planning#434)", () => {
-  // Verbatim result shape from OpenCode CLI 1.18.15 (docs/272 run 2026-08-18):
-  // the wrapper is one blank-line-free CommonMark HTML block, which the
-  // client's skipHtml markdown drops WHOLE — report included.
+  // Captured from OpenCode CLI 1.18.15 on 2026-08-18.
   const WRAPPED =
     '<task id="ses_8f214c2af" state="completed">\n<task_result>\n11\n</task_result>\n</task>';
 
@@ -167,9 +139,6 @@ describe("normalizeOpencodeToolResult — the task wrapper (planning#434)", () =
   });
 
   it("unwraps an error-state wrapper the same way — is_error styling is carried by the result block, not the tags", () => {
-    // A wrapped error that does NOT match the regex renders raw in the error
-    // panel (`<pre>`, no markdown) — visible degradation, which is the
-    // intended pass-through stance, not a bug to blank out.
     expect(
       normalizeOpencodeToolResult(
         "task",

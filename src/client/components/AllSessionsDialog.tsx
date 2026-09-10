@@ -10,7 +10,6 @@ interface AllSessionsDialogProps {
   onClose: () => void;
   sessions: SessionInfo[];
   repos: RepoInfo[];
-  /** Repo the filter starts on — the repo the dialog was opened from. */
   initialRepoUrl: string | undefined;
   onFetch: () => void;
   onResume: (sessionId: string) => void;
@@ -19,11 +18,6 @@ interface AllSessionsDialogProps {
 }
 
 const ALL_REPOS = "__all__";
-// docs/128 (ops) / docs/211 (sandbox) — these kinds are repo-less (no
-// `remoteUrl`), so they belong to no repo bucket and would only ever surface
-// under "All Repositories". Give them their own synthetic filter entries so an
-// archived sandbox/ops session is discoverable and restorable on its own,
-// instead of being effectively unreachable from a repo-scoped view.
 const SANDBOX_FILTER = "__sandbox__";
 const OPS_FILTER = "__ops__";
 
@@ -43,7 +37,6 @@ export function AllSessionsDialog({
   const [actioningId, setActioningId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Build unique repo URLs from all sessions + repos list
   const repoOptions = useMemo(() => {
     const urls = new Set<string>();
     for (const s of sessions) {
@@ -57,12 +50,9 @@ export function AllSessionsDialog({
     );
   }, [sessions, repos]);
 
-  // Only offer the kind-based filters when such sessions actually exist
-  // (archived ones are included — `sessions` is the full `/all` list).
   const hasSandbox = useMemo(() => sessions.some((s) => s.kind === "sandbox"), [sessions]);
   const hasOps = useMemo(() => sessions.some((s) => s.kind === "ops"), [sessions]);
 
-  // Reset state when dialog opens (inline state reset during render)
   const prevOpenRef = useRef(false);
   if (open && !prevOpenRef.current) {
     setQuery("");
@@ -78,7 +68,6 @@ export function AllSessionsDialog({
   if (!open) return null;
 
   const filtered = sessions.filter((s) => {
-    // Repo / kind filter
     if (selectedRepo === SANDBOX_FILTER) {
       if (s.kind !== "sandbox") return false;
     } else if (selectedRepo === OPS_FILTER) {
@@ -86,7 +75,6 @@ export function AllSessionsDialog({
     } else if (selectedRepo !== ALL_REPOS && s.remoteUrl !== selectedRepo) {
       return false;
     }
-    // Text filter
     if (query.trim()) {
       const q = query.toLowerCase();
       const matchesTitle = s.title.toLowerCase().includes(q);
@@ -117,10 +105,6 @@ export function AllSessionsDialog({
 
   const handleResume = async (sessionId: string) => {
     const session = sessions.find((s) => s.id === sessionId);
-    // Restore the workspace before resuming when the session has no live
-    // on-disk checkout: either the user hid it (`archived`/`userArchived`) or
-    // the disk-idle ladder evicted it (`diskTier === "evicted"`). `unarchive`
-    // re-clones from the bare cache on a fresh branch.
     if (session && (session.archived || session.userArchived || session.diskTier === "evicted")) {
       await onUnarchive(sessionId);
     }
@@ -131,14 +115,12 @@ export function AllSessionsDialog({
   return (
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
       <DialogContent className="w-full max-md:flex max-md:flex-col md:max-w-lg rounded-lg border-(--color-border-secondary)">
-        {/* Header */}
         <div className="flex items-center border-b border-(--color-border-secondary) px-4 py-3">
           <DialogTitle className="text-sm font-medium text-(--color-text-primary)">
             All Sessions
           </DialogTitle>
         </div>
 
-        {/* Filter bar */}
         <div className="px-4 pt-3 pb-2 flex gap-2">
           <input
             ref={inputRef}
@@ -167,7 +149,6 @@ export function AllSessionsDialog({
           </select>
         </div>
 
-        {/* Session list */}
         <div className="px-4 pb-3 max-md:flex-1 max-md:min-h-0">
           <div className="h-80 max-md:h-full overflow-y-auto rounded-md border border-(--color-border-secondary) flex flex-col gap-1 py-1">
             {filtered.length === 0 ? (
@@ -194,7 +175,6 @@ export function AllSessionsDialog({
           </div>
         </div>
 
-        {/* Footer */}
         <div className="flex justify-end border-t border-(--color-border-secondary) px-4 py-3">
           <Button
             variant="ghost"

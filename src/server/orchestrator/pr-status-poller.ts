@@ -1,22 +1,3 @@
-/**
- * PrStatusPoller — orchestrator-level PR status poller.
- *
- * One poller per repo, not per session. All sessions sharing a repo share
- * one polling loop. Polls every 15 seconds using a single GitHub GraphQL
- * query per repo (OPEN PRs only). Broadcasts changes via SSE.
- *
- * Phase 2 additions: auto-fix state management, per-check failure details,
- * server-driven auto-fix loop.
- *
- * This file is the orchestration shell. The substantive pieces live in
- * dedicated modules so each can be reasoned about (and tested) in isolation:
- *
- * - `pr-status-parser.ts`   — pure GraphQL → domain helpers + equality
- * - `auto-fix-manager.ts`   — auto-fix state machine
- * - `auto-merge-manager.ts` — auto-merge state machine + REST merge loop
- * - `ci-grace-tracker.ts`   — "no checks yet" grace window + workflow detection
- */
-
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { TerminalPrFacts } from "./github-auth-prs.js";
 import type { SessionManager } from "./sessions.js";
@@ -54,31 +35,18 @@ import {
   PR_STATUS_SLOW_INTERVAL_MS,
 } from "./pr-polling-supervisor.js";
 
-// Re-export the cadence constants so existing importers
-// (`pr-status-poller.test.ts`) keep working without an import path change.
 export { PR_STATUS_POLL_INTERVAL_MS, PR_STATUS_SLOW_INTERVAL_MS };
 
-/**
- * docs/196 — the facts the notify-on-merge watch acts on when a tracked
- * session's PR reaches a terminal state. Fired for both merged and
- * closed-without-merge so the watch can deliver the correct (distinct) signal.
- */
 export interface PrTerminalStateInfo {
-  /** The session whose PR reached a terminal state (the watched child). */
   sessionId: string;
   outcome: "merged" | "closed";
   prNumber: number;
   prUrl: string;
   prTitle: string;
-  /** The PR's head branch. */
   branch: string;
-  /** Merge commit SHA when known (merged outcome only). */
   mergeSha?: string;
 }
 
-// Re-export the pure parser helpers so existing callers
-// (`pr-status-poller.test.ts`, `services/github-ci-fix.ts`) keep working
-// without an import path change.
 export { parsePrNode, extractHeadSha, extractCurrentHeadOid, extractBaseSha, extractFailedCheckRuns, extractChangedFiles };
 
 export class PrStatusPoller {
@@ -86,114 +54,28 @@ export class PrStatusPoller {
   private sessionManager: SessionManager;
   private sseBroadcast: (event: string, data: unknown) => void;
 
-  /**
-   * Per-session / per-repo state (lastKnown, sessionRepos, prTabActive, merged
-   * promotion, REST-verify debouncing, cached PR nodes, push timestamps) plus
-   * the pure query-shape helpers. docs/201 Phase P9.
-   */
   private readonly tracker = new PrSessionTracker();
-  /**
-   * Viewer + in-flight-action global gate. The supervisor only runs while this
-   * is open. Assigned in the constructor (needs autoFix/autoMerge). docs/201 P9.
-   */
   private readonly gate: PollingGlobalGate;
-  /**
-   * Single polling timer + per-repo cadence selection. Assigned in the
-   * constructor (needs the gate + collaborators). docs/201 Phase P9.
-   */
   private readonly supervisor: PrPollingSupervisor;
-  /** Last broadcast-side rate-limit flag — used to detect transitions. */
   private lastBroadcastLimited = false;
 
-  /** Auto-fix state machine. */
   private autoFix: AutoFixManager;
-  /** Auto-merge state machine + REST merge loop. */
   private autoMerge: AutoMergeManager;
-  /** "No checks yet" grace window + per-repo workflow detection. */
   private graceTracker: CiGraceTracker;
-  /**
-   * docs/146 — auto-resolve-conflicts state machine. Constructed only when
-   * `runnerRegistry` is supplied (the feature needs the registry to look up
-   * runners for the pre-attempt gate). Skipped wiring in degraded test
-   * setups leaves the manager `undefined` and the feature inactive.
-   */
   public autoConflictResolveManager: AutoConflictResolveManager | undefined;
 
-  /** Optional: runner registry for server-initiated fix prompts. */
   private runnerRegistry?: SessionRunnerRegistry;
-  /** Optional: called when a merged PR is detected — used to archive the session. */
   private onMergeDetectedCb?: (sessionId: string) => Promise<void>;
-  /**
-   * docs/282 — the IN-FLIGHT {@link onMergeDetectedCb} work, per session.
-   *
-   * Merge detection has two halves and they do not land together: this class
-   * synchronously records the merged snapshot + `mergedHeadSha`, then fires the
-   * callback, which is what stamps `merged_at` (via `markMergedAndPruneExcess`).
-   * Everything that decides whether a session's branch may be reset — the whole
-   * docs/218 gate — reads `mergedAt`, so "the probe resolved" is NOT the same
-   * fact as "this session now reads as merged".
-   *
-   * {@link awaitMergeHandling} exists so the pre-turn recheck can wait for the
-   * second half rather than racing it. Fire-and-forget everywhere else, exactly
-   * as before: the entry is removed when the callback settles, so this holds at
-   * most one promise per session that is merging right now.
-   *
-   * Two clears back that up for the callback that never settles at all, because
-   * a stale entry is not just memory — the recheck would wait out its whole
-   * budget on it, on every qualifying turn, for a merge long since over.
-   * {@link reArm} ends the episode the handler belongs to, and
-   * {@link untrackSession} ends the session's tracking outright.
-   */
+  // The callback stamps merged_at after detection; pre-turn reset must await it.
   private readonly mergeHandling = new Map<string, Promise<void>>();
-  /**
-   * docs/194 — called when a merged PR is detected, with the PR **body** in
-   * scope (which `onMergeDetectedCb` lacks). Drives the issue-lifecycle
-   * "→ completed" transition: parse `Closes/Refs <pointer>` lines and broker the
-   * status/comment writes. Distinct from `onMergeDetectedCb` (sessionId-only,
-   * archive path); both fire on the same merge.
-   */
   private onMergedPr?: (info: MergedPrInfo) => Promise<void>;
-  /**
-   * docs/196 — called once when a tracked session's PR reaches a terminal state
-   * (merged OR closed-without-merge), with the branch + PR ref in scope. Drives
-   * the notify-on-merge watch: the handler checks whether THIS session has an
-   * armed merge-watch and, if so, fires the parent's wake-turn + merge card.
-   * Distinct from `onMergedPr` (merge-only, issue-lifecycle); this also fires on
-   * closed-unmerged so a watch can deliver the distinct "closed" signal.
-   */
   private onPrTerminalState?: (info: PrTerminalStateInfo) => Promise<void>;
-  /**
-   * Optional: factory for a GitManager bound to a session's workspace dir.
-   * When wired, the poller overrides GitHub's GraphQL `additions`/`deletions`
-   * with a local `git diff --stat <base>...HEAD` so the PR card's diff numbers
-   * match what the user sees when they click through to the diff dialog
-   * (which is computed from the same local working tree). Without this,
-   * GitHub's indexing lag after an auto-push can leave the card showing the
-   * previous commit's numbers for a few polls until GitHub catches up.
-   */
   private createGitManager?: (dir: string) => GitManager;
 
-  /**
-   * docs/146 — global enable getter for the auto-resolve loop. Captured so
-   * the manager reads the setting at decision time rather than mirroring it
-   * into per-session state. Optional — if absent, the manager treats the
-   * feature as disabled.
-   */
   private isAutoResolveEnabled: () => boolean;
 
-  /**
-   * docs/169 — global enable getter for the auto-fix-CI loop. Read at decision
-   * time so toggling the global setting takes effect on the next poll/idle with
-   * no per-session fan-out.
-   */
   private isAutoFixEnabled: () => boolean;
 
-  /**
-   * docs/169 Workstream C — cross-automation arbiter shared by both remediation
-   * managers (mutual exclusion + await-fresh-signal) and consulted by auto-merge
-   * as a cheap precondition. One instance covers every session this poller
-   * tracks.
-   */
   public readonly remediationArbiter = new RemediationArbiter();
 
   constructor(opts: {
@@ -204,30 +86,12 @@ export class PrStatusPoller {
     getSharedRepoDir?: (repoUrl: string) => string;
     fetchAndFixCb?: FetchAndFixCb;
     onMergeDetectedCb?: (sessionId: string) => Promise<void>;
-    /**
-     * docs/194 — merge-detected callback that receives the PR body, so the
-     * issue-lifecycle "→ completed" parse can run where the body is in scope.
-     */
     onMergedPr?: (info: MergedPrInfo) => Promise<void>;
-    /**
-     * docs/196 — fired once when a tracked session's PR reaches a terminal state
-     * (merged or closed-without-merge). Wired to the notify-on-merge watch.
-     */
     onPrTerminalState?: (info: PrTerminalStateInfo) => Promise<void>;
-    /**
-     * When set, the poller swaps GitHub's GraphQL additions/deletions (which
-     * lag a few seconds after each push while GitHub reindexes) for the same
-     * locally-computed diff stats the click-through diff dialog uses, so the
-     * card's +N/-N button can't show stale numbers.
-     */
     createGitManager?: (dir: string) => GitManager;
-    /** docs/146 — global gate getter for the auto-resolve loop. */
     isAutoResolveEnabled?: () => boolean;
-    /** docs/146 — rebase-and-resolve callback. Late-bindable via the manager's setter. */
     rebaseAndResolveCb?: RebaseAndResolveCb;
-    /** docs/169 — global gate getter for the auto-fix-CI loop. */
     isAutoFixEnabled?: () => boolean;
-    /** Server-owned runner activation for viewerless remediation. */
     ensureRunner?: (sessionId: string) => Promise<SessionRunnerInterface | undefined>;
   }) {
     this.githubAuth = opts.githubAuth;
@@ -241,13 +105,7 @@ export class PrStatusPoller {
     this.isAutoResolveEnabled = opts.isAutoResolveEnabled ?? (() => false);
     this.isAutoFixEnabled = opts.isAutoFixEnabled ?? (() => false);
 
-    // Bind broadcast as the change callback so collaborators don't need to
-    // know about SSE plumbing — they just say "this session changed."
     const onSessionChange = (sessionId: string) => this.broadcastSessionStatus(sessionId);
-    // docs/169 — auto-fix is now a global-toggle, arbiter-aware specialization
-    // of the shared remediation base. Resolving runners needs the registry; in
-    // degraded test setups without one, `getRunner` returns undefined and the
-    // base's pre-attempt gate defers (matching the conflict manager's contract).
     this.autoFix = new AutoFixManager(
       onSessionChange,
       (sessionId) => opts.runnerRegistry?.get(sessionId),
@@ -255,27 +113,14 @@ export class PrStatusPoller {
       opts.fetchAndFixCb,
       undefined,
       this.remediationArbiter,
-      // docs/186 — per-session pause gate. A session whose row carries
-      // `autoFixCiPaused` opts out of the auto-fix loop even with the global
-      // setting on. Read at decision time so a resume takes effect next poll.
       (sessionId) => !this.sessionManager.get(sessionId)?.autoFixCiPaused,
       opts.ensureRunner,
     );
-    // docs/266 — the managed merge loop needs the runner to answer "is this
-    // session still working?" before it merges. Same shape (and same degraded
-    // contract) as auto-fix above: no registry ⇒ the lookup returns undefined,
-    // which reads as "not busy" so the merge still happens.
     this.autoMerge = new AutoMergeManager(
       this.githubAuth,
       onSessionChange,
       (sessionId) => opts.runnerRegistry?.get(sessionId),
-      // The authoritative sync read, used once per merge attempt rather than
-      // once per tick — it fetches, so it belongs on the rare path. The cheap
-      // per-tick reading on the summary cannot see the remote moving under a
-      // stale tracking ref (a force-push from another clone), which reads as
-      // `in-sync` and would let the loop merge a history this session does not
-      // have. Undefined (no workspace, no factory) leaves the loop on the
-      // summary's reading alone.
+      // Fetch at merge time: poll-time tracking refs can miss a remote force-push.
       async (sessionId, headBranch) => {
         const dir = this.sessionManager.get(sessionId)?.workspaceDir;
         if (!dir || !this.createGitManager) return undefined;
@@ -283,10 +128,6 @@ export class PrStatusPoller {
       },
     );
     this.graceTracker = new CiGraceTracker(opts.getSharedRepoDir);
-    // docs/146 — the manager requires the runner registry for its pre-attempt
-    // gate (needs to look up `runner.running` / call `verifyRunningState`).
-    // Without it, leave the manager unwired and the feature inactive — matches
-    // the "skip wiring when runnerRegistry is absent" contract.
     if (opts.runnerRegistry) {
       const registry = opts.runnerRegistry;
       this.autoConflictResolveManager = new AutoConflictResolveManager(
@@ -300,22 +141,12 @@ export class PrStatusPoller {
       );
     }
 
-    // docs/201 Phase P9 — the gate and supervisor are split into sibling
-    // modules. The gate reads viewer/autonomous-action state (needs the
-    // collaborators constructed above); the supervisor owns the timer and
-    // per-repo cadence, delegating the actual GraphQL poll back to `pollRepo`.
     this.gate = new PollingGlobalGate({
       runnerRegistry: opts.runnerRegistry,
       tracker: this.tracker,
       autoFix: this.autoFix,
       autoMerge: this.autoMerge,
-      // Armed auto-resolve keeps the supervisor alive headlessly, same as
-      // auto-fix. Undefined in degraded setups that skip wiring the manager
-      // (no runner registry) — the gate treats that as "feature inactive."
       autoConflictResolve: this.autoConflictResolveManager,
-      // docs/196 — a pending notify-on-merge watch must keep polling so the
-      // child's human merge is observed and the parent woken, even with no
-      // viewer anywhere. Read lazily per gate check (only when no viewer).
       hasPendingMergeWatch: () => this.sessionManager.listPendingMergeWatches().length > 0,
     });
     this.supervisor = new PrPollingSupervisor({
@@ -327,55 +158,20 @@ export class PrStatusPoller {
     });
   }
 
-  // ---- Public hooks (called by the orchestrator) ----
-
-  /**
-   * Notify the poller that a viewer has attached to a runner. Opens the
-   * global gate (if it was closed) and clears the disconnect grace timer so
-   * the supervisor stays running. The orchestrator's WS `attachToRunner`
-   * pairs this with `forceRefreshSession(sessionId)` to make the user-
-   * perceived freshness instant.
-   */
   notifyViewerAttached(): void {
     this.gate.clearDetachGrace();
     this.supervisor.ensure();
   }
 
-  /**
-   * Notify the poller that a viewer has detached. If that was the last
-   * viewer (and no autonomous action is keeping the gate open), arms the
-   * grace timer; the supervisor will pause itself on the next tick after
-   * VIEWER_DETACH_GRACE_MS elapses without a reconnect.
-   */
   notifyViewerDetached(): void {
     this.gate.armDetachGrace();
   }
 
-  /**
-   * Notify the poller that a session just initiated an auto-push to origin.
-   * Bumps that session's cadence to fast for POST_PUSH_FAST_WINDOW_MS so CI
-   * registration is observed promptly. Called from the orchestrator's
-   * `scheduleAutoPush` after the push lands; tests call it directly.
-   */
   notifyAutoPush(sessionId: string): void {
     this.tracker.lastAutoPushAt.set(sessionId, Date.now());
-    // A push lands → we expect CI signal → keep the supervisor running so
-    // the cadence picks it up. If the gate is otherwise closed (no viewer,
-    // no autonomous action), this still doesn't open it on its own — the
-    // user closed their tab, and waiting for them to come back is fine.
     if (this.gate.isOpen()) this.supervisor.ensure();
   }
 
-  /**
-   * Register a session as having an open PR.
-   *
-   * Issues an immediate one-shot poll if the global gate is open (i.e. the
-   * caller is observing — the orchestrator's WS attach path pairs this with
-   * a viewer attach). At server startup, when `app-lifecycle.ts` tracks
-   * persisted sessions before any viewer has connected, the gate is closed
-   * and tracking is just bookkeeping — the first poll happens on the next
-   * viewer attach via `forceRefreshSession`.
-   */
   trackSession(sessionId: string, repoUrl: string): void {
     const parsed = parseGitHubRemote(repoUrl);
     if (!parsed) return;
@@ -385,30 +181,16 @@ export class PrStatusPoller {
     this.tracker.mergedSessions.delete(sessionId);
     this.tracker.verifiedAbsent.delete(sessionId);
 
-    // Kick off workflow parsing in the background so the first poll's
-    // grace-decision has the path filters available. Failures are silent —
-    // the poller retries on every poll until a successful load.
     this.graceTracker.ensureWorkflowsLoaded(repoKey, repoUrl).catch(() => {});
 
     if (this.gate.isOpen()) {
       this.supervisor.ensure();
-      // Preserve the "first poll is immediate" contract from the old
-      // per-repo-timer design — without it the freshly-tracked session
-      // would wait up to one fast-tick (15 s) for its first observation.
       this.pollRepo(repoKey, parsed.owner, parsed.repo, { force: true }).catch((err: unknown) => {
         console.error(`[pr-poller] Error on initial poll ${repoKey}:`, err);
       });
     }
   }
 
-  /**
-   * Force a one-shot refresh for the repo that owns a session's PR status.
-   * This is used for user-visible events (session activation, PR creation,
-   * merge button) so the background cadence remains cheap without making the
-   * UI wait for the next tick. A forced refresh is also the one path that
-   * bypasses the global gate — a viewer is by definition active when this
-   * runs, even if `notifyViewerAttached` hasn't landed yet.
-   */
   async forceRefreshSession(
     sessionId: string,
     opts: { waitForMissingVerify?: boolean } = {},
@@ -417,8 +199,6 @@ export class PrStatusPoller {
     const slash = repoKey?.indexOf("/") ?? -1;
     if (!repoKey || slash <= 0) return;
 
-    // A user action is a strong activity signal, and a forced refresh should
-    // not be suppressed by a previous "missing from bulk GraphQL" episode.
     this.gate.clearDetachGrace();
     this.supervisor.ensure();
     this.tracker.verifiedAbsent.delete(sessionId);
@@ -431,39 +211,7 @@ export class PrStatusPoller {
     });
   }
 
-  /**
-   * Force a REST verification for a single session's PR. This is used after
-   * ShipIt itself merges a PR, where waiting for the open-PR GraphQL view to
-   * drop the branch can leave the UI stale for one or more poll intervals.
-   *
-   * Note this deliberately does NOT route through `pollRepo` like
-   * `forceRefreshSession` does: `pollRepo`'s bulk query is `states: [OPEN]`, and
-   * GitHub's GraphQL view can still report a *just-merged* PR as open for a beat
-   * (eventual consistency). `pollRepo` would then match it on the open path and
-   * never reach `verifyMissingPr` — exactly the staleness this fast-path exists
-   * to bypass with a definitive any-state REST probe. The cost of skipping
-   * `pollRepo` is that we don't inherit its `canonicalApiTarget` retarget, so we
-   * resolve the canonical owner ourselves (below) before the REST probe — else,
-   * on a transferred/renamed repo, `findPullRequestAnyState` filters
-   * `head=<old-owner>:<branch>` and matches nothing (planning#161).
-   *
-   * docs/282 — `armAbsentDebounce: false` runs the same definitive probe WITHOUT
-   * arming the `verifiedAbsent` single-probe debounce. Every pre-existing caller
-   * probes a PR it expects to be terminal, where arming is right; the pre-turn
-   * recheck probes one it expects to still be OPEN, on every qualifying turn, and
-   * arming there would be a merge-detection REGRESSION: `verifiedAbsent` is
-   * cleared only by the PR reappearing in the OPEN bulk view or by a forced
-   * refresh, so a PR merged moments after a recheck would fall out of the bulk
-   * view with the debounce already armed and never get REST-verified.
-   */
-  /**
-   * docs/287-agent-merge-per-repo — the merge gate's zero-check decision.
-   *
-   * Here because the decision needs state the poll loop preloads
-   * (`ensureWorkflowsLoaded`). It awaits that LOAD, never the grace window — the
-   * command does not wait by itself (req 17). `prNumber` is explicit because a
-   * session can ask about a pull request the poller is not tracking for it.
-   */
+  /** Awaits workflow loading, not the grace window. */
   async awaitCiGraceDecision(args: {
     repoUrl: string | undefined;
     repoKey: string;
@@ -482,6 +230,9 @@ export class PrStatusPoller {
     });
   }
 
+  /** Use REST because the OPEN GraphQL view can lag a merge.
+   * Pre-turn checks must disable armAbsentDebounce so later merges are still probed.
+   */
   async forceVerifySessionPrState(
     sessionId: string,
     opts: { armAbsentDebounce?: boolean } = {},
@@ -501,38 +252,16 @@ export class PrStatusPoller {
     const polledRepo = repoKey.slice(slash + 1);
     const { owner, repo } = await this.resolveCanonicalApiTarget(repoKey, polledOwner, polledRepo);
     const outcome = await this.verifyMissingPr(sessionId, owner, repo, session.branch);
-    // Arm the single-probe debounce for every resting outcome EXCEPT a
-    // superseded-PR suppression — see the matching note in `pollRepo`'s missing-
-    // PR branch. A suppressed verify means the only PR on the branch is still the
-    // re-armed session's OLD merged PR (docs/202); arming here would wedge
-    // convergence if the NEW PR opens-and-merges before being observed open.
     if (outcome !== "suppressed" && (opts.armAbsentDebounce ?? true)) {
       this.tracker.verifiedAbsent.add(sessionId);
     }
   }
 
-  /**
-   * docs/282 — resolve once this session's in-flight merge bookkeeping has
-   * settled, or immediately when none is in flight.
-   *
-   * The caller is the pre-turn merge recheck, and what it needs is the
-   * *second* half of merge detection: `verifyMissingPr` records the merged
-   * snapshot and `mergedHeadSha` synchronously, but `merged_at` — the field the
-   * whole docs/218 reset gate keys off — is stamped by `onMergeDetectedCb`,
-   * which the poll loop deliberately does not await. Awaiting it here covers the
-   * merge THIS turn's probe just discovered and equally one a background poll
-   * discovered a beat earlier (whose `alreadyTerminal` guard means our probe
-   * fires no callback of its own).
-   *
-   * Never rejects — the tracked promise already swallows its own errors — and
-   * the caller bounds it with its own timeout, because the callback does
-   * container and network work that must not be able to strand a turn.
-   */
+  /** Caller must bound this wait; merge callbacks can require network work. */
   async awaitMergeHandling(sessionId: string): Promise<void> {
     await this.mergeHandling.get(sessionId);
   }
 
-  /** Untrack a session (archived, PR merged, etc.). */
   untrackSession(sessionId: string): void {
     const repoKey = this.tracker.sessionRepos.get(sessionId);
     this.tracker.untrack(sessionId);
@@ -548,28 +277,15 @@ export class PrStatusPoller {
     }
   }
 
-  /**
-   * docs/146 — re-broadcast every tracked session's PR snapshot. Used when
-   * `autoResolveConflicts` flips false → true so existing sessions get the
-   * (now-ungated) `autoResolve` block onto their snapshot without waiting
-   * for a genuine PR-status change.
-   */
   broadcastAllSnapshots(): void {
     const updates: PrStatusSummary[] = [];
     for (const [sessionId, summary] of this.tracker.lastKnown) {
-      // Skip sessions whose terminal-state snapshots already promoted them
-      // (the merged/closed bulk-view short-circuit handles them).
       if (this.tracker.mergedSessions.has(sessionId)) continue;
       updates.push(this.attachAutomationState(summary));
     }
     if (updates.length > 0) this.sseBroadcast("pr_status", { updates });
   }
 
-  /**
-   * Mark whether a session's PR tab is the active right-panel tab (docs/133
-   * Phase 4). When turned on, kicks an immediate poll for the session's repo so
-   * the conversation fields populate without waiting a full poll interval.
-   */
   setPrTabActive(sessionId: string, active: boolean): void {
     const was = this.tracker.prTabActiveSessions.has(sessionId);
     if (active) this.tracker.prTabActiveSessions.add(sessionId);
@@ -582,9 +298,6 @@ export class PrStatusPoller {
       if (repoKey && slash > 0) {
         const owner = repoKey.slice(0, slash);
         const repo = repoKey.slice(slash + 1);
-        // Treat PR-tab activation as a viewer signal so a paused supervisor
-        // wakes up and the user sees the heavier conversation fields without
-        // waiting a tick.
         this.gate.clearDetachGrace();
         this.supervisor.ensure();
         this.pollRepo(repoKey, owner, repo, { force: true }).catch((err: unknown) => {
@@ -594,36 +307,16 @@ export class PrStatusPoller {
     }
   }
 
-  /**
-   * Seed in-memory `lastKnown` from persisted snapshots so archived sessions
-   * appear in `getAllStatuses()` immediately after server restart. Called
-   * once during app startup, before any clients connect.
-   *
-   * Deliberately does NOT seed `mergedSessions` from persisted merged/closed
-   * snapshots: a previous orchestrator process could have written that state
-   * from a rate-limit-induced false promotion, and trusting it would keep
-   * the session permanently skipped by the poller. The first poll's bulk
-   * GraphQL view + the REST verify fallback will re-confirm the state and
-   * either re-add to `mergedSessions` (real merge) or unstick `lastKnown`
-   * (PR is actually still open).
-   */
+  // Do not seed mergedSessions: polling must recheck persisted terminal states.
   loadPersisted(): void {
     const persisted = this.sessionManager.getAllPrStatuses();
     for (const snapshot of persisted) {
-      // Strip runtime-only state — autoFix / autoMerge live in their own maps
-      // and shouldn't leak in via persisted JSON.
       const clean: PrStatusSummary = { ...snapshot };
       delete clean.autoFix;
       delete clean.autoMerge;
       this.tracker.lastKnown.set(snapshot.sessionId, clean);
     }
-    // docs/202 — re-seed superseded-PR suppression from persisted breadcrumbs so
-    // a session re-armed before this restart (and not yet carrying a new PR)
-    // can't have its OLD merged PR re-promote it to merged on the first poll.
-    // The breadcrumb's `number` is exactly the value `reArm` recorded; it stays
-    // suppressed only until a different-numbered PR appears, which is correct. A
-    // re-armed session has `merged_at` cleared, so it is always in the visible
-    // `list()` (Active, never resolved/capped) — no need to scan archived rows.
+    // Retain old-PR suppression across restarts of re-armed sessions.
     for (const session of this.sessionManager.list()) {
       if (session.previousMergedPr) {
         this.tracker.supersededPrNumbers.set(session.id, session.previousMergedPr.number);
@@ -631,11 +324,6 @@ export class PrStatusPoller {
     }
   }
 
-  /**
-   * Clear the persisted PR snapshot for a session (on unarchive, when a fresh
-   * branch is created and the previous PR no longer applies). Broadcasts a
-   * removal so connected clients drop their cached PR status / card.
-   */
   clearPersisted(sessionId: string): void {
     this.tracker.lastKnown.delete(sessionId);
     this.tracker.mergedSessions.delete(sessionId);
@@ -643,32 +331,11 @@ export class PrStatusPoller {
     this.sseBroadcast("pr_status", { updates: [], removals: [sessionId] });
   }
 
-  /**
-   * docs/202 — re-arm a merged session whose branch has been rebased and gained
-   * new work, so the poller treats it as a normal active session ready for a
-   * fresh PR. **Silently** clears the poller's server-side terminal state and
-   * resumes tracking.
-   *
-   * Deliberately does NOT reuse {@link clearPersisted}: that broadcasts a
-   * destructive `pr_status { removals: [sessionId] }` over SSE, which races the
-   * new WS `pr_lifecycle_update` card across two independent client channels —
-   * if the removal lands *after* the card, it wipes the freshly-shown card and
-   * the user is left with nothing (docs/202 "Transport"). Instead we clear state
-   * quietly and rely on two non-racing convergence paths: the re-armed card
-   * carries `previousMergedPr` so `updateCard` lets it override the terminal
-   * guard, and reconnecting viewers converge via snapshot reconciliation.
-   *
-   * `supersededPrNumber` (the prior merged PR's number) is recorded so the
-   * immediate forced poll that `trackSession` fires can't re-promote the OLD
-   * merged PR via `verifyMissingPr` → `findPullRequestAnyState`. Set BEFORE
-   * `trackSession` so the suppression is in place when that poll runs.
+  /** Clear silently: an SSE removal can race and erase the new WS PR card.
+   * Suppress the old PR before trackSession starts its immediate poll.
    */
   reArm(sessionId: string, supersededPrNumber?: number): void {
-    // docs/282 — the merge this session is being re-armed OUT of is over, so any
-    // handler still tracked for it belongs to no live episode. The `finally`
-    // below is the ordinary removal; this covers the handler that never settles,
-    // which would otherwise make every later qualifying turn wait out the
-    // recheck's whole budget on a merge that is already history.
+    // Drop a hung callback from the previous merge episode.
     this.mergeHandling.delete(sessionId);
     this.tracker.lastKnown.delete(sessionId);
     this.tracker.lastPrNodes.delete(sessionId);
@@ -682,27 +349,18 @@ export class PrStatusPoller {
     if (repoUrl) this.trackSession(sessionId, repoUrl);
   }
 
-  /** Get the current PR status for a session. */
   getStatus(sessionId: string): PrStatusSummary | undefined {
     return this.tracker.lastKnown.get(sessionId);
   }
 
-  /** Get all current PR statuses (for SSE snapshot on connect). */
   getAllStatuses(): PrStatusSummary[] {
     return [...this.tracker.lastKnown.values()].map((s) => this.attachAutomationState(s));
   }
 
-  /** Get auto-fix state for a session. */
   getAutoFixState(sessionId: string): AutoFixState | undefined {
     return this.autoFix.get(sessionId);
   }
 
-  /**
-   * docs/169 — fan a runner "idle" event out to BOTH remediation managers so a
-   * `deferred` attempt (the agent was busy when CI failed / a conflict landed)
-   * re-evaluates the moment the runner frees up, rather than waiting for the
-   * next poll. Called from the runner registry's "idle" subscription.
-   */
   notifyRunnerIdle(sessionId: string): void {
     void this.autoFix.onRunnerIdle(sessionId).catch((err: unknown) => {
       console.error(`[pr-poller] auto-fix onRunnerIdle error for ${sessionId}:`, err);
@@ -712,84 +370,49 @@ export class PrStatusPoller {
     });
   }
 
-  /**
-   * docs/169 — a WS-typed user input refreshes BOTH remediation automations'
-   * attempt budgets (the user re-engaged with the session). Fanned out from the
-   * WS dispatch switch in `index.ts`.
-   */
   resetRemediationForUserActivity(sessionId: string): void {
     this.autoFix.resetForUserActivity(sessionId);
     this.autoConflictResolveManager?.resetForUserActivity(sessionId);
   }
 
-  /** Get the cached GraphQL PR node for a session (for extracting check details). */
   getLastPrNode(sessionId: string): GraphQLPrNode | undefined {
     return this.tracker.lastPrNodes.get(sessionId);
   }
 
-  // ---- Auto-merge state management ----
-
-  /** Get auto-merge state for a session. */
   getAutoMergeState(sessionId: string): AutoMergeState | undefined {
     return this.autoMerge.get(sessionId);
   }
 
-  /** Set auto-merge enabled/disabled for a session. */
   setAutoMergeEnabled(sessionId: string, enabled: boolean): AutoMergeState {
     return this.autoMerge.setEnabled(sessionId, enabled);
   }
 
-  /**
-   * Mark auto-merge as ShipIt-managed. `opts.managedReason` distinguishes the
-   * GitHub-refused fallback from the docs/266 "session is live" case; it
-   * defaults to the former.
-   */
   setAutoMergeManaged(
     sessionId: string,
     managed: boolean,
     opts: { settingsUrl?: string; reason?: string; managedReason?: AutoMergeManagedReason } = {},
   ): void {
     this.autoMerge.setManaged(sessionId, managed, opts);
-    // Managed auto-merge depends on the poller to detect CI-success → merge.
-    // Open the gate so a closed tab doesn't strand the flow.
     if (managed) this.supervisor.ensure();
   }
 
-  /**
-   * docs/266 — does this session have a live runner? Consulted at ARMING time:
-   * a PR whose session is live stays on the ShipIt-managed loop, where the busy
-   * gate is enforceable, instead of being handed to GitHub native auto-merge
-   * (which knows nothing about a ShipIt turn and merged PR #2327 mid-turn).
-   *
-   * Runner EXISTENCE, not `agentBusy`: the arming outlives the moment it is
-   * made, and an idle-but-live session is one user message away from a turn.
-   * With no hand-back to native (see the plan doc), arming on "busy right now"
-   * would leave exactly the incident's shape — a PR armed native while the
-   * session was quiet, merging mid-turn once review feedback started a turn.
-   *
-   * No registry wired (degraded setups, tests) ⇒ false ⇒ native arming, which
-   * is the pre-docs/266 behaviour.
-   */
+  /** An idle runner can start a turn after arming; native auto-merge cannot gate it. */
   hasLiveRunner(sessionId: string): boolean {
     return this.runnerRegistry?.get(sessionId) !== undefined;
   }
 
-  /** Set an auto-merge error (toggle reverts to OFF). */
   setAutoMergeError(sessionId: string, error: PrAutoMergeError): void {
     this.autoMerge.setError(sessionId, error);
   }
 
-  /** Set the preferred merge method for a session. */
   setMergeMethod(sessionId: string, method: "squash" | "merge" | "rebase"): void {
     this.autoMerge.setMergeMethod(sessionId, method);
   }
 
-  /** Clean up all timers. */
   destroy(): void {
     this.supervisor.destroy();
   }
 
-  /** Broadcast current status for a single session. */
   private broadcastSessionStatus(sessionId: string): void {
     const status = this.tracker.lastKnown.get(sessionId);
     if (status) {
@@ -798,31 +421,15 @@ export class PrStatusPoller {
     }
   }
 
-  /** Attach auto-fix and auto-merge state to a PrStatusSummary for SSE broadcast. */
   private attachAutomationState(summary: PrStatusSummary): PrStatusSummary {
     let result = summary;
     const fixState = this.autoFix.get(summary.sessionId);
-    // Never attach auto-fix state over a GREEN rollup. The manager's state is
-    // the loop's bookkeeping, not a display flag: green means there is nothing
-    // to fix, so an "Auto-fixing…" spinner or an "Auto-fix exhausted" note on a
-    // passing card is wrong however the state got there. The state machine now
-    // settles itself on a resolved poll (`runTransition` step 5); this is the
-    // belt-and-suspenders half, the same shape docs/146 applies to auto-resolve.
-    // Deliberately only `success` — a `pending` rollup (CI re-running after the
-    // fix turn pushed) must keep showing the line, or it would flicker away
-    // mid-attempt.
+    // Keep fix progress while CI reruns, but hide it once checks pass.
     if (fixState && summary.checks.state !== "success") {
       result = {
         ...result,
         autoFix: {
-          // The 1-based number of the attempt being DISPLAYED. `attemptCount`
-          // counts COMPLETED attempts — it is incremented post-turn, in
-          // `completeTurn` — so while one is in flight the card would otherwise
-          // read "attempt 0/3" for the first attempt. The manager already
-          // computes this number for `fireAttempt`; publishing it here keeps the
-          // client from reconstructing it in each of the two places that render
-          // the line. Never exceeds `maxAttempts`: the cap gate refuses to fire
-          // once `attemptCount >= maxAttempts`.
+          // Stored count excludes the running attempt; display is one-based.
           attemptCount:
             fixState.status === "running" ? fixState.attemptCount + 1 : fixState.attemptCount,
           status: fixState.status,
@@ -831,13 +438,6 @@ export class PrStatusPoller {
       };
     }
     const mergeState = this.autoMerge.get(summary.sessionId);
-    // Never attach an arming onto a TERMINAL summary. The arming belongs to one
-    // pull request and is dropped when that PR goes merged/closed
-    // (`verifyMissingPr`), so this is normally moot — but it is the same
-    // belt-and-suspenders the auto-fix block above applies: if the state ever
-    // outlives its PR (a delete that didn't run, an arming re-created between
-    // the merge and the observation), the client must not be told that a merged
-    // PR is still waiting to auto-merge. That is what strands the toggle ON.
     if (mergeState && summary.prState !== "merged" && summary.prState !== "closed") {
       result = {
         ...result,
@@ -852,9 +452,6 @@ export class PrStatusPoller {
         },
       };
     }
-    // docs/146 — attach auto-resolve state ONLY when the global setting is
-    // on. Belt-and-suspenders against a disabled user seeing a lingering
-    // failure banner from the snapshot.
     const resolveState = this.autoConflictResolveManager?.get(summary.sessionId);
     if (resolveState && this.isAutoResolveEnabled()) {
       result = {
@@ -871,26 +468,8 @@ export class PrStatusPoller {
     return result;
   }
 
-  /**
-   * Resolve the owner/repo THIS poll's GitHub REST calls should target, given
-   * the canonical `nameWithOwner` GitHub returned. When a repo is
-   * transferred/renamed (e.g. nicolasalt/shipit → nikzlabs/shipit), the bulk
-   * GraphQL poll keeps working under the cached (old) owner — GitHub's
-   * `repository(owner, name)` follows the repo's redirect records — but the REST
-   * merge-detection probe filters `head=<owner>:<branch>`, which matches nothing
-   * once the head label carries the NEW owner, silently breaking merge
-   * detection. `nameWithOwner` is the canonical identity; when it differs from
-   * the key we polled under, return it so the REST calls below hit the new owner.
-   *
-   * Deliberately does NOT mutate any persisted or in-memory identity (session
-   * `remoteUrl`, `sessionRepos`, the RepoStore record, or the bare-cache hash).
-   * Those three must agree on one URL or the client orphans the sessions (it
-   * groups them under a repo by exact-URL match) — an earlier version rewrote the
-   * session rows alone and detached every session from its repo. The cached URL
-   * stays consistent everywhere (git keeps working via GitHub's redirect); only
-   * the owner/repo used for this poll's API calls is corrected, re-derived every
-   * poll, statelessly. No-op when GitHub returns no `nameWithOwner` or it already
-   * matches, so the steady-state path is unchanged.
+  /** REST head filters need the new owner after a transfer.
+   * Keep stored URLs unchanged: session grouping requires exact URL matches.
    */
   private canonicalApiTarget(
     polledKey: string,
@@ -908,16 +487,6 @@ export class PrStatusPoller {
     return { owner, repo };
   }
 
-  /**
-   * Resolve the canonical owner/repo for a (possibly transferred/renamed) repo
-   * via a lightweight `repository { nameWithOwner }` GraphQL probe, then apply
-   * `canonicalApiTarget`. `pollRepo` gets `nameWithOwner` for free from its bulk
-   * query, but the targeted single-session verify path bypasses `pollRepo` on
-   * purpose (see `forceVerifySessionPrState`), so it must resolve the canonical
-   * owner itself before its owner-qualified REST probe. Falls back to the polled
-   * owner/repo whenever the probe yields nothing (unauthenticated, rate-limited,
-   * network error, or no redirect), so the steady-state path is unchanged.
-   */
   private async resolveCanonicalApiTarget(
     repoKey: string,
     owner: string,
@@ -941,10 +510,6 @@ export class PrStatusPoller {
   ): Promise<void> {
     if (!this.githubAuth.authenticated) return;
 
-    // ---- Rate-limit gate ----
-    // Read once and react to transitions. We never call GraphQL while in
-    // limited state — that would just bounce off another 403 and waste
-    // budget once the window resets.
     const rateLimit = this.githubAuth.getRateLimitState();
     const stillLimited = rateLimit.limited && (rateLimit.resetAt === null || rateLimit.resetAt > Date.now());
 
@@ -958,19 +523,8 @@ export class PrStatusPoller {
 
     if (stillLimited) return;
 
-    // Record the poll attempt timestamp before the GraphQL call so the
-    // supervisor's cadence check (in `supervisorTick`) doesn't fire a second
-    // poll for the same repo while this one is in flight.
     this.supervisor.recordPolledAt(repoKey);
 
-    // docs/155 Phase 1: shrink the query to what this poll actually needs.
-    //   - `first: N` caps the bulk view at tracked-session count plus the
-    //     discovery floor, so a 30-PR repo doesn't pay for 30 PRs of light
-    //     data every tick.
-    //   - `focusedPrNumbers` emits one heavy `focused${i}` alias per session
-    //     whose PR tab is currently active, so conversation fields are pulled
-    //     only for the PR the user is actually looking at — not the whole
-    //     bulk view as it was pre-Phase-1.
     const first = this.tracker.computeBulkFirst(repoKey);
     const focusedPrNumbers = this.tracker.collectFocusedPrNumbers(repoKey);
     const coveragePrNumbers = this.tracker.collectCoveragePrNumbers(repoKey);
@@ -980,31 +534,16 @@ export class PrStatusPoller {
       { owner, name: repo },
     );
 
-    // graphqlQuery returns the full JSON body, so the data is at the top level.
-    // It already returns `null` on RATE_LIMITED responses (transport or
-    // body-level), so a null result here means "do nothing" — never "all PRs
-    // closed."
+    // Missing data is not evidence that PRs closed.
     const repository = (result as unknown as GraphQLResponse)?.data?.repository;
     const prNodes = repository?.pullRequests?.nodes;
     if (!prNodes) return;
 
-    // After a repo transfer/rename, target this poll's REST calls (merge verify,
-    // auto-fix, auto-merge) at the canonical owner GitHub resolves to, while
-    // leaving every persisted identity untouched (see canonicalApiTarget). The
-    // bulk GraphQL above already worked via GitHub's redirect; only the
-    // owner-qualified REST `head` filter needs the new owner.
     ({ owner, repo } = this.canonicalApiTarget(repoKey, owner, repo, repository.nameWithOwner));
 
-    // Walk any `focused${i}` aliases the query asked for. Conversation data
-    // lives here, not on the bulk nodes.
     const focusedByPrNumber = extractFocusedPrNodes(result);
 
-    // Build a map of headRefName → PR node for matching, and observe whether
-    // ANY PR in this repo has CI checks reported. Once true, stays true: this
-    // sticky signal lets us correctly classify a brand-new PR as "pending"
-    // even before its workflow runs have registered, and it covers external
-    // CI (Vercel, third-party status checks) that wouldn't show up via local
-    // .github/workflows inspection.
+    // Observed checks also detect external CI absent from local workflow files.
     const prByBranch = new Map<string, GraphQLPrNode>();
     let observedChecksThisPoll = false;
     for (const node of prNodes) {
@@ -1015,14 +554,7 @@ export class PrStatusPoller {
       }
     }
 
-    // Fold the per-number aliases (focused + coverage) into the branch map so a
-    // tracked session's known PR is matched even when it fell outside the bulk
-    // `first: N` window. Only OPEN aliases are surfaced this way: a known PR
-    // that has since merged or closed is fetched by number regardless of state,
-    // and parsePrNode always reports "open" — so treating it as a bulk match
-    // would resurrect a merged card. Leaving merged/closed PRs absent here
-    // routes them through verifyMissingPr, which owns terminal-state promotion.
-    // A bulk node always wins (it is guaranteed OPEN by the connection filter).
+    // parsePrNode assumes open; terminal aliases must go through REST verification.
     for (const node of focusedByPrNumber.values()) {
       if (node.state !== "OPEN") continue;
       if (!prByBranch.has(node.headRefName)) prByBranch.set(node.headRefName, node);
@@ -1031,16 +563,9 @@ export class PrStatusPoller {
       this.graceTracker.markRepoHasChecks(repoKey);
     }
 
-    // Match PRs to sessions by branch name
     const updates: PrStatusSummary[] = [];
     const sessions = this.sessionManager.list();
-    // docs/266 — `list()` filters out archived sessions (`sessions.ts`, the
-    // `userArchived` clause), so an archived session never reaches
-    // `handleManaged`. That was harmless while a live session's PR was armed on
-    // GitHub — native merged it with no help from us — but ShipIt now owns
-    // those merges, and the polling gate stays OPEN for an armed managed state
-    // (`polling-global-gate.ts`), so the result would be a supervisor spinning
-    // forever over a PR nothing ever merges. Re-admit exactly the armed ones.
+    // Archived sessions still need polling when ShipIt owns their pending merge.
     for (const sessionId of this.tracker.sessionRepos.keys()) {
       if (this.tracker.sessionRepos.get(sessionId) !== repoKey) continue;
       const armed = this.autoMerge.get(sessionId);
@@ -1050,10 +575,6 @@ export class PrStatusPoller {
       if (archived) sessions.push(archived);
     }
 
-    // Ensure workflows are parsed for this repo before we make grace
-    // decisions below. The first call kicks off the load; subsequent calls
-    // are no-ops once cached. We use the first tracked session's remoteUrl
-    // — all sessions on the same repoKey share the same remote.
     const trackedSession = sessions.find(
       (s) => this.tracker.sessionRepos.get(s.id) === repoKey && s.remoteUrl,
     );
@@ -1070,35 +591,15 @@ export class PrStatusPoller {
       const bulkNode = prByBranch.get(session.branch);
 
       if (bulkNode) {
-        // PR is back in the bulk view — clear the "verified absent" marker so
-        // a future disappearance triggers a fresh verify.
         this.tracker.verifiedAbsent.delete(session.id);
-        // docs/202 — a PR in the OPEN bulk view is necessarily the NEW PR for a
-        // re-armed session (the superseded one is merged, never OPEN), so clear
-        // any superseded-PR suppression and let normal tracking take over.
         this.tracker.supersededPrNumbers.delete(session.id);
-        // If this session had a focused alias on this poll, the focused node
-        // carries the same fields as the bulk node plus conversation. Prefer
-        // it so the summary picks up issue comments + review threads.
         const prNode = focusedByPrNumber.get(bulkNode.number) ?? bulkNode;
-        // Cache the PR node for extracting check details later
         this.tracker.lastPrNodes.set(session.id, prNode);
 
         const summary = parsePrNode(prNode, session.id);
         const headSha = extractHeadSha(prNode) ?? "";
 
-        // If GitHub reports no checks yet but we have any signal the repo
-        // runs CI (workflow files in the local clone, or checks observed on
-        // any PR in this repo previously), treat as "pending" — checks just
-        // haven't registered yet. Without this override, the client sees
-        // state: "none" and unconditionally enables the squash-and-merge
-        // button, which is wrong while CI is still spinning up.
-        //
-        // The override is time-boxed via CiGraceTracker; after the grace
-        // window elapses without GitHub registering any check for the current
-        // head SHA, we accept that no workflows apply to this PR and let the
-        // state fall back to "none" (the client treats that as "CI doesn't
-        // apply, mergeable"). A new push (new head SHA) resets the timer.
+        // Allow expected CI time to register before treating absent checks as none.
         if (summary.checks.state === "none") {
           const force = this.graceTracker.shouldForcePending({
             sessionId: session.id,
@@ -1111,24 +612,15 @@ export class PrStatusPoller {
           });
           if (force) {
             summary.checks.state = "pending";
-            // Publish the deadline so the client can retire the spinner on its
-            // own even if polling pauses before we observe the expiry.
+            // The client must expire the spinner even if polling pauses.
             const until = this.graceTracker.graceDeadlineFor(session.id);
             if (until !== undefined) summary.checks.graceUntil = until;
           }
         } else {
-          // Any non-"none" state means GitHub registered something — no need
-          // to keep the grace timer running.
           this.graceTracker.clearForSession(session.id);
         }
 
-        // Prefer locally-computed diff stats over GitHub's GraphQL
-        // additions/deletions. GitHub reindexes a PR's diff on its side a
-        // few seconds (sometimes longer) after a push, so the GraphQL view
-        // can lag — leaving the card's +N/-N button showing the previous
-        // commit's numbers while the click-through diff dialog (computed
-        // locally from `git diff base...HEAD`) already shows the latest.
-        // Using the same local source for both keeps them consistent.
+        // Match the local diff dialog while GitHub's diff indexing catches up.
         if (this.createGitManager && session.workspaceDir) {
           const localGit = this.createGitManager(session.workspaceDir);
           try {
@@ -1136,26 +628,16 @@ export class PrStatusPoller {
             summary.insertions = local.insertions;
             summary.deletions = local.deletions;
           } catch {
-            // Workspace gone (archived), bare repo without a checkout, etc.
-            // Fall back to GitHub's numbers.
+            // Retain GitHub's counts if local stats are unavailable.
           }
-          // Does the remote branch this PR would merge still carry everything
-          // the session has committed? Local refs only — no network on the poll
-          // path. The merge route re-resolves this against the live remote
-          // before it merges anything; this reading exists so the button is
-          // already disabled when the user looks at it, rather than failing on
-          // the click. Undefined (no workspace, no tracking ref, HEAD elsewhere)
-          // means "cannot tell" and blocks nothing.
+          // This display read uses local refs; the merge path fetches fresh state.
           const sync = await readBranchSync(localGit, summary.headBranch);
           if (sync) summary.branchSync = sync;
         }
 
         const prev = this.tracker.lastKnown.get(session.id);
 
-        // Carry forward the last known conversation when this poll didn't
-        // fetch it (no focused alias for this session). Without this, the
-        // change-detection gate would wipe the client's conversation as soon
-        // as the PR tab loses focus.
+        // A light poll must not erase previously fetched conversation.
         if (summary.issueComments === undefined && prev?.issueComments !== undefined) {
           summary.issueComments = prev.issueComments;
         }
@@ -1163,29 +645,18 @@ export class PrStatusPoller {
           summary.reviewThreads = prev.reviewThreads;
         }
 
-        // Handle auto-fix state transitions. docs/169 — now async (the base's
-        // pre-attempt gate may HTTP-roundtrip `verifyRunningState`); fire-and-
-        // forget so one session's gate doesn't delay the rest of the poll.
+        // Do not let one session's worker requests delay other sessions' polls.
         void this.autoFix.handleTransition(session.id, summary, prNode, owner, repo)
           .catch((err: unknown) => {
             console.error(`[pr-poller] Auto-fix handleTransition error for ${session.id}:`, err);
           });
 
-        // Handle ShipIt-managed auto-merge. docs/169 — consult the arbiter as a
-        // cheap precondition: don't drive a merge while a remediation claim is
-        // held (a fix/resolve turn is mid-flight). Belt-and-suspenders — the
-        // merge's own green-CI + mergeable preconditions already make collision
-        // rare.
         if (!this.remediationArbiter.isClaimed(session.id)) {
           this.autoMerge.handleManaged(session.id, summary, owner, repo).catch((err: unknown) => {
             console.error(`[pr-poller] Managed auto-merge error for ${session.id}:`, err);
           });
         }
 
-        // docs/146 — auto-resolve transitions. Fire-and-forget; the poller
-        // loop is synchronous and we don't want one session's worker HTTP
-        // roundtrip (verifyRunningState) to delay other sessions on the same
-        // repo's poll iteration.
         if (this.autoConflictResolveManager) {
           const headShaForResolve = extractHeadSha(prNode) ?? "";
           const baseShaForResolve = extractBaseSha(prNode);
@@ -1196,53 +667,26 @@ export class PrStatusPoller {
             });
         }
 
-        // Attach automation state before comparison and broadcast
         const withAutomation = this.attachAutomationState(summary);
 
-        // Only include in broadcast if something changed
         if (!prev || !prStatusEqual(prev, summary)) {
           this.tracker.lastKnown.set(session.id, summary);
           this.sessionManager.setPrStatus(session.id, summary);
           updates.push(withAutomation);
         }
       } else {
-        // PR missing from bulk view — could be:
-        //   (a) genuinely merged or closed,
-        //   (b) past the `first: N` pagination cap,
-        //   (c) GraphQL returned a partial response (rate limit, GitHub
-        //       index lag, etc.) that's been classified as success here.
-        //
-        // (b) and (c) used to wrongly promote the session to "merged" on
-        // every poll. We now NEVER promote synchronously — instead route
-        // through a single REST verify per "missing" episode, debounced by
-        // `verifiedAbsent` until the PR reappears in a bulk response.
+        // Pagination and indexing lag can omit an open PR; verify through REST.
         if ((!opts.force && this.tracker.verifiedAbsent.has(session.id)) || this.tracker.inFlightVerify.has(session.id)) continue;
         this.tracker.inFlightVerify.add(session.id);
-        // eslint-disable-next-line no-restricted-syntax -- fire-and-forget in the synchronous poll loop; the outcome decides whether to arm the debounce
+        // eslint-disable-next-line no-restricted-syntax -- async outcome controls debounce
         const verify = this.verifyMissingPr(session.id, owner, repo, session.branch)
           .then((outcome) => {
-            // Arm the single-probe debounce for every resting outcome EXCEPT a
-            // superseded-PR suppression. A `"suppressed"` verify means the only
-            // PR on the branch is still the re-armed session's OLD merged PR
-            // (docs/202) — the session's NEW PR hasn't been observed yet. If we
-            // armed the debounce here, a NEW PR that opens AND merges entirely
-            // between two polls (so it never appears in the OPEN bulk view to
-            // clear `verifiedAbsent` — exactly the `gh pr create` → merge-on-
-            // GitHub case, especially while the tab is closed) would never be
-            // REST-verified again. The suppression also never clears (it only
-            // clears when a *different*-numbered PR is observed), so the session
-            // stays stuck with no PR card — the gray "Branch" badge — instead of
-            // converging to GitHub's terminal `merged`/`closed` state. Leaving the
-            // debounce un-armed for the suppressed case lets the next poll
-            // re-verify and promote once `findPullRequestAnyState` returns the
-            // different-numbered (now-terminal) PR.
+            // Keep probing after suppression: a new PR can open and merge between polls.
             if (outcome !== "suppressed") this.tracker.verifiedAbsent.add(session.id);
           })
           .catch((err: unknown) => {
             console.error(`[pr-poller] REST verify error for ${session.id}:`, err);
-            // On a transient REST/GraphQL error, arm the debounce as before so a
-            // persistent failure doesn't re-probe every poll; the next forced
-            // refresh (viewer attach / activation) clears it and retries.
+            // Avoid repeated failures; a forced refresh clears this debounce.
             this.tracker.verifiedAbsent.add(session.id);
           })
           .finally(() => {
@@ -1252,36 +696,12 @@ export class PrStatusPoller {
       }
     }
 
-    // Broadcast only if there are changes
     if (updates.length > 0) {
       this.sseBroadcast("pr_status", { updates });
     }
   }
 
-  /**
-   * Per-session REST verify of a PR's true state. Fires when a tracked
-   * session's PR is missing from the bulk GraphQL response. The bulk view
-   * can lie in several ways (rate-limit-truncated response, `first: N`
-   * pagination cap, GitHub index lag) — REST gives us a definitive answer
-   * for one PR at a time so we never promote to merged on absence alone.
-   *
-   * Behavior by outcome:
-   *   - No PR found: do nothing. We never had bulk-view confirmation that
-   *     this branch ever had a PR, and we won't fabricate one from REST
-   *     silence either.
-   *   - Open: if `lastKnown` is stuck on merged/closed (recovery from a
-   *     past false promotion), clear the cached state and broadcast a
-   *     removal so the UI drops the bogus PR card. Otherwise: leave state
-   *     alone and wait for the next GraphQL poll to pick the PR back up.
-   *   - Closed or merged: promote, persist, broadcast, and trigger the
-   *     archive callback for merged.
-   *
-   * Returns the resting outcome so the caller can decide whether to arm the
-   * `verifiedAbsent` single-probe debounce. Crucially, a `"suppressed"` result
-   * (the superseded re-armed PR, docs/202) must NOT arm the debounce, or a NEW
-   * PR that opens-and-merges between polls is never re-verified and the session
-   * never converges to its terminal state (see the callers).
-   */
+  /** Callers must not debounce a suppressed result: the new PR is still unknown. */
   private async verifyMissingPr(
     sessionId: string,
     owner: string,
@@ -1294,48 +714,21 @@ export class PrStatusPoller {
     const isMerged = pr.merged_at !== null;
     const prState = isMerged ? "merged" as const : pr.state === "closed" ? "closed" as const : "open" as const;
 
-    // docs/202 — superseded-PR suppression for a re-armed session. While a
-    // superseded (old merged) PR number is recorded, ignore a TERMINAL result
-    // carrying that exact number — it is the PR the rebased branch already moved
-    // past, and promoting it would clobber the re-armed card straight back to
-    // merged. A result with a *different* number (the new PR opened, or a
-    // genuinely different terminal PR) clears the suppression and is handled
-    // normally below.
     const superseded = this.tracker.supersededPrNumbers.get(sessionId);
     if (superseded !== undefined && pr.number !== superseded) {
       this.tracker.supersededPrNumbers.delete(sessionId);
     } else if (superseded !== undefined && prState !== "open") {
-      // Same-numbered terminal PR — the one we're suppressing. Treat as "no
-      // current PR": leave the session active with its `ready` card standing.
-      // Reported as `"suppressed"` so the caller does NOT arm `verifiedAbsent`:
-      // the session's NEW PR hasn't appeared yet, and the next poll must stay
-      // free to re-verify and catch it (even if it opens-and-merges between
-      // polls, never showing in the OPEN bulk view).
       return "suppressed";
     }
 
     if (prState === "open") {
       const prev = this.tracker.lastKnown.get(sessionId);
-      // A GraphQL-derived open snapshot is strictly richer than anything REST
-      // gives us here (real check rollup, mergeable, conversation, files), so
-      // never clobber it — the next GraphQL poll keeps it fresh.
+      // Retain the richer GraphQL snapshot when one exists.
       if (prev?.prState === "open") return "open";
 
-      // Either a brand-new PR that the bulk GraphQL view hasn't indexed yet
-      // (GitHub's eventual consistency right after `gh pr create` — the forced
-      // refresh that PR creation kicks off lands here BEFORE the PR shows up in
-      // the bulk query), or recovery from a past false merged/closed promotion.
-      // Surface the open PR immediately from the REST result so the card
-      // appears within ~1s instead of waiting up to a full slow poll (120s) for
-      // GraphQL to catch up. The next GraphQL poll enriches checks / mergeable /
-      // files / conversation and replaces this placeholder summary.
       this.tracker.mergedSessions.delete(sessionId);
       this.tracker.lastPrNodes.delete(sessionId);
 
-      // Suppress a premature "mergeable" reading (and the merge button) while CI
-      // is expected to register, mirroring the GraphQL path's grace override. We
-      // don't have the head SHA from REST, so grace falls back to its time-based
-      // window; the next GraphQL poll supplies the real SHA and reconciles.
       const forcePending = this.graceTracker.shouldForcePending({
         sessionId,
         repoKey: `${owner}/${repo}`,
@@ -1380,12 +773,6 @@ export class PrStatusPoller {
     return "terminal";
   }
 
-  /**
-   * docs/287 req 11 — the ONE terminal-promotion operation: the snapshot,
-   * `merged_at`, `mergedHeadSha`, reset eligibility, the merge watch and the
-   * issue lifecycle all happen here. Takes the FACTS rather than fetching them,
-   * because detection knows the branch and settlement knows the number.
-   */
   private promoteTerminal(args: {
     sessionId: string;
     owner: string;
@@ -1396,66 +783,27 @@ export class PrStatusPoller {
       state: "open" | "closed"; merged_at: string | null; merge_commit_sha: string | null;
       head_sha: string | null; additions: number; deletions: number;
     };
-    /** Re-run the once-per-merge effects even if the state already reads terminal. */
+    /** Replay effects after an interrupted settlement. */
     force?: boolean;
   }): void {
     const { sessionId, owner, repo, branch, pr, force } = args;
-    // Capture whether this session was already promoted to a terminal state
-    // before this verify, so the merge-driven side effects (archive,
-    // issue-lifecycle close, notify-on-merge) fire exactly once per real merge.
-    //
-    // `mergedSessions` is the in-memory fire-once edge, but `trackSession()`
-    // wipes it — and the orchestrator re-tracks a session on every viewer
-    // reconnect / session activation (see index.ts), then forces a refresh.
-    // Relying on `mergedSessions` alone therefore re-promotes an already-merged
-    // PR on each re-track and re-fires the terminal callbacks (re-archive,
-    // `session_list` SSE fan-out, a bare-cache git refetch) without bound — the
-    // production repeat observed at the slow-poll cadence ("Post-merge: marked
-    // <id> as merged" logged dozens of times for one session). The persisted
-    // last-known PR state survives both a re-track and a restart (loadPersisted
-    // seeds it), so we also treat a PR already recorded terminal as terminal.
-    // A merge first observed only after a mid-merge restart still fires once:
-    // its persisted state was "open" at the last pre-restart poll.
     const isMerged = pr.merged_at !== null;
     const prState = isMerged ? "merged" as const : pr.state === "closed" ? "closed" as const : "open" as const;
     const prevState = this.tracker.lastKnown.get(sessionId)?.prState;
-    // docs/266 — captured HERE, before `lastKnown` is overwritten with the
-    // terminal summary below (which hard-codes `autoMergeEnabled: false`).
-    // GitHub's own flag is the only record of a native arming ShipIt never
-    // stored, e.g. the merge button's pending-checks fallback.
+    // Capture native arming before the terminal snapshot overwrites it.
     const nativeArmedOnGitHub = this.tracker.lastKnown.get(sessionId)?.autoMergeEnabled === true;
-    // req 11 — without `force` this is NOT crash-reentrant: the snapshot
-    // persists first, `alreadyTerminal` is derived from it, and `merged_at` /
-    // `mergedHeadSha` are written later and only when `!alreadyTerminal`. A
-    // crash between the two suppresses them for ever. A `settling` claim is the
-    // evidence they did not run, so it re-enters rather than trust the snapshot.
+    // Persisted state prevents replay on re-track; force repairs interrupted effects.
     const alreadyTerminal = force
       ? false
       : this.tracker.mergedSessions.has(sessionId)
       || prevState === "merged"
       || prevState === "closed";
 
-    // docs/266 req 7 — attribute the merges nothing local performed: the GitHub
-    // web UI, a laptop, or native auto-merge GitHub executed on its own. Nothing
-    // in ShipIt runs those, so the record has to come from the observer. Silent
-    // when this process performed the merge itself (the merge routes and the
-    // managed loop each log their own line), so the two never contradict.
-    // `verifyMissingPr` is the only terminal-promotion site and `!alreadyTerminal`
-    // the fire-once edge, so this is once per real merge, not once per re-track.
-    //
-    // Emitted HERE, ahead of the persist below, and not down with the other
-    // merge side effects. `alreadyTerminal` is computed from the state that
-    // persist overwrites, so a crash between the two would restart into
-    // `prevState === "merged"` and suppress this line forever — the record lost
-    // for exactly the merge an incident review came looking for.
+    // Log before persistence can cause a restart to suppress this observation.
     if (isMerged && !alreadyTerminal) {
       logMergeObserved({ owner, repo, prNumber: pr.number, sessionId });
     }
 
-    // Terminal state — merged or closed-without-merge. Build a summary
-    // mirroring the previous catchUpProbe shape (placeholder checks /
-    // mergeable, since REST doesn't give us a rollup and the PR is now
-    // past CI either way).
     const summary: PrStatusSummary = {
       sessionId,
       prNumber: pr.number,
@@ -1475,50 +823,15 @@ export class PrStatusPoller {
 
     this.tracker.lastKnown.set(sessionId, summary);
     this.sessionManager.setPrStatus(sessionId, summary);
-    // Closed-without-merge is terminal like a merge: stamp `closed_at` so the
-    // session sinks out of the active sidebar into "Recently resolved". (Merge
-    // sets `merged_at` via the onMergeDetectedCb archive path below.) markClosed
-    // is a no-op if the PR already merged, so ordering vs. the merge path is safe.
-    //
-    // On the real transition, broadcast the updated `session_list` so viewers
-    // demote the session into "Recently resolved" live — mirroring the merge
-    // path's `session_list` broadcast in `onMergeDetectedCb`. The `pr_status`
-    // event below only updates the PR card; without this `session_list`, the
-    // session's `closedAt` (which drives the sidebar grouping) wouldn't reach
-    // the client until a full reload re-bootstraps the list. `markClosed`
-    // returns true only on the first stamp, so this fires once per close.
+    // pr_status updates the card; session_list updates the sidebar's closed state.
     if (prState === "closed" && this.sessionManager.markClosed(sessionId)) {
       this.sseBroadcast("session_list", { sessions: this.sessionManager.list() });
     }
     this.tracker.mergedSessions.add(sessionId);
-    // docs/146 — release the manager's per-session state when the PR moves
-    // to a terminal state (merged or closed-without-merge). Without this,
-    // the state is dormant-but-harmless (subsequent polls short-circuit
-    // before reaching the manager) but the map grows unbounded.
     this.autoConflictResolveManager?.delete(sessionId);
     this.autoFix.delete(sessionId);
     this.remediationArbiter.delete(sessionId);
-    // Auto-merge is armed per *task*, not per session (docs/175: "a sticky
-    // auto-merge is a footgun"). The PR it was armed for is now terminal, so
-    // this — not `untrackSession`, which nothing in production calls — is the
-    // release point. Leaving the state armed was actively wrong in both
-    // directions: `activatePendingAutoMergeForPr` reads a lingering `enabled`
-    // as "pre-armed" and would silently arm the session's NEXT PR (exactly the
-    // review-intended PR that docs/175 refuses to ship on a remembered
-    // toggle), while the docs/077 `completed` short-circuit — set when the
-    // managed REST merge succeeded and deliberately NOT cleared at the merge —
-    // rode along with it, so `handleManaged` returned early forever and the
-    // still-ON toggle never merged anything. Dropping the state fixes both.
-    // A re-arm (docs/202/216) therefore starts from OFF, and re-arming
-    // auto-merge for the next task is a fresh, conscious toggle.
-    //
-    // docs/266 — before dropping it, record what was armed. This is the only
-    // place a NATIVE auto-merge is ever attributable from ShipIt's side (the
-    // merge itself happens inside GitHub), and the ops review of the PR #2327
-    // incident had nothing to go on: neither merge path logged anything. The
-    // managed loop logs its own merge at the REST call.
-    // ShipIt's own state is not the only way a PR gets armed — see
-    // `nativeArmedOnGitHub` above.
+    // Record then clear arming: it must not carry into the session's next PR.
     const armedAtTerminal = this.autoMerge.get(sessionId);
     if (!alreadyTerminal && (armedAtTerminal?.enabled || nativeArmedOnGitHub)) {
       const mode = armedAtTerminal?.enabled && armedAtTerminal.managed
@@ -1531,11 +844,6 @@ export class PrStatusPoller {
     this.autoMerge.delete(sessionId);
     this.sseBroadcast("pr_status", { updates: [summary] });
 
-    // docs/196 — fire the notify-on-merge watch hook for BOTH terminal outcomes.
-    // Guarded by `!alreadyTerminal` so it fires once per terminal transition; the
-    // watch's own `delivered`/`closed-unmerged` state machine is the second
-    // fire-once guard (covers a restart that re-observes the same merge). The
-    // handler no-ops when this session carries no armed watch.
     if (!alreadyTerminal && this.onPrTerminalState) {
       this.onPrTerminalState({
         sessionId,
@@ -1551,24 +859,13 @@ export class PrStatusPoller {
     }
 
     if (isMerged && !alreadyTerminal) {
-      // docs/218 — record the merged PR's head-branch tip as the session's
-      // auto-reset safety anchor, BEFORE the merge side effects (archive,
-      // issue-lifecycle close, notify-on-merge) fire. We deliberately store the
-      // PR's `head.sha` rather than the session's current local HEAD: a turn
-      // that ran between the GitHub merge and this detection would have advanced
-      // local HEAD onto unmerged work, and anchoring on that would later let the
-      // pre-turn reset discard it. Fail closed when the SHA is absent (malformed
-      // REST response) — leaving `mergedHeadSha` NULL means the reset can't fire.
+      // Anchor reset to the merged PR head; local HEAD may contain later unmerged work.
       if (pr.head_sha) {
         this.sessionManager.setMergedHeadSha(sessionId, pr.head_sha);
       } else {
         console.warn(`[pr-poller] merged PR #${pr.number} for ${sessionId} had no head.sha — auto-reset anchor not recorded`);
       }
       if (this.onMergeDetectedCb) {
-        // docs/282 — still fire-and-forget for the poll loop, but the promise is
-        // now observable: this callback is what stamps `merged_at`, and the
-        // pre-turn recheck must not decide against a session that has been
-        // *found* merged but not yet *marked* merged. See `mergeHandling`.
         const handling = this.onMergeDetectedCb(sessionId)
           .catch((err: unknown) => {
             console.error(`[pr-poller] Post-merge archive error for ${sessionId}:`, err);
@@ -1578,10 +875,6 @@ export class PrStatusPoller {
           });
         this.mergeHandling.set(sessionId, handling);
       }
-      // docs/194 — drive the issue-lifecycle "→ completed" transition from the
-      // merged PR body. This is the parse site the body is in scope at (the
-      // sessionId-only `onMergeDetectedCb` cannot be). Best-effort and
-      // independent of the archive path above.
       if (this.onMergedPr) {
         this.onMergedPr({
           sessionId,
@@ -1597,14 +890,8 @@ export class PrStatusPoller {
 
   }
 
-  /**
-   * docs/287-agent-merge-per-repo req 11 — promote a pull request ShipIt just
-   * merged, addressed by NUMBER.
-   *
-   * Not `forceVerifySessionPrState()`, which resolves the session's CURRENT
-   * branch and settles a different pull request after a re-arm. `guard` is asked
-   * AFTER the read and before the first write: the caller's preconditions were
-   * checked across an awaited request, and a turn can start inside it.
+  /** A re-armed branch can name another PR; settlement must use the original number.
+   * Recheck the caller's guard after the read, before writing session state.
    */
   async promoteMergedPrByNumber(args: {
     sessionId: string;
@@ -1615,8 +902,6 @@ export class PrStatusPoller {
   }): Promise<{ pr: TerminalPrFacts; promoted: boolean } | null> {
     const pr = await this.githubAuth.findPullRequestByNumber(args.owner, args.repo, args.prNumber);
     if (!pr) return null;
-    // Terminal state only: forcing an OPEN pull request through here drops its
-    // remediation and auto-merge state, after which polling skips it.
     if (pr.merged_at === null && pr.state !== "closed") return { pr, promoted: false };
     if (args.guard && !args.guard(pr)) return { pr, promoted: false };
     this.promoteTerminal({
@@ -1630,11 +915,6 @@ export class PrStatusPoller {
     return { pr, promoted: true };
   }
 
-  /**
-   * Read one pull request by number, promoting nothing — for the settlement path
-   * that asks about a pull request this session no longer owns, where the answer
-   * belongs in the transcript but no session state may move on it.
-   */
   async readPrByNumber(owner: string, repo: string, prNumber: number): Promise<TerminalPrFacts | null> {
     return this.githubAuth.findPullRequestByNumber(owner, repo, prNumber);
   }

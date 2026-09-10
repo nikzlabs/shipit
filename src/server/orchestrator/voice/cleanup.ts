@@ -1,27 +1,10 @@
-/**
- * Cleanup-provider selection + the cleanup runner with sanity checks (docs/144).
- *
- * `pickCleanupProvider()` is the single place provider selection lives:
- *   1. Claude Code OAuth bearer (the common case for ShipIt users).
- *   2. OpenAI voice key (fallback).
- * It gates on a non-null token from `getAccessToken()` rather than the generic
- * `checkCredentials()` boolean, which is also true for API-key-only setups
- * that have no usable OAuth bearer for direct Anthropic calls.
- *
- * `cleanTranscript()` runs the chosen adapter under a 3s timeout and a small
- * sanity check. On ANY failure it returns the raw transcript plus an
- * `errorCode` — the user is never blocked on a flaky cleanup call.
- */
-
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import { createClaudeCleanupProvider } from "./providers/claude-cleanup.js";
 import { createOpenAiCleanupProvider } from "./providers/openai-cleanup.js";
 import type { CleanupProvider } from "./providers/types.js";
 
 export const CLEANUP_TIMEOUT_MS = 3000;
-/** Cleaned output longer than this ratio of the input is treated as garbage. */
 const MAX_LENGTH_RATIO = 2;
-/** Telltale preambles a misbehaving model emits despite the "output ONLY" rule. */
 const PREAMBLE_PATTERNS = [
   /^here(?:'s| is)\b/i,
   /^the cleaned\b/i,
@@ -39,25 +22,11 @@ export type CleanupErrorCode =
 
 export interface CleanupResult {
   text: string;
-  /** Set when cleanup ran successfully (so the client can show which path ran). */
   cleanupProvider?: CleanupProvider["id"];
-  /** Set when cleanup fell through to the raw transcript. */
   cleanupErrorCode?: CleanupErrorCode;
 }
 
-/**
- * Resolve the cleanup provider to use, in order of preference. Returns null
- * when neither a Claude OAuth bearer nor an OpenAI key is available.
- *
- * `credentialDir` scopes the OAuth read to a provider account (docs/150-multiple-provider-subscriptions req 19).
- * Unscoped, `getAccessToken()` reads the singleton config root — which used to
- * be an alias into the migrated default account, and since req 19 retired those
- * aliases holds nothing on a migrated install. Passing nothing here would drop
- * cleanup to the OpenAI fallback (or to no provider at all) for every user with
- * a connected Claude subscription. A reserved route has no account root, so
- * `undefined` is still correct there: those routes legitimately use the
- * singleton path / `ANTHROPIC_AUTH_TOKEN`.
- */
+// Pass the account root: migrated OAuth accounts have no singleton-root alias.
 export async function pickCleanupProvider(
   authManager: AuthManager,
   openaiKey: string | null,
@@ -70,7 +39,7 @@ export async function pickCleanupProvider(
       return createClaudeCleanupProvider(token.token, fetchImpl);
     }
   } catch {
-    // Fall through to OpenAI — a broken Claude path must not block cleanup.
+    // Fall back to OpenAI.
   }
   if (openaiKey) {
     return createOpenAiCleanupProvider(openaiKey, fetchImpl);
@@ -85,11 +54,6 @@ function isSane(raw: string, cleaned: string): CleanupErrorCode | null {
   return null;
 }
 
-/**
- * Run cleanup with timeout + sanity check, falling through to `raw` on any
- * failure. `provider` is null when none is available (caller passes the
- * result of `pickCleanupProvider`).
- */
 export async function cleanTranscript(
   raw: string,
   provider: CleanupProvider | null,

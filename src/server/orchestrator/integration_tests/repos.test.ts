@@ -1,6 +1,3 @@
-/**
- * Integration tests for repo management endpoints and RepoStore.
- */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -30,11 +27,7 @@ beforeEach(async () => {
   sessionManager = new SessionManager(dbManager);
   repoStore = new RepoStore(dbManager);
 
-  // The claim-session slow path re-clones a missing bare cache from the remote
-  // (`ensureBareCache`). Against these nonexistent repos that means a real
-  // round-trip to github.com plus, without GIT_TERMINAL_PROMPT=0, a blocking
-  // credential prompt. Pinning git to local transports fails it in ~5 ms so the
-  // route returns its 500 immediately instead of at the mercy of the network.
+  // Fail remote clones locally instead of waiting for network or credential prompts.
   restoreGitTransports = pinGitToLocalTransports();
 
   const credentialStore = createTestCredentialStore(tmpDir);
@@ -42,9 +35,6 @@ beforeEach(async () => {
   githubStub = new StubGitHubAuthManager();
 
   app = await buildApp({
-    // docs/288 — the SAME database these managers were built from, so the
-    // agent-merge claim store the orchestrator constructs internally is the one
-    // these tests write requests into.
     databaseManager: dbManager,
     sessionManager,
     repoStore,
@@ -101,7 +91,6 @@ describe("POST /api/repos with url", () => {
       status: "cloning",
     });
 
-    // Verify it's in the store
     expect(repoStore.has("https://github.com/test/repo.git")).toBe(true);
   });
 
@@ -126,25 +115,15 @@ describe("POST /api/repos with url", () => {
   });
 
   it("a failed clone leaves no cache behind, so a retry re-clones (docs/131)", async () => {
-    // Regression: `git clone --bare` leaves its target directory behind when it
-    // fails, and the `stat(cacheDir)` existence check is the ONLY guard on the
-    // clone. So the SECOND add skipped cloning entirely, called setReady, and
-    // published a repo whose bare cache was empty — every session claimed from
-    // it then cloned from nothing. Found smoke-testing the dogfood seed, which
-    // re-adds a non-ready fixture repo on every boot and so hits this reliably.
     const url = "https://github.com/test/never-clonable.git";
     const cacheRoot = path.join(tmpDir, "repo-cache");
 
     await app.inject({ method: "POST", url: "/api/repos", payload: { url } });
-    // The clone is backgrounded; git is pinned to local transports so it fails
-    // in milliseconds rather than at the mercy of the network.
     await vi.waitFor(() => {
       expect(fs.existsSync(cacheRoot) ? fs.readdirSync(cacheRoot) : []).toEqual([]);
     });
     expect(repoStore.get(url)?.status).toBe("cloning");
 
-    // The retry must actually attempt a clone again — and fail again — rather
-    // than inherit a bogus `ready`.
     await app.inject({ method: "POST", url: "/api/repos", payload: { url } });
     await vi.waitFor(() => {
       expect(repoStore.get(url)?.status).toBe("cloning");
@@ -188,7 +167,6 @@ describe("POST /api/repos/trust (docs/178)", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/repos/trust",
-      // suffix-less form — same canonical key as the stored `.git` form
       payload: { url: "https://github.com/owner/repo" },
     });
     expect(res.statusCode).toBe(200);
@@ -196,31 +174,19 @@ describe("POST /api/repos/trust (docs/178)", () => {
   });
 
   it("re-runs deferred setup for a still-WARM open session of the remote", async () => {
-    // Regression: clicking Trust right after adding a repo — before the first
-    // turn graduates the session — left the preview empty forever. The trust
-    // endpoint enumerated `sessionManager.list()`, which filters out warm
-    // sessions (`WHERE warm = 0`), so the just-claimed (still warm=1) session
-    // the user was looking at was skipped and its deferred install/compose
-    // never re-ran. It must enumerate the runner registry instead, which
-    // includes warm sessions that have a live runner. (docs/178)
     const url = "https://github.com/owner/repo.git";
     repoStore.add(url);
     repoStore.setReady(url);
 
-    // A just-claimed warm session, with a valid clone dir (tmpDir exists) and
-    // registered as the repo's warm session — so the startup zombie-warm sweep
-    // (`startup-tasks.ts`) keeps it instead of deleting it as a stale orphan.
+    // Register the warm session so the startup orphan sweep keeps it.
     const warmId = "warm-session-1";
     sessionManager.track(warmId, undefined, tmpDir);
     sessionManager.setRemoteUrl(warmId, url);
-    sessionManager.setWarm(warmId, true); // ungraduated → excluded from list()
+    sessionManager.setWarm(warmId, true);
     repoStore.setWarmSessionId(url, warmId);
     expect(sessionManager.list().some((s) => s.id === warmId)).toBe(false);
 
     let reran = 0;
-    // Inject a minimal stub runner so trust's loop has something to nudge. A
-    // warm session keeps its runner in the registry even though `list()` hides
-    // it — that is exactly the case the fix must cover.
     (app.runnerRegistry as unknown as { runners: Map<string, unknown> }).runners.set(
       warmId,
       { disposed: false, rerunServiceSetup: () => { reran += 1; }, dispose: () => {} },
@@ -270,7 +236,6 @@ describe("PATCH /api/repos/:url (hide/show, docs/222)", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().repo).toMatchObject({ url, hidden: true });
 
-    // Repo row and session both survive — only the visibility flag changed.
     expect(repoStore.has(url)).toBe(true);
     expect(repoStore.get(url)?.hidden).toBe(true);
     expect(sessionManager.get("sess-a")?.userArchived).toBeFalsy();
@@ -325,12 +290,6 @@ describe("PATCH /api/repos/:url (hide/show, docs/222)", () => {
   });
 });
 
-/**
- * docs/287-agent-merge-per-repo — the grant rides the same PATCH route, which is
- * how it inherits the browser-only boundary that keeps it out of reach of the
- * agent it governs (req 3). These pin the route's answers; the store's own tests
- * pin the identity matching.
- */
 describe("PATCH /api/repos/:url (agent-merge grant, docs/287)", () => {
   const url = "https://github.com/owner/repo.git";
 
@@ -356,16 +315,10 @@ describe("PATCH /api/repos/:url (agent-merge grant, docs/287)", () => {
   });
 
   it("cancels this repository's merge requests when the grant is withdrawn (docs/288 req 4)", async () => {
-    // The whole of requirement 4. A request survives a restart, so leaving one
-    // armed after the permission is off means ShipIt merges under a permission
-    // it reports as withdrawn — exactly what GitHub-native auto-merge could not
-    // avoid, and the reason this is a ShipIt request at all.
     repoStore.add(url);
     const claims = new AgentMergeClaimStore(dbManager);
     sessionManager.track("s1", "A session");
     sessionManager.track("s2", "Another session");
-    // A live runner for s1 — without one there is no transport to emit through,
-    // and the assertion below would pass for the wrong reason.
     const registry = (app as unknown as {
       runnerRegistry: { getOrCreate(id: string, dir: string, agent: string): { emitMessage(m: unknown): void } };
     }).runnerRegistry;
@@ -377,7 +330,6 @@ describe("PATCH /api/repos/:url (agent-merge grant, docs/287)", () => {
     claims.arm({
       sessionId: "s1", repoId: "github:owner/repo", prNumber: 7, expectedSha: "sha", method: "merge",
     });
-    // A different repository's request must survive: the grant is per repository.
     claims.arm({
       sessionId: "s2", repoId: "github:owner/other", prNumber: 3, expectedSha: "sha2", method: "merge",
     });
@@ -396,14 +348,10 @@ describe("PATCH /api/repos/:url (agent-merge grant, docs/287)", () => {
     expect(off.statusCode).toBe(200);
     expect(claims.get("s1")).toBeNull();
     expect(claims.get("s2")).not.toBeNull();
-    // And the session is told, or its agent waits for a merge that is not coming.
     const said = new ChatHistoryManager(dbManager).load("s1")
       .map((m) => (m as { text?: string }).text ?? "").join(" ");
     expect(said).toContain("agent merging was turned off");
 
-    // …and a user who has the session OPEN sees it now, not on the next reload.
-    // Persisting alone leaves the request vanishing from a live transcript with
-    // no explanation at all.
     const emitted = broadcastsTo("s1");
     expect(emitted.some((m) => m.type === "system_notice"
       && ((m as { message?: string }).message ?? "").includes("agent merging was turned off")))
@@ -411,9 +359,6 @@ describe("PATCH /api/repos/:url (agent-merge grant, docs/287)", () => {
   });
 
   it("leaves a merge already under way alone", async () => {
-    // A row past `pending` is being settled or resolved from its tuple and can
-    // no longer merge anything, so there is nothing to cancel — and deleting it
-    // would destroy the only evidence that a merge happened.
     repoStore.add(url);
     const claims = new AgentMergeClaimStore(dbManager);
     sessionManager.track("s3", "A session");
@@ -449,16 +394,10 @@ describe("PATCH /api/repos/:url (agent-merge grant, docs/287)", () => {
       payload: { allowAgentMerge: true },
     });
     expect(res.statusCode).toBe(400);
-    // The url arrives from the caller and can carry `user:password@`; quoting
-    // it back would put a credential in the response body and in every log that
-    // records it (cross-agent review finding).
     expect(res.json().error).not.toContain("gitlab.com");
   });
 
   it("does not mutate any other field when the grant is refused", async () => {
-    // The route's stated guarantee is that a rejected body leaves the row
-    // untouched. Writing `hidden` before validating the grant's identity broke
-    // it: this hid the repository and THEN answered 400.
     const gitlab = "https://gitlab.com/owner/repo.git";
     repoStore.add(gitlab);
     const res = await app.inject({
@@ -471,8 +410,6 @@ describe("PATCH /api/repos/:url (agent-merge grant, docs/287)", () => {
   });
 
   it("404s for a parseable repository ShipIt does not hold", async () => {
-    // Not a 200: answering success for a write that matched no row left the
-    // repository starting with the grant OFF once it was finally added.
     const never = "https://github.com/never/added.git";
     const res = await app.inject({
       method: "PATCH",
@@ -520,11 +457,6 @@ describe("DELETE /api/repos/:url", () => {
   });
 
   it("removes a repo whose URL exceeds Fastify's default 100-char maxParamLength", async () => {
-    // A remote URL longer than 100 chars (long org/repo names, or a
-    // credential-bearing URL) overflows Fastify's default maxParamLength of 100.
-    // Before raising the ceiling the request never matched the route — it fell
-    // through to a 404 here, and to the SPA static handler in prod — so the repo
-    // was silently undeletable from the UI. See `maxParamLength` in index.ts.
     const longUrl =
       "https://github.com/a-very-long-organization-name-here/an-equally-long-repository-name-that-pushes-us-well-past-one-hundred-characters.git";
     expect(longUrl.length).toBeGreaterThan(100);
@@ -543,7 +475,6 @@ describe("DELETE /api/repos/:url", () => {
     const repoUrl = "https://github.com/owner/repo.git";
     repoStore.add(repoUrl);
 
-    // Two real sessions backed by this repo, plus an unrelated one.
     sessionManager.track("sess-a", "A");
     sessionManager.setRemoteUrl("sess-a", repoUrl);
     sessionManager.track("sess-b", "B");
@@ -559,12 +490,9 @@ describe("DELETE /api/repos/:url", () => {
     });
     expect(res.statusCode).toBe(200);
 
-    // The repo's sessions are gone from the sidebar list…
     expect(sessionManager.list().map((s) => s.id)).toEqual(["sess-other"]);
-    // …but still present in the DB, flagged archived (history preserved).
     expect(sessionManager.get("sess-a")?.userArchived).toBe(true);
     expect(sessionManager.get("sess-b")?.userArchived).toBe(true);
-    // The unrelated session is untouched.
     expect(sessionManager.get("sess-other")?.userArchived).toBeUndefined();
   });
 });
@@ -614,7 +542,6 @@ describe("POST /api/repos/:url/claim-session", () => {
 
   it("returns 400 for repo still cloning", async () => {
     repoStore.add("https://github.com/owner/repo.git");
-    // status is "cloning" by default after add()
 
     const encodedUrl = encodeURIComponent("https://github.com/owner/repo.git");
     const res = await app.inject({
@@ -630,7 +557,6 @@ describe("POST /api/repos/:url/claim-session", () => {
     repoStore.add(repoUrl);
     repoStore.setReady(repoUrl);
 
-    // Create the cached repo dir with a valid git repo so the claim path works
     const repoDir = path.join(tmpDir, "repos");
     fs.mkdirSync(repoDir, { recursive: true });
 
@@ -640,15 +566,11 @@ describe("POST /api/repos/:url/claim-session", () => {
       url: `/api/repos/${encodedUrl}/claim-session`,
     });
 
-    // This will fail if the shared repo dir doesn't exist — but it exercises
-    // the error path cleanly (500 with descriptive message)
     if (res.statusCode === 200) {
       const body = res.json();
       expect(body.sessionId).toBeDefined();
       expect(body.sessionDir).toBeDefined();
     } else {
-      // Expected when cached repo dir hash doesn't match — the fallback tries
-      // to clone from a nonexistent repo dir
       expect(res.statusCode).toBe(500);
     }
   });

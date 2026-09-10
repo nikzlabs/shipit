@@ -1,34 +1,10 @@
-/**
- * DiffMediaView — side-by-side "before / after" renderers for the diff panel's
- * non-text files:
- *
- *   - `ImageDiffView`   raster images (png/jpg/gif/…). The server embeds each
- *                       side's bytes as a base64 `data:` URI on the FileDiff, so
- *                       we render the two `<img>`s directly. A checkerboard
- *                       backdrop reveals transparency.
- *   - `SvgDiffView`     SVGs (which are text, so the panel still offers a Monaco
- *                       text diff) rendered through the same sandboxed
- *                       `RenderedFrame` used by the file viewer (docs/219).
- *
- * Both lay out old-on-the-left / new-on-the-right with red/green tinted labels
- * matching the diff gutter, and degrade to a placeholder for a side with nothing
- * to show — see {@link missingPaneLabel}, which distinguishes "this version
- * doesn't exist" from "we couldn't load it" (the Git LFS case).
- *
- * Git LFS images reach here the same way any other image does: the server
- * follows the pointer stub and embeds the resolved bytes, so this component
- * never has to know a file is LFS-tracked — except to explain an empty pane.
- */
-
 import { RenderedFrame } from "./FileContentView/RenderedFrame.js";
 import type { FileDiff } from "../../server/shared/types.js";
 
-/** True for a `.svg` path — the only text file we offer a rendered diff for. */
 export function isSvgPath(filePath: string): boolean {
   return filePath.split(".").pop()?.toLowerCase() === "svg";
 }
 
-/** Checkerboard so transparent PNGs/SVGs are visible against the dark panel. */
 const CHECKERBOARD =
   "repeating-conic-gradient(#808080 0% 25%, #a0a0a0 0% 50%) 50% / 16px 16px";
 
@@ -52,7 +28,6 @@ function EmptyPane({ label }: { label: string }) {
   );
 }
 
-/** Two-column scaffold shared by the image and SVG views. */
 function MediaSplit({
   left,
   right,
@@ -74,13 +49,6 @@ function MediaSplit({
   );
 }
 
-/**
- * Why an empty pane is empty. A side is legitimately absent only when the file
- * was added (no before) or deleted (no after); any *other* empty side means we
- * had a version and couldn't render it — an oversized blob, or LFS content the
- * server couldn't fetch. Saying "(added — no previous version)" there would be a
- * confident lie about the file's history, which is worse than admitting the miss.
- */
 export function missingPaneLabel(file: FileDiff, side: "old" | "new"): string {
   if (side === "old" && file.status === "added") return "(added — no previous version)";
   if (side === "new" && file.status === "deleted") return "(deleted)";

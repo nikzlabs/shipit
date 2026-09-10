@@ -1,11 +1,3 @@
-/**
- * planning#292 — the GLOBAL system prompt lives under the ORCHESTRATOR's workspace
- * root, not a session clone. Four call sites used to compose that path by hand
- * with a variable called `workspaceDir`, which is also the name of a session's
- * clone everywhere else in the codebase; these tests pin the contract now that
- * one helper owns it.
- */
-
 import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -33,8 +25,6 @@ describe("global system prompt (app-scope)", () => {
     expect(globalSystemPromptPath(appRoot)).toBe(
       path.join(appRoot, ".shipit", "system-prompt.md"),
     );
-    // The orchestrator root holds every session's dir at `sessions/<id>/workspace`.
-    // The global prompt sits above all of them — no session id in the path.
     expect(globalSystemPromptPath(appRoot)).not.toContain(`${path.sep}sessions${path.sep}`);
   });
 
@@ -60,10 +50,8 @@ describe("global system prompt (app-scope)", () => {
 
     await writeGlobalSystemPrompt(appRoot, "   \n  ");
     expect(fs.existsSync(globalSystemPromptPath(appRoot))).toBe(false);
-    // Deleting an already-absent file is not an error.
     await expect(writeGlobalSystemPrompt(appRoot, "")).resolves.toBeUndefined();
 
-    // A file that exists but holds only whitespace reads as "no prompt".
     fs.mkdirSync(path.dirname(globalSystemPromptPath(appRoot)), { recursive: true });
     fs.writeFileSync(globalSystemPromptPath(appRoot), "\n \n");
     expect(await readGlobalSystemPrompt(appRoot)).toBeUndefined();

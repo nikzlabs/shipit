@@ -1,8 +1,3 @@
-/**
- * docs/262 reqs 17, 18, 26 — the per-import primitives: where the shared state
- * directory lives, what survives a refresh, and what "validated settings" means.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -41,10 +36,6 @@ afterEach(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
-
 function makeExport(over: Partial<PluginExport> = {}): PluginExport {
   return {
     name: "requirements",
@@ -68,7 +59,6 @@ function makeUse(over: Partial<PluginUse> = {}): PluginUse {
   };
 }
 
-/** This "operation's" live generations — what production resolves once per pass. */
 function liveFor(plugins: PluginReposConfig): ReturnType<typeof resolveLiveGenerations> {
   return resolveLiveGenerations(stateDir, plugins.repos);
 }
@@ -77,22 +67,14 @@ function readSettings(alias: string): unknown {
   return JSON.parse(fs.readFileSync(pluginSettingsPath(sessionDir, alias), "utf-8"));
 }
 
-// ---------------------------------------------------------------------------
-
 describe("layout", () => {
   it("survives the reclaim archive and disk eviction actually run (req 18)", async () => {
-    // Not a comparison against REGENERABLE_SESSION_SUBDIRS: the constant is a
-    // declaration, and this has to pin the EFFECT. `reclaimRegenerableSessionDirs`
-    // is what archive (`services/session.ts`), the startup janitor and the
-    // disk-tier ladder all call.
     fs.mkdirSync(pluginStateDir(sessionDir, "reqs"), { recursive: true });
     fs.writeFileSync(path.join(pluginStateDir(sessionDir, "reqs"), "bumps"), "111");
     fs.mkdirSync(path.join(stateDir, "plugins", "tools"), { recursive: true });
 
     await reclaimRegenerableSessionDirs(workspaceDir);
 
-    // The checkout and ShipIt's regenerable state are gone; the plugin's shared
-    // state is not — only a session reset or delete may take that.
     expect(fs.existsSync(workspaceDir)).toBe(false);
     expect(fs.existsSync(stateDir)).toBe(false);
     expect(fs.readFileSync(path.join(pluginStateDir(sessionDir, "reqs"), "bumps"), "utf-8")).toBe("111");
@@ -164,14 +146,10 @@ describe("resolvePluginSettings", () => {
     const { values, errors } = resolvePluginSettings(declared, use);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain("`depth`");
-    // and the bad value is not smuggled through under the default's name
     expect("depth" in values).toBe(false);
   });
 
   it("rejects a number JSON cannot carry, on either side", () => {
-    // YAML has `.nan`, `.inf` and overflowing literals; JSON has none of them,
-    // and `JSON.stringify` writes all three as `null` — so without this the
-    // plugin would receive neither its declared value nor a number.
     const use = makeUse({ overrides: { services: {}, commands: {}, settings: { depth: Infinity } } });
     expect(resolvePluginSettings(declared, use).errors[0]).toContain("`depth`");
 
@@ -185,7 +163,6 @@ describe("resolvePluginSettings", () => {
     const proto = makeExport({ settings: { constructor: { default: "x" } } });
     const use = makeUse({ overrides: { services: {}, commands: {}, settings: { toString: "y" } } });
     const { values, errors } = resolvePluginSettings(proto, use);
-    // `toString` is not declared → an error, not an inherited-function hit.
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain("`toString`");
     expect(JSON.parse(JSON.stringify(values))).toEqual({ constructor: "x" });
@@ -202,7 +179,6 @@ describe("resolvePluginSettings", () => {
 
 describe("preparePluginState", () => {
   const exported = makeExport({ settings: { greeting: { default: "hello" } } });
-  /** Every import in this block comes from one declared repo, `game-tools`. */
   const resolverFor = (e: PluginExport | null): PluginImportResolver => ({
     repoNameFor: () => "game-tools",
     exportFor: () => e,
@@ -230,8 +206,6 @@ describe("preparePluginState", () => {
     const marker = path.join(pluginStateDir(sessionDir, "reqs"), "bumps");
     fs.writeFileSync(marker, "111");
 
-    // A refresh brings a new manifest with a new default — the settings file
-    // follows it, the state does not.
     preparePluginState({
       sessionDir,
       uses: [makeUse()],
@@ -247,7 +221,6 @@ describe("preparePluginState", () => {
     fs.writeFileSync(marker, "1");
 
     preparePluginState({ sessionDir, uses: [], resolver });
-    // Undeclaring an import is neither a session reset nor a delete (req 18).
     expect(fs.readFileSync(marker, "utf-8")).toBe("1");
     expect(fs.existsSync(pluginSettingsPath(sessionDir, "reqs"))).toBe(false);
   });
@@ -258,7 +231,6 @@ describe("preparePluginState", () => {
     expect(entries[0].settingsPath).toBeNull();
     expect(entries[0].issues).toHaveLength(1);
     expect(fs.existsSync(pluginSettingsPath(sessionDir, "reqs"))).toBe(false);
-    // The state directory still exists — it is not the settings' hostage.
     expect(fs.existsSync(pluginStateDir(sessionDir, "reqs"))).toBe(true);
   });
 
@@ -266,7 +238,6 @@ describe("preparePluginState", () => {
     preparePluginState({ sessionDir, uses: [makeUse()], resolver });
     expect(fs.existsSync(pluginSettingsPath(sessionDir, "reqs"))).toBe(true);
 
-    // The declaration changed to something the manifest cannot satisfy.
     const use = makeUse({ overrides: { services: {}, commands: {}, settings: { nope: "x" } } });
     preparePluginState({ sessionDir, uses: [use], resolver });
     expect(fs.existsSync(pluginSettingsPath(sessionDir, "reqs"))).toBe(false);
@@ -276,10 +247,6 @@ describe("preparePluginState", () => {
     preparePluginState({ sessionDir, uses: [makeUse()], resolver });
     expect(readSettings("reqs")).toEqual({ greeting: "hello" });
 
-    // The project changed the value and the replacement cannot be written
-    // (disk full, I/O error). Leaving the old file readable is how a plugin
-    // keeps writing durable output to the directory the project moved away
-    // from — so the old file goes, and the card hears about it.
     const rename = vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
       throw new Error("ENOSPC: no space left on device");
     });
@@ -293,7 +260,6 @@ describe("preparePluginState", () => {
     expect(entries[0].failure).toContain("could not be written");
     expect(entries[0].settingsPath).toBeNull();
     expect(fs.existsSync(pluginSettingsPath(sessionDir, "reqs"))).toBe(false);
-    // …and no half-written temporary is left addressable either.
     const files = fs.readdirSync(path.dirname(pluginSettingsPath(sessionDir, "reqs")));
     expect(files.filter((f) => f.includes(".tmp-"))).toEqual([]);
   });
@@ -309,8 +275,6 @@ describe("preparePluginState", () => {
 
   it("leaves an existing settings file alone when no manifest is available", () => {
     preparePluginState({ sessionDir, uses: [makeUse()], resolver });
-    // Nothing is live yet (never fetched, or mid-restore): that is not evidence
-    // the settings already written are wrong.
     preparePluginState({ sessionDir, uses: [makeUse()], resolver: resolverFor(null) });
     expect(readSettings("reqs")).toEqual({ greeting: "hello" });
     expect(fs.existsSync(pluginStateDir(sessionDir, "reqs"))).toBe(true);
@@ -328,9 +292,6 @@ describe("preparePluginState", () => {
   });
 
   it("publishes the settings file by rename, never by writing it in place", () => {
-    // The distinction is what a concurrently-reading plugin service sees: an
-    // in-place rewrite exposes a truncated JSON document, which is a parse
-    // error rather than an old value.
     preparePluginState({ sessionDir, uses: [makeUse()], resolver });
     const rename = vi.spyOn(fs, "renameSync");
     preparePluginState({
@@ -355,9 +316,6 @@ describe("preparePluginState", () => {
   });
 
   it("does not replace the settings file when nothing changed", () => {
-    // Every round would otherwise hand it a new inode, which a Docker FILE bind
-    // mount does not follow — a long-lived service would keep reading a file
-    // nothing writes to any more.
     preparePluginState({ sessionDir, uses: [makeUse()], resolver });
     const before = fs.statSync(pluginSettingsPath(sessionDir, "reqs")).ino;
 
@@ -385,13 +343,6 @@ describe("createPluginImportResolver", () => {
     };
   }
 
-  /**
-   * Publish a generation the way `plugin-generations.ts` does — manifest AND
-   * record. The record is what carries the SOURCE, and every reader through the
-   * `active` symlink checks it: the generation is filed under the declaration's
-   * name, which is re-pointable, so a manifest read without it can answer with
-   * the previous repository's exports.
-   */
   function publishGeneration(repoName: string, yaml: string, source = "acme/tools"): void {
     const gen = path.join(stateDir, "plugins", repoName, "generations", "abc123");
     fs.mkdirSync(gen, { recursive: true });
@@ -421,18 +372,12 @@ describe("createPluginImportResolver", () => {
   });
 
   it("resolves the checkout through the DECLARATION's spelling, not the use entry's", () => {
-    // The checkout directory carries `Game-Tools`; `from:` matches
-    // case-insensitively, and a case-sensitive filesystem would otherwise find
-    // nothing (the defect `plugin-runtime.ts` had to fix).
     publishGeneration("Game-Tools", "exports:\n  plugins:\n    requirements: {}\n");
     const { exportFor, repoNameFor } = createPluginImportResolver(config(), [], liveFor(config()));
     expect(exportFor(makeUse({ from: "GAME-TOOLS" }))?.name).toBe("requirements");
     expect(repoNameFor(makeUse({ from: "GAME-TOOLS" }))).toBe("Game-Tools");
   });
 
-  // A declaration re-pointed at another repository keeps its name, and the
-  // checkout is filed under that name — so without the source check this would
-  // validate the consumer's settings against the PREVIOUS repository's manifest.
   it("ignores a live generation left by a repository the declaration no longer names", () => {
     publishGeneration(
       "Game-Tools",
@@ -471,7 +416,6 @@ describe("pluginSettingsIssuesByRepo", () => {
       ],
     };
     const issues = pluginSettingsIssuesByRepo(plugins, [makeExport({ name: "probe" })], liveFor(plugins));
-    // Keyed by the declaration's own spelling — that is the card's identity.
     expect([...issues.keys()]).toEqual(["Here"]);
     expect(issues.get("Here")![0]).toContain("`nope`");
   });
@@ -486,18 +430,11 @@ describe("pluginSettingsIssuesByRepo", () => {
   });
 });
 
-/**
- * The one translation both plugin container surfaces take. Its whole job is that
- * a session path never reaches Docker as a bind source in production, where the
- * daemon cannot see it — so the interesting cases are the ones with no answer,
- * which must be `null` and never a plausible-looking string.
- */
 describe("volumeSubpathFor", () => {
   it("names a session path relative to the volume root, in POSIX form", () => {
     expect(volumeSubpathFor("/workspace", "/workspace/sessions/abc/workspace")).toBe("sessions/abc/workspace");
     expect(volumeSubpathFor("/workspace", "/workspace/sessions/abc/plugin-data/reqs/settings.json"))
       .toBe("sessions/abc/plugin-data/reqs/settings.json");
-    // A trailing slash on the root is the same root, not a different one.
     expect(volumeSubpathFor("/workspace/", "/workspace/sessions/abc")).toBe("sessions/abc");
   });
 

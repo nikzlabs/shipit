@@ -1,23 +1,3 @@
-/**
- * Integration test for issue-**write** idempotency (planning#114).
- *
- * A crashed turn (exit 137 / OOM) that is retried — or a resumed agent CLI
- * session — re-drives the tail `shipit issue …` shim verbatim: it re-executes
- * as a fresh subprocess and POSTs an identical write to the orchestrator. The
- * production symptom was ~12 duplicate comments on one issue from a single
- * retry loop. `runner.recordedCards` (which dedups the read card) is reset at
- * every turn start, so it can't span the resume boundary; the write relay must
- * dedup on the write's *content* within a window.
- *
- * This drives the real orchestrator (`buildApp()`) with a live WS viewer (which
- * is what puts a runner in the registry) and a faked tracker REST layer that
- * COUNTS its write calls, asserting:
- *   - a replayed identical comment performs the tracker write exactly once and
- *     emits exactly one provenance card — the replay returns the original card's
- *     id (so the shim still sees `ok: true`) without a second write;
- *   - a genuinely distinct comment still gets its own write + its own card.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -70,7 +50,6 @@ describe("Integration: issue write idempotency (planning#114)", () => {
     commentPatchCount = 0;
 
     const trackerFetch = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
-      // POST a comment → record the call and return the created comment.
       if (/\/issues\/\d+\/comments$/.test(url) && init?.method === "POST") {
         commentPostCount += 1;
         const body = init.body ? (JSON.parse(init.body) as { body?: string }).body : "";
@@ -83,9 +62,7 @@ describe("Integration: issue write idempotency (planning#114)", () => {
           201,
         );
       }
-      // The identity ShipIt writes as — the authorship guard's other half.
       if (url.endsWith("/user")) return jsonResponse({ login: "octocat" });
-      // A comment by id: read (guards + prior body) or PATCH (the rewrite).
       const commentMatch = /\/issues\/comments\/(\d+)$/.exec(url);
       if (commentMatch) {
         if (init?.method === "PATCH") {
@@ -154,7 +131,7 @@ describe("Integration: issue write idempotency (planning#114)", () => {
 
   it("a replayed identical comment writes the tracker once and emits one card", async () => {
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const post = () =>
       app.inject({
@@ -163,23 +140,18 @@ describe("Integration: issue write idempotency (planning#114)", () => {
         payload: { tracker: "github", id: "42", body: "looks good" },
       });
 
-    // First write — real tracker call + card.
     const first = await post();
     expect(first.statusCode).toBe(200);
     const firstCardId = (first.json() as { cardId: string }).cardId;
 
-    // Three replays of the identical write (simulating a crash/retry loop).
     for (let i = 0; i < 3; i++) {
       const replay = await post();
       expect(replay.statusCode).toBe(200);
-      // The replay surfaces the ORIGINAL card id — no second card minted.
       expect((replay.json() as { cardId: string }).cardId).toBe(firstCardId);
     }
 
-    // Exactly one real tracker write despite four POSTs.
     expect(commentPostCount).toBe(1);
 
-    // Exactly one provenance card in history.
     const cards = await writeCardsInHistory();
     expect(cards).toHaveLength(1);
     expect(cards[0].cardId).toBe(firstCardId);
@@ -189,7 +161,7 @@ describe("Integration: issue write idempotency (planning#114)", () => {
 
   it("a genuinely distinct comment still gets its own write + card", async () => {
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const first = await app.inject({
       method: "POST",
@@ -205,7 +177,6 @@ describe("Integration: issue write idempotency (planning#114)", () => {
     });
     expect(second.statusCode).toBe(200);
 
-    // Different content → two real writes and two distinct cards.
     expect(commentPostCount).toBe(2);
     const cards = await writeCardsInHistory();
     expect(cards).toHaveLength(2);
@@ -213,12 +184,6 @@ describe("Integration: issue write idempotency (planning#114)", () => {
 
     client.close();
   });
-
-  // ---- comment edit (planning#88) ----------------------------------------------
-  //
-  // A comment edit is scoped to a COMMENT, but the dedup key's issue slot holds
-  // the issue (it doubles as the card's undo target). So the comment id rides in
-  // the hashed content. These two tests pin both halves of that choice.
 
   const editComment = (commentId: string, body: string) =>
     app.inject({
@@ -229,7 +194,7 @@ describe("Integration: issue write idempotency (planning#114)", () => {
 
   it("a replayed identical comment edit rewrites once and emits one card", async () => {
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const first = await editComment("9001", "corrected");
     expect(first.statusCode).toBe(200);
@@ -251,12 +216,8 @@ describe("Integration: issue write idempotency (planning#114)", () => {
 
   it("edits to DIFFERENT comments on the same issue are not collapsed", async () => {
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Same issue, same new body, different comments. Keying on the issue alone
-    // would silently drop the second — returning the first's card as if it had
-    // succeeded, leaving one of the two comments un-fixed with nothing to show
-    // for it. Hashing the comment id keeps them distinct.
     expect((await editComment("9001", "corrected")).statusCode).toBe(200);
     expect((await editComment("9002", "corrected")).statusCode).toBe(200);
 

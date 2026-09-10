@@ -1,12 +1,3 @@
-/**
- * CodexAuthManager unit tests.
- *
- * Drives the manager with a fake `spawn` so we can deterministically replay
- * the stdout/stderr the real `codex login --device-auth` produces, plus
- * malformed and error variants. The credentials-on-disk check is also
- * injected so the suite doesn't need to touch /credentials.
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
@@ -24,21 +15,11 @@ import {
   type SpawnFn,
 } from "./auth-manager.js";
 
-/** Build a fake JWT (header.payload.signature) carrying the OpenAI auth claim. */
 function fakeJwt(authClaim: Record<string, unknown>): string {
   const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
   return `${b64({ alg: "none" })}.${b64({ "https://api.openai.com/auth": authClaim })}.sig`;
 }
 
-// ---------------------------------------------------------------------------
-// Fake child_process
-// ---------------------------------------------------------------------------
-
-/**
- * Minimal stand-in for a ChildProcess. Only implements what the manager
- * touches: stdout / stderr Readable streams, an `on("close" | "error")`
- * registration, and a `kill()` method.
- */
 class FakeChildProcess extends EventEmitter {
   pid = 12345;
   stdout = new Readable({ read() { /* no-op */ } });
@@ -53,7 +34,6 @@ class FakeChildProcess extends EventEmitter {
 interface SpawnContext {
   proc: FakeChildProcess;
   spawnFn: SpawnFn;
-  /** Calls captured (command, args). */
   calls: { cmd: string; args: readonly string[] }[];
 }
 
@@ -67,7 +47,6 @@ function makeSpawn(): SpawnContext {
   return { proc, spawnFn, calls };
 }
 
-/** Push a chunk onto a Readable so the manager's listener fires synchronously. */
 function emitStdout(stream: Readable, text: string): void {
   stream.push(Buffer.from(text, "utf-8"));
 }
@@ -75,10 +54,6 @@ function emitStdout(stream: Readable, text: string): void {
 afterEach(() => {
   vi.useRealTimers();
 });
-
-// ---------------------------------------------------------------------------
-// Regex sanity checks
-// ---------------------------------------------------------------------------
 
 describe("extractCodexPlan", () => {
   it("reads and title-cases the chatgpt_plan_type claim from the id token", () => {
@@ -110,8 +85,8 @@ describe("CodexAuthManager / regex", () => {
 
   it("USER_CODE_PATTERN ignores unrelated tokens", () => {
     expect("hello world".match(USER_CODE_PATTERN)).toBeNull();
-    expect("abc-defgh".match(USER_CODE_PATTERN)).toBeNull(); // lowercase
-    expect("AB-CDEFG".match(USER_CODE_PATTERN)).toBeNull(); // wrong shape
+    expect("abc-defgh".match(USER_CODE_PATTERN)).toBeNull();
+    expect("AB-CDEFG".match(USER_CODE_PATTERN)).toBeNull();
   });
 
   it("VERIFICATION_URL_PATTERN matches the canonical OpenAI device URL", () => {
@@ -124,10 +99,6 @@ describe("CodexAuthManager / regex", () => {
     expect(text.match(VERIFICATION_URL_PATTERN)?.[0]).toBe("https://auth.openai.com/codex/device?foo=bar");
   });
 });
-
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
 
 describe("CodexAuthManager / startDeviceFlow", () => {
   it("spawns codex login --device-auth", () => {
@@ -167,7 +138,6 @@ describe("CodexAuthManager / startDeviceFlow", () => {
     mgr.startDeviceFlow();
     emitStdout(proc.stdout, "https://auth.openai.com/codex/device\nK8RE-8MIGC\n");
     emitStdout(proc.stdout, "https://auth.openai.com/codex/device\nK8RE-8MIGC\n");
-    // Let the Readable flush through to data listeners.
     await new Promise((r) => setImmediate(r));
     expect(events).toHaveLength(1);
   });
@@ -179,7 +149,6 @@ describe("CodexAuthManager / startDeviceFlow", () => {
       mgr.once("codex_auth_pending", (ev: CodexAuthPendingEvent) => resolve(ev));
     });
     mgr.startDeviceFlow();
-    // Bold / colored output the CLI sometimes emits.
     emitStdout(proc.stdout, "\x1b[1mhttps://auth.openai.com/codex/device\x1b[0m\n\x1b[33mK8RE-8MIGC\x1b[0m\n");
     const ev = await pending;
     expect(ev.verificationUri).toBe("https://auth.openai.com/codex/device");
@@ -246,12 +215,6 @@ describe("CodexAuthManager / startDeviceFlow", () => {
     expect(calls).toHaveLength(1);
   });
 
-  // Regression: page reload mid-flow used to leave the Sign-in button dead
-  // because (a) the server's `proc` was still polling, so a second
-  // `startDeviceFlow()` no-op'd, and (b) the original `codex_auth_pending`
-  // event was already consumed by the previous browser tab. Now the manager
-  // re-emits the cached pending event so a fresh click after reload swaps
-  // the UI back to the Step 1 / Step 2 view.
   it("re-emits the cached pending event when start is called against a running flow", async () => {
     const { proc, spawnFn } = makeSpawn();
     const mgr = new CodexAuthManager({ spawn: spawnFn, checkAuthFile: () => false });
@@ -266,8 +229,6 @@ describe("CodexAuthManager / startDeviceFlow", () => {
     await new Promise((r) => setImmediate(r));
     expect(events).toHaveLength(1);
 
-    // Second click — simulates the user hitting "Sign in" after a page
-    // reload. The manager must re-broadcast so the new UI catches up.
     mgr.startDeviceFlow();
     expect(events).toHaveLength(2);
     expect(events[1]).toEqual(events[0]);
@@ -279,7 +240,6 @@ describe("CodexAuthManager / startDeviceFlow", () => {
     expect(mgr.getPendingEvent()).toBeNull();
 
     mgr.startDeviceFlow();
-    // No URL/code yet — still null.
     expect(mgr.getPendingEvent()).toBeNull();
 
     emitStdout(proc.stdout, "https://auth.openai.com/codex/device\nK8RE-8MIGC\n");
@@ -329,10 +289,6 @@ describe("CodexAuthManager / startDeviceFlow", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Cancel + signOut
-// ---------------------------------------------------------------------------
-
 describe("CodexAuthManager / cancel + signOut", () => {
   it("cancel kills the running process and is idempotent", () => {
     const { proc, spawnFn } = makeSpawn();
@@ -342,7 +298,6 @@ describe("CodexAuthManager / cancel + signOut", () => {
     mgr.cancel();
     expect(proc.killed).toBe(true);
     expect(mgr.pending).toBe(false);
-    // Second call must not throw.
     expect(() => mgr.cancel()).not.toThrow();
   });
 
@@ -353,8 +308,6 @@ describe("CodexAuthManager / cancel + signOut", () => {
     mgr.on("codex_auth_failed", () => { failedFired = true; });
     mgr.startDeviceFlow();
     mgr.cancel();
-    // After cancel, the underlying process firing 'close' should be a no-op
-    // because the listener was removed. Re-emit anyway to verify.
     proc.emit("close", 0);
     await new Promise((r) => setImmediate(r));
     expect(failedFired).toBe(false);
@@ -370,10 +323,6 @@ describe("CodexAuthManager / cancel + signOut", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Account-scoped flows (docs/150)
-// ---------------------------------------------------------------------------
-
 describe("CodexAuthManager / account-scoped (docs/150)", () => {
   let tmp: string;
 
@@ -385,7 +334,6 @@ describe("CodexAuthManager / account-scoped (docs/150)", () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  /** Spawn fake that also captures the per-call options (env, etc.). */
   function makeSpawnWithOpts(): { proc: FakeChildProcess; spawnFn: SpawnFn; opts: Parameters<SpawnFn>[2][] } {
     const proc = new FakeChildProcess();
     const opts: Parameters<SpawnFn>[2][] = [];
@@ -408,12 +356,10 @@ describe("CodexAuthManager / account-scoped (docs/150)", () => {
   it("checkCredentials reads the account's auth.json, ignoring the injected singleton check", () => {
     const { spawnFn } = makeSpawnWithOpts();
     const mgr = new CodexAuthManager({ spawn: spawnFn, checkAuthFile: () => true });
-    // No file yet → scoped check is false even though the singleton check is true.
     expect(mgr.checkCredentials(tmp)).toBe(false);
     fs.mkdirSync(path.join(tmp, ".codex"), { recursive: true });
     fs.writeFileSync(path.join(tmp, ".codex", "auth.json"), "{}");
     expect(mgr.checkCredentials(tmp)).toBe(true);
-    // The singleton path is unaffected.
     expect(mgr.checkCredentials()).toBe(true);
   });
 
@@ -430,7 +376,6 @@ describe("CodexAuthManager / account-scoped (docs/150)", () => {
     await new Promise((r) => setImmediate(r));
 
     expect(observed).toBe("acct-9");
-    // Scope is cleared after the terminal event.
     expect(mgr.getActiveAccountId()).toBeNull();
   });
 

@@ -1,10 +1,3 @@
-/**
- * docs/255 — the service side of `gh pr view --comments`: the conversation is a
- * second round-trip, so it is fetched only when asked for, and a failed fetch
- * surfaces as `conversationError` rather than as an empty (and therefore
- * misleading) set of arrays.
- */
-
 import { describe, it, expect, vi } from "vitest";
 import { viewPullRequest } from "./github.js";
 import type { GitManager } from "../../shared/git.js";
@@ -73,7 +66,6 @@ describe("viewPullRequest with comments", () => {
     });
     const res = await viewPullRequest(makeGit(), github, { number: 5, remoteUrl: REMOTE, comments: true });
     expect(res).toMatchObject({ number: 5, conversationError: "Bad credentials" });
-    // The distinction the whole feature turns on: no empty arrays to misread.
     expect(res).not.toHaveProperty("comments");
     expect(res).not.toHaveProperty("reviewThreads");
   });
@@ -89,8 +81,6 @@ describe("viewPullRequest with comments", () => {
   });
 
   it("raises a failed PR read instead of reporting it as 'no such PR'", async () => {
-    // A 403 on a private repo used to collapse to null and render as "No pull
-    // request found for this branch" — failure masquerading as absence.
     const github = makeGitHub({
       viewPullRequestResult: vi.fn(async () => ({ ok: false, error: "Resource not accessible" })),
     });

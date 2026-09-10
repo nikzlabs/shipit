@@ -1,19 +1,3 @@
-/**
- * Integration test for the conditional chat-history refetch (docs/278, planning#324).
- *
- * Returning focus to a tab reconnects the WebSocket unconditionally — deliberately,
- * because a backgrounded socket can read `OPEN` while being dead — and the fresh
- * connection re-issues `GET /history`. On a long session that response is
- * megabytes, and the overwhelmingly common answer is "nothing changed".
- *
- * So this drives the real orchestrator and asks three things of the route:
- * a repeat request with the tag it just handed out is answered `304`; anything
- * that changes what the response WOULD say moves the tag, including the in-place
- * card patch that leaves the row count and the largest id untouched; and the
- * `304` is answered without materializing the transcript, which is the entire
- * point of composing the validator instead of hashing the body.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -118,11 +102,6 @@ describe("Integration: conditional history refetch (planning#324)", () => {
     expect(again.headers.etag).toBe(etag);
   });
 
-  /**
-   * The reason the validator is a per-session revision counter rather than the
-   * cheaper-looking `MAX(id)` + `COUNT(*)`: a card lifecycle transition patches
-   * its row, so both of those are unchanged while the transcript is not.
-   */
   it("moves the validator when a card is patched in place", async () => {
     const etag = await currentTag();
     const before = dbManager.db
@@ -159,8 +138,6 @@ describe("Integration: conditional history refetch (planning#324)", () => {
 
   it("moves the validator when the transcript is rewritten to the same length", async () => {
     const etag = await currentTag();
-    // A rewind restore: same row count, different content. The revision is the
-    // only thing that can tell these apart.
     history.saveMessages(sessionId, [
       { role: "user", text: "file a bug about the preview" },
       { role: "assistant", text: "REWRITTEN" },
@@ -171,18 +148,11 @@ describe("Integration: conditional history refetch (planning#324)", () => {
     expect((res.json() as { messages: { text: string }[] }).messages[1].text).toBe("REWRITTEN");
   });
 
-  /**
-   * The transcript is not the only thing in this response. A composed validator
-   * that spoke only for the chat rows would leave the six other sources
-   * permanently stale for a client that never gets a fresh body.
-   */
   it("moves the validator when a non-transcript part of the payload changes", async () => {
     const etag = await currentTag();
     const revision = history.transcriptRevision(sessionId);
 
     history.createRewindSnapshot(sessionId, { action: "chat", messages: [] });
-    // Nothing was written to `messages`, so the transcript half of the tag is
-    // untouched — the other half has to carry this.
     expect(history.transcriptRevision(sessionId)).toBe(revision);
 
     const res = await load(etag);
@@ -191,11 +161,6 @@ describe("Integration: conditional history refetch (planning#324)", () => {
       .toBe("chat");
   });
 
-  /**
-   * The point of the change. Hashing the body to discover that nothing changed
-   * meant loading every row, decoding its JSON columns and projecting the result
-   * first — the full cost of a change, paid to report the absence of one.
-   */
   it("does not read the transcript at all to answer 304", async () => {
     const etag = await currentTag();
     const loadSpy = vi.spyOn(history, "load");
@@ -203,7 +168,6 @@ describe("Integration: conditional history refetch (planning#324)", () => {
     expect((await load(etag)).statusCode).toBe(304);
     expect(loadSpy).not.toHaveBeenCalled();
 
-    // …and it still reads it when there is something to send.
     history.append(sessionId, { role: "assistant", text: "filed it" });
     expect((await load(etag)).statusCode).toBe(200);
     expect(loadSpy).toHaveBeenCalledWith(sessionId);

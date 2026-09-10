@@ -49,7 +49,7 @@ describe("Integration: Session management", () => {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     } catch {
-      // Ignore cleanup errors — temp dir will be cleaned by OS
+      // Ignore cleanup errors.
     }
   });
 
@@ -112,7 +112,6 @@ describe("Integration: bootstrap sessions remoteUrl caching", () => {
   });
 
   it("bootstrap lazy-populates remoteUrl from git config", async () => {
-    // Create a real git repo with an origin remote
     const sessionDir = path.join(tmpDir, "sess-git");
     fs.mkdirSync(sessionDir, { recursive: true });
     const git = new GitManager(sessionDir);
@@ -120,7 +119,6 @@ describe("Integration: bootstrap sessions remoteUrl caching", () => {
     await git.addRemote("origin", "https://github.com/lazy/populated.git");
 
     sessionManager.track("sess-git", "Lazy session", sessionDir);
-    // No remoteUrl cached yet
 
     const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
     expect(res.statusCode).toBe(200);
@@ -128,7 +126,6 @@ describe("Integration: bootstrap sessions remoteUrl caching", () => {
     const session = sessions.find((s) => s.id === "sess-git");
     expect(session?.remoteUrl).toBe("https://github.com/lazy/populated.git");
 
-    // Should also be persisted in the manager
     expect(sessionManager.get("sess-git")?.remoteUrl).toBe("https://github.com/lazy/populated.git");
   });
 
@@ -139,7 +136,6 @@ describe("Integration: bootstrap sessions remoteUrl caching", () => {
     expect(res.statusCode).toBe(200);
     const sessions = res.json().sessions as { id: string; remoteUrl: string }[];
     const session = sessions.find((s) => s.id === "sess-missing");
-    // Should not crash and remoteUrl stays empty
     expect(session?.remoteUrl).toBe("");
   });
 

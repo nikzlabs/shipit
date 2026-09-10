@@ -1,4 +1,3 @@
-/** Strip ANSI escape codes and terminal control sequences from text. */
 export function stripAnsi(text: string): string {
   /* eslint-disable no-control-regex -- stripping ANSI/terminal sequences requires matching control chars */
   return text.replace(

@@ -7,15 +7,6 @@ import { GitManager } from "../../shared/git.js";
 import type { WsServerMessage } from "../../shared/types.js";
 import { emitPrLifecycleAfterCommit, type PrLifecycleDeps } from "./pr-lifecycle.js";
 
-/**
- * Regression guard for docs/210: the PR card's changed-docs strip must refresh
- * on EVERY post-turn commit, decoupled from the PR-lifecycle branching. The
- * recompute used to live inside the `if (prStatus)` branch, so a turn that took
- * the no-status / recovery / ready path committed new docs without re-emitting
- * the strip — it stayed frozen until a session-switch re-seed. These tests pin
- * `pr_notable_files` firing in both the tracked-PR and the no-status case.
- */
-
 let tmpDir: string;
 
 function git(args: string): void {
@@ -25,7 +16,6 @@ function git(args: string): void {
   });
 }
 
-/** A feature branch off `main` with a new design doc committed. */
 function seedRepoWithChangedDoc(): void {
   git("init -q -b main");
   git("config user.email test@test.com");
@@ -41,11 +31,6 @@ function seedRepoWithChangedDoc(): void {
   git("commit -qm 'add doc'");
 }
 
-/**
- * Minimal deps. `prStatus` toggles whether the poller has a status cached for
- * the session; `authenticated` is left false so the no-status case lands in the
- * ready path (no `quickCreatePr` network call).
- */
 function makeDeps(opts: { prStatus: { baseBranch: string } | undefined }): PrLifecycleDeps {
   return {
     sessionManager: {
@@ -91,7 +76,6 @@ describe("emitPrLifecycleAfterCommit — changed-docs strip refresh", () => {
       cardId: "pr-card-s1",
       notableFiles: [{ path: "docs/210-thing/plan.md", kind: "doc", label: "210/plan.md", status: "A" }],
     });
-    // Poller owns phase/status for a tracked PR, so no lifecycle card is emitted.
     expect(emitted.some((m) => m.type === "pr_lifecycle_update")).toBe(false);
   });
 
@@ -107,13 +91,11 @@ describe("emitPrLifecycleAfterCommit — changed-docs strip refresh", () => {
       emit: (m) => emitted.push(m),
     });
 
-    // The strip refresh fires regardless of which lifecycle path runs.
     const notable = emitted.filter((m) => m.type === "pr_notable_files");
     expect(notable).toHaveLength(1);
     expect(notable[0]).toMatchObject({
       notableFiles: [{ path: "docs/210-thing/plan.md", kind: "doc", label: "210/plan.md", status: "A" }],
     });
-    // No tracked PR + unauthenticated → the ready card is also emitted.
     expect(emitted.some((m) => m.type === "pr_lifecycle_update")).toBe(true);
   });
 });

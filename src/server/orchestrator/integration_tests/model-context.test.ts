@@ -56,24 +56,21 @@ describe("Integration: Model context & token tracking", () => {
   afterEach(async () => {
     await app.close();
     dbManager.close();
-    // Wait for any pending async operations (git auto-commit) to complete
     await new Promise((r) => setTimeout(r, 200));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     } catch {
-      // Ignore cleanup errors — CI tmpdir will be cleared anyway
+      // Ignore cleanup errors.
     }
   });
 
   it("model_info is sent when Claude init event includes model", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Start a Claude turn
     client.send({ type: "send_message", text: "hello" });
     await waitForClaude(() => lastClaude);
 
-    // Simulate system init with model field
     lastClaude.emit("event", {
       type: "system",
       subtype: "init",
@@ -83,7 +80,6 @@ describe("Integration: Model context & token tracking", () => {
 
     await client.receiveType("session_started");
 
-    // Next message should be model_info
     const modelInfo = await client.receiveType("model_info");
     expect(modelInfo).toMatchObject({
       type: "model_info",
@@ -97,20 +93,17 @@ describe("Integration: Model context & token tracking", () => {
 
   it("no model_info when init event lacks model field", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Start a Claude turn
     client.send({ type: "send_message", text: "hello" });
     await waitForClaude(() => lastClaude);
 
-    // Simulate system init WITHOUT model field
     lastClaude.emit("event", {
       type: "system",
       subtype: "init",
       session_id: "no-model-session",
     });
 
-    // Emit result + done to finish the turn
     lastClaude.emit("event", {
       type: "result",
       subtype: "success",
@@ -120,7 +113,6 @@ describe("Integration: Model context & token tracking", () => {
 
     await new Promise((r) => setTimeout(r, 200));
 
-    // Drain all messages and verify none have type model_info
     const allMessages: any[] = [];
     try {
       for (let i = 0; i < 20; i++) {
@@ -136,13 +128,11 @@ describe("Integration: Model context & token tracking", () => {
 
   it("usage_update includes token data when result has tokens", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Start a Claude turn
     client.send({ type: "send_message", text: "hello" });
     await waitForClaude(() => lastClaude);
 
-    // Simulate system init
     lastClaude.emit("event", {
       type: "system",
       subtype: "init",
@@ -151,12 +141,10 @@ describe("Integration: Model context & token tracking", () => {
 
     await client.receiveType("session_started");
 
-    // Simulate assistant text
     lastClaude.emit("event", {
       type: "assistant",
       message: { content: [{ type: "text", text: "Here is my response" }] },
     });
-    // Simulate result with token data
     lastClaude.emit("event", {
       type: "result",
       subtype: "success",
@@ -166,11 +154,9 @@ describe("Integration: Model context & token tracking", () => {
       usage: { input_tokens: 5000, output_tokens: 1200 },
     });
 
-    // Drain the agent_event for result
     const resultEvent = await client.receiveType("agent_event");
     expect(resultEvent.type).toBe("agent_event");
 
-    // Next should be usage_update with token data
     const usageUpdate = await client.receiveType("usage_update");
     expect(usageUpdate).toMatchObject({
       type: "usage_update",

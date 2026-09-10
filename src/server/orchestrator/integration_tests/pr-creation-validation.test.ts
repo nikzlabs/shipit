@@ -64,7 +64,6 @@ describe("Integration: PR creation — validation errors", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
-  /** Create a session via send_message + Claude events. Returns the app session ID. */
   async function createSession(client: TestClient): Promise<string> {
     client.send({ type: "send_message", text: "hello" });
     const claude = await waitForClaude(() => lastClaude);
@@ -94,10 +93,8 @@ describe("Integration: PR creation — validation errors", () => {
   async function setupSessionWithRemote(client: TestClient): Promise<string> {
     const sessionId = await createSession(client);
 
-    // Authenticate via HTTP
     await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
-    // Set remote via HTTP
     await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/git/remotes`,
@@ -109,7 +106,7 @@ describe("Integration: PR creation — validation errors", () => {
 
   it("returns error when not authenticated with GitHub", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const sessionId = await createSession(client);
 
@@ -127,11 +124,10 @@ describe("Integration: PR creation — validation errors", () => {
 
   it("returns error when no origin remote is configured", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const sessionId = await createSession(client);
 
-    // Authenticate but don't add a remote
     await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
     const res = await app.inject({
@@ -148,14 +144,12 @@ describe("Integration: PR creation — validation errors", () => {
 
   it("returns error when remote is not a GitHub URL", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const sessionId = await createSession(client);
 
-    // Authenticate
     await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
 
-    // Add a non-GitHub remote
     await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/git/remotes`,
@@ -176,7 +170,7 @@ describe("Integration: PR creation — validation errors", () => {
 
   it("returns error when title is empty", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const sessionId = await setupSessionWithRemote(client);
 
@@ -194,7 +188,7 @@ describe("Integration: PR creation — validation errors", () => {
 
   it("returns error when title is too long", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const sessionId = await setupSessionWithRemote(client);
 
@@ -212,7 +206,7 @@ describe("Integration: PR creation — validation errors", () => {
 
   it("returns error when base branch is empty", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const sessionId = await setupSessionWithRemote(client);
 

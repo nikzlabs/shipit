@@ -2,8 +2,6 @@ import { describe, it, expect } from "vitest";
 import { formatEvictBlockedNotice, type EvictBlockReason } from "./evict-blocked-notice.js";
 import type { SecretFinding } from "../../shared/secret-scan.js";
 
-// planning#296 — the notice a user sees when disk eviction refuses to wipe a
-// checkout whose uncommitted work couldn't be committed.
 describe("formatEvictBlockedNotice", () => {
   const finding: SecretFinding = {
     rule: "aws-access-key-id",
@@ -18,7 +16,6 @@ describe("formatEvictBlockedNotice", () => {
     expect(text).toContain(".env:3");
     expect(text).toContain("AWS access key ID");
     expect(text).toContain("AKIA…(20 chars)");
-    // The notice is persisted to the DB — it may only ever carry the redaction.
     expect(text).toContain("gitleaks:allow");
   });
 
@@ -42,9 +39,6 @@ describe("formatEvictBlockedNotice", () => {
     expect(text).toContain("src/a.ts");
   });
 
-  // The ladder's own refusal, not an auto-commit one: there is no repository
-  // for a commit to have been refused in, and nothing will ever push these
-  // files — so the message must not promise that the next turn fixes it.
   it("tells a repo-less workspace that only a person can unblock it", () => {
     const text = formatEvictBlockedNotice({ kind: "no-repository" });
     expect(text).toContain("no longer a git repository");
@@ -52,9 +46,6 @@ describe("formatEvictBlockedNotice", () => {
     expect(text).not.toContain("next turn");
   });
 
-  // docs/266 / planning#407 — the eviction would have DELETED content ShipIt's
-  // own git cannot read, so the notice has to name the path and must not
-  // promise that the next turn commits it.
   it("names the unreadable path and does not promise a next-turn commit", () => {
     const text = formatEvictBlockedNotice({
       kind: "unreadable",

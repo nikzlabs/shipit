@@ -12,8 +12,6 @@ import {
 } from "./compose-stack-reaper.js";
 import { serializeStackOp } from "./stack-op-queue.js";
 
-// docs/290 — the boot reconciliation for compose stacks that outlived the
-// orchestrator process that started them.
 describe("compose-stack-reaper", () => {
   const SID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
   const OTHER = "11111111-2222-3333-4444-555555555555";
@@ -31,8 +29,6 @@ describe("compose-stack-reaper", () => {
   }
 
   function matchesLabelFilter(labels: Record<string, string>, filters: string[]): boolean {
-    // Docker's `label` filter is AND across entries, and each entry is either
-    // `key` (has the label) or `key=value`.
     return filters.every((f) => {
       const eq = f.indexOf("=");
       if (eq === -1) return labels[f] !== undefined;
@@ -40,28 +36,11 @@ describe("compose-stack-reaper", () => {
     });
   }
 
-  /**
-   * A STATEFUL fake: a removed container leaves the daemon's view, so the
-   * teardown's verifying re-listing sees what actually happened rather than the
-   * snapshot it started from. A fake that returned a frozen list could not tell
-   * a completed teardown from an abandoned one — which is the whole property
-   * under test.
-   *
-   * Every call lands in one ordered `calls` array, so ordering claims
-   * (containers before networks; the stop that must still be followed by a
-   * remove) are observable rather than inferred from separate buckets.
-   */
   function fakeDocker(opts: {
     containers?: FakeContainer[];
     networks?: FakeNetwork[];
-    /** Container ids whose `stop` rejects, with the given statusCode. */
     stopFails?: Record<string, number>;
-    /** Container ids whose `remove` rejects, with the given statusCode. */
     removeFails?: Record<string, number>;
-    /**
-     * Ids whose `remove` REJECTS but which vanish anyway — Docker's `409
-     * removal already in progress`, where another actor finishes the job.
-     */
     removeEventuallySucceeds?: Set<string>;
     listContainersThrows?: boolean;
   }) {
@@ -103,9 +82,6 @@ describe("compose-stack-reaper", () => {
       getNetwork: (id: string) => ({
         remove: async () => { calls.push(`removeNetwork:${id}`); },
       }),
-      // Present so a teardown that ever reached for volumes would be VISIBLE
-      // rather than silently absent — a `light` session's docs/183 overlay must
-      // survive the teardown.
       listVolumes: vi.fn(async () => { calls.push("listVolumes"); return { Volumes: [] }; }),
       getVolume: (name: string) => ({ remove: async () => { calls.push(`removeVolume:${name}`); } }),
     };
@@ -185,21 +161,14 @@ describe("compose-stack-reaper", () => {
 
       expect(await downComposeStackByProject(h.docker, SID)).toBe(2);
 
-      // Only the running one is stopped; both are removed.
       expect(h.stopped).toEqual(["c1"]);
       expect(h.removed).toEqual(["c1", "c2"]);
       expect(h.networksRemoved).toEqual(["n1"]);
-      // A `light` session keeps its docs/183 overlay volumes for a warm resume,
-      // so the teardown must never reach for a volume — including via a
-      // `remove({ v: true })` on a container, which would take its anonymous
-      // volumes with it.
       expect(h.volumeCalls).toEqual([]);
       expect(h.calls.filter((c) => c.startsWith("remove:"))).toEqual([
         'remove:c1:{"force":true}',
         'remove:c2:{"force":true}',
       ]);
-      // Containers before networks — a network with an attached container
-      // cannot be removed, and the failure would look like "already gone".
       expect(h.calls.indexOf("removeNetwork:n1")).toBeGreaterThan(
         h.calls.findIndex((c) => c.startsWith("remove:c2")),
       );
@@ -221,11 +190,6 @@ describe("compose-stack-reaper", () => {
       expect(h.removed).toEqual(["gone", "ok"]);
     });
 
-    // Review finding. `stop` and `remove` shared one `try`, so a container
-    // someone else stopped between the listing and our stop answered `304
-    // Not Modified`, execution jumped past `remove()`, and the teardown
-    // reported success with the container still there — and `light → evicted`
-    // then wiped the workspace on the strength of it.
     it("still removes a container whose stop answered 304 Not Modified", async () => {
       const h = fakeDocker({
         containers: [serviceContainer(SID, "already-stopped")],
@@ -236,8 +200,6 @@ describe("compose-stack-reaper", () => {
       expect(h.live.size).toBe(0);
     });
 
-    // `409` from a FORCED remove means removal is already in progress — not
-    // that it finished. The verifying re-listing is what decides.
     it("accepts a 409 whose removal really did land", async () => {
       const h = fakeDocker({
         containers: [serviceContainer(SID, "racing")],
@@ -314,11 +276,6 @@ describe("compose-stack-reaper", () => {
       expect(reaped).toBe(1);
     });
 
-    // Review finding. `reattachInFlightTurns` keeps a worker for a self-woken
-    // turn, an outstanding background task, a running `agent.install` or a live
-    // terminal WITHOUT creating a runner — and a current-build worker returns
-    // even earlier. Its agent container is on the session's compose network, so
-    // it can be driving those services by DNS right now.
     it("keeps a stack the boot adoption sweep held for live work it did not adopt", async () => {
       const h = fakeDocker({ containers: [serviceContainer(SID, "c1")] });
       const reaped = await reapSurvivingComposeStacks({
@@ -329,18 +286,9 @@ describe("compose-stack-reaper", () => {
       expect(h.removed).toEqual([]);
     });
 
-    // Review finding: the hold was re-checked BEFORE the Docker calls, so an
-    // activation landing in between published its manager, ran its own
-    // `compose up`, and had the brand-new containers listed and removed. Both
-    // halves of the fix are under test here — the teardown is on the session's
-    // stack queue (where every other compose invocation for a session already
-    // is), and the hold is re-checked INSIDE that critical section.
     it("keeps a stack when an activation takes the session's stack queue first", async () => {
       const serviceManagers = new Map<string, unknown>();
       const h = fakeDocker({ containers: [serviceContainer(SID, "c1")] });
-      // Model an activation already in flight: `setupServiceManager` publishes
-      // its manager and does its `compose up` through this same queue. The hold
-      // is NOT visible when the sweep first looks at this session.
       const activation = serializeStackOp(SID, async () => {
         await new Promise((resolve) => { setTimeout(resolve, 5); });
         serviceManagers.set(SID, {});
@@ -353,9 +301,6 @@ describe("compose-stack-reaper", () => {
       expect(h.removed).toEqual([]);
     });
 
-    // The other ordering: the sweep wins the queue, so it tears the old stack
-    // down and the activation's own `killStaleContainers` + `compose up` builds
-    // a fresh one behind it. Both orderings are safe; neither interleaves.
     it("takes the stack down when it wins the queue, and lets the activation follow", async () => {
       const serviceManagers = new Map<string, unknown>();
       const h = fakeDocker({ containers: [serviceContainer(SID, "c1")] });
@@ -386,8 +331,6 @@ describe("compose-stack-reaper", () => {
     });
 
     it("never touches an egress sidecar — it carries the parent label but no compose project", async () => {
-      // docs/172 Tier B/C sidecars share the AGENT container's netns; reaping
-      // them would leave a surviving agent container with no DNS and no HTTPS.
       const h = fakeDocker({
         containers: [{
           Id: "resolver",
@@ -400,8 +343,6 @@ describe("compose-stack-reaper", () => {
     });
 
     it("ignores a container whose two labels disagree about whose stack it is", async () => {
-      // A repository's own compose file can set `shipit-parent-session`; Compose
-      // merges label maps, so the generated override cannot un-declare it.
       const h = fakeDocker({
         containers: [{
           Id: "spoof",
@@ -425,8 +366,6 @@ describe("compose-stack-reaper", () => {
         deps({ docker: h.docker, sessions: { [SID]: session(), [OTHER]: session({ id: OTHER }) } }),
       );
       expect(reaped).toBe(1);
-      // What actually vanished, not what was attempted: the stuck stack is
-      // still standing and the next boot retries it.
       expect(h.live.has("stuck")).toBe(true);
       expect(h.live.has("fine")).toBe(false);
     });

@@ -9,18 +9,12 @@ import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import type { CredentialStore } from "../credential-store.js";
 
-// Minimal fake runner: emitMessage + the turn-accumulation fields the native
-// sink records onto (`emitChatCard` reads chatMessageGroups for the anchor and
-// pushes onto recordedCards). Identity is what the WeakMap keys on, so a fresh
-// object per test is an isolated "turn".
 function fakeRunner(
   groups: { text: string; toolUse: unknown[] }[] = [],
 ): { runner: SessionRunnerInterface; emitted: WsServerMessage[] } {
   const emitted: WsServerMessage[] = [];
   const runner = {
     emitMessage: (m: WsServerMessage) => emitted.push(m),
-    // The agent authors a voice note from inside its own turn, so the card
-    // rides the in-progress turn rather than `emitChatCard`'s post-turn append.
     running: true,
     chatMessageGroups: groups,
     recordedCards: [],
@@ -29,10 +23,6 @@ function fakeRunner(
   return { runner, emitted };
 }
 
-// `emitChatCard` now persists the in-progress turn (docs/191), so every
-// `routeVoiceNote` call needs a chat-history sink. A no-op satisfies the
-// contract for cases that don't assert on persistence; `route` injects it so
-// each test case's deps stay terse.
 const noopHistory = { replaceInProgress: () => {}, append: () => {} };
 const route = (
   payload: Parameters<typeof routeVoiceNote>[0],
@@ -85,9 +75,6 @@ describe("routeVoiceNote", () => {
   });
 
   it("records the native card on the runner, anchored after the current groups, so it survives a reload", async () => {
-    // Two persistable assistant groups already accumulated this turn — the card
-    // must anchor after them so `buildTurnMessages` re-interleaves it at the end
-    // of the turn (where the tool was issued), not above it.
     const { runner } = fakeRunner([
       { text: "working…", toolUse: [] },
       { text: "", toolUse: [{ name: "Edit" }] },
@@ -213,9 +200,6 @@ describe("routeVoiceNote", () => {
     expect(webhookCalls).toBe(1);
   });
 
-  // The silent (`needsAttention: false`) note was removed — every note is
-  // attention-worthy. The webhook body keeps a constant `needsAttention: true`
-  // so existing `v: 1` receivers that branch on it keep working.
   it("posts a constant needsAttention: true in the v1 webhook body", async () => {
     const { runner } = fakeRunner();
     const credentialStore = fakeCredentialStore({
@@ -240,16 +224,11 @@ describe("routeVoiceNote", () => {
     expect(hasAuthoredVoiceNoteThisTurn(runner)).toBe(false);
     await route(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId });
     expect(hasAuthoredVoiceNoteThisTurn(runner)).toBe(true);
-    // A derived note must NOT set the authored flag.
     const { runner: r2 } = fakeRunner();
     await route(base(), { runner: r2, sessionId: "s1", credentialStore, source: "ask", idFactory: deterministicId });
     expect(hasAuthoredVoiceNoteThisTurn(r2)).toBe(false);
   });
 
-  // The per-turn attention cap was removed (docs/163): it was redundant with the
-  // client's 20s chime debounce and inverted against latest-wins playback —
-  // silencing the NEWEST note while stale speech kept playing. Every note in a
-  // turn now delivers in full.
   it("does not cap or downgrade repeated notes within a turn", async () => {
     const { runner, emitted } = fakeRunner();
     let webhookPosts = 0;

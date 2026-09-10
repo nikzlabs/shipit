@@ -1,11 +1,3 @@
-/**
- * Integration tests for GitHub PR review-comment sync (docs/102).
- *
- * Covers the four write-back routes (reply, resolve, unresolve, submit
- * review). The poller-driven read side ships with docs/133 Phase 4 and has
- * its own tests; these only exercise mutations.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -73,7 +65,6 @@ afterEach(async () => {
 
 describe("PR review-thread sync", () => {
   it("requires authentication for replies", async () => {
-    // No token set.
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/pr/threads/THREAD_1/reply`,

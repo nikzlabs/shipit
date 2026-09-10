@@ -17,8 +17,6 @@ import type { VoiceNotePayload, VoiceNoteSource } from "../../shared/types/voice
 import { emitChatCard, emitNoticeInTurn, buildTurnMessages, persistTurnInProgress, updateRecordedCard } from "../chat-card-persistence.js";
 import type { CompactionCard } from "../../shared/types.js";
 import crypto from "node:crypto";
-// Phase P6 (docs/201) — concern modules split out of this file. `wireAgentListeners`
-// keeps the lifecycle wiring and delegates to these.
 import {
   extractToolResults,
   stampToolDurations,
@@ -45,116 +43,34 @@ import {
 } from "./agent-rate-limits.js";
 import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
 
-// `buildTurnMessages` / `persistTurnInProgress` now live in
-// `chat-card-persistence.ts` (co-located with `recordChatCard`, which shares
-// the `recordedCards` interleaving contract, and so `emitChatCard` can persist
-// without an import cycle). Re-exported here so existing importers
-// (send-message, dispatch-steering, agent-execution, tests) keep their
-// `./agent-listeners.js` import path unchanged.
 export { buildTurnMessages, persistTurnInProgress } from "../chat-card-persistence.js";
 
-// Phase P6 (docs/201) — these helpers were extracted into sibling concern
-// modules. Re-exported here so existing importers (send-message,
-// dispatch-steering, agent-execution, tests) keep their `./agent-listeners.js`
-// import path unchanged.
 export { extractToolResults, stampToolDurations } from "./agent-event-normalizer.js";
 export { recordSteeredMessage, requeueUndeliveredSteers } from "./agent-message-builder.js";
 export { normalizeAgentUsageLimitError } from "./agent-rate-limits.js";
 
-/**
- * Context-light dependency set for `wireAgentListeners`. Lifted out of the
- * WS handler context (`FullCtx = ConnectionCtx & RunnerCtx & AppCtx`) so that
- * non-WS callers — system-dispatched turns, the rebase conflict-resolution
- * driver, child-session spawns — can share the same listener implementation.
- *
- * Keep this list minimal: anything in here is something the listener actually
- * needs to do its job. New per-turn signals belong in `WireListenersOpts`,
- * not here.
- */
 export interface AgentListenerDeps {
   sessionManager: SessionManager;
   chatHistoryManager: ChatHistoryManager;
   usageManager: UsageManager;
-  /** App-level SSE broadcaster (session_list, session_started, etc.). */
   sseBroadcast: (event: string, data: unknown) => void;
-  /** Append a line to the per-session log buffer. */
   broadcastLog: (source: LogSource, text: string) => void;
-  /** Model the caller wants the turn to start with (before agent_init confirms). */
   getSelectedModel: () => string | undefined;
-  /** Optional: push a fresh rate-limit snapshot (any agent) to the subscription badge. */
   recordAgentRateLimits?: (
     agentId: AgentId,
     session: { usedPct: number | null; resetAt: string } | null,
     weekly: { usedPct: number | null; resetAt: string } | null,
-    /**
-     * docs/150 — the session whose turn reported these numbers, so the
-     * orchestrator can attribute them to that session's pinned provider
-     * account. Omitted only where no session owns the turn.
-     */
     sessionId?: string,
-    /**
-     * Credential route captured with the turn. A session can be repointed
-     * during quota failover while its old process is still emitting terminal
-     * telemetry; resolving the route from the mutable session row then files
-     * the old account's windows under the new account.
-     */
+    /** Captured route; the session can change before terminal telemetry arrives. */
     routeId?: string,
   ) => void;
-  /** Optional: latest subscription-limits snapshot, used to reclassify generic CLI errors. */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
-  /**
-   * docs/150-multiple-provider-subscriptions req 7 — the provider failed this turn saying the subscription is
-   * spent. Stamps the account the turn ran on so the router stops choosing it,
-   * which is what makes the *next* turn fail over instead of hitting the same
-   * wall. `until` is epoch ms.
-   *
-   * A callback rather than the manager itself: the listener knows only "the
-   * turn for session X died of quota", and resolving that to an account is the
-   * orchestrator's job, not this module's. Optional — tests and local runtime
-   * omit it, in which case the live quota telemetry remains the only signal.
-   */
+  /** until is epoch milliseconds. */
   markSessionAccountExhausted?: (sessionId: string, until: number, routeId?: string) => void;
-  /**
-   * planning#358 — record/clear "this supplied secret was refused for auth" on
-   * the credential route the turn actually used.
-   *
-   * Callbacks rather than the `CredentialStore` itself, for the same reason as
-   * `markSessionAccountExhausted` directly above: this module knows only that a
-   * turn on route X failed authentication, while deciding what that means for
-   * the stored row — and re-broadcasting Settings — is the orchestrator's job.
-   *
-   * The pair is what keeps the state honest in both directions. Marking without
-   * clearing is the failure mode `markProviderAccountReauthenticated` was
-   * written to fix on the account side: a row stuck `auth_failed` forever while
-   * the credential works again. Optional — tests and local runtime omit them,
-   * which simply leaves the row's status untouched as it is today.
-   */
   markCredentialRouteAuthFailed?: (routeId: string) => void;
   clearCredentialRouteAuthFailed?: (routeId: string) => void;
-  /**
-   * docs/153 — fire-and-forget nudge to the orchestrator-owned Claude OAuth
-   * refresher. Triggered from the session-level `auth_required` handler so a
-   * stale per-session token is healed for the next turn. Optional — local
-   * runtime and tests omit it. Kept as a direct ref for non-WS callers
-   * (credentials sync); the WS-side `auth_required` handler routes through
-   * the agent-keyed {@link onAgentAuthRequired} table instead. (docs/155)
-   */
   nudgeClaudeOAuthRefresh?: () => void;
-  /**
-   * docs/155 — per-agent dispatch for the WS-level `auth_required` event.
-   * Each backend that needs a side effect on auth failure (Claude: nudge the
-   * OAuth refresher; Codex: a future device-flow restart) registers itself
-   * at app-DI time and the listener becomes agent-agnostic. Optional — no-op
-   * if the agent has no registered hook.
-   */
   onAgentAuthRequired?: (agentId: AgentId) => void;
-  /**
-   * docs/163 — deliver a voice note through the router. Used by the source
-   * observer to emit a *derived* headline when the agent reaches an
-   * `AskUserQuestion` / `ExitPlanMode` interrupt without having authored one
-   * via the built-in `voice_note` tool first (the fallback floor). Optional —
-   * absent in tests / minimal setups, in which case derivation is skipped.
-   */
   deliverVoiceNote?: (
     payload: VoiceNotePayload,
     runner: SessionRunnerInterface,
@@ -162,158 +78,33 @@ export interface AgentListenerDeps {
   ) => void;
 }
 
-/**
- * Default context window in tokens. Kept as a re-export for legacy call
- * sites; per-model windows are resolved via `getContextWindowForModel`.
- */
 export const CONTEXT_WINDOW_TOKENS = DEFAULT_CONTEXT_WINDOW_TOKENS;
 
-/**
- * Per-turn options accepted by `wireAgentListeners`. Anything that varies
- * between callers (WS-typed, system-dispatched, rebase resolution) belongs
- * here; long-lived dependencies (managers, broadcasters) live in
- * `AgentListenerDeps`.
- */
 export interface WireListenersOpts {
   isNewSession: boolean;
   persistUserMessage: (sessionId: string) => void;
   fallbackTitle?: string;
-  /**
-   * Session ID captured at turn start — immune to session switches. The WS
-   * paths capture this from `ctx.getActiveAppSessionId()` (URL-derived on the
-   * per-session route); system-dispatched and rebase paths pass the runner's
-   * sessionId directly. All call sites pass a value; the optional marker is
-   * a vestige of an old test-ergonomics affordance and runtime requires it.
-   */
+  /** Required at runtime despite the optional type. */
   capturedSessionId?: string;
-  /**
-   * Credential route captured after environment preparation and before the
-   * CLI starts. Listener wiring happens earlier than failover, so reading the
-   * session row while wiring captures the outgoing route on a retry.
-   */
+  /** Read after environment preparation; wiring precedes failover. */
   getCapturedRouteId?: () => string | undefined;
-  /** docs/260 — the captured route's kind, for reserved-vs-account branches. */
   getCapturedRouteKind?: () => "account" | "reserved" | "string" | undefined;
-  /**
-   * docs/260-turn-level-account-routing req 2 — failure policy resolved from the TURN'S OWN captured
-   * route. Undefined when the turn captured none (then the session's model
-   * selection answers instead).
-   */
   getCapturedRoutePolicy?: () => CredentialFailurePolicy | undefined;
-  /**
-   * docs/140 — is the turn now ending one the CLI started on its own (a
-   * self-wake, or a live steer it acked too late to apply)?
-   *
-   * The third input to `quotaRefusalCanFailOver`, and the one this module cannot
-   * work out for itself: the executor refuses to re-dispatch such a turn, so the
-   * terminal error row suppressed below has nothing coming to replace it. Wired
-   * by `turn-executor.ts`; absent (tests, non-executor callers) reads false,
-   * which is the pre-existing behaviour.
-   */
   isServingAdoptedTurn?: () => boolean;
-  /**
-   * The permission mode this turn actually requested from the CLI (docs/138),
-   * AFTER any guarded→auto downgrade. When this is `"guarded"`, the
-   * `agent_init` handler reads `init.permissionMode` to confirm the
-   * classifier engaged (`"auto"`) and, if not, sets the runner's volatile
-   * `guardedUnavailable` flag and emits an inline fallback notice. Undefined /
-   * non-guarded turns skip the check entirely.
-   */
   requestedPermissionMode?: PermissionMode;
-  /**
-   * Called from the `error` handler after the runner has been cleaned up.
-   * `runAgentWithMessage` uses this to drain the next queued message so a
-   * transient /agent/start failure (e.g. 409 race) doesn't strand the rest
-   * of the queue. Awaited so any recursive turn start is sequenced inside
-   * the error handler.
-   */
   onError?: () => Promise<void>;
-  /**
-   * docs/179 — synchronous gate the `auth_required` handler calls BEFORE it
-   * kills the agent: returns true when the turn executor will auto-recover this
-   * auth failure (a first attempt with a token healer wired). When true, the
-   * handler SUPPRESSES the visible re-auth flow (no sign-in card, no OAuth
-   * start) and defers to {@link recoverAuth}; calling it also flips the
-   * executor's stand-down flag so the `done` teardown lets the recovery own all
-   * terminal work. Absent → the handler always surfaces re-auth (legacy flow).
-   */
+  /** Claims recovery synchronously, before killing the process can trigger teardown. */
   willRecoverAuth?: () => boolean;
-  /**
-   * docs/179 — async recovery the handler kicks off after teardown when
-   * {@link willRecoverAuth} returned true: heal the OAuth token and re-dispatch
-   * the turn once. Resolves true when recovery is handled, false when the heal
-   * failed — in which case the handler surfaces the sign-in card.
-   *
-   * "handled" is deliberately wider than "re-dispatched". An
-   * ADOPTED turn (self-wake / late live-steer) heals its token and then ends
-   * WITHOUT a re-dispatch, because `input.prompt` belongs to the previous turn
-   * (docs/140). It is still handled: the executor ran the turn's whole terminal
-   * sequence, and a signed-in user must not be shown a sign-in card for a token
-   * that just healed.
-   */
+  /** true means handled, including adopted turns healed without redispatch. */
   recoverAuth?: () => Promise<boolean>;
-  /**
-   * Runtime stale-resume recovery. Called with the id parsed from Claude's
-   * "No conversation found" stderr. Returning true means the executor has
-   * claimed recovery, so the listener suppresses the user-facing error.
-   */
   recoverMissingConversation?: (agentSessionId: string) => boolean;
-  /**
-   * docs/252 phase 5 — synchronous gate the `error` handler calls FIRST,
-   * mirroring {@link willRecoverAuth}.
-   *
-   * A quota failure does not always arrive as an `agent_result`. Codex's
-   * app-server can refuse `turn/start` outright, and that rejected JSON-RPC
-   * request becomes an adapter-level `error` — so the req-14 same-turn failover
-   * and the req-7 exhaustion stamp, both of which watch `agent_result`, never
-   * saw a Codex subscription run out mid-turn. Established by reading the two
-   * paths (`codex/adapter.ts` `initializeAndRun(...).catch` → `emit("error")`),
-   * not assumed from Claude's shape.
-   *
-   * Returning true means the executor has claimed the turn: it benches the
-   * credential and re-dispatches, exactly as the `agent_result` path does, and
-   * this handler must run NONE of its terminal teardown — the retry owns the
-   * drain, the commit and the finished broadcast.
-   */
+  /** true transfers terminal cleanup to the retry. */
   willRetryOnQuotaError?: (err: Error) => boolean;
-  /**
-   * True when this turn is being run on a persistent streaming agent
-   * (live steering active, docs/140). In streaming mode the CLI can
-   * genuinely block on `AskUserQuestion` (the user's answer flows back via
-   * `sendUserMessage`/NDJSON on stdin), so the orchestrator must NOT
-   * interrupt on the tool — that would tear down the running turn instead
-   * of letting the user steer their answer in.
-   */
   useStreaming?: boolean;
-  /**
-   * docs/140 Phase 6.11 — this turn runs on a backend whose process survives its
-   * own turn boundary and can start a turn ShipIt never asked for
-   * (`AgentCapabilities.startsOwnTurns`, resolved through the agent registry).
-   * Gates `adoptCliStartedTurn`'s assistant edge.
-   *
-   * NOT `useStreaming`: Codex steers, so it streams — but its app-server is
-   * killed at `turn/completed` and it emits the turn's FINAL assistant text
-   * after that, so there the adoption shape means "the turn that just ended is
-   * still talking", and adopting would mark the session busy for a turn that
-   * will never produce another `result`.
-   */
+  /** Distinct from streaming: Codex can emit final text after its result without starting a turn. */
   adoptsCliStartedTurns?: boolean;
 }
 
-/**
- * Wire up common agent event listeners shared across every entry point that
- * runs an agent turn: WS `send_message` / `answer_question`, system-dispatched
- * turns (Fix CI, child sessions, the `/agent/dispatch` HTTP route), and the
- * rebase conflict-resolution driver. All flows share the same message-group
- * accumulator (`runner.chatMessageGroups`) so tool calls + assistant text
- * round-trip through chat history identically regardless of caller.
- *
- * `runner` must be the registry-resolved reference (not a per-connection
- * `getRunner()` result) so the listener survives WS disconnects. `null` is
- * accepted only as a defensive fallback — the listener degrades to a no-op
- * for state mutations when it's null. Callers should resolve via the registry
- * (`resolveRunner` for WS, `host` for system flows) and pass the result here.
- */
 export function wireAgentListeners(
   agent: AgentProcess,
   runner: SessionRunnerInterface | null,
@@ -321,50 +112,13 @@ export function wireAgentListeners(
   opts: WireListenersOpts,
 ): void {
   if (!opts.capturedSessionId) {
-    // The previous fallback in the agent_init branch called
-    // `setActiveAppSessionId(event.sessionId)` — but `event.sessionId` is the
-    // Claude CLI's internal session_id (e.g. `agent-init-1`), not an app
-    // session UUID. Setting it as the active app session is always wrong.
-    // All callers always set capturedSessionId, so reaching this state means
-    // the call site is buggy — fail loudly rather than silently mis-routing.
     throw new Error("wireAgentListeners requires opts.capturedSessionId");
   }
   const sessionAtTurnStart = deps.sessionManager.get(opts.capturedSessionId);
-  // Capture the model used for this turn — sourced from `agent_init` (what the
-  // CLI actually picked) or falls back to the selected model. Used on
-  // `agent_result` to attach the model to per-turn usage so the dial can
-  // re-target context window when the user switches models mid-session.
-  //
-  // docs/252 phase 4 — the fallback reads the session ROW first, for the same
-  // reason `buildAgentRunParams` does: `getSelectedModel` is per-connection, so
-  // with two viewers on one session it can name a model this turn did not spawn
-  // with, and this value is what a harness reporting no model of its own gets
-  // recorded against (req 11).
   let turnModel: string | undefined = sessionAtTurnStart?.model ?? deps.getSelectedModel();
-  // docs/252 phase 3 (req 16) — who is billing this turn, captured at turn
-  // START alongside the model, for the same reason: the session's selection can
-  // move under a running turn (`set_model` between the spawn and the result),
-  // and a turn must be recorded against what actually ran it. The rates are the
-  // catalogue's as of now and are persisted with the row, so a later price edit
-  // cannot restate the past.
   const turnAttributionAtStart = turnAttributionFor(selectionOf(sessionAtTurnStart));
-  // Identity of the turn these listeners were wired for. Wiring always follows
-  // `resetRunnerTurnState` (turn-executor runs the reset before it wires), so
-  // this is the epoch of the turn that owns the runner's accumulators and the
-  // session's in-progress chat rows RIGHT NOW. The `error` handler compares
-  // against the live value before finalizing those rows: a killed resident
-  // process can emit a LOCAL adapter error (an in-flight worker HTTP call
-  // rejecting) long after a successor turn started, and the SSE relay's
-  // runToken guard never sees locally-emitted events — so without this check
-  // the stale error finalized the successor's rows and its recorded cards
-  // (the account-failover notice) came back as permanent duplicates.
-  // Re-captured on `agent_self_wake`, where the SAME wired listeners adopt the
-  // wake turn after handing it a fresh epoch.
+  // Local adapter errors bypass SSE stale-event filtering; compare the turn epoch too.
   let wiredTurnEpoch = runner?.turnEpoch;
-  // Helper: emit to all viewers via runner. If runner is unexpectedly null
-  // (registry lookup failed before any viewer attached), the message has
-  // nowhere good to go — log and drop rather than try a per-connection send,
-  // which doesn't exist on every caller anyway.
   const emitToViewers = (msg: WsServerMessage) => {
     if (runner) {
       runner.emitMessage(msg);
@@ -373,79 +127,20 @@ export function wireAgentListeners(
     }
   };
 
-  // `agent_init` fires once per Claude CLI "session" — i.e. once per top-level
-  // turn AND once per Task subagent (each subagent gets its own session_id and
-  // emits its own init). The log entry is meant to mark the agent process
-  // actually coming up, not every internal session boundary, so gate it to the
-  // first init we see for this wired-agent invocation. Without the flag, a turn
-  // that dispatches a few subagents prints a wall of misleading "Agent process
-  // started" entries even though only one process started.
   let hasLoggedAgentStart = false;
 
-  // docs/153 Fix 2 — agent_session_id persistence is deferred until we have
-  // evidence the CLI produced usable output. agent_init fires *before* the
-  // CLI tries to read the conversation jsonl, so persisting `event.sessionId`
-  // at init time would overwrite a freshly-recovered id with a doomed
-  // fresh-init UUID when `--resume` is about to fail with "No conversation
-  // found". Stash the first init's session id here, flush it on the first
-  // signal the turn is actually running (agent_assistant, or the canonical
-  // agent_result write below), and short-circuit if we see the missing-
-  // conversation stderr line.
+  // Init precedes resume validation; wait for output before replacing the stored ID.
   let pendingAgentSessionId: string | null = null;
   let agentSessionIdPersisted = false;
   let missingConversationDetected = false;
-  // docs/140 — true once the turn these listeners were wired for has produced
-  // its `agent_result`. On a resident streaming process the listeners stay
-  // attached across turns (they are replaced only when the orchestrator starts
-  // the NEXT turn), so top-level assistant output observed after this flag is
-  // set belongs to a turn the CLI started on its own. See `adoptCliStartedTurn`.
   let sawTurnResult = false;
 
-  /**
-   * docs/235 §6 / docs/140 — adopt a turn the orchestrator never started.
-   *
-   * The CLI starts turns of its own on a resident streaming process, and they
-   * run through the listener closure the previous turn left attached. Two edges
-   * reach here:
-   *
-   *   - **`agent_self_wake`** (docs/235) — a `Bash(run_in_background)` job
-   *     finished and the CLI re-invoked the model.
-   *   - **top-level assistant output after this turn's `result`** (docs/140) —
-   *     the CLI accepted a live steer that arrived too late to land in the
-   *     finishing turn (it acked the message, so it is not re-queued) and runs
-   *     it as its own turn once the old one ends. Nothing announces that turn;
-   *     the model producing output is the first proof it exists.
-   *
-   * Either way the runner must read as running for the duration, and the turn
-   * needs a CLEAN accumulator — exactly as `turn-executor` gives a
-   * user-initiated turn via `resetRunnerTurnState`. Nothing calls that for a
-   * turn the orchestrator never started, so without it the new turn's output
-   * appends to the PREVIOUS turn's `chatMessageGroups` and its `agent_result`
-   * persists the combined set — duplicating the earlier turn in the transcript.
-   *
-   * The reset runs ONLY when no turn is in flight. `agent_self_wake` rides the
-   * CLI's `task_notification`, which fires whenever a background job finishes —
-   * and a job started earlier in the CURRENT turn commonly reports back while
-   * that same turn is still streaming. That is not a wake; it is a mid-turn
-   * notification, and resetting there DESTROYS the running turn:
-   * `chatMessageGroups` is cleared, and the next tool-result boundary's
-   * `replaceInProgress` deletes every in_progress row for the session and
-   * re-inserts from the truncated accumulator. The live viewer never notices (it
-   * doesn't re-read), but the turn's opening is gone from chat history for good.
-   * See `integration_tests/self-wake-midturn.test.ts`.
-   */
   const adoptCliStartedTurn = (reason: string): void => {
     if (!runner) return;
-    // The false→true edge, captured before the flag moves. This function runs on
-    // EVERY `agent_self_wake`, and that event rides the CLI's
-    // `task_notification` — which fires whenever a background job reports back,
-    // 15+ times inside one session in the production log. So anything that must
-    // happen once per ADOPTED TURN hangs off this flag, never off the call.
+    // Task notifications also arrive mid-turn; resetting then would erase its history.
     const startsTurn = !runner.running;
     if (startsTurn) {
       resetRunnerTurnState(runner);
-      // The adopted turn runs through these SAME listeners; adopt its epoch so
-      // its own crash-path finalize isn't mistaken for a stale turn's.
       wiredTurnEpoch = runner.turnEpoch;
     }
     runner.running = true;
@@ -457,34 +152,6 @@ export function wireAgentListeners(
         running: true,
         queueLength: runner.queueLength,
       });
-      // docs/267 — …and the CROSS-SESSION half. `session_status` rides the
-      // PER-SESSION WebSocket, so it reaches only viewers already attached to
-      // this session. Every other sidebar keeps `isAgentRunning === false`, and
-      // `SessionStatusDot` falls through "agent running" (priority 2) to the
-      // green CI checkmark (priority 5) for a session that is in fact working —
-      // the truth appearing only when the user switches in and HTTP history
-      // reports the authoritative `agentRunning`. The REMOVAL half was never
-      // missing (`session_agent_finished` is already an SSE broadcast); that
-      // asymmetry was the whole bug.
-      //
-      // No `activity` field. The client tolerates its absence, and it would be
-      // invented rather than reported: nothing here knows what the CLI decided
-      // to do. It is also unused in this shape — the client applies the label
-      // only to the ACTIVE session's status line, which the `session_status`
-      // above has already put into its loading state.
-      //
-      // Streaming only, and that gate is what makes the add safe. An adopted
-      // turn gets a post-turn flow — and with it the matching
-      // `session_agent_finished` — only from `turn-executor`'s
-      // `rearmForCliStartedTurn`, which `beginRearm` refuses to run when the
-      // turn is not streaming. On a one-shot turn the process's `done` reaches
-      // `broadcastFinishedIfIdle`, so announcing a start there would depend on
-      // that broadcast actually firing. docs/287 made it fire — the
-      // non-streaming `done` branch now clears the latched `running` first — but
-      // the retraction still says only "the session is idle again", never "that
-      // adopted turn ran and finished", because on a one-shot process it did
-      // not. Left streaming-only: this is a start we still cannot promise to
-      // retract meaningfully.
       if (startsTurn && opts.useStreaming === true) {
         deps.sseBroadcast("session_agent_started", { sessionId: turnSessionId });
       }
@@ -502,87 +169,20 @@ export function wireAgentListeners(
     agentSessionIdPersisted = true;
   };
 
-  // ---- Suppress auto-resolved AskUserQuestion tool_results ----
-  //
-  // The Claude CLI auto-resolves AskUserQuestion in both `-p` headless mode AND
-  // `--input-format stream-json` (live steering) — see docs/140 and the
-  // AskUserQuestion comment in the agent_assistant branch below. The orchestrator
-  // interrupts on seeing the tool_use, but the interrupt is asynchronous (PTY
-  // Ctrl+C or a streaming `control_request`), so the auto-resolved tool_result
-  // can still reach the orchestrator before the turn ends.
-  //
-  // If that synthetic tool_result is forwarded to the client and attached to the
-  // chat-history message group, the AskUserQuestion card renders as "answered":
-  // `MessageList` sets `questionDisabled = !!el.result`, and `AskUserQuestion`
-  // derives `submittedAnswers` from the auto-resolved content — graying out the
-  // options and rendering the synthetic string as an Other answer. The user can
-  // no longer click anything to actually answer.
-  //
-  // Track the well-formed AskUserQuestion tool_use_ids we interrupt and drop any
-  // subsequent tool_result blocks that match them, both from the broadcast event
-  // and from the persisted message group. The same set also tracks ExitPlanMode
-  // ids under live steering — the streaming CLI auto-resolves that tool the same
-  // way, which would otherwise flip the PlanApproval card to "Plan resolved" and
-  // strip its Accept/Suggest buttons before the user could act (see the
-  // ExitPlanMode block in the agent_assistant branch below).
+  // Synthetic CLI answers can race the interrupt and disable unanswered cards.
   const suppressedToolResultIds = new Set<string>();
-  // planning#358 — see the note at `wireAuthRequiredHandler` below.
   let sawAuthRequiredThisTurn = false;
   agent.on("auth_required", () => { sawAuthRequiredThisTurn = true; });
 
-  /**
-   * planning#438 — has THIS turn already written its terminal error row? Two
-   * handlers can write one for a single death, and the grok adapter reaches
-   * both: `proc.on("error")` re-emits the OS error, and the INDEPENDENT `close`
-   * handler still synthesizes an `agent_result` carrying its own error (there is
-   * no guard between them — opencode's close handler picks one or the other, so
-   * only grok has the pair). Whichever fires first owns the row; the second
-   * stands down rather than leaving the user two bubbles for one failure.
-   *
-   * First-wins is the right way round in both orderings: the `error` event
-   * carries the OS-level cause (`spawn ENOENT`), which is more specific than the
-   * synthesized "exited with code N", and a late `error` after a result adds
-   * nothing the result did not already say.
-   *
-   * Turn-scoped by construction — `agent-execution.ts` calls
-   * `removeAllListeners()` before re-wiring a reused process, so this closure
-   * never outlives its turn.
-   */
+  // A process death can emit both error and agent_result.
   let persistedTerminalErrorRow = false;
 
-  /**
-   * planning#438 — did this result carry a QUOTA refusal? Set in the
-   * `agent_result` detection block and read by the persistence block further
-   * down, which must stand down when it is true: a quota-refused turn is about
-   * to be failed over to the next account (the executor's docs/150 req 14 gate),
-   * and a turn that is being re-run has not ended. When no account is left, the
-   * turn ends as a `ProviderRouteUnavailableError` through the `error` handler,
-   * whose row names the routing failure and the resend that resolves it — which
-   * is the message the user can act on, not the provider's raw refusal.
-   */
   let sawHardExhaustionThisTurn = false;
 
-  // ---- MCP mid-turn crash detection (docs/088) + per-tool timing (docs/185) ----
-  //
-  // The CLI's init event covers cold-start liveness (ClaudeAdapter →
-  // `mcp_status`), but doesn't say anything when a server dies mid-turn. The
-  // tracker recovers that from tool-result errors (every MCP tool call is named
-  // `mcp__<server>__<tool>`), records `id → name` and a first-observation start
-  // for every tool_use, and emits `mcp_server_status state:"crashed"` (deduped
-  // per-turn-per-server) on a matching `is_error` result. `toolUseStartTimes`
-  // feeds `stampToolDurations`. State is per-wired-agent so it resets per turn.
-  // See `createAgentToolTracker` in `agent-event-normalizer.ts`.
   const toolTracker = createAgentToolTracker(opts.capturedSessionId, emitToViewers);
 
   agent.on("log", (source: string, text: string) => {
     deps.broadcastLog(source as "stderr" | "stdout" | "server", text);
-    // docs/153 Fix 2 — when the Claude CLI's stderr reports a missing
-    // conversation for the `--resume <id>` we passed, the fresh init UUID
-    // the CLI emits immediately afterwards is doomed: the process exits 1
-    // with no usable output. Flip into "do not persist" state so the
-    // listener stops the pending agent_session_id from clobbering the DB,
-    // and surface a chat-level error so the user sees why the turn aborted
-    // (vs. the previous silent loop).
     const missingConversation = source === "stderr"
       ? /No conversation found with session ID:\s*([^\s]+)/i.exec(text)
       : null;
@@ -594,13 +194,6 @@ export function wireAgentListeners(
         const recovering = opts.recoverMissingConversation?.(invalidId) ?? false;
         if (!recovering) {
           const message = "Couldn't resume the previous conversation. ShipIt could not start a fresh thread automatically; resend your message or open Settings → Agents if the problem continues.";
-          // Persisted, not merely emitted — same rule as the auth notice in
-          // `agent-auth-handler.ts`: this is the user's only explanation for a
-          // turn that produced nothing, so it has to survive a detached viewer,
-          // a session switch, and a reload. Recorded in-band (rather than
-          // appended) so the `done` handler's `onInterruptedTurn` finalize
-          // rebuilds it at its true position alongside any partial output,
-          // instead of the two racing to write separate rows.
           const turnSessionId = opts.capturedSessionId;
           if (runner && turnSessionId) {
             emitChatCard(
@@ -619,13 +212,6 @@ export function wireAgentListeners(
 
   agent.on("event", (rawEvent: AgentEvent) => {
     let event = rawEvent;
-    // Subscription rate-limits are account-wide telemetry, not chat content:
-    // route them into the limits badge (which broadcasts its own SSE) and
-    // stop — forwarding as an `agent_event` would just be noise for the chat
-    // message grouping. Both Claude (via the CLI's `rate_limit_event` stream
-    // messages) and Codex (via `account/rateLimits/updated`) feed this same
-    // single callback — the orchestrator dispatches to the right provider.
-    // See docs/135.
     if (event.type === "agent_rate_limits") {
       deps.recordAgentRateLimits?.(
         agent.agentId,
@@ -637,39 +223,18 @@ export function wireAgentListeners(
       return;
     }
 
-    // docs/140 — a live steer the backend refused (Codex rejects `turn/steer`
-    // during review / manual-compaction turns with `ActiveTurnNotSteerable`).
-    // The message was already optimistically rendered + recorded as an
-    // in-progress steered row; rather than let it vanish, drop that row and
-    // re-queue the text so it runs as the next turn. Steerability is a
-    // turn-level property (a non-steerable turn rejects EVERY steer for its
-    // whole duration, and a steerable one accepts them all), so popping the
-    // OLDEST pending steer per rejection both preserves send order and can't
-    // re-queue a steer that actually landed. This is NOT chat content — handle
-    // it and return before the message accumulator, exactly like rate-limits.
     if (event.type === "agent_steer_rejected") {
       const turnSessionId = opts.capturedSessionId;
       if (runner) {
         const pending = runner.steeredMessages;
-        // Pop the oldest pending steer (FIFO). Its stored `text` is the raw
-        // user message (not the assembled prompt the adapter echoes back), so
-        // the re-queued bubble matches what the user typed.
         const dropped = pending[0];
         if (dropped) {
           runner.steeredMessages = pending.slice(1);
-          // Re-persist the in-progress set without the dropped steer so a
-          // reload doesn't show it twice (once here, once when the queued turn
-          // runs and persists its own user row).
           if (turnSessionId) {
             persistTurnInProgress(deps.chatHistoryManager, runner, turnSessionId);
           }
         }
-        // Re-queue the original text (+ best-effort attachments). The post-turn
-        // drain feeds it as the next turn once the current (non-steerable) turn
-        // ends. Fall back to the adapter-echoed text if there's no record.
         const requeueText = dropped?.text ?? event.text;
-        // A rejected user steer — re-queued as the interactive turn it always
-        // was (planning#257).
         const queued: QueuedMessage = { text: requeueText, execution: "interactive" };
         if (dropped?.images && dropped.images.length > 0) queued.images = dropped.images;
         if (dropped?.files && dropped.files.length > 0) {
@@ -685,14 +250,6 @@ export function wireAgentListeners(
       return;
     }
 
-    // docs/140 — a live steer's delivery ACK. The streaming CLI echoes every
-    // user message it accepts into a turn (`--replay-user-messages`); matching
-    // that echo against the steer we sent confirms the agent will act on it.
-    // Mark the oldest un-delivered steer whose assembled prompt the CLI echoed
-    // as delivered, so it is NOT re-queued at turn end (an un-acked steer fell
-    // into the turn-end gap and IS re-queued — see `requeueUndeliveredSteers`).
-    // NOT chat content (the inline bubble was rendered by `message_steered`) —
-    // handle and return before the message accumulator, like steer-rejected.
     if (event.type === "agent_user_replay") {
       if (runner) {
         const steers = runner.steeredMessages;
@@ -705,17 +262,10 @@ export function wireAgentListeners(
           next[idx] = { ...next[idx], delivered: true };
           runner.steeredMessages = next;
         }
-        // An unmatched echo is the initial turn prompt (also replayed) or a
-        // steer with no recorded assembledPrompt — harmless to ignore.
       }
       return;
     }
 
-    // docs/178 — context compaction in flight. Transient progress only: forward
-    // an emit-only "Compacting…" indicator and stop before the message
-    // accumulator (it has no place in the scrollback). Like rate-limits and
-    // steer-rejected, this is not chat content. Both CLIs may compact
-    // unsolicited mid-turn, so this can arrive with no user `/compact`.
     if (event.type === "agent_compaction_started") {
       const turnSessionId = opts.capturedSessionId;
       if (turnSessionId) {
@@ -729,79 +279,27 @@ export function wireAgentListeners(
       return;
     }
 
-    // docs/235 — the LEVEL signal: the backend's complete current
-    // background-task list. Transient live state, so it is emit-only and
-    // deliberately NOT persisted — the tasks are gone by the time anyone
-    // reloads the transcript tomorrow. The durable consequence is the runner
-    // state, which keeps the idle enforcer and the disk-tier ladder from
-    // reclaiming a container that still has work outstanding.
     if (event.type === "agent_background_tasks") {
       const turnSessionId = opts.capturedSessionId;
       if (runner) {
         runner.setBackgroundTasks(event.tasks);
         if (turnSessionId) {
-          // Its OWN message type, never a `session_status`. This event fires at
-          // arbitrary moments relative to turn boundaries — in particular the CLI
-          // drains the list ~1ms BEFORE the `task_notification` that wakes it (see
-          // the wire trace in docs/235), and again while `handleSendMessage` is
-          // still setting up a turn it hasn't flagged `running` for yet. Riding on
-          // `session_status` meant filling in a `running` snapshot at exactly those
-          // moments, which the client reads as "the turn ended": indicator off,
-          // "needs attention" chime, then back on a frame later.
+          // Do not send session_status: task-list changes are not turn boundaries.
           emitToViewers({
             type: "background_tasks",
             sessionId: turnSessionId,
             count: runner.backgroundTaskCount,
             descriptions: runner.backgroundTaskDescriptions,
           });
-          // The CROSS-SESSION half is not emitted here: `setBackgroundTasks`
-          // above makes the runner emit `background_work`, and the single
-          // subscriber in `runner-registry-factory` turns that into the
-          // `session_attention` SSE broadcast (planning#246). Announcing per call
-          // site is what left five other clears silent.
         }
       }
       return;
     }
 
-    // docs/235 — the EDGE signal: a background task finished and the CLI is
-    // starting a turn nobody asked it for. Mark the runner running so the
-    // session reads as busy for the duration; the ordinary `agent_result`
-    // handler below clears it exactly as it would for a user-initiated turn.
-    // Emit-only for the same reason as above: the spinner is live state, while
-    // the turn's actual output persists through the normal path.
     if (event.type === "agent_self_wake") {
       const turnSessionId = opts.capturedSessionId;
-      // docs/235 §6 — mark the runner running and hand the wake turn a clean
-      // accumulator (only when no turn is in flight; see `adoptCliStartedTurn`).
-      //
-      // NOT gated on `opts.useStreaming`, unlike the assistant edge below, and
-      // that asymmetry is deliberate rather than an oversight. The executor
-      // refuses to re-arm a non-streaming turn, so a wake arriving between a
-      // one-shot turn's `agent_result` and its `done` sets `running = true` with
-      // no flow left to clear it.
-      //
-      // docs/287 — that state used to be described here as "unreachable through
-      // the adapter", on the reasoning that a one-shot CLI reaps its background
-      // tasks and exits at turn end (docs/235 probe A). **Production disproves
-      // it**: on 2026-09-03 a `task_notification` arrived in the same second as
-      // process exit, twice, latching the runner busy until the next user action
-      // tripped the "stuck running=true" reset 45 and 5 minutes later. The fix is
-      // in `turn-executor.ts`'s non-streaming `done` branch, which now clears the
-      // flag exactly as the streaming branch does — NOT a gate here, which would
-      // change docs/235's shipped contract (pinned on a non-streaming session by
-      // `integration_tests/self-wake-midturn.test.ts`) and would also suppress
-      // the busy state for the window the notification legitimately covers.
+      // One-shot CLIs can notify between result and exit; the executor's done clears running.
       adoptCliStartedTurn("self-wake");
-      // docs/109 reqs 10–11 — the SAME event is also the only completion signal
-      // a backgrounded subagent ever produces. Its `tool_result` was written
-      // once at launch (the CLI's acknowledgement) and is never superseded, so
-      // without this the card claims "Running in the background" forever, across
-      // reloads, after the parent agent has already acted on the report.
-      //
-      // Deliberately AFTER the liveness block and behind its own guards: this is
-      // a second, independent consumer of one event, and a failure to find the
-      // card must not cost the session its busy state.
       if (turnSessionId && event.toolUseId) {
         retireFinishedBackgroundSubagent(deps.chatHistoryManager, runner, emitToViewers, {
           sessionId: turnSessionId,
@@ -814,12 +312,6 @@ export function wireAgentListeners(
       return;
     }
 
-    // docs/178 — compaction finished. This IS transcript content (the history
-    // was replaced by a summary), so persist a card via `emitChatCard` (the one
-    // supported way to add a transcript card off the agent-event stream — it
-    // both emits live AND records in-band with the turn so it survives a
-    // reconnect, a session switch, and a full reload). Also clears the transient
-    // indicator. Return before the accumulator — the card is the record.
     if (event.type === "agent_compacted") {
       const turnSessionId = opts.capturedSessionId;
       if (turnSessionId && runner) {
@@ -842,14 +334,6 @@ export function wireAgentListeners(
       return;
     }
 
-    // docs/193 / planning#114 — an agent backend raised a gated action the user must
-    // approve (sensitive-file edit, escalated command). This IS transcript
-    // content: persist a pending card via `emitChatCard` so it survives a
-    // reconnect / switch / reload, and the user can still answer it after a
-    // reload (the worker holds the request). This block sits BEFORE the raw
-    // `agent_event` broadcast below, so returning here means the bare
-    // `agent_permission_request` event isn't double-sent — only the card. The
-    // user's answer arrives as a `resolve_permission` WS message.
     if (event.type === "agent_permission_request") {
       const turnSessionId = opts.capturedSessionId;
       if (turnSessionId && runner) {
@@ -881,10 +365,6 @@ export function wireAgentListeners(
           { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
         );
 
-        // docs/193 (Thread C) — the agent is now BLOCKED awaiting this answer.
-        // Broadcast a cross-session attention signal over the global SSE so a
-        // user focused on another session sees "needs your approval" in the
-        // sidebar, not just inside this session's transcript.
         runner.awaitingPermissionIds.add(event.requestId);
         deps.sseBroadcast("session_attention", {
           sessionId: turnSessionId,
@@ -894,23 +374,11 @@ export function wireAgentListeners(
       return;
     }
 
-    // docs/193 — the user answered a permission request. Patch the persisted
-    // card to its terminal state and emit the terminal WS message so the live
-    // card flips. Driven by the broker's single resolution broadcast, keyed by
-    // requestId.
     if (event.type === "agent_permission_resolved") {
       const turnSessionId = opts.capturedSessionId;
       if (turnSessionId && runner) {
         const phase = event.behavior === "allow" ? "approved" : "denied";
-        // The permission card resolves MID-TURN — the agent is blocked awaiting
-        // the answer, so the proposing-turn row is still in_progress. A DB-only
-        // `updatePermissionCard` patch would be clobbered by the next
-        // `replaceInProgress` rebuild from `recordedCards` (still holding the
-        // pending snapshot), reverting the card to its Approve/Deny variant on
-        // the next switch/reload. Patch the recorded card in place so every
-        // rebuild — and the final end-of-turn persist — carries the terminal
-        // phase, then flush. Fall back to the DB-row patch only if the card
-        // isn't in this turn's recorded set (the proposing turn finalized).
+        // Patch recorded cards before rebuilding history, or the pending phase returns.
         const requestId = event.requestId;
         const remembered = event.remembered;
         const patchedRecorded = updateRecordedCard(
@@ -941,8 +409,6 @@ export function wireAgentListeners(
           ...(event.remembered ? { remembered: true } : {}),
         });
 
-        // docs/193 (Thread C) — clear the cross-session attention signal once no
-        // permission prompt is left outstanding for this session.
         runner.awaitingPermissionIds.delete(event.requestId);
         if (runner.awaitingPermissionIds.size === 0) {
           deps.sseBroadcast("session_attention", {
@@ -962,46 +428,16 @@ export function wireAgentListeners(
             deps.getSubscriptionLimitsSnapshot?.(),
           )
         : undefined;
-      // docs/150-multiple-provider-subscriptions req 7 — a turn the provider killed for quota is the most
-      // reliable exhaustion signal there is: it is the account refusing work,
-      // not telemetry describing it. Stamp it against the NORMALIZED text,
-      // which is where the reset instant ends up when we could recover one.
-      //
-      // The provider does not always kill the turn, though: a Claude CLI that
-      // hits the limit mid-turn says so in an ordinary assistant message and
-      // then ends `subtype: "success"`, leaving `error` undefined. Fall through
-      // to the turn's final assistant text so that shape still benches the
-      // account (see `detectHardExhaustionInTurnText`).
+      // Claude can report quota exhaustion as assistant text on a successful result.
       const noticeText = normalizedError ? null : (runner?.turnSummary ?? null);
       const detected = normalizedError
         ? detectHardExhaustion(normalizedError)
         : detectHardExhaustionInTurnText(noticeText);
-      // planning#438 — carried to the persistence block below, which must NOT
-      // write a terminal error row for a quota refusal: the executor's docs/150
-      // req 14 gate fails this turn over to the next account, and the retry owns
-      // the user-visible outcome. If no account is left, the turn ends as a
-      // `ProviderRouteUnavailableError` through the `error` handler, which
-      // persists the routing message instead — the one the user can act on.
-      //
-      // **…but only when that gate will actually run** (planning#453 review).
-      // `stopsOnFailure` is `billingMode === "key"`, so a metered key gets no
-      // failover at all — and suppressing unconditionally handed that turn the
-      // worst of both: no retry to explain it and no row saying why, leaving a
-      // reloaded transcript with a failed turn and no reason in it. The two
-      // modules now ask one shared question so they cannot drift apart again;
-      // `quotaRefusalCanFailOver`'s docstring carries the reasoning.
-      //
-      // …and the ADOPTED-turn condition is the third input, added after the
-      // same drift recurred on the docs/140 path (production 2026-09-06). The
-      // executor never re-dispatches a turn the CLI started on its own, so
-      // suppressing the row there left the user nothing at all.
+      // Suppress the error row only when failover owns the outcome, including adopted-turn rules.
       sawHardExhaustionThisTurn =
         detected !== null
         && quotaRefusalCanFailOver(
           opts.getCapturedRoutePolicy?.(),
-          // The same subject the executor's gate reads (`sessionId` there is
-          // this capture). Undefined only in tests, where the policy resolves
-          // to "can fail over" and behaviour is unchanged.
           opts.capturedSessionId ? deps.sessionManager.get(opts.capturedSessionId) : undefined,
           opts.isServingAdoptedTurn?.() ?? false,
         );
@@ -1013,38 +449,11 @@ export function wireAgentListeners(
           opts.getCapturedRouteId?.(),
         );
       }
-      // planning#358 — proof by use: an `agent_result` at all means the CLI got
-      // past authentication on this route, so any earlier `auth_failed` verdict
-      // is stale and must not keep demanding attention in Settings.
-      //
-      // Deliberately NOT gated on the result being error-free. On Claude — the
-      // only backend that can currently reach the mark — an auth failure does
-      // not arrive here: `claude/process.ts` raises `auth_required` and swallows
-      // both auth-shaped events, so an `agent_result` carrying a quota error
-      // still proves the credential authenticated, which is exactly the fact
-      // this clears. Gating on `!event.error` would leave a healthy credential
-      // marked broken whenever its first turn back happened to hit a limit.
-      //
-      // That invariant is backend-specific, not universal, so do not restate it
-      // as one: Codex's handler maps any `turn/completed` with a non-`completed`
-      // status to an `agent_result` with `error` and no auth-shaped exclusion,
-      // which could in principle clear a mark set moments earlier by a
-      // simultaneous `auth_required`. Latent today — the catalogue gives Codex
-      // no string-delivered route that can reach the mark — and the cost if it
-      // ever lands is one stale `ready` that the next failure re-marks.
+      // A redirected service can emit auth_required and then a result; preserve that failure.
       const authenticatedRouteId = opts.getCapturedRouteId?.();
       if (authenticatedRouteId && !sawAuthRequiredThisTurn) {
         deps.clearCredentialRouteAuthFailed?.(authenticatedRouteId);
       }
-      // A turn the provider refused for quota is a FAILED turn even when the
-      // CLI dressed it up as a successful one. Promote it here, where both
-      // channels meet, so everything downstream of this event keeps working off
-      // `error` alone: the docs/182 `lastTurnErrored` flag a few hundred lines
-      // below, the transcript's error row, `shipit session wait`. Without this,
-      // an exhaustion detected on the text channel that has no account left to
-      // fail over to (the retry is bounded to one hop) retires as a success —
-      // which is the incident this whole change exists to prevent, one account
-      // further along. The error path is untouched: it already had both fields.
       if (normalizedError !== undefined) {
         event = { ...event, error: normalizedError };
       } else if (detected && noticeText) {
@@ -1052,19 +461,7 @@ export function wireAgentListeners(
       }
     }
 
-    // Drop auto-resolved tool_result blocks for AskUserQuestion calls we
-    // interrupted. See `suppressedToolResultIds` declaration for why. If
-    // filtering removes every block, skip the whole event — the client has
-    // nothing to render and per-type handling below would no-op on empty
-    // content anyway.
-    // `content` is `unknown[]` by declaration but not by guarantee: the
-    // Anthropic message schema also permits a bare string, and the adapter
-    // passes `message.content` through untouched. A string here threw
-    // `TypeError: content.filter is not a function` out of the SSE event
-    // parser mid-turn, which stranded the turn and requeued an unacknowledged
-    // steer. Skip the filter for a non-array (there are no blocks to suppress)
-    // rather than trusting the type — `stampToolDurations` right below already
-    // guards the same way.
+    // Wire content can be a string despite the declared array type.
     const toolResultContent = (event as { content?: unknown }).content;
     if (
       event.type === "agent_tool_result" &&
@@ -1083,10 +480,6 @@ export function wireAgentListeners(
       }
     }
 
-    // Derive per-tool execution time (docs/185) by stamping each tool_result
-    // block with `now - <tool_use start>`. Done before the emit so the live
-    // client and the persisted `toolResults` (built downstream via
-    // `extractToolResults`) share one computed value from one source.
     if (event.type === "agent_tool_result") {
       event = stampToolDurations(event, toolTracker.toolUseStartTimes, Date.now());
     }
@@ -1094,20 +487,7 @@ export function wireAgentListeners(
     const isInternalStreamCompletion =
       event.type === "agent_assistant" && event.isStreamCompletion;
     if (!isInternalStreamCompletion) {
-      // docs/244 — project heavy bodies out of the WIRE copy only. `event`
-      // itself must stay whole: it flows on to `extractToolResults` below and
-      // is what gets persisted, and the fetch endpoints read the persisted row.
-      // Projecting in place here would store the slice and destroy the tail.
-      //
-      // A client cannot outrun the write, but only because this projects tool
-      // RESULTS and nothing else: the `replaceInProgress` that commits them is
-      // a synchronous better-sqlite3 call in the `agent_tool_result` branch
-      // below, in this same tick, so the row lands before the frame reaches the
-      // network. That does NOT extend to `agent_assistant` — an Edit/Write body
-      // arriving there is not committed until the *next* tool-result boundary,
-      // so stripping it here would leave the diff modal with nothing to fetch
-      // for as long as the tool takes to run. Hence tool inputs are projected
-      // on the history path only; see `WireProjectionOptions`.
+      // Keep full bodies for persistence; only results persist synchronously in this tick.
       const wireEvent = opts.capturedSessionId
         ? projectAgentEventForWire(opts.capturedSessionId, event, (id) => toolTracker.getToolName(id))
         : event;
@@ -1115,37 +495,13 @@ export function wireAgentListeners(
     }
 
     if (event.type === "agent_init") {
-      // Use the session ID captured at turn start — immune to session switches.
-      // Guaranteed non-null by the assert at function entry.
       const turnSessionId = opts.capturedSessionId!;
-      // Record "Agent process started" only when the agent actually
-      // starts emitting events — the unconditional broadcastLog at the
-      // run() call site fired even when the worker rejected a duplicate
-      // /agent/start (HTTP 409), producing misleading multi-start log
-      // entries when the orchestrator's defensive flow couldn't catch
-      // a race. agent_init is emitted by both local adapters and the
-      // proxy, so this works uniformly across runtime modes. Gated to
-      // the first init per turn — see the `hasLoggedAgentStart` comment
-      // above for why subsequent inits (subagents, streaming turn-2)
-      // must not re-log.
-      // docs/178 — the Claude CLI emits a SECOND `system/init` mid-stream after
-      // it compacts context (and subagents each emit their own init). Only the
-      // FIRST init per wired-agent is the real process start / the turn's
-      // session+permission baseline; the guarded-mode availability check below
-      // is gated on this so a post-compaction re-init can't flip
-      // `guardedUnavailable` or re-emit a spurious downgrade notice. `pendingAgentSessionId`
-      // already resists overwrite via `??=`, so the resume key is safe too.
+      // Compaction and subagents can emit further init events without a new process.
       const isFirstInit = !hasLoggedAgentStart;
       if (!hasLoggedAgentStart) {
         hasLoggedAgentStart = true;
         deps.broadcastLog("server", "Agent process started");
       }
-      // docs/153 Fix 2 — stash the init's sessionId; persist it lazily on
-      // the first agent_assistant or agent_result so a `--resume` failure
-      // (which always emits a *fresh* init UUID right before exiting) can't
-      // overwrite the recovered id or a healthy session's prior id. Only the
-      // top-level turn's first init is recorded — subagent inits emit their
-      // own sessionIds which are not the resume key for the next turn.
       pendingAgentSessionId ??= event.sessionId;
       const session = deps.sessionManager.get(turnSessionId);
       if (session) {
@@ -1153,7 +509,6 @@ export function wireAgentListeners(
         deps.sseBroadcast("session_started", { session });
       }
       if (opts.isNewSession) {
-        // docs/140 diag — see comment in agent-execution.ts persistUserMessage.
         console.log(`[persist-user] agent_init session=${turnSessionId} (isNewSession branch)`);
         opts.persistUserMessage(turnSessionId);
       }
@@ -1167,20 +522,10 @@ export function wireAgentListeners(
         });
       }
 
-      // docs/138 — guarded-mode runtime availability detection. The init
-      // event's `permissionMode` is the authoritative signal: `"auto"` means
-      // the classifier engaged. We only check when this turn actually
-      // requested guarded; for `auto`/`plan` the field is irrelevant.
       if (opts.requestedPermissionMode === "guarded" && runner && isFirstInit) {
         if (event.permissionMode === "auto") {
-          // Engaged. Clear any stale unavailable flag (e.g. an admin
-          // re-enabled auto mode since the last failed attempt this session).
           runner.guardedUnavailable = false;
         } else {
-          // Requested but not engaged → non-transient unavailable (plan / admin
-          // lock / unsupported model). The CLI already dropped to default for
-          // this turn, so we let it complete in auto-equivalent and just label
-          // it. Set the volatile flag so subsequent turns silently send auto.
           runner.guardedUnavailable = true;
           emitNoticeInTurn(
             runner,
@@ -1192,21 +537,7 @@ export function wireAgentListeners(
         }
       }
 
-      // Plan-mode desync fix — resync `appliedPermissionMode` from the CLI's
-      // authoritative `init.permissionMode`. A persistent streaming CLI keeps
-      // its spawn-time `--permission-mode` for life, but the orchestrator's
-      // `appliedPermissionMode` bookkeeping can drift (it's cleared on
-      // `setAgent(null)` during proxy recreation on reload, and the client chip
-      // falls back to "auto" after a reload). When it drifts to `undefined`
-      // while the CLI is still pinned to `plan`, the between-turns mode-change
-      // gate (send-message / turn-executor) compares "auto requested" against
-      // "auto applied", skips the freeing `set_permission_mode` push, and the
-      // session is permanently wedged ("can't exit plan mode"). The init event
-      // is the CLI's own report of its current mode, so trust it over local
-      // bookkeeping. Only act on a recognized CLI mode — adapters that don't
-      // surface it (Codex) leave the bookkeeping untouched. Not gated on
-      // `isFirstInit`: a post-compaction / post-`set_permission_mode` re-init
-      // also carries the real mode, and resyncing from it is always safe.
+      // Re-init can report a changed mode; synchronize it even after the first init.
       if (runner) {
         const synced = cliPermissionModeToApplied(event.permissionMode);
         if (synced !== "unrecognized") {
@@ -1216,37 +547,7 @@ export function wireAgentListeners(
     }
 
     if (event.type === "agent_assistant") {
-      // docs/140 — a TOP-LEVEL assistant event after this wired turn's `result`,
-      // on a resident streaming process, is the CLI producing output for a turn
-      // the orchestrator never started. Production shape: a live steer the CLI
-      // acked too late to apply, which it then runs as the next turn — the third
-      // outcome documented on `AgentUserReplayEvent`. Without adopting it the
-      // session read as IDLE for the whole response, its post-turn flow was
-      // never armed, and a later `agent_self_wake` could reset the accumulator
-      // mid-response and lose the answer's opening.
-      //
-      // The model TALKING is the edge, not the CLI's `init`. An init looks like
-      // the obvious announcement — docs/235's own probe names it — but it is
-      // emitted for `set_permission_mode` too (`StreamingClaudeProcess.setPermissionMode`),
-      // and that control response promises no turn and no later `result` to
-      // clear `running` again. Steering pushes the mode change and the message
-      // as two independent worker calls, so it can land after the finishing
-      // turn's `result` and wedge the session as permanently busy.
-      //
-      // On a backend that starts its own turns, a top-level assistant event has
-      // no such benign producer: a backgrounded subagent's carries
-      // `parentToolUseId` (excluded below), and compaction emits none. That
-      // clause is exactly what `opts.adoptsCliStartedTurns` carries — on Codex
-      // the same shape means the opposite (its app-server is killed at
-      // `turn/completed` and emits the turn's final text after it), which is why
-      // the gate is a capability and not `useStreaming`.
-      //
-      // Adoption must happen BEFORE this branch accumulates: `resetRunnerTurnState`
-      // clears `chatMessageGroups` / `turnSummary`, so a reset after the append
-      // would drop the adopted turn's first block. A self-wake reaches
-      // `adoptCliStartedTurn` first (its `task_notification` precedes the turn's
-      // output) and has already set `running`, so each CLI-started turn is
-      // adopted exactly once.
+      // Adopt before accumulation resets history. Init alone can be a mode-change response.
       if (
         opts.adoptsCliStartedTurns && sawTurnResult && runner && !runner.running
         && !event.parentToolUseId
@@ -1254,20 +555,8 @@ export function wireAgentListeners(
         adoptCliStartedTurn("post-result assistant output");
       }
 
-      // docs/153 Fix 2 — the CLI has produced an assistant content block,
-      // so the resumed (or freshly-init'd) session is real. Persist the
-      // top-level init's sessionId to the DB now. agent_result's persist
-      // below is the authoritative final write; this earlier persist
-      // guards the case where the process exits abnormally between first
-      // assistant and result (network drop, OOM, etc.) — without it the
-      // next turn's --resume would lose the rotation.
       persistAgentSessionIdIfReady();
 
-      // Multiple text blocks within a single assistant event are distinct
-      // preambles separated by tool_use blocks (common when a subagent runs
-      // serial tool calls in one turn). Joining with "" runs them together
-      // with no separator — "…cloaker.Now I have…". Use "\n\n" so each
-      // preamble renders as its own paragraph under whitespace-pre-wrap.
       const text = (event.content ?? [])
         .filter((b): b is ClaudeContentBlockText => b.type === "text")
         .map((b) => b.text)
@@ -1276,25 +565,14 @@ export function wireAgentListeners(
       const toolBlocks = (event.content ?? [])
         .filter((b): b is ClaudeContentBlockToolUse => b.type === "tool_use");
 
-      // Stream completion (Codex deltas finished): replace turnSummary with
-      // the FULL text, but skip accumulator/chat-group updates — the deltas
-      // already populated those. Without this, turnSummary would be the last
-      // tiny delta (often "."), which became the commit message.
+      // Deltas already populated chat groups; use the full text only for the summary.
       if (event.isStreamCompletion) {
         if (text && runner) runner.turnSummary = text;
         return;
       }
 
-      // Record every tool_use this turn — including subagent (Task) ones,
-      // since their children dispatch MCP tools whose failures we still want
-      // attributed to the right server. See `createAgentToolTracker` at the
-      // top of this function (docs/088 mid-turn crash detection).
       if (toolBlocks.length > 0) toolTracker.recordToolUses(toolBlocks);
 
-      // Subagent (Task) events carry parentToolUseId. Route them under the
-      // group that contains the parent Task tool, *not* into the main flow —
-      // otherwise nested tool calls would corrupt the parent conversation.
-      // (109 — subagent transparency)
       if (event.parentToolUseId && runner) {
         attachSubagentAssistant(runner, event.parentToolUseId, text, toolBlocks);
         return;
@@ -1309,82 +587,21 @@ export function wireAgentListeners(
         runner.accumulatedToolUse = [...runner.accumulatedToolUse, ...toolBlocks];
       }
 
-      // Claude can enter plan mode by calling EnterPlanMode during an otherwise
-      // auto/default turn. In streaming mode that mutates the resident CLI
-      // process, so the orchestrator's applied-mode bookkeeping must follow it;
-      // otherwise approving the later ExitPlanMode card looks like auto→auto
-      // and we skip the set_permission_mode(undefined) control request that
-      // releases the process from plan mode.
       if (runner && toolBlocks.some((t) => t.name === "EnterPlanMode")) {
         runner.appliedPermissionMode = "plan";
       }
 
-      // Track message groups for chat history (split at tool-result boundaries).
-      // The accumulation + standalone-tool-merge logic lives in
-      // `agent-message-builder.ts`.
       if ((text || toolBlocks.length > 0) && runner) {
         accumulateAssistantGroups(runner, text, toolBlocks);
       }
 
-      // docs/163 — voice notes: deliver the authored card (sole deliverer, built
-      // from the tool INPUT, rides this fast channel) and, as the fallback
-      // floor, a derived headline when a top-level AskUserQuestion / ExitPlanMode
-      // interrupt needs the user but no authored note fired this turn. Subagent
-      // calls carry `parentToolUseId` and returned early above, so they aren't
-      // observed — by design (a subagent shouldn't page the user). See
-      // `observeVoiceNotes` in `agent-voice-handler.ts`.
       if (runner) {
         observeVoiceNotes(runner, toolBlocks, deps.deliverVoiceNote);
       }
 
-      // The voice-note card's durable persist is owned by `routeVoiceNote` →
-      // `emitChatCard` (docs/191): emitting a card now also persists the
-      // in-progress turn in the same call, so there's no window where the card
-      // lives only in the live array + `recordedCards`. No separate eager
-      // persist is needed here.
-
-      // AskUserQuestion blocking: the Claude CLI in `-p` (headless) mode has no
-      // way to actually wait for a real user answer — without `--input-format
-      // stream-json` there's no bidirectional channel — so the CLI auto-resolves
-      // the tool call (typically with an empty/"no user" result) and the model
-      // continues with whatever it had planned. From the user's POV the
-      // AskUserQuestion card appears AND the agent has already moved on without
-      // them pressing anything.
-      //
-      // Fix: when we see an AskUserQuestion tool_use at the top level, interrupt
-      // the CLI so it can't act on the auto-resolved result. The card stays
-      // rendered (we've already emitted the event and stored the message group).
-      // When the user picks an answer, `handleAnswerQuestion` resumes with
-      // `--resume` and the answer as the next prompt.
-      //
-      // We set `wasInterrupted = true` so the existing post-turn flow (see
-      // agent-execution.ts) suppresses the spurious "exited without result"
-      // error and skips the queue drain. Only fires for top-level events —
-      // parentToolUseId-carrying (subagent) events have already returned above.
-      //
-      // Gate on well-formed input: when the model emits an AskUserQuestion
-      // call with missing/malformed `questions` (e.g. an empty input object,
-      // which the CLI's input validator rejects with InputValidationError),
-      // the AskUserQuestion card can't render at all — the client checks
-      // `Array.isArray(tool.input.questions)` before rendering. Interrupting
-      // here would kill the turn before the model gets the validation error
-      // back, stranding the user with no card and no progress. Skip the
-      // interrupt for malformed calls so the CLI's auto-resolved error reaches
-      // the model and it can retry within the same turn.
-      //
-      // docs/140 — live steering: the original assumption was that the CLI in
-      // `--input-format stream-json` mode would genuinely block awaiting the
-      // user's answer. In practice it auto-resolves the tool call the same way
-      // headless `-p` mode does, so the model moved on before the user could
-      // pick an answer. Interrupt in both modes. In streaming mode `interrupt()`
-      // is a `control_request` that ends the turn with `error_during_execution`
-      // while keeping the persistent process alive, so the answer can still
-      // flow back via `sendUserMessage`/NDJSON in `handleAnswerQuestion`.
+      // Both CLI modes auto-answer. Interrupt only valid questions that the user can answer.
       if (runner && toolBlocks.some(isWellFormedAskUserQuestion)) {
         runner.wasInterrupted = true;
-        // Remember the AskUserQuestion ids so we can drop the CLI's
-        // auto-resolved tool_result for them — otherwise the client renders the
-        // card as already-answered and the user can't click any option.
         for (const t of toolBlocks) {
           if (isWellFormedAskUserQuestion(t)) suppressedToolResultIds.add(t.id);
         }
@@ -1392,26 +609,7 @@ export function wireAgentListeners(
         deps.broadcastLog("server", "Agent interrupted: waiting for AskUserQuestion answer");
       }
 
-      // ExitPlanMode blocking (live steering only). In the one-shot `-p
-      // --permission-mode plan` path the CLI ends the turn at ExitPlanMode (the
-      // model has presented its plan and the headless process exits), so the
-      // PlanApproval card renders with its Accept/Suggest buttons intact and
-      // there is nothing to fix. The persistent streaming process behaves
-      // differently: ExitPlanMode auto-resolves the same way AskUserQuestion
-      // does (the CLI emits an `is_error` tool_result because there's no human
-      // to approve the plan exit) and the model charges ahead in the SAME turn
-      // — still in plan mode, so its Write/Edit/Bash calls are blocked and it
-      // complains it "can't exit plan mode." Meanwhile the auto-resolved
-      // tool_result flips the PlanApproval card to "Plan resolved" and disables
-      // the buttons, so the user can never click "Accept & Execute" (which is
-      // what actually switches the session out of plan mode).
-      //
-      // Fix: mirror the AskUserQuestion treatment under streaming. Interrupt so
-      // the model stops at the plan boundary, and suppress the auto-resolved
-      // tool_result so the card stays interactive. The user then clicks
-      // "Accept & Execute" (switches the session to auto + sends a fresh
-      // "Execute the plan" message) or "Suggest Changes" — both fresh turns,
-      // consistent with every other turn boundary.
+      // Streaming ExitPlanMode also auto-resolves; keep the approval card interactive.
       if (opts.useStreaming && runner && toolBlocks.some((t) => t.name === "ExitPlanMode")) {
         runner.wasInterrupted = true;
         for (const t of toolBlocks) {
@@ -1422,20 +620,11 @@ export function wireAgentListeners(
       }
     }
 
-    // Mark a message-group boundary when tool results arrive so the
-    // next agent_assistant starts a new chat history entry.
     if (event.type === "agent_tool_result") {
       const toolResults = extractToolResults(event);
 
-      // docs/088 mid-turn crash detection: scan tool results for failures
-      // attributable to a configured MCP server. Done BEFORE the subagent
-      // routing fork below so failures inside Task children are caught too.
-      // No-op when there are no errors / no MCP-prefixed names — cheap to
-      // call on every result block.
       if (toolResults.length > 0) toolTracker.reportMcpCrashesFromResults(toolResults);
 
-      // Subagent tool_result events: attach to the parent group's subagentEvents
-      // and do NOT split the main message group. (109 — subagent transparency)
       if (event.parentToolUseId && runner && toolResults.length > 0) {
         attachSubagentToolResults(runner, event.parentToolUseId, toolResults);
         return;
@@ -1443,13 +632,10 @@ export function wireAgentListeners(
 
       if (runner) runner.needsNewMessageGroup = true;
 
-      // Attach tool results to the current message group
       if (toolResults.length > 0 && runner) {
         attachToolResultsToGroup(runner, toolResults);
       }
 
-      // Persist all accumulated message groups as in-progress, interleaving any
-      // live-steered user messages at their recorded position (docs/140).
       const usageSessionId = opts.capturedSessionId;
       if (usageSessionId) {
         const inProgressMessages = buildTurnMessages(
@@ -1459,10 +645,6 @@ export function wireAgentListeners(
           { inProgress: true },
         );
         deps.chatHistoryManager.replaceInProgress(usageSessionId, inProgressMessages);
-        // docs/244 / planning#299 — this boundary is what puts the turn's Edit/Write
-        // inputs and its nested subagent results on disk. Recording them lets a
-        // mid-turn reconnect strip the committed prefix instead of re-sending
-        // every body the history path had just removed.
         if (runner) markMessagesCommitted(runner.committedBodyIds, inProgressMessages);
         if (runner) runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
       }
@@ -1471,13 +653,6 @@ export function wireAgentListeners(
     if (event.type === "agent_result") {
       const turnSessionId = opts.capturedSessionId;
       if (turnSessionId) {
-        // docs/153 Fix 2 — only write the result's sessionId when the turn
-        // actually produced something. A `--resume <missing-id>` turn emits
-        // both agent_init AND agent_result with fresh, useless UUIDs before
-        // exiting; the stderr scan above sets `missingConversationDetected`
-        // which we honor here. agentSessionIdPersisted is also `true` after
-        // the first assistant for healthy turns, so this stays the canonical
-        // rotation write for those.
         if (!missingConversationDetected) {
           deps.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
           agentSessionIdPersisted = true;
@@ -1486,21 +661,7 @@ export function wireAgentListeners(
         deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
       }
 
-      // docs/138 — surface guarded-mode classifier blocks inline so a guarded
-      // turn never fails silently. A single block doesn't abort (the model
-      // re-routes); the CLI ends a headless run only after its 3-consecutive /
-      // 20-total threshold, at which point the turn produces an early/empty
-      // result with these denials populated. Either way we summarize the
-      // blocked tool(s) and offer next steps. Model self-refusals are NOT
-      // classifier denials and never reach this array.
-      //
-      // Gate on `requestedPermissionMode === "guarded"`: the CLI can populate
-      // `permission_denials[]` in non-guarded turns too (e.g. headless `-p`
-      // auto-resolves an `AskUserQuestion` call because there's no human to
-      // answer), and attributing those to "Guarded mode" was misleading the
-      // user. In `auto`/`plan` mode the classifier isn't engaged, so any
-      // denials in the result event are not classifier blocks and we don't
-      // surface this notice.
+      // Non-guarded turns can report permission denials too; do not call them classifier blocks.
       if (
         event.permissionDenials?.length
         && turnSessionId
@@ -1509,9 +670,6 @@ export function wireAgentListeners(
       ) {
         const blockedTools = [...new Set(event.permissionDenials.map((d) => d.toolName))].join(", ");
         const count = event.permissionDenials.length;
-        // Recorded in-band (not emit-only) so the blocked-actions summary
-        // survives a reload. It fires before this turn's final persist below,
-        // so buildTurnMessages interleaves it at the turn's end.
         emitNoticeInTurn(
           runner,
           turnSessionId,
@@ -1524,10 +682,6 @@ export function wireAgentListeners(
 
       const usageSessionId = turnSessionId ?? event.sessionId;
 
-      // If the backend reported the real context window for this turn's
-      // model (e.g. Opus 4.7 → 1_000_000), re-emit `model_info` with the
-      // authoritative value. This overrides whatever `agent_init` derived
-      // from the static `MODEL_CONTEXT_WINDOWS` map.
       if (event.contextWindow && turnModel) {
         emitToViewers({
           type: "model_info",
@@ -1536,11 +690,6 @@ export function wireAgentListeners(
         });
       }
 
-      // Build the per-turn usage record for the live `turn_usage_update` emit.
-      // Per-turn data is no longer attached to chat-history messages — the
-      // canonical per-turn series is owned by `UsageManager` and rehydrated
-      // from there via `GET /api/sessions/:id/history` (see B in the
-      // ContextDial cost-display unification).
       let perTurnUsage: TurnUsage | undefined;
       const hasUsageTelemetry =
         event.cost?.totalUsd !== undefined
@@ -1557,30 +706,10 @@ export function wireAgentListeners(
         if (event.tokens?.cacheRead !== undefined) perTurnUsage.cacheRead = event.tokens.cacheRead;
         if (event.tokens?.cacheWrite !== undefined) perTurnUsage.cacheCreate = event.tokens.cacheWrite;
         if (turnModel) perTurnUsage.model = turnModel;
-        // `contextTokens` is the real context-window occupancy at turn end
-        // (last iteration's input + cache). Distinct from `inputTokens +
-        // cacheRead + cacheCreate`, which sums over every iteration and
-        // dramatically overstates context for tool-heavy turns.
         if (event.contextTokens !== undefined) perTurnUsage.contextTokens = event.contextTokens;
       }
 
       if (perTurnUsage) {
-        // Some backends, including Codex app-server, report authoritative token
-        // usage but no dollar cost. Persist those turns with a zero-dollar
-        // value so session turn counts, token history, and rehydration still
-        // work; do not estimate pricing here.
-        // `record` converts the CLI's cumulative `total_cost_usd` (carried in
-        // `perTurnUsage.costUsd`) into a per-turn delta and returns it; reflect
-        // that delta back onto the live emit so `turn_usage_update` shows the
-        // same figure the DB will rehydrate, not the cumulative snapshot.
-        // docs/252 phase 3 — `cost_usd` means money that left the account, and
-        // the rule keys on the BILLING MODE (`turn-attribution.ts`). The
-        // harness's own figure is passed as what it is — possibly absent, which
-        // is not the same as zero: Codex reports no dollar figure at all, and
-        // reading that as "free" is what made metered OpenAI turns cost nothing.
-        // The turn-start capture is preferred, but a session created BY this
-        // turn (`isNewSession`) has no row to read at wire time — so fall back
-        // to reading it now rather than recording that first turn as `legacy`.
         const turnAttribution =
           turnAttributionAtStart
           ?? turnAttributionFor(selectionOf(deps.sessionManager.get(usageSessionId)));
@@ -1607,30 +736,19 @@ export function wireAgentListeners(
             model: turnModel,
             contextTokens: event.contextTokens,
             costSource: resolvedCost.costSource,
-            // Carry the harness's running total forward even on a turn that did
-            // not take its cost from it, so the delta chain stays continuous
-            // across a billing-mode switch within one conversation.
+            // Preserve cumulative continuity across billing-mode changes.
             ...(event.cost?.totalUsd !== undefined
               ? { cumulativeSnapshot: event.cost.totalUsd }
               : {}),
             ...(turnAttribution ? { attribution: turnAttribution } : {}),
-            // docs/260 §5 — the route this turn authenticated with, from the
-            // turn's own capture (never the session row, which records no
-            // route any more). The durable input to req 10's change notice.
             ...(opts.getCapturedRouteId?.()
               ? { credentialRouteId: opts.getCapturedRouteId()! }
               : {}),
           },
         );
-        // docs/252 req 16 — the live emit carries the same two attribution
-        // fields rehydration computes from the stored row, so a per-turn row
-        // does not change what it says the moment the page reloads.
         if (turnAttribution) {
           perTurnUsage.billingMode = turnAttribution.billingMode;
         }
-        // `sub` only, matching what rehydration computes — a `key` turn's
-        // `costUsd` already comes from these rates, so a second copy under the
-        // comparison's name would invite double-counting.
         if (turnAttribution?.billingMode === "sub") {
           perTurnUsage.atApiRatesUsd = costFromRates(turnAttribution.rates, {
             input: event.tokens?.input,
@@ -1649,10 +767,6 @@ export function wireAgentListeners(
             groups: sessionUsage.groups ?? [],
             totalDurationMs: sessionUsage.totalDurationMs,
             turnCount: sessionUsage.turnCount,
-            // The turn's own figures ride the `turn_usage_update` emitted just
-            // below, which is what the dial reads; a second copy here had no
-            // reader left once `usage_update` stopped moving the dial
-            // (planning#482).
             cumulativeInputTokens: tokenTotals?.cumulativeInputTokens,
             cumulativeOutputTokens: tokenTotals?.cumulativeOutputTokens,
           });
@@ -1667,44 +781,16 @@ export function wireAgentListeners(
           }
         }
       } else if (opts.getCapturedRouteId?.()) {
-        // docs/260-turn-level-account-routing req 10 — a turn can end WITHOUT usage telemetry (a Codex
-        // compact result reports no tokens or cost), but its credential route
-        // is still the fact the next turn's "Continuing on X" notice compares
-        // against. Left unrecorded, that comparison would read the route of an
-        // OLDER turn and mis-fire. Record the route with an empty usage row —
-        // zero cost and zero tokens change no aggregate.
+        // Record the route even without usage, for the next turn's route-change comparison.
         deps.usageManager.record(usageSessionId, 0, event.durationMs ?? 0, undefined, undefined, {
           ...(turnModel ? { model: turnModel } : {}),
           credentialRouteId: opts.getCapturedRouteId()!,
         });
       }
 
-      // docs/140 — recover any live steer the CLI never acknowledged this turn
-      // (one that fell into the turn-end gap: written to stdin while `running`
-      // was still true, but the model had already finished and never applied or
-      // echoed it). Re-queue it BEFORE the finalize below so the un-acked steer
-      // is excluded from this turn's rows and instead runs as the next turn via
-      // the executor's post-turn drain — an automatic resend rather than a lost
-      // message. No-op off the live-steer path.
+      // Remove undelivered steers before finalization; queued turns will persist them.
       if (runner) requeueUndeliveredSteers(runner, emitToViewers);
 
-      // planning#438 — a turn can END in an errored `agent_result` while having
-      // streamed nothing at all: grok and opencode synthesize the result when
-      // the CLI dies before producing one, and codex maps a failed
-      // `turn/completed` the same way. `receivedResult` is then true, so the
-      // executor's no-result row and the dispatch retry hook (`onNoResultExit`)
-      // both stand down — and the persist below writes only the (empty)
-      // accumulated groups. The user's message got silence on reload; the only
-      // explanation lived in the emit-only wire event. A terminal "failed" is
-      // transcript content (CLAUDE.md "Chat transcript content MUST be
-      // persisted"), so record a persisted error row in-band — the
-      // `buildTurnMessages` below folds it in via `recordedCards` at its true
-      // position. Skipped when the turn streamed any visible content (the
-      // quota promotion above can set `error` to the turn's own assistant
-      // text, which a row here would duplicate), when the user interrupted
-      // (an interrupt is not a failure, mirroring `turnErrored` below), and
-      // when the auth handler or the missing-conversation path already
-      // persisted the actionable explanation for this same death.
       const resultError = (event as { error?: string }).error;
       const turnHasVisibleContent =
         (runner?.chatMessageGroups ?? []).some((g) => g.text || g.toolUse.length > 0);
@@ -1718,11 +804,6 @@ export function wireAgentListeners(
         && !sawHardExhaustionThisTurn
       ) {
         persistedTerminalErrorRow = true;
-        // Guarded like the executor's `postTurnStep` steps, and for the same
-        // reason: this block sits BEFORE the turn's group persist a few lines
-        // down, so an unguarded SQLite failure here would abandon the rest of
-        // the handler and cost the turn everything it streamed — trading one
-        // missing row for the whole turn.
         try {
           if (runner) {
             emitChatCard(
@@ -1732,8 +813,6 @@ export function wireAgentListeners(
               { chatHistoryManager: deps.chatHistoryManager, sessionId: usageSessionId },
             );
           } else {
-            // No runner to record on — persist directly so the row still
-            // survives reload, and emit so an attached viewer sees it live.
             emitToViewers({ type: "error", message: resultError });
             deps.chatHistoryManager.append(usageSessionId, {
               role: "assistant",
@@ -1749,11 +828,6 @@ export function wireAgentListeners(
         }
       }
 
-      // Persist each message group as a separate assistant entry so that
-      // reloaded chat history shows the same message boundaries as live
-      // streaming. Per-turn usage is no longer attached to the last group —
-      // the per-turn cost/token series lives in `usage_turns` and is fetched
-      // alongside chat history by the `/history` HTTP endpoint.
       const finalMessages = buildTurnMessages(
         runner?.chatMessageGroups ?? [],
         runner?.steeredMessages ?? [],
@@ -1764,12 +838,6 @@ export function wireAgentListeners(
       deps.chatHistoryManager.finalizeInProgress(usageSessionId);
       if (runner) runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
 
-      // If `postTurnCommit` ran earlier in this turn (e.g. the codex CLI's
-      // first `turn/completed` arrived BEFORE the final assistant text events)
-      // but couldn't link the commit because there were no in_progress=0 rows
-      // yet, the link info was stashed on the runner. Apply it now that the
-      // rows actually exist. This is the second half of the fix described in
-      // `postTurnCommit` (see `opts.runner` there).
       if (runner?.pendingCommitLink) {
         const { commitHash, parentCommitHash } = runner.pendingCommitLink;
         const updatedId = deps.chatHistoryManager.updateLastMessage(usageSessionId, {
@@ -1790,26 +858,12 @@ export function wireAgentListeners(
         }
       }
 
-      // docs/182 — record the turn's terminal error state definitively at
-      // completion (true when this result carries an error that wasn't a
-      // deliberate interrupt; false on a clean finish). Mirrored to the session
-      // row so it survives an orchestrator restart, and read by the
-      // child-session readiness check so `shipit session wait` resolves a
-      // distinct `error` outcome instead of a false `idle`. Writing on every
-      // completion means a child that errored then succeeded on a follow-up turn
-      // clears the flag without a separate reset.
       const turnErrored = Boolean((event as { error?: unknown }).error) && !runner?.wasInterrupted;
       if (runner) runner.lastTurnErrored = turnErrored;
       if (turnSessionId) deps.sessionManager.setLastTurnErrored(turnSessionId, turnErrored);
 
-      // docs/140 — from here on, a fresh `agent_init` on these listeners means
-      // the CLI started a turn of its own (see `adoptCliStartedTurn`).
       sawTurnResult = true;
 
-      // Mark turn as complete immediately — don't wait for async post-turn
-      // work (git commit, PR lifecycle) in the "done" handler. This closes
-      // the timing window where a reconnecting viewer sees running=true.
-      // Use runner directly (not ctx) so this works even after WS disconnect.
       if (runner) {
         runner.running = false;
         runner.clearTurnEventBuffer();
@@ -1825,47 +879,10 @@ export function wireAgentListeners(
     }
   });
 
-  // docs/179 — `auth_required` handling (auth-failure recovery / token refresh)
-  // lives in `agent-auth-handler.ts`. It reads only turn-start-captured values
-  // (`opts.capturedSessionId`, the resolved `runner`) and emits via
-  // `emitToViewers`, preserving the WS-lifecycle invariant.
-  // planning#358 — turn-scoped latch: did THIS turn fail authentication?
-  //
-  // Registered as its own listener rather than threaded through the auth
-  // handler, because it must be set even on the paths that handler returns
-  // early from. Per-turn by construction: `agent-execution.ts` calls
-  // `removeAllListeners()` before re-wiring a reused process, so this closure
-  // never outlives its turn.
-  //
-  // Measured, not theorised. Against a deliberately invalid DeepSeek key the
-  // sequence was `marked auth_failed` → `cleared auth_failed` → `agent exited`,
-  // all inside one failed turn: the CLI raised `auth_required` AND then emitted
-  // an `agent_result`, so the clear undid the mark and the row went back to
-  // reading `ready` on a credential that had just been refused. "Auth failures
-  // never arrive as `agent_result`" holds for the shapes whose text matches the
-  // CLI's auth patterns and does not hold for a bare upstream 401 from a
-  // redirected service — which is precisely the case this feature exists for.
   wireAuthRequiredHandler(agent, runner, deps, opts, emitToViewers);
 
   agent.on("error", async (err: Error) => {
-    // A STALE error — one whose turn a successor has already replaced — must
-    // not run ANY of this handler. The teardown below finalizes the session's
-    // in-progress rows from the runner's CURRENT accumulators, flips
-    // `running`, clears the turn-event buffer and drains the queue; every one
-    // of those now belongs to the successor turn. This shape is real: a
-    // resident process killed by the failover pre-check can reject an
-    // in-flight worker HTTP call and emit `error` LOCALLY (bypassing the SSE
-    // relay's runToken stale guard) while the next turn is inside env-prep —
-    // finalizing here flipped that turn's failover notice to `in_progress=0`,
-    // and its next boundary re-inserted the recorded card as a permanent
-    // duplicate bubble. Settlement of the superseded turn is owned by the
-    // `superseded` event (planning#318), not by this handler.
-    //
-    // Checked BEFORE `willRetryOnQuotaError`, deliberately: a stale
-    // quota-shaped error would otherwise finalize the successor's rows, bench
-    // the account the successor is currently pinned to, and dispatch a retry
-    // whose fresh agent DISPLACES the successor's — the same interference
-    // through a second door (found by cross-backend review).
+    // Check before retry: a stale error must not change the successor's route or state.
     if (
       runner !== null &&
       wiredTurnEpoch !== undefined &&
@@ -1876,19 +893,7 @@ export function wireAgentListeners(
       );
       return;
     }
-    // docs/252 phase 5 — before the teardown: is this a quota failure the
-    // executor is about to fail over from? Everything below is the terminal
-    // teardown of a turn that has ended (it finalizes history, appends an error
-    // row, clears `running` and broadcasts `session_agent_finished`), and a
-    // turn about to be re-run has not ended. Same stand-down shape as the
-    // `auth_required` recovery, for the same reason.
     if (opts.willRetryOnQuotaError?.(err) === true) return;
-    // docs/150-multiple-provider-subscriptions req 13 — a turn blocked because no connected account can serve
-    // it is a routing decision, not a crashed process. It reaches this handler
-    // (env-prep throws, `executeAgentTurn` re-emits as `error`) so it inherits
-    // the whole terminal-turn cleanup below, but the user must not be told
-    // their agent crashed: the message already says what happened and what to
-    // do, so it is surfaced verbatim.
     const blocked = err instanceof ProviderRouteUnavailableError;
     const display = blocked ? err.message : `Agent process error: ${err.message}`;
     console.error(blocked ? "[agent] turn blocked:" : "[agent] process error:", err.message);
@@ -1896,16 +901,6 @@ export function wireAgentListeners(
     emitToViewers({ type: "error", message: display });
     const turnSessionId = opts.capturedSessionId;
     if (turnSessionId) {
-      // Preserve whatever partial turn the agent produced before it errored.
-      // Mirrors the agent_result path: persist the accumulated message groups
-      // and finalize them, *then* append the error message. The old code
-      // called clearInProgress() here, which deleted the entire in-progress
-      // turn — so a crash mid-turn wiped all of the agent's work from the UI
-      // on the next history load.
-      // Pass empty steers (this path historically drops them) but keep recorded
-      // cards so a voice note / bug-report card recorded before the crash isn't
-      // lost on reload — the card is folded in at its true position, same as a
-      // clean finalize.
       const partialMessages = buildTurnMessages(
         runner?.chatMessageGroups ?? [],
         [],
@@ -1914,11 +909,6 @@ export function wireAgentListeners(
       );
       deps.chatHistoryManager.replaceInProgress(turnSessionId, partialMessages);
       deps.chatHistoryManager.finalizeInProgress(turnSessionId);
-      // planning#438 — only the FIRST terminal error row for this turn is
-      // written. An errored `agent_result` may already have written one (grok
-      // emits both for a single death; see `persistedTerminalErrorRow`), and a
-      // second bubble saying the same thing is worse than none. Only the row is
-      // gated — the finalize above and the whole teardown below still run.
       if (!persistedTerminalErrorRow) {
         persistedTerminalErrorRow = true;
         deps.chatHistoryManager.append(turnSessionId, {
@@ -1928,46 +918,15 @@ export function wireAgentListeners(
         });
       }
     }
-    // Clear runner state so a stuck `running=true` doesn't make this runner
-    // permanently undisposable. Some adapter paths emit `error` without a
-    // follow-up `done` (e.g. spawn failure in claude.ts:94, agent_error SSE
-    // event from the worker without a subsequent agent_done) — without this
-    // reset, `runner.dispose()`'s running-guard would refuse forever.
-    // Setting running=false also lets the periodic idle enforcer reclaim the
-    // session normally. Emit `idle` if appropriate so post-cleanup proceeds.
     if (runner) {
-      // Identity-guard: only clear the runner's agent ref if it still points
-      // at us. A later turn may already have replaced it; clobbering to null
-      // would silently drop every subsequent SSE event from that turn.
       if (runner.getAgent() === agent) {
         runner.setAgent(null);
-        // docs/140 — streaming process is gone; reset the gate.
         runner.isStreamingActive = false;
-        // docs/235 — and its background tasks died with it (the CLI reaps them
-        // on exit). Without this a crashed process would leave a non-zero count
-        // pinning `agentBusy` true, making the runner permanently
-        // unreclaimable — the same failure this whole block guards against for
-        // `running`.
-        // planning#246 — `clearBackgroundTasks` announces the marker itself, so a
-        // crashed process (which emits no draining `agent_background_tasks`)
-        // still reaches every sidebar.
         runner.clearBackgroundTasks();
       }
       runner.running = false;
-      // docs/182 — a process-level error is a terminal turn error: record it on
-      // the runner and persist it so `shipit session wait` reports `error`
-      // (exit 3) even after an orchestrator restart loses the in-memory flag.
       runner.lastTurnErrored = true;
       if (turnSessionId) deps.sessionManager.setLastTurnErrored(turnSessionId, true);
-      // docs/163 — the errored turn has just been finalized into chat history
-      // (replaceInProgress + finalize + the error row above). Clear the
-      // turn-event replay buffer so a subsequent WS reconnect doesn't re-emit
-      // those same events on top of the already-persisted turn. Without this,
-      // the buffer stays dirty (lastPersistedBufferIndex only advances on
-      // tool-result / agent_result boundaries, never on the error path), and
-      // every reconnect — including a browser reload — replays the completed
-      // turn a second time, producing a duplicate that survives reload. This
-      // mirrors the clean-completion path in the `agent_result` handler.
       runner.clearTurnEventBuffer();
       if (turnSessionId) {
         emitToViewers({
@@ -1983,10 +942,6 @@ export function wireAgentListeners(
       deps.sseBroadcast("session_agent_finished", { sessionId: turnSessionId });
     }
 
-    // Drain the next queued message so a transient /agent/start failure
-    // (e.g. 409 race with the previous turn's worker-side cleanup) doesn't
-    // strand the rest of the queue. The drain helper will set running=true
-    // and start a fresh agent when it shifts a message off.
     if (opts.onError) {
       try {
         await opts.onError();
@@ -1994,20 +949,7 @@ export function wireAgentListeners(
         console.error("[agent] error-path drain failed:", drainErr);
       }
     }
-    // The runner's "idle" event fires LAST, after `onError` has run this turn's
-    // drain and post-turn commit — the ordering `turn-executor.ts` states for
-    // every other terminal path ("the idle event drives auto-remediation ... so
-    // it must fire only AFTER the post-turn commit/PR work has landed"). This
-    // path used to signal idle *above*, before `onError` was even called, so an
-    // idle-driven `dispose()` could land between the two: the quota-exhaustion
-    // retry clears `running` before the replacement attempt starts, so the
-    // runner's own running-guard reads it as reclaimable while its post-turn
-    // commit is still 150ms away. The commit then landed against a session whose
-    // runner had already left the registry, and the push went with it.
-    //
-    // Safe to defer: `onAgentFinished` is itself guarded on `!running && no
-    // queue`, so a drain that started a fresh turn suppresses the signal rather
-    // than emitting a spurious idle mid-turn — which the old placement did.
+    // Idle can trigger disposal or remediation; signal it after drain and commit.
     runner?.onAgentFinished();
   });
 }

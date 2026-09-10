@@ -22,16 +22,16 @@ Two blocks, both optional, in the consuming project's `shipit.yaml`:
 ```yaml
 plugins:
   repos:
-    - repo: acme/dev-tools     # owner/name on GitHub, or `self`
-      name: tools              # the local name, used everywhere else
-      branch: main             # or `pin: v1.2.0` / a full SHA — never both
+    - repo: acme/dev-tools # Or self.
+      name: tools
+      branch: main # Or pin: v1.2.0 / a full SHA; never both.
   use:
-    - plugin: requirements     # an export the repo's manifest declares
+    - plugin: requirements
       from: tools
-      alias: reqs              # optional local name (default: the plugin name)
-      overrides:               # everything the CONSUMER gets to decide
+      alias: reqs # Defaults to the plugin name.
+      overrides:
         settings:
-          root: docs/specs     # a value for a setting the manifest declares
+          root: docs/specs
         services:
           api: { port: 4300, autostart: false, as: reqs-api }
         commands:
@@ -70,9 +70,9 @@ exports:
       skills: plugins/requirements/skills
       install: npm ci
       install-inputs: [package-lock.json]
-      dep-dirs: [node_modules]   # what install populates; this is the default
-      credentials: [FAL_KEY]     # names only — values live with each project
-      hosts: [fal.run]           # informational
+      dep-dirs: [node_modules]
+      credentials: [FAL_KEY]
+      hosts: [fal.run]
       settings:
         root:
           description: Directory the plugin reads and writes
@@ -260,8 +260,8 @@ re-activates when `shipit.yaml` changes or the session opens. After you push a
 change to the plugin repository, pull it in:
 
 ```
-shipit plugin refresh            # every declared repository
-shipit plugin refresh tools      # just this one
+shipit plugin refresh
+shipit plugin refresh tools
 ```
 
 It waits for the work and prints the commit each repository moved from and to.
@@ -270,7 +270,7 @@ session keeps working, on the OLD version. That distinction is the point of the
 non-zero exit: nothing is broken, but you are not running what you think.
 
 ```
-shipit plugin refresh --json     # the same rows, plus the last install
+shipit plugin refresh --json
 ```
 
 The user has the same verb without asking you: each branch-tracking repository's
@@ -310,9 +310,9 @@ not "what is live" (the Plugins tab and `SHIPIT_PLUGIN_COMMIT` already say
 that), but **is what is live usable, and if not, why**:
 
 ```
-shipit plugin status             # every declared repository
-shipit plugin status tools       # just this one
-shipit plugin status --json      # the same thing for a machine reader
+shipit plugin status
+shipit plugin status tools
+shipit plugin status --json
 ```
 
 Per repository it prints the commit being executed, every problem the Plugins

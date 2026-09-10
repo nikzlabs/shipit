@@ -1,18 +1,3 @@
-/**
- * Unit tests for the `shipit` shim (docs/117). Covers:
- * - argument parsing
- * - allowlist enforcement (rejected subcommands, --repo / --owner)
- * - happy paths for create / list / view
- * - error formatting (validation, quota 429, generic broker error)
- * - exit codes + JSON output
- *
- * The shim talks to the worker over HTTP. Tests inject a fake `call`
- * function so we never actually open a socket.
- *
- * Kept structurally parallel to `gh.test.ts` so the two shims share
- * exactly one test harness shape.
- */
-
 import { describe, it, expect } from "vitest";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -23,12 +8,6 @@ import {
   UNTRUSTED_CLOSE_MARKER,
 } from "../../shared/untrusted-input.js";
 
-/**
- * Write `content` to a throwaway temp file and return its path. Used to drive
- * `shipit session create --prompt-file <path>` in tests — the shim reads the
- * prompt from disk (or stdin), never from an inline flag, so backticks and
- * `$(...)` in the prompt survive verbatim.
- */
 async function promptFile(content: string): Promise<string> {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "shipit-shim-"));
   const p = path.join(dir, "prompt.txt");
@@ -47,13 +26,6 @@ interface MockResponse {
   body: Record<string, unknown>;
 }
 
-/**
- * docs/248 — the destinations the shim resolves references against in these
- * tests: the session's own repository (unnamed, req 12's exception) plus three
- * declarations. `hello` exists so `octocat/hello#42` resolves to a destination
- * that is NOT the session's own repo, which is the wrong-target case the whole
- * feature exists to prevent.
- */
 const DEFAULT_TRACKERS = {
   destinations: [
     { id: "github", kind: "github", key: "session/repo" },
@@ -90,19 +62,13 @@ function makeRunner() {
 
     const fakeCall = async (method: "GET" | "POST" | "PATCH", path: string, body: unknown) => {
       const key = `${method} ${path.split("?")[0]}`;
-      // docs/248 — every `shipit issue` command first asks the orchestrator which
-      // trackers this repository declares, so it can resolve a reference locally
-      // and report a routing failure in CLI output. That lookup is plumbing, not
-      // the operation under test, so it is answered here and deliberately kept
-      // OUT of `calls`: an assertion that "no broker call fired" still means "no
-      // issue operation fired", and `calls[0]` is still the operation.
+      // Exclude tracker discovery from recorded issue operations.
       if (key === "GET /agent-ops/issue/trackers") {
         return responses[key] ?? { status: 200, body: DEFAULT_TRACKERS };
       }
       calls.push({ method, path, body });
       const matching = responses[key];
       if (matching) return { status: matching.status, body: matching.body };
-      // Default: 200 with empty body so handlers fall through to "not found" cases
       return { status: 200, body: { child: null, children: [] } };
     };
 
@@ -116,10 +82,6 @@ function makeRunner() {
 
   return { run };
 }
-
-// ---------------------------------------------------------------------------
-// parseFlags
-// ---------------------------------------------------------------------------
 
 describe("parseFlags (shipit shim)", () => {
   it("parses positional + value flags + boolean flags", () => {
@@ -147,10 +109,6 @@ describe("parseFlags (shipit shim)", () => {
     expect(out.unsupported).toContain("--mystery");
   });
 });
-
-// ---------------------------------------------------------------------------
-// Top-level dispatch
-// ---------------------------------------------------------------------------
 
 describe("runShim — help and version", () => {
   it("prints help when no args", async () => {
@@ -190,10 +148,6 @@ describe("runShim — help and version", () => {
     ["service", "list", "/shipit-docs/compose.md"],
     ["release", "plan", "/shipit-docs/release.md"],
     ["branch", "reset-to-base", "/shipit-docs/sessions.md"],
-    // `shipit plugin` keeps its own HELP rather than routing through
-    // COMMAND_DOCS, so the pointer is asserted here for the same reason: help
-    // that names no page leaves the agent to guess which of the two plugin
-    // docs it wants.
     ["plugin", "refresh", "/shipit-docs/plugins.md"],
     ["plugin", "status", "/shipit-docs/plugins.md"],
   ])("supports --help for shipit %s %s", async (domain, sub, docsPath) => {
@@ -220,10 +174,6 @@ describe("runShim — help and version", () => {
     expect(out.exitCode).toBe(0);
   });
 });
-
-// ---------------------------------------------------------------------------
-// Allowlist
-// ---------------------------------------------------------------------------
 
 describe("runShim — allowlist", () => {
   it("rejects unknown top-level subcommands", async () => {
@@ -275,10 +225,6 @@ describe("runShim — allowlist", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// shipit session create
-// ---------------------------------------------------------------------------
-
 describe("shipit session create", () => {
   it("requires --prompt-file", async () => {
     const { run } = makeRunner();
@@ -299,7 +245,6 @@ describe("shipit session create", () => {
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("inline prompt flags");
     expect(out.stderr).toContain("--prompt-file");
-    // The redirect must fire before any broker call.
     expect(out.calls).toHaveLength(0);
   });
 
@@ -369,19 +314,15 @@ describe("shipit session create", () => {
     expect(out.calls).toHaveLength(1);
     expect(out.calls[0].method).toBe("POST");
     expect(out.calls[0].path).toBe("/agent-ops/session/create");
-    // `--turn` maps to `spawnedByTurn` on the wire.
     expect(out.calls[0].body).toMatchObject({
       prompt: "Port API to TS",
       title: "Port API",
       spawnedByTurn: "turn-123",
     });
-    // Don't send fields the agent didn't pass:
     const body = out.calls[0].body as Record<string, unknown>;
     expect("agent" in body).toBe(false);
     expect("base" in body).toBe(false);
     expect("model" in body).toBe(false);
-    // The agent cannot pick its own branch name — `--branch` was dropped
-    // because agent-supplied names drifted outside the `shipit/` namespace.
     expect("branch" in body).toBe(false);
   });
 
@@ -413,17 +354,12 @@ describe("shipit session create", () => {
       },
     );
     expect(out.exitCode).toBe(0);
-    // docs/264-agent-roles req 16 — the child spawn now sends the SAME wire names the
-    // one-shot spawn does (`agentId`/`modelId`), so one server-side parser reads
-    // both bodies. The flags the agent types are unchanged.
     expect(out.calls[0].body).toMatchObject({
       agentId: "codex",
       modelId: "claude-sonnet-4-20250514",
     });
   });
 
-  // docs/264-agent-roles req 16 — the rest of the shared vocabulary, which a child session
-  // could not say at all before: a service, a billing mode and a reasoning level.
   it("forwards --role, --service, --billing-mode and --effort on a child spawn", async () => {
     const { run } = makeRunner();
     const pf = await promptFile("x");
@@ -450,7 +386,6 @@ describe("shipit session create", () => {
     });
   });
 
-  // docs/264-agent-roles req 20 — the one word that declines the parent's role.
   it("forwards --no-role on a child spawn", async () => {
     const { run } = makeRunner();
     const pf = await promptFile("x");
@@ -465,8 +400,6 @@ describe("shipit session create", () => {
   });
 
   it("refuses --no-role together with --role, without a round trip", async () => {
-    // Two opposite statements about the same thing. Resolving it by precedence
-    // would run a child on a brief the caller may have meant to decline.
     const { run } = makeRunner();
     const pf = await promptFile("x");
     const out = await run([
@@ -487,17 +420,6 @@ describe("shipit session create", () => {
     expect(out.calls).toHaveLength(0);
   });
 
-  /**
-   * docs/264-agent-roles reqs 7, 10, 16 — **a named-but-empty parameter rides along instead
-   * of being dropped**, which is what makes the two commands one refusal rule
-   * rather than two implementations that agree on the common case.
-   *
-   * `shipit agent run` has tested presence (`!== undefined`) since phase 3; the
-   * child sent whatever was truthy, so `--role deep-dive --model=""` quietly ran
-   * the BARE role — a run nobody asked for, and exactly the dropped override
-   * req 10 forbids — where the one-shot command refused it. The shim forwards
-   * it; the server names the flag.
-   */
   for (const [flag, key] of [
     ["--role", "role"],
     ["--agent", "agentId"],
@@ -526,9 +448,6 @@ describe("shipit session create", () => {
   }
 
   it("rejects --base as an unsupported flag", async () => {
-    // The agent-facing `--base` was removed: generic fan-out children always
-    // branch off the parent repo's freshly-fetched `origin/main`, so a child
-    // can't be pinned to a stale ref that misses a just-merged parent change.
     const { run } = makeRunner();
     const pf = await promptFile("x");
     const out = await run([
@@ -594,14 +513,9 @@ describe("shipit session create", () => {
     const out = await run(["session", "create", "--prompt-file", pf]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("requires --title");
-    // The requirement is enforced before the broker is hit.
     expect(out.calls).toHaveLength(0);
   });
 });
-
-// ---------------------------------------------------------------------------
-// shipit session list
-// ---------------------------------------------------------------------------
 
 describe("shipit session list", () => {
   it("prints 'No spawned sessions' when the broker returns an empty list", async () => {
@@ -666,11 +580,6 @@ describe("shipit session list", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// shipit session find / list --all (docs/255 — Ops host inventory)
-// ---------------------------------------------------------------------------
-
-/** One inventory record as the orchestrator returns it. */
 const INVENTORY_HIT = {
   id: "83292266-7445-4a1b-9c2d-000000000000",
   title: "Fix integration-suite self-kill",
@@ -724,9 +633,6 @@ describe("shipit session find (docs/255)", () => {
   });
 
   it("accepts --pr as '#1744' or a PR URL in any of its real forms", async () => {
-    // `…/files` and `…?x=1` are ordinary things to paste out of a browser. A
-    // plain trailing-digits match rejects the first and reads the second as
-    // PR 1 — silently looking up the WRONG PR, which is the dangerous one.
     for (const value of [
       "1744",
       "#1744",
@@ -786,8 +692,6 @@ describe("shipit session find (docs/255)", () => {
   });
 
   it("names the exact next page rather than telling the agent to widen --limit", async () => {
-    // `limit` is server-capped, so "pass --limit to widen" would loop the agent
-    // against a ceiling it cannot raise. `--offset` is the only way past it.
     const { run } = makeRunner();
     const out = await run(["session", "find", "--branch", "b"], {
       [INVENTORY_ROUTE]: {
@@ -841,9 +745,6 @@ describe("shipit session list --all (docs/255)", () => {
   });
 
   it("refuses host-only flags without --all rather than silently ignoring them", async () => {
-    // Without this, `shipit session list --include-warm` quietly returns the
-    // CHILDREN list — which reads as a successful answer to a question it never
-    // actually asked.
     for (const flag of [["--include-warm"], ["--include-archived"], ["--offset", "5"]]) {
       const { run } = makeRunner();
       const out = await run(["session", "list", ...flag]);
@@ -870,10 +771,6 @@ describe("shipit session list --all (docs/255)", () => {
     expect(out.stdout).toContain("42 sessions");
   });
 });
-
-// ---------------------------------------------------------------------------
-// shipit session logs (docs/264 — Ops server-source log read)
-// ---------------------------------------------------------------------------
 
 const LOGS_ROUTE = "GET /agent-ops/session/host-session-logs";
 
@@ -932,8 +829,6 @@ describe("shipit session logs (docs/264)", () => {
   });
 
   it("distinguishes an empty window from pruned logs", async () => {
-    // Identical-looking output, opposite meanings: one says nothing happened,
-    // the other says the evidence is gone. Never let the operator guess.
     const { run: runEmpty } = makeRunner();
     const empty = await runEmpty(["session", "logs", "7bc72326", "--since", "10m"], {
       [LOGS_ROUTE]: {
@@ -955,9 +850,6 @@ describe("shipit session logs (docs/264)", () => {
   });
 
   it("reports withheld lines rather than letting them vanish, broken down by shape", async () => {
-    // A non-zero count is the only signal that a producer's wording drifted off
-    // its ops-safe template, so the renderer must never swallow it — and a bare
-    // total is not actionable, hence the per-shape split.
     const { run } = makeRunner();
     const out = await run(["session", "logs", "7bc72326"], {
       [LOGS_ROUTE]: {
@@ -976,9 +868,6 @@ describe("shipit session logs (docs/264)", () => {
   });
 
   it("still reports a total against an orchestrator that predates the breakdown", async () => {
-    // The shim and the orchestrator are versioned separately; an older server
-    // sends only `withheldUnclassified`, and printing nothing there would read
-    // as "no lines were withheld".
     const { run } = makeRunner();
     const out = await run(["session", "logs", "7bc72326"], {
       [LOGS_ROUTE]: {
@@ -1027,10 +916,6 @@ describe("shipit session logs (docs/264)", () => {
     expect(out.calls).toHaveLength(0);
   });
 });
-
-// ---------------------------------------------------------------------------
-// shipit session view
-// ---------------------------------------------------------------------------
 
 describe("shipit session view", () => {
   it("with no id, resolves THIS session instead of erroring (docs/233)", async () => {
@@ -1139,10 +1024,6 @@ describe("shipit session view", () => {
     expect(out.stderr).toContain("Spawned session not found");
   });
 });
-
-// ---------------------------------------------------------------------------
-// shipit session message  (docs/117 Phase 3)
-// ---------------------------------------------------------------------------
 
 describe("shipit session message", () => {
   it("requires a child session id", async () => {
@@ -1255,10 +1136,6 @@ describe("shipit session message", () => {
     expect(out.stderr).toContain("not a descendant of this parent");
   });
 });
-
-// ---------------------------------------------------------------------------
-// shipit session wait  (docs/117 Phase 3)
-// ---------------------------------------------------------------------------
 
 describe("shipit session wait", () => {
   it("requires a child session id", async () => {
@@ -1400,15 +1277,6 @@ describe("shipit session wait", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// shipit session wait — resilience (docs/182)
-//
-// These exercise the segment loop, transient-retry backoff, and multi-child
-// fan-out, which need a stateful `call` (responses change between iterations)
-// and an injectable virtual clock so deadline-driven loops are deterministic.
-// ---------------------------------------------------------------------------
-
-/** Virtual clock: `sleep(ms)` advances `now()` so backoff loops terminate. */
 function virtualClock(): { now: () => number; sleep: (ms: number) => Promise<void> } {
   let t = 0;
   return {
@@ -1424,11 +1292,6 @@ interface WaitMockResponse {
   body: Record<string, unknown>;
 }
 
-/**
- * Run `shipit session wait ...` with a per-child queue of responses (shifted in
- * order, last entry reused once exhausted) and a virtual clock so the segment /
- * backoff loops are deterministic and fast.
- */
 async function runWait(
   argv: string[],
   queues: Record<string, WaitMockResponse[]>,
@@ -1445,13 +1308,10 @@ async function runWait(
   const clock = virtualClock();
   const call = async (_m: string, path: string) => {
     callCount++;
-    // /agent-ops/session/wait/<id>?...
     const id = path.split("/agent-ops/session/wait/")[1]?.split("?")[0] ?? "";
     const queue = queues[id] ?? [];
     const res = queue.length > 1 ? queue.shift()! : (queue[0] ?? { status: 200, body: { outcome: "pending" } });
-    // Model the real server holding a segment open: a `pending` response only
-    // comes back after the segment elapsed, so advance the virtual clock. This
-    // bounds an otherwise-instant pending loop by the overall deadline.
+    // Model server wait time so pending responses consume the deadline.
     if (res.status >= 200 && res.status < 300 && res.body.outcome === "pending") {
       await clock.sleep(25_000);
     }
@@ -1491,7 +1351,6 @@ describe("shipit session wait — resilience (docs/182)", () => {
     expect(out.callCount).toBe(3);
     const parsed = JSON.parse(out.stdout);
     expect(parsed.outcome).toBe("idle");
-    // The swallowed transport error is surfaced as a note, not an outcome.
     expect(parsed.lastTransportError).toBeTruthy();
   });
 
@@ -1507,7 +1366,6 @@ describe("shipit session wait — resilience (docs/182)", () => {
 
   it("--any resolves on the first finisher and reports it", async () => {
     const out = await runWait(["session", "wait", "ses_a", "ses_b", "--any", "--json"], {
-      // ses_a never finishes within the loop; ses_b is idle on the first poll.
       ses_a: [{ status: 200, body: { outcome: "pending", child: { id: "ses_a", status: "running" } } }],
       ses_b: [{ status: 200, body: { outcome: "idle", child: { id: "ses_b", status: "idle" } } }],
     });
@@ -1546,10 +1404,6 @@ describe("shipit session wait — resilience (docs/182)", () => {
     expect(out.stderr).toContain("mutually exclusive");
   });
 });
-
-// ---------------------------------------------------------------------------
-// shipit session archive  (docs/117 Phase 3)
-// ---------------------------------------------------------------------------
 
 describe("shipit session archive", () => {
   it("requires a child session id", async () => {
@@ -1618,10 +1472,6 @@ describe("shipit session archive", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// shipit session whoami / report  (docs/233, planning#243) — the upward channel
-// ---------------------------------------------------------------------------
-
 const COHORT_BODY = {
   self: { id: "ses_me", title: "Elementalist catalog", branch: "shipit/elem", status: "running" },
   parent: { id: "ses_parent", title: "Spell catalogs", branch: "shipit/plan", status: "idle" },
@@ -1675,7 +1525,6 @@ describe("shipit session rename (docs/250)", () => {
       "POST /agent-ops/session/rename": { status: 200, body: RENAMED },
     });
     expect(out.exitCode).toBe(0);
-    // No session id anywhere in the path — the worker injects the caller's own.
     expect(out.calls[0]).toMatchObject({
       method: "POST",
       path: "/agent-ops/session/rename",
@@ -1898,10 +1747,6 @@ describe("shipit session report", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// shipit source (docs/162) — read-only ShipIt source surface, Ops-only
-// ---------------------------------------------------------------------------
-
 describe("shipit source", () => {
   it("status prints the resolved ref and exactness", async () => {
     const { run } = makeRunner();
@@ -2105,7 +1950,6 @@ describe("shipit session create --shipit-source (docs/162)", () => {
     const out = await run(["session", "create", "--prompt-file", pf, "--shipit-source"]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("--shipit-source requires --title");
-    // The requirement is enforced before the broker is hit.
     expect(out.calls).toHaveLength(0);
   });
 
@@ -2117,10 +1961,6 @@ describe("shipit session create --shipit-source (docs/162)", () => {
     expect(out.exitCode).not.toBe(0);
   });
 
-  // Guard: the agent-facing docs show operators copy-paste-able `shipit session
-  // create` recipes. `--title` is required by the shim (tests above), so every
-  // runnable invocation in the docs must carry it — otherwise a pasted recipe
-  // fails before the broker is ever hit. This pins the docs to the CLI contract.
   it("every runnable 'shipit session create' recipe in the docs passes --title", async () => {
     const docsDir = path.resolve(
       path.dirname(new URL(import.meta.url).pathname),
@@ -2131,9 +1971,6 @@ describe("shipit session create --shipit-source (docs/162)", () => {
     for (const name of docs) {
       const doc = await fsp.readFile(path.join(docsDir, name), "utf8");
       for (const line of doc.split("\n")) {
-        // A runnable recipe invokes the command with a prompt source. Prose
-        // mentions (`**\`shipit session create\`** (this shim)`, "Under the
-        // hood, …") never carry `--prompt-file`, so they're excluded.
         if (line.includes("shipit session create") && line.includes("--prompt-file")) {
           invocations.push(line.trim());
         }
@@ -2164,8 +2001,6 @@ describe("shipit session create --detached (docs/205)", () => {
       title: "Unrelated fix",
       detached: true,
     });
-    // The stable text block flags the severance so the agent doesn't try to
-    // wait/view/message it afterward.
     expect(out.stdout).toContain("session-id: ses_det");
     expect(out.stdout).toContain("detached:   yes");
   });
@@ -2197,10 +2032,6 @@ describe("shipit session create --detached (docs/205)", () => {
     expect(out.calls).toHaveLength(0);
   });
 });
-
-// ---------------------------------------------------------------------------
-// shipit issue (docs/175 read + docs/177 write)
-// ---------------------------------------------------------------------------
 
 describe("shipit issue", () => {
   const issuePayload = {
@@ -2236,11 +2067,7 @@ describe("shipit issue", () => {
     expect(out.stdout).toContain("A bug");
   });
 
-  // -- docs/248: --repo names the destination repository -------------------
-
   it("view routes a qualified pointer to the repository it named", async () => {
-    // The core wrong-target fix: `octocat/hello#42` must reach octocat/hello's
-    // issue 42, not the session repo's issue 42.
     const { run } = makeRunner();
     const out = await run(["issue", "view", "octocat/hello#42"], {
       "GET /agent-ops/issue/view": { status: 200, body: issuePayload },
@@ -2266,8 +2093,6 @@ describe("shipit issue", () => {
   });
 
   it("list without --tracker means the session's own repo", async () => {
-    // req 12 — the session's own repository is the one destination an operation
-    // may reach without naming it, and it keeps the bare `github` id.
     const { run } = makeRunner();
     const out = await run(["issue", "list"], {
       "GET /agent-ops/issue/list": { status: 200, body: { tracker: { id: "github" }, issues: [] } },
@@ -2275,8 +2100,6 @@ describe("shipit issue", () => {
     expect(out.calls[0].path).toMatch(/tracker=github(&|$)/);
   });
 
-  // req 11 — a name nobody declared fails closed, with the declared set named so
-  // the agent can correct itself rather than retry against another tracker.
   it("rejects a tracker name nobody declared", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "list", "--tracker", "nope"]);
@@ -2287,9 +2110,6 @@ describe("shipit issue", () => {
   });
 
   it("rejects --tracker that contradicts the tracker named in the reference", async () => {
-    // Naming two different destinations is a mistake, not a precedence
-    // question — silently preferring either one would be the substitution
-    // requirement 17 forbids.
     const { run } = makeRunner();
     const out = await run(["issue", "view", "octocat/hello#42", "--tracker", "planning"]);
     expect(out.exitCode).not.toBe(0);
@@ -2316,9 +2136,6 @@ describe("shipit issue", () => {
   });
 
   it("still rejects --priority on a qualified GitHub destination", async () => {
-    // The GitHub feature gaps are properties of the adapter, so they apply
-    // identically to a declared/named repository (planning#312 covers fixing them
-    // for both destinations at once).
     const { run } = makeRunner();
     const out = await run([
       "issue", "create", "--tracker", "planning", "--title", "T", "--body", "B", "--priority", "high",
@@ -2334,8 +2151,6 @@ describe("shipit issue", () => {
     expect(out.calls).toHaveLength(0);
   });
 
-  // req 12 — a bare id with no `--tracker` means the session's own repository,
-  // the one destination that needs no name.
   it("view resolves a bare number against the session's own repository", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "view", "42"], {
@@ -2369,11 +2184,9 @@ describe("shipit issue", () => {
       },
     });
     expect(out.exitCode).toBe(0);
-    // Both reads go out, each carrying the resolved tracker + id.
     const commentsCall = out.calls.find((c) => c.path.startsWith("/agent-ops/issue/comments"));
     expect(commentsCall?.path).toContain("tracker=github");
     expect(commentsCall?.path).toContain("id=42");
-    // Issue body still renders, then the thread.
     expect(out.stdout).toContain("A bug");
     expect(out.stdout).toContain("comments (2):");
     expect(out.stdout).toContain("octocat · 2026-01-01T00:00:00Z");
@@ -2424,15 +2237,8 @@ describe("shipit issue", () => {
       "GET /agent-ops/issue/comments": { status: 502, body: { error: "tracker hiccup" } },
     });
     expect(out.exitCode).toBe(1);
-    // The upstream error is surfaced verbatim (formatError prefers res.body.error).
     expect(out.stderr).toContain("tracker hiccup");
   });
-
-  // ---- Untrusted-input envelope (planning#87 / docs/176) ----------------------
-  //
-  // Fetched issue free-text is attacker-influenceable, so the shim wraps it in
-  // the planning#100 provenance envelope ("data, not instructions"). Defense-in-depth,
-  // never the barrier — the real controls are environment-layer (egress/tokens).
 
   it("view wraps the issue title + body in the untrusted-input envelope", async () => {
     const { run } = makeRunner();
@@ -2440,19 +2246,13 @@ describe("shipit issue", () => {
       "GET /agent-ops/issue/view": { status: 200, body: issuePayload },
     });
     expect(out.exitCode).toBe(0);
-    // The envelope brackets the reporter-authored free-text...
     expect(out.stdout).toContain(`${UNTRUSTED_OPEN_MARKER} ISSUE CONTENT`);
     expect(out.stdout).toContain(`${UNTRUSTED_CLOSE_MARKER} ISSUE CONTENT`);
-    // ...carries provenance (tracker:identifier)...
     expect(out.stdout).toContain("github:octocat/hello#42");
-    // ...and the "treat as data" notice.
     expect(out.stdout).toMatch(/DATA from an issue tracker/i);
-    // The title and body are present (inside the envelope); the trusted metadata
-    // (status/url) stays outside it.
     expect(out.stdout).toContain("A bug");
     expect(out.stdout).toContain("the body");
     expect(out.stdout).toContain("status:    Open");
-    // The body must sit between the open and close markers, not before them.
     const open = out.stdout.indexOf(UNTRUSTED_OPEN_MARKER);
     const close = out.stdout.indexOf(UNTRUSTED_CLOSE_MARKER);
     const bodyAt = out.stdout.indexOf("the body");
@@ -2472,10 +2272,7 @@ describe("shipit issue", () => {
       },
     });
     expect(out.exitCode).toBe(0);
-    // The forged marker is neutralized (rewritten with HTML entities), so it
-    // cannot "close" the envelope early and have trailing bytes read as trusted.
     expect(out.stdout).toContain("&lt;&lt;END UNTRUSTED ISSUE CONTENT");
-    // Exactly one real closing marker (the shim's own), not the attacker's.
     expect(out.stdout.match(/(?<!&lt;)<<END UNTRUSTED ISSUE CONTENT/g)).toHaveLength(1);
   });
 
@@ -2489,10 +2286,8 @@ describe("shipit issue", () => {
       },
     });
     expect(out.exitCode).toBe(0);
-    // The thread is wrapped and explicitly framed as lower trust than the body.
     expect(out.stdout).toContain("comments — lower trust than the body");
     expect(out.stdout).toContain("a comment");
-    // Two distinct envelopes now: the issue body and the comment thread.
     expect(out.stdout.match(/<<UNTRUSTED ISSUE CONTENT/g)?.length).toBe(2);
   });
 
@@ -2508,7 +2303,6 @@ describe("shipit issue", () => {
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toContain("(truncated)");
     expect(out.stdout).toContain("…[truncated]");
-    // The full 40k body never reaches the agent — it's clamped well under it.
     expect(out.stdout.length).toBeLessThan(30_000);
   });
 
@@ -2532,8 +2326,6 @@ describe("shipit issue", () => {
       "GET /agent-ops/issue/view": { status: 200, body: issuePayload },
     });
     expect(out.exitCode).toBe(0);
-    // --json is the structured path: fields are inherently delimited, so no
-    // text envelope is applied — the agent parses JSON, not prose.
     expect(out.stdout).not.toContain(UNTRUSTED_OPEN_MARKER);
     const parsed = JSON.parse(out.stdout) as { identifier: string; description: string };
     expect(parsed.identifier).toBe("octocat/hello#42");
@@ -2554,8 +2346,6 @@ describe("shipit issue", () => {
     expect(out.stdout).toContain("commented on SHI-1");
   });
 
-  // ---- comment edit (planning#88) ----------------------------------------------
-
   it("comment edit posts the issue + comment id + new body", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "comment", "edit", "SHI-1", "--comment", "c1", "-b", "corrected"], {
@@ -2568,8 +2358,6 @@ describe("shipit issue", () => {
     expect(out.calls[0]).toMatchObject({
       method: "POST",
       path: "/agent-ops/issue/comment/edit",
-      // The ISSUE is named alongside the comment id — a comment id is
-      // backend-global, so the issue is what names the destination and scopes it.
       body: { tracker: "linear:SHI", trackerName: "roadmap", id: "SHI-1", commentId: "c1", body: "corrected" },
     });
     expect(out.stdout).toContain("edited a comment on SHI-1");
@@ -2595,7 +2383,6 @@ describe("shipit issue", () => {
     const out = await run(["issue", "comment", "edit", "SHI-1", "-b", "corrected"]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("--comment");
-    // Points at how to obtain the id rather than leaving the agent guessing.
     expect(out.stderr).toContain("--comments --json");
     expect(out.calls).toHaveLength(0);
   });
@@ -2620,8 +2407,6 @@ describe("shipit issue", () => {
     expect(out.stderr).toContain("was written by Nik Zherebtsov");
   });
 
-  // `comment delete` is deliberately absent; say so rather than letting it fall
-  // through and fail as an unrecognized pointer.
   it("comment delete is rejected with a pointer at comment edit", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "comment", "delete", "c1"]);
@@ -2693,15 +2478,11 @@ describe("shipit issue", () => {
     });
   });
 
-  // req 13 — a create ALWAYS names its destination: no default, and no unnamed
-  // fallback to the session's own repository, which for a public code repo would
-  // mean a forgotten flag files a planning issue publicly.
   it("create refuses to run without --tracker", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "create", "--title", "x"]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("--tracker <name> is required");
-    // The declared names are listed, so the agent can pick one.
     expect(out.stderr).toContain("planning");
     expect(out.calls).toHaveLength(0);
   });
@@ -2775,8 +2556,6 @@ describe("shipit issue", () => {
     expect(out.calls[0].body).toMatchObject({ id: "SHI-1", labels: ["infra"] });
   });
 
-  // ---- Parent / sub-issue nesting (planning#208) ------------------------------
-
   it("create forwards a resolved --parent key", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "create", "--tracker", "roadmap", "--title", "Child", "--parent", "SHI-204"], {
@@ -2812,9 +2591,6 @@ describe("shipit issue", () => {
     expect(out.calls).toHaveLength(0);
   });
 
-  // docs/248 — a parent resolves through the declarations too, and must land on
-  // the SAME destination: Linear nests only within a team, so silently
-  // reparenting across teams would be the substitution req 17 forbids.
   it("create rejects a --parent on a different tracker than the issue", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "create", "--tracker", "roadmap", "--title", "x", "--parent", "planning#1"]);
@@ -2867,8 +2643,6 @@ describe("shipit issue", () => {
     expect(out.calls).toHaveLength(0);
   });
 
-  // ---- Lean list --json + --full (planning#201, Gap 3) ------------------------
-
   it("list --json drops each issue's body by default (token economy)", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "list", "--json"], {
@@ -2885,9 +2659,7 @@ describe("shipit issue", () => {
     const rows = JSON.parse(out.stdout) as { identifier: string; title: string; description?: string }[];
     expect(rows[0].identifier).toBe("octocat/hello#1");
     expect(rows[0].title).toBe("do the thing");
-    // The heavy body is omitted from the lean default...
     expect(rows[0].description).toBeUndefined();
-    // ...but the rest of the row is intact.
     expect(rows[0]).toHaveProperty("priority");
   });
 
@@ -2904,8 +2676,6 @@ describe("shipit issue", () => {
     expect(rows[0].description).toBe("the full body");
   });
 
-  // ---- labels / statuses discovery (planning#201, Gap 2) ----------------------
-
   it("labels lists the tracker's pickable label names (one per line)", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "labels"], {
@@ -2918,7 +2688,6 @@ describe("shipit issue", () => {
     expect(out.calls[0].path).toContain("tracker=github");
     expect(out.stdout).toContain("bug");
     expect(out.stdout).toContain("design");
-    // Plain list — no untrusted-input envelope (config metadata, not free-text).
     expect(out.stdout).not.toContain(UNTRUSTED_OPEN_MARKER);
   });
 
@@ -2972,15 +2741,12 @@ describe("shipit issue", () => {
     expect(out.calls).toHaveLength(0);
   });
 
-  // ---- per-subcommand --help (planning#201, smaller note) ---------------------
-
   it("`issue list --help` points to the canonical issue docs", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "list", "--help"]);
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toContain("shipit issue list");
     expect(out.stdout).toContain("/shipit-docs/issues.md");
-    // No broker call — help short-circuits before the handler.
     expect(out.calls).toHaveLength(0);
   });
 
@@ -2992,8 +2758,6 @@ describe("shipit issue", () => {
     expect(out.stdout).toContain("/shipit-docs/issues.md");
     expect(out.calls).toHaveLength(0);
   });
-
-  // ---- label create (planning#232) --------------------------------------------
 
   it("label create posts to the broker and reports the summary", async () => {
     const { run } = makeRunner();
@@ -3010,7 +2774,6 @@ describe("shipit issue", () => {
     expect(out.calls[0]).toMatchObject({
       method: "POST",
       path: "/agent-ops/issue/label/create",
-      // Defaults to Linear — no pointer to infer a tracker from.
       body: { tracker: "linear:SHI", name: "t3code", color: "#0ea5e9", description: "T3 code area" },
     });
     expect(out.stdout).toContain('created label "t3code"');
@@ -3025,8 +2788,6 @@ describe("shipit issue", () => {
     expect((out.calls[0].body as Record<string, unknown>).tracker).toBe("github:octocat/hello");
   });
 
-  // req 13's reasoning applies to label creation too: it mutates a tracker's
-  // configuration, so it names which one.
   it("label create refuses to run without --tracker", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "label", "create", "--name", "t3code"]);
@@ -3055,8 +2816,6 @@ describe("shipit issue", () => {
     expect(out.stderr).toContain("only `label create` and `label edit` are supported");
     expect(out.calls).toHaveLength(0);
   });
-
-  // ---- label edit (planning#88) ------------------------------------------------
 
   it("label edit posts the patch and reports the summary", async () => {
     const { run } = makeRunner();
@@ -3095,7 +2854,6 @@ describe("shipit issue", () => {
     expect(noName.exitCode).not.toBe(0);
     expect(noName.stderr).toContain("--name is required");
 
-    // --name only says WHICH label; an edit that changes nothing is a mistake.
     const noChange = await run(["issue", "label", "edit", "--tracker", "roadmap", "--name", "bug"]);
     expect(noChange.exitCode).not.toBe(0);
     expect(noChange.stderr).toContain("at least one of --new-name, --color or --description");
@@ -3123,7 +2881,6 @@ describe("shipit issue", () => {
     const { run } = makeRunner();
     const out = await run(["issue", "label", "delete", "t3code"]);
     expect(out.exitCode).not.toBe(0);
-    // The refusal has to say WHY, or it reads as an oversight to route around.
     expect(out.stderr).toContain("no issue carries");
     expect(out.stderr).toContain("shipit issue label edit");
     expect(out.calls).toHaveLength(0);
@@ -3184,15 +2941,7 @@ describe("shipit issue", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// shipit agent run (docs/144 — sub-agent spawn)
-// ---------------------------------------------------------------------------
-
 describe("runShim — agent run", () => {
-  // docs/261 reqs 6 + 7 — a bare prompt names neither a role nor a target, so
-  // there is nothing left to infer from. It used to be "--agent is required";
-  // now the whole set is, because naming only the harness is exactly the shape
-  // a stored default used to complete.
   it("requires either a role or the full explicit set", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review this");
@@ -3218,9 +2967,6 @@ describe("runShim — agent run", () => {
     expect(out.calls).toHaveLength(0);
   });
 
-  // docs/261 req 7 — every explicit parameter reaches the request body. This is
-  // the hop `--model` used to die on: it was parsed here and named by nothing
-  // downstream, so it was silently dropped before the spawn.
   it("posts every explicit parameter and prints the sub-agent's text", async () => {
     const { run } = makeRunner();
     const file = await promptFile("Review this diff");
@@ -3252,8 +2998,6 @@ describe("runShim — agent run", () => {
     expect(out.stdout).toContain("Found 2 bugs at foo.ts:10");
   });
 
-  // docs/261 req 6 — the implicit path. The caller names the ROLE and nothing
-  // else; who reviews is resolved from the user's settings, server-side.
   it("posts a role and none of the explicit parameters", async () => {
     const { run } = makeRunner();
     const file = await promptFile("Review this diff");
@@ -3270,9 +3014,6 @@ describe("runShim — agent run", () => {
     }
   });
 
-  // docs/264-agent-roles req 10 REVERSES docs/261 here: a role alongside a parameter used to
-  // be refused as "two questions at once", and is now the override path. The
-  // parameter rides along and the server validates it against this install.
   it("carries --role plus a parameter as an override rather than refusing it", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review");
@@ -3289,10 +3030,6 @@ describe("runShim — agent run", () => {
     expect(out.calls[0].body).toMatchObject({ role: "reviewer", modelId: "claude-opus-5" });
   });
 
-  // req 18 — a role is any name the user typed, and they live server-side. A
-  // compiled-in list here would reject the user's OWN roles, so the shim passes
-  // the name through and the server's refusal names the roles that do exist
-  // (req 13).
   it("passes an unknown role through to the server rather than judging it locally", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review");
@@ -3307,14 +3044,6 @@ describe("runShim — agent run", () => {
     expect(out.stderr).toContain("Roles on this install");
   });
 
-  // docs/261 req 7 — the refusal the whole design exists for. A half-specified
-  // call used to be completed from a stored per-harness default the caller could
-  // not see; now it names what is missing and runs nothing.
-  //
-  // docs/275 — the local missing list covers the four flags the shim can judge
-  // without the catalogue. Whether `--effort` is required is a per-harness fact
-  // (a harness may declare no levels), so the shim states the condition and the
-  // server owns the answer.
   it("refuses an incomplete explicit call, naming every missing flag", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review");
@@ -3324,14 +3053,10 @@ describe("runShim — agent run", () => {
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("missing --service, --billing-mode");
     expect(out.stderr).toContain("--effort is also required where the harness declares reasoning levels");
-    // and it points at the path that needs no parameters at all
     expect(out.stderr).toContain("--role reviewer");
     expect(out.calls).toHaveLength(0);
   });
 
-  // docs/275 req 2 — a four-flag call is complete on a harness that declares no
-  // reasoning levels, so the shim must not demand `--effort` locally: the
-  // payload posts with the key absent and the server validates per harness.
   it("posts a role-less call without --effort, leaving the key absent (docs/275)", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review");
@@ -3445,21 +3170,10 @@ describe("runShim — agent run", () => {
     expect(out.stdout).toContain("findings");
     expect(out.stderr).toContain("run-77");
     expect(out.stderr).toContain("shipit agent result run-77");
-    // The id belongs on stderr — stdout stays the sub-agent's text, verbatim.
     expect(out.stdout).not.toContain("run-77");
   });
 });
 
-// ---------------------------------------------------------------------------
-// shipit agent roles / params (docs/264-agent-roles req 12 — what the agent may name)
-// ---------------------------------------------------------------------------
-
-/**
- * The two reads ship together, and the pairing is the requirement rather than a
- * convenience: an agent allowed to override a parameter (req 10) but unable to
- * see which parameters exist would name one from memory, and a remembered model
- * is indistinguishable from a user-supplied one by the time it reaches ShipIt.
- */
 describe("runShim — agent roles / params", () => {
   it("lists the roles this install has, with what each is for", async () => {
     const { run } = makeRunner();
@@ -3480,9 +3194,6 @@ describe("runShim — agent roles / params", () => {
     expect(out.stdout).toContain("reviewer");
   });
 
-  // A role that cannot run is still listed, with the reason: dropping it would
-  // read as "no such role" and send the agent to invent a different one, and the
-  // three unavailable states need three different remedies (req 7).
   it("keeps an unavailable role in the list, with its reason", async () => {
     const { run } = makeRunner();
     const out = await run(["agent", "roles"], {
@@ -3496,16 +3207,6 @@ describe("runShim — agent roles / params", () => {
     expect(out.stdout).toContain("quota_exhausted");
   });
 
-  /**
-   * Req 19 — the description is carried for two jobs, and the listing has to say
-   * the second one. The field shipped in this output from the start and every
-   * caller still wrote one prompt for every role, which is the evidence that
-   * *carrying* it is not the same as it being used.
-   *
-   * Asserted on the epilogue rather than on wording: what must be there is the
-   * instruction to write from the description, and the clause that stops "this
-   * role runs a small model" from being read as an argument for `--model`.
-   */
   it("tells the caller to write the prompt from the description, without moving the target", async () => {
     const { run } = makeRunner();
     const out = await run(["agent", "roles"], {
@@ -3552,8 +3253,6 @@ describe("runShim — agent roles / params", () => {
     expect(out.stdout).toContain("--agent codex");
     expect(out.stdout).toContain("low, high");
     expect(out.stdout).toContain("--service openai --billing-mode sub --model gpt-5.6-sol");
-    // The list exists to make an override honest, not to make assembling a
-    // target attractive (req 15) — so it says so where it is read.
     expect(out.stdout).toContain("Prefer a role");
   });
 
@@ -3569,10 +3268,6 @@ describe("runShim — agent roles / params", () => {
     expect(out.stdout).toContain("no credential");
   });
 });
-
-// ---------------------------------------------------------------------------
-// shipit agent result (planning#247 — re-read a finished run's persisted output)
-// ---------------------------------------------------------------------------
 
 describe("runShim — agent result", () => {
   it("fetches the latest run when no id is given and prints its output", async () => {
@@ -3628,7 +3323,6 @@ describe("runShim — agent result", () => {
         body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "error", createdAt: "x" },
       },
     });
-    // docs/248 — the status now reaches the exit code (this run errored).
     expect(out.exitCode).toBe(3);
     expect(out.stderr).toContain("no output");
     expect(out.stdout).toBe("");
@@ -3651,14 +3345,6 @@ describe("runShim — agent result", () => {
     expect(out.calls).toHaveLength(0);
   });
 });
-
-// ---------------------------------------------------------------------------
-// shipit agent result — status-carrying exit codes (docs/248)
-//
-// The point of these codes: a caller that backgrounded a long consult branches
-// on `$?` instead of grepping the run's own output for the word "pending",
-// which a finished code review can perfectly well contain.
-// ---------------------------------------------------------------------------
 
 describe("shipit agent result — exit codes (docs/248)", () => {
   const card = (status: string, extra: Record<string, unknown> = {}) => ({
@@ -3684,8 +3370,6 @@ describe("shipit agent result — exit codes (docs/248)", () => {
     const { run } = makeRunner();
     const out = await run(["agent", "result"], { "GET /agent-ops/agent/result": card(status) });
     expect(out.exitCode).toBe(3);
-    // The output still prints — a failed run's partial text is what the caller
-    // is here for.
     expect(out.stdout).toContain("the review");
   });
 
@@ -3698,10 +3382,6 @@ describe("shipit agent result — exit codes (docs/248)", () => {
   });
 
   it("keeps 'still running' distinct from every failure code", async () => {
-    // Requirement 3: a caller retrying until the command succeeds must not spin
-    // forever against a mistyped run id or a bad flag, so "still running" cannot
-    // share a code with either. 1 = lookup failed, 2 = bad invocation
-    // (the shim-wide `fail()` default), 4 = come back later.
     const { run } = makeRunner();
     const pending = await run(["agent", "result"], { "GET /agent-ops/agent/result": card("pending") });
     const badId = await run(["agent", "result", "nope"], {
@@ -3733,11 +3413,6 @@ describe("shipit agent result — exit codes (docs/248)", () => {
     expect(out.stderr).toContain("no output");
   });
 
-  // planning#309 — the boot reconcile turns a card stranded `pending` by an
-  // orchestrator restart into a terminal `cancelled` one. That is a deliberate
-  // change in what a waiting caller observes: the same poll that used to answer
-  // 4 ("come back later") forever now answers 3 ("the run failed"), which is the
-  // only thing that lets a retry loop terminate.
   it("exits 3 — not 4 — for a consult cancelled by an orchestrator restart", async () => {
     const { run } = makeRunner();
     const out = await run(["agent", "result"], {
@@ -3755,9 +3430,6 @@ describe("shipit agent result — exit codes (docs/248)", () => {
   });
 
   it("prints ShipIt's explanation on stderr, keeping stdout in the sub-agent's voice", async () => {
-    // `statusDetail` is ShipIt's commentary, not the consultant's words. Putting
-    // it on stdout would hand a caller our apology as if Codex had written it —
-    // the planning#247 "one artifact" guarantee runs the other way.
     const { run } = makeRunner();
     const out = await run(["agent", "result"], {
       "GET /agent-ops/agent/result": {
@@ -3809,17 +3481,6 @@ describe("shipit agent result — exit codes (docs/248)", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// shipit agent result --wait — the resilient segment loop (docs/248)
-// ---------------------------------------------------------------------------
-
-/**
- * Run `shipit agent result --wait ...` against a queue of responses (shifted in
- * order, last entry reused once exhausted) with a virtual clock, mirroring
- * `runWait` for the child-session loop. A `pending` segment advances the clock
- * the way a real server holding a segment open would, so the overall deadline
- * genuinely bounds the loop.
- */
 async function runResultWait(
   argv: string[],
   queue: WaitMockResponse[],
@@ -3885,7 +3546,6 @@ describe("shipit agent result --wait (docs/248)", () => {
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toContain("the review");
     expect(out.paths).toHaveLength(3);
-    // Every segment asks the server to wait, and carries the pinned run id.
     expect(out.paths[0]).toContain("wait=true");
     expect(out.paths[0]).toContain("spawnId=run-77");
     expect(out.paths[0]).toContain("segment=25");
@@ -3896,11 +3556,6 @@ describe("shipit agent result --wait (docs/248)", () => {
     expect(out.exitCode).toBe(3);
   });
 
-  // planning#309 — the scenario this whole reconcile exists for, from the waiting
-  // caller's side. The orchestrator dies mid-consult; the wait rides out the
-  // resets; the rebooted orchestrator's boot sweep has marked the card
-  // `cancelled`, so the wait ENDS instead of running to its timeout and being
-  // re-issued forever.
   it("ends the wait when a restart-stranded run comes back cancelled", async () => {
     const out = await runResultWait(["agent", "result", "run-77", "--wait"], [
       pendingSegment,
@@ -3916,12 +3571,10 @@ describe("shipit agent result --wait (docs/248)", () => {
     ]);
     expect(out.exitCode).toBe(3);
     expect(out.stderr).toContain("ShipIt restarted while this consult was running");
-    // Not "still running after Ns" — the wait resolved on an answer.
     expect(out.stderr).not.toContain("still running after");
   });
 
   it("retries a transport reset beneath the deadline instead of reporting it", async () => {
-    // Requirement 5: a blip costs part of the wait, not the wait.
     const out = await runResultWait(["agent", "result", "--wait"], [
       { status: 0, body: { error: "connection reset" } },
       { status: 503, body: { error: "orchestrator restarting" } },
@@ -3940,13 +3593,10 @@ describe("shipit agent result --wait (docs/248)", () => {
     expect(out.exitCode).toBe(4);
     expect(out.stderr).toContain("still running after 60s");
     expect(out.stderr).toContain("shipit agent result run-77 --wait");
-    // The deadline genuinely bounds the loop: 60s of 25s segments, not forever.
     expect(out.paths.length).toBeLessThanOrEqual(3);
   });
 
   it("reports a lookup failure as 1, not as a timeout, when nothing ever answered", async () => {
-    // Every attempt died in transport, so we never learned anything about the
-    // run — that is a broken lookup, not "still pending".
     const out = await runResultWait(
       ["agent", "result", "run-77", "--wait", "--timeout", "5"],
       [{ status: 0, body: { error: "connection refused" } }],
@@ -3975,16 +3625,7 @@ describe("shipit agent result --wait (docs/248)", () => {
     expect(out.stdout).toContain("old server");
   });
 
-  // -------------------------------------------------------------------------
-  // Adversarial cases — found by a fresh-context review of this branch. Each
-  // one previously produced a WRONG exit code, which is the single thing this
-  // command must never do: the whole feature is "trust $? instead of the text".
-  // -------------------------------------------------------------------------
-
   it("never reports success for a 2xx body that isn't a card", async () => {
-    // `callBroker` turns a body reset or truncated after its 2xx headers into
-    // `{}`. Defaulting that to "success" would tell the caller a run finished
-    // cleanly on the strength of a corrupted response.
     const out = await runResultWait(["agent", "result", "--wait", "--timeout", "5"], [
       { status: 200, body: {} },
     ]);
@@ -4010,16 +3651,11 @@ describe("shipit agent result --wait (docs/248)", () => {
   });
 
   it("pins the run across segments so a newer consult can't hijack the wait", async () => {
-    // No run id ⇒ "the most recent run". The server pins only within a segment,
-    // so without shim-side pinning the second request would re-resolve to a
-    // newer run started mid-wait and report ITS status.
     const out = await runResultWait(["agent", "result", "--wait"], [
       pendingSegment,
       finished("success"),
     ]);
     expect(out.exitCode).toBe(0);
-    // First request names no run; every later one carries the id the server
-    // reported, so they all follow the same run.
     expect(out.paths[0]).not.toContain("spawnId");
     expect(out.paths[1]).toContain("spawnId=run-77");
   });
@@ -4034,8 +3670,6 @@ describe("shipit agent result --wait (docs/248)", () => {
   });
 
   it("does not spin hot against a server that answers pending instantly", async () => {
-    // An older orchestrator ignores `wait` and returns immediately. Without a
-    // floor, the loop issues ~1000 requests/second for the whole timeout.
     const instantPending = {
       status: 200,
       body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "pending", createdAt: "x" },
@@ -4045,12 +3679,10 @@ describe("shipit agent result --wait (docs/248)", () => {
       [instantPending],
     );
     expect(out.exitCode).toBe(4);
-    // 10s of wait, paced at >=1s per iteration.
     expect(out.paths.length).toBeLessThanOrEqual(11);
   });
 
   it("keeps the per-request budget within the caller's stated timeout", async () => {
-    // `--timeout 5` must not hand the first request a 15-second abort budget.
     const budgets: number[] = [];
     const clock = virtualClock();
     const io: ShimIO = { stdout: () => {}, stderr: () => {}, exit: () => { throw new Error("__shim_exit__"); } };
@@ -4083,8 +3715,6 @@ describe("shipit agent result --wait (docs/248)", () => {
   });
 
   it("honours a sub-second --timeout instead of flooring it to zero", async () => {
-    // `--timeout 0.5` floored to 0 skipped the lookup entirely and then blamed
-    // the orchestrator for being unreachable.
     const out = await runResultWait(["agent", "result", "--wait", "--timeout", "0.5"], [finished("success")]);
     expect(out.exitCode).toBe(0);
     expect(out.paths.length).toBeGreaterThan(0);
@@ -4096,16 +3726,10 @@ describe("shipit agent result --wait (docs/248)", () => {
       [finished("success")],
     );
     expect(out.exitCode).toBe(0);
-    // First segment's overall `timeout` param reflects the clamp, not 99999.
     expect(out.paths[0]).toContain("timeout=1800");
   });
 });
 
-/**
- * planning#279 — the `--force` break-glass. The shim's job is the flag contract and
- * the request body; the safety decision is the orchestrator's (and is re-checked
- * there, because the HTTP route is container-reachable on its own).
- */
 describe("shipit branch reset-to-base --force", () => {
   const RESET = "POST /agent-ops/branch/reset-to-base";
 
@@ -4131,7 +3755,6 @@ describe("shipit branch reset-to-base --force", () => {
     );
     expect(out.exitCode).toBe(0);
     expect(out.calls[0].body).toEqual({ force: true, reason: "shipped via cherry-pick; branch stranded" });
-    // The agent must be able to tell a forced reset from a gated one.
     expect(out.stdout).toContain("FORCED");
     expect(out.stdout).toContain("recorded in the transcript");
   });
@@ -4166,17 +3789,11 @@ describe("shipit branch reset-to-base --force", () => {
     });
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("--force --reason");
-    // …but still forbids the hand-rolled equivalent.
     expect(out.stderr).toContain("git reset --hard");
   });
 });
 
-// ---------------------------------------------------------------------------
-// shipit issue → a declared plugin repository (docs/262 req 25)
-// ---------------------------------------------------------------------------
-
 describe("shipit issue — plugin repository feedback (docs/262 req 25)", () => {
-  /** What the orchestrator reports for a project that declares one plugin repo. */
   const WITH_PLUGIN = {
     destinations: [
       { id: "github", kind: "github", key: "session/repo" },
@@ -4222,8 +3839,6 @@ describe("shipit issue — plugin repository feedback (docs/262 req 25)", () => 
     expect(out.calls[0].path).toContain("tracker=github%3Aacme%2Fdev-tools");
   });
 
-  // Declared BOTH ways: one destination, two names, and the name typed is what
-  // reaches the orchestrator — it is what decides whether this is feedback.
   it("reports the plugin name when it aliases a tracker of the same repository", async () => {
     const BOTH = {
       destinations: [
@@ -4246,7 +3861,6 @@ describe("shipit issue — plugin repository feedback (docs/262 req 25)", () => 
     expect(out.exitCode).toBe(0);
     expect(out.calls[0].body).toMatchObject({ tracker: "github:acme/dev-tools", trackerName: "tools" });
 
-    // …and the tracker name still reaches it unchanged.
     const { run: run2 } = makeRunner();
     const out2 = await run2(["issue", "create", "--tracker", "planning", "--title", "T", "-b", "B"], {
       "GET /agent-ops/issue/trackers": { status: 200, body: BOTH },

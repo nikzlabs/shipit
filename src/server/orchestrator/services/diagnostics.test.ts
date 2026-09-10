@@ -12,9 +12,6 @@ import { getSessionDiagnostics, describeProviderRoute } from "./diagnostics.js";
 import { evaluateContentKeyReport } from "../install-content-key.js";
 import { expectInvalidShipitConfig } from "../../shared/shipit-config-test-guard.js";
 
-// Pin host detection to a large host so the host-relative default resource
-// ceilings (used when no MAX_SESSION_* env var is set) don't clamp the
-// declared values these tests assert are mirrored through to effectiveAgent.
 beforeEach(() => {
   vi.spyOn(os, "totalmem").mockReturnValue(64 * 1024 * 1024 * 1024);
   vi.spyOn(os, "cpus").mockReturnValue(
@@ -22,8 +19,6 @@ beforeEach(() => {
   );
 });
 afterEach(() => vi.restoreAllMocks());
-
-// ---- Test doubles ----
 
 function fakeContainerManager(opts: { container: SessionContainer | null; lastErr?: { error: string; at: number } | null } = { container: null }): SessionContainerManager {
   const sc = opts.container;
@@ -70,8 +65,6 @@ function entry(text: string, ts = "2026-05-07T12:00:00.000Z"): LogRingEntry {
   return { source: "server", text, timestamp: ts };
 }
 
-// ---- Tests ----
-
 describe("getSessionDiagnostics", () => {
   it("returns the full payload when everything is wired", async () => {
     const sc = { id: "abcdef1234567890", workerUrl: "http://w", status: "running" } as SessionContainer;
@@ -100,8 +93,6 @@ describe("getSessionDiagnostics", () => {
       },
       "sess-1",
     );
-    // The health probe will try to reach the worker — in the test env it'll
-    // fail fast (workerReachable: false). That's fine; we just check the shape.
     expect(result.sessionId).toBe("sess-1");
     expect(result.health).toMatchObject({ containerState: "running" });
     expect(result.services).toHaveLength(2);
@@ -234,10 +225,8 @@ describe("getSessionDiagnostics", () => {
       expect(result.parsedConfig?.compose).toEqual({ file: "docker-compose.yml", dockerSocket: false });
       expect(result.parsedConfig?.warnings).toEqual([]);
       expect(result.parsedConfig?.parseError).toBeUndefined();
-      // Memory sizing is host-derived and always present.
       expect(result.parsedConfig?.sizing.effectiveMb).toBeGreaterThan(0);
       expect(result.parsedConfig?.sizing.baselineSource).toBe("auto");
-      // Breaker dep wasn't injected → payload reports null.
       expect(result.oomBreaker).toBeNull();
     });
 
@@ -275,8 +264,6 @@ describe("getSessionDiagnostics", () => {
     });
   });
 
-  // Follow-up to nikzlabs/shipit#2429 — the panel is where a user learns that
-  // content-keying is off, BEFORE the failure it eventually causes.
   describe("installContentKeyOff surfacing", () => {
     let sessionRoot: string | undefined;
 
@@ -287,7 +274,6 @@ describe("getSessionDiagnostics", () => {
       }
     });
 
-    /** A production-shaped clone: `<sessionRoot>/workspace`. */
     function clone(): string {
       sessionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-ck-"));
       const dir = path.join(sessionRoot, "workspace");
@@ -366,14 +352,12 @@ describe("getSessionDiagnostics", () => {
     });
 
     it("surfaces booted vs parsed distinctly when they disagree (the warm→claim incident)", async () => {
-      // The container booted on a 1 GiB cgroup...
       const sc = {
         id: "abcdef1234567890",
         workerUrl: "http://127.0.0.1:1",
         status: "running",
         bootedLimits: { memoryLimit: 1024 * 1024 * 1024, cpuQuota: 50_000, pidsLimit: 256 },
       } as SessionContainer;
-      // ...while the workspace's shipit.yaml (read live) now declares 3 GiB.
       tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-booted-"));
       fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent:\n  memory: 3072\n");
 
@@ -389,11 +373,7 @@ describe("getSessionDiagnostics", () => {
       );
 
       const health = result.health as Extract<typeof result.health, { containerState: string }>;
-      // Both values are present and distinct — the panel renders them side
-      // by side so the mismatch is visible without kernel-log inspection. The
-      // booted limit (1 GiB) is frozen at create; the sizing is derived live
-      // and never below BOOT_MIN (1536 MiB), so they always differ here.
-      expect(health.bootedLimits?.memoryLimit).toBe(1024 * 1024 * 1024); // booted
+      expect(health.bootedLimits?.memoryLimit).toBe(1024 * 1024 * 1024);
       expect(result.parsedConfig?.sizing.effectiveMb).toBeGreaterThanOrEqual(1536);
       expect(health.bootedLimits!.memoryLimit / 1024 / 1024).not.toBe(
         result.parsedConfig?.sizing.effectiveMb,
@@ -421,7 +401,7 @@ describe("getSessionDiagnostics", () => {
       const { createOomCircuitBreaker } = await import("../oom-circuit-breaker.js");
       const breaker = createOomCircuitBreaker({ windowMs: 60_000, threshold: 2 });
       breaker.recordOom("sess-1");
-      breaker.recordOom("sess-1"); // trips
+      breaker.recordOom("sess-1");
 
       const result = await getSessionDiagnostics(
         {
@@ -457,9 +437,6 @@ describe("getSessionDiagnostics", () => {
     expect(result.recentLogs[49]?.text).toBe("msg75");
   });
 
-  // docs/150-multiple-provider-subscriptions req 11 — "which account is this session on right now?" is not the
-  // same question as the chat-visible failover notice, which only covers the
-  // moment of a switch.
   describe("provider route (docs/150-multiple-provider-subscriptions req 11)", () => {
     const labels: Record<string, string> = { acct_1: "Work" };
     const lookup = (_provider: string, id: string) => labels[id];
@@ -474,8 +451,6 @@ describe("getSessionDiagnostics", () => {
     });
 
     it("spells out a reserved route so metered billing is legible", () => {
-      // `claude-api-key` in a panel does not tell the user they are paying per
-      // token — which is the one thing that route means (req 12).
       expect(
         describeProviderRoute(
           { agentId: "claude", providerRouteKind: "reserved", providerRouteId: "claude-api-key" },
@@ -485,18 +460,12 @@ describe("getSessionDiagnostics", () => {
     });
 
     it("reports a routeless session as per-turn selection, not as an error (docs/260)", () => {
-      // docs/260 removed session→account pinning: with no resident process
-      // there is no current route, and the next turn picks the account fresh.
-      // That is the honest steady state between turns, not a failure.
       const route = describeProviderRoute({ agentId: null }, lookup);
       expect(route?.kind).toBeNull();
       expect(route?.label).toBe("selected per turn — the next turn picks an account");
     });
 
     it("says so when the resident process's account has been disconnected", () => {
-      // Disconnecting an account can outrun the process running on it; worth
-      // naming, because it explains a session that is about to change account
-      // at its next turn's selection (docs/260).
       expect(
         describeProviderRoute(
           { agentId: "claude", providerRouteKind: "account", providerRouteId: "acct_gone" },
@@ -520,9 +489,6 @@ describe("getSessionDiagnostics", () => {
     });
 
     it("threads the RESIDENT process's route into the payload (docs/260)", async () => {
-      // docs/260 — the displayed route is `runner.residentRoute` (the live
-      // CLI's credential), not a session-row pin: only a resident process has
-      // a current account between selections.
       const result = await getSessionDiagnostics(
         {
           containerManager: fakeContainerManager({ container: null }),
@@ -560,8 +526,6 @@ describe("getSessionDiagnostics", () => {
     });
   });
 
-  // docs/248 — requirement 6's surface. A pin that can't be honored has to be
-  // VISIBLE; the reported bug was that it was silently assumed correct.
   describe("nodeRuntime", () => {
     const baseDeps = {
       runnerRegistry: fakeRegistry(fakeRunner()),
@@ -578,7 +542,7 @@ describe("getSessionDiagnostics", () => {
       expect(result.nodeRuntime).toBeNull();
     });
 
-    /** A stand-in worker, since `workerGet` speaks http.request, not fetch. */
+    // Use an HTTP server because workerGet uses http.request rather than fetch.
     async function withFakeWorker(
       handler: (req: http.IncomingMessage, res: http.ServerResponse) => void,
       run: (workerUrl: string) => Promise<void>,
@@ -625,7 +589,6 @@ describe("getSessionDiagnostics", () => {
     });
 
     it("degrades to null rather than failing the whole panel when the endpoint is missing", async () => {
-      // A container that outlived a deploy (docs/113) predates the endpoint.
       await withFakeWorker(
         (_req, res) => {
           res.statusCode = 404;
@@ -639,7 +602,6 @@ describe("getSessionDiagnostics", () => {
             "sess-1",
           );
           expect(result.nodeRuntime).toBeNull();
-          // The rest of the panel still renders — that is the point.
           expect(result.sessionId).toBe("sess-1");
         },
       );

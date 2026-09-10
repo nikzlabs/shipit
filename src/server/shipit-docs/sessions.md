@@ -262,7 +262,6 @@ session per defect in a single turn rather than batching them into one PR.
 ### Example
 
 ```sh
-# User asked: "Spin up a separate session to port the API to TypeScript."
 shipit session create --prompt-file - --title "Port API to TypeScript" <<'EOF'
 Port the API in /server to TypeScript. Land it as a separate PR.
 EOF
@@ -272,7 +271,6 @@ EOF
 ```
 
 ```sh
-# Coordinate later in the conversation:
 shipit session list
 # ses_abc123    running    shipit/k7p2qz    Port API to TypeScript
 shipit session view ses_abc123
@@ -309,44 +307,21 @@ linkage; you cannot operate on sessions you didn't spawn. (The upward direction
 is `shipit session report`, below.)
 
 ```sh
-# Spawn a long-running task on its own branch (branch name is auto-generated).
 shipit session create --prompt-file - --title "Migrate API to Drizzle" <<'EOF'
 Migrate the API to Drizzle
 EOF
 # session-id: ses_abc
 
-# Block until the child reaches a terminal state (or the timeout fires).
 shipit session wait ses_abc --timeout 1800
-# The wait is resilient: it polls in short segments and silently retries
-# through connection resets and orchestrator redeploys, so you don't need
-# to re-issue it yourself. Branch on the exit code, NOT on transport noise:
-#   exit 0 → child idle / archived (finished its turn(s), nothing queued)
-#   exit 3 → child's last turn ERRORED — do NOT treat as success
-#   exit 1 → timed out while the child was still running (or it was not found)
-# With --json the same outcome is in the `outcome` field, and a swallowed
-# transport hiccup (if any) is reported in `lastTransportError` — it is never
-# itself an outcome, so "exit 1" always means a real timeout, not a blip.
 
-# Orchestrate a fleet with one call. --any wakes you on the first finisher
-# so you can act on it, then wait on the rest; --all waits for everyone.
 shipit session wait ses_a ses_b ses_c --any --timeout 1800
 shipit session wait ses_a ses_b ses_c --all --timeout 1800
 
-# Send a follow-up prompt without the user switching sessions.
 shipit session message ses_abc -m "Also update the README to mention Drizzle"
 
-# Be woken when the child's PR MERGES — without blocking this turn. `wait`
-# only blocks until the child's agent goes idle (PR opened); the human merge
-# can take days, so don't wait on it. Arm a watch and end your turn instead:
 shipit session notify-on-merge ses_abc
 # notify-on-merge: armed
-# …turn ends. Later, when ses_abc's PR merges, THIS session gets a queued
-# system turn ("child PR merged — proceed with the planned rebase") plus a
-# merge card. If the PR is closed unmerged, you get a distinct "did not ship"
-# wake-turn instead. The watch fires once and survives an orchestrator restart.
 
-# Archive an idle child that's done its job. Refuses while the child is
-# still running — `wait` first if you want a deterministic teardown.
 shipit session archive ses_abc
 ```
 
@@ -435,7 +410,7 @@ next can start, you don't have to stop at the first PR and wait to be nudged:
 gh pr create -t "Step one" --body-file - <<'EOF'
 ...
 EOF
-shipit session notify-on-merge --self     # arm, then end your turn
+shipit session notify-on-merge --self
 ```
 
 When that PR merges, ShipIt starts a new turn in this session. That turn's first

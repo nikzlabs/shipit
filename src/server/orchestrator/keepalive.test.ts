@@ -8,15 +8,6 @@ import {
   type KeepaliveSocket,
 } from "./keepalive.js";
 
-/**
- * The whole point of this module is that a browser connection never sits idle
- * long enough for a reverse proxy to cut it, so the bound that matters is
- * "well under Cloudflare's 100s". These tests pin the ping cadence, the
- * half-open termination, and — most importantly — that both timers stop when
- * the connection ends (a leaked interval would ping a dead socket forever).
- */
-
-/** Cloudflare's documented idle cut for proxied WebSockets and SSE streams. */
 const CLOUDFLARE_IDLE_CUT_MS = 100_000;
 
 function fakeSocket(readyState = 1): KeepaliveSocket & {
@@ -45,8 +36,6 @@ afterEach(() => { vi.useRealTimers(); });
 
 describe("keepalive timings", () => {
   it("pings well inside the proxy idle cut, with room for missed intervals", () => {
-    // Two missed intervals must still land inside the cut, otherwise a single
-    // dropped ping would let the proxy kill an otherwise healthy connection.
     expect(KEEPALIVE_INTERVAL_MS * 3).toBeLessThan(CLOUDFLARE_IDLE_CUT_MS);
   });
 });
@@ -63,7 +52,7 @@ describe("startWebSocketKeepalive", () => {
   });
 
   it("does not ping a socket that is not OPEN", () => {
-    const socket = fakeSocket(0 /* CONNECTING */);
+    const socket = fakeSocket(0);
     startWebSocketKeepalive(socket);
 
     vi.advanceTimersByTime(KEEPALIVE_INTERVAL_MS * 3);
@@ -89,7 +78,6 @@ describe("startWebSocketKeepalive", () => {
     const onUnresponsive = vi.fn();
     startWebSocketKeepalive(socket, { onUnresponsive });
 
-    // Budget spent but not exceeded — still alive.
     vi.advanceTimersByTime(KEEPALIVE_INTERVAL_MS * KEEPALIVE_MAX_MISSED_PONGS);
     expect(socket.terminated).toBe(false);
     expect(socket.pings).toBe(KEEPALIVE_MAX_MISSED_PONGS);
@@ -97,7 +85,6 @@ describe("startWebSocketKeepalive", () => {
     vi.advanceTimersByTime(KEEPALIVE_INTERVAL_MS);
     expect(socket.terminated).toBe(true);
     expect(onUnresponsive).toHaveBeenCalledOnce();
-    // Termination replaces the ping, it doesn't accompany it.
     expect(socket.pings).toBe(KEEPALIVE_MAX_MISSED_PONGS);
   });
 
@@ -145,8 +132,6 @@ describe("startSseKeepalive", () => {
   });
 
   it("writes a comment, not an event — EventSource must ignore it", () => {
-    // A `:`-prefixed line is a comment per the SSE spec; anything else here
-    // would surface as a spurious message on the client.
     expect(SSE_KEEPALIVE_COMMENT.startsWith(":")).toBe(true);
     expect(SSE_KEEPALIVE_COMMENT.endsWith("\n\n")).toBe(true);
     expect(SSE_KEEPALIVE_COMMENT).not.toContain("event:");

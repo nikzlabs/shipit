@@ -15,13 +15,6 @@ import {
 } from "./overlay-base.js";
 import { overlayBaseDir, overlayBaseGenDir, overlayScopeHash } from "./overlay-volume.js";
 
-/**
- * Production port of the validated prototype (`run-rolling-base.ts`, 33/33).
- * Ancestry decisions run against a REAL git repo so the
- * `git merge-base --is-ancestor` semantics the CAS relies on are exercised for
- * real, not faked.
- */
-
 function git(dir: string, ...args: string[]): string {
   return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trim();
 }
@@ -54,7 +47,6 @@ describe("overlay-base: rolling-base publish CAS", () => {
   let stateDir: string;
   let snapshotSeq: number;
 
-  /** A trivial worker-exported merged snapshot: one tagged file per call. */
   function snapshot(tag: string): string {
     const dir = path.join(tmpDir, `snap-${++snapshotSeq}`);
     fs.mkdirSync(dir, { recursive: true });
@@ -108,16 +100,11 @@ describe("overlay-base: rolling-base publish CAS", () => {
     });
     expect(res.outcome).toBe("created");
     expect(res.pointer).toMatchObject({ commit: c1, depth: 1, generation: 1 });
-    // Base contents were materialized as generation 1 under the scope-hash dir.
     const scopeHash = overlayScopeHash(SCOPE.repoUrl, SCOPE.runtimeKey);
     expect(res.pointer?.baseDir).toBe(overlayBaseGenDir(stateDir, scopeHash, 1));
     expect(fs.existsSync(path.join(res.pointer!.baseDir, "node_modules.marker"))).toBe(true);
   });
 
-  // planning#147 — the materialized base is handed to the worker uid so overlayfs
-  // copy-up of an existing base dep stays writable for the non-root agent. The
-  // chown itself needs privileges, so we inject a spy and assert it fires on the
-  // freshly-materialized generation (and only after a real materialize).
   it("hands each materialized base generation to the worker uid (created + advanced)", async () => {
     const chowned: string[] = [];
     const chownBaseDir = (dir: string): void => {
@@ -145,7 +132,6 @@ describe("overlay-base: rolling-base publish CAS", () => {
       chownBaseDir,
     });
     expect(r2.outcome).toBe("advanced");
-    // The new generation is chowned; the chown is invoked exactly once per publish.
     expect(chowned).toEqual([
       overlayBaseGenDir(stateDir, scopeHash, 1),
       overlayBaseGenDir(stateDir, scopeHash, 2),
@@ -160,7 +146,6 @@ describe("overlay-base: rolling-base publish CAS", () => {
     const c1 = commit("c1");
     await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }), isAncestor, chownBaseDir });
     chowned.length = 0;
-    // Equal-commit republish → skipped-equal, nothing materialized.
     const res = await publishBase({
       stateDir,
       scope: SCOPE,
@@ -202,9 +187,7 @@ describe("overlay-base: rolling-base publish CAS", () => {
   it("declines a behind publish — ordering is ancestry, not wall-clock", async () => {
     const c1 = commit("c1");
     const c2 = commit("c2");
-    // Newer base published first.
     await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c2 }), isAncestor });
-    // A late-but-older publisher (still on c1) grabs the lock afterward.
     const res = await publishBase({
       stateDir,
       scope: SCOPE,
@@ -230,18 +213,12 @@ describe("overlay-base: rolling-base publish CAS", () => {
       });
       outcomes.push(res.outcome);
     }
-    // created, advanced (depth 2), then depth would be 3 === cap → flattened.
     expect(outcomes).toEqual(["created", "advanced", "flattened"]);
     const ptr = readBasePointer(stateDir, SCOPE);
     expect(ptr).toMatchObject({ commit: last, depth: 1, generation: 3 });
   });
 
   it("an advance leaves the previous generation untouched (immutable lowerdirs, no tmp leaks)", async () => {
-    // docs/183 — bases are immutable generations: live overlay mounts pin a
-    // specific g<N> as their lowerdir, and (spike-proven) renaming/deleting a
-    // mounted lowerdir breaks merged-readdir for every same-scope session. So an
-    // advance must create g2 BESIDE g1 — never mutate, rename, or remove g1 —
-    // and move only the pointer. Stale generations are the disk-janitor's job.
     const scopeHash = overlayScopeHash(SCOPE.repoUrl, SCOPE.runtimeKey);
 
     const c1 = commit("c1");
@@ -254,15 +231,12 @@ describe("overlay-base: rolling-base publish CAS", () => {
     expect(r2.pointer?.baseDir).toBe(overlayBaseGenDir(stateDir, scopeHash, 2));
     expect(fs.readFileSync(path.join(r2.pointer!.baseDir, "node_modules.marker"), "utf8")).toBe(c2);
 
-    // g1 is still exactly what it was — a live mount may be pinning it.
     expect(fs.readFileSync(path.join(overlayBaseGenDir(stateDir, scopeHash, 1), "node_modules.marker"), "utf8")).toBe(c1);
 
-    // No `.tmp-*` copies leak in the scope dir (unreferenced disk the GC can't key on).
     const leaked = fs.readdirSync(overlayBaseDir(stateDir, scopeHash)).filter((n) => n.startsWith(".tmp-"));
     expect(leaked).toEqual([]);
   });
 
-  /** Rewrite `main` to a divergent orphan line; returns the rewritten commit. */
   function forcePushDivergentHistory(): string {
     git(repoDir, "checkout", "-q", "--orphan", "rewritten");
     fs.writeFileSync(path.join(repoDir, "rewrite.txt"), "rewritten");
@@ -275,8 +249,6 @@ describe("overlay-base: rolling-base publish CAS", () => {
     const c1 = commit("c1");
     await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }), isAncestor });
 
-    // The new session synced to the (now current default) rewritten commit, which
-    // is neither ancestor nor descendant of c1.
     const rewritten = forcePushDivergentHistory();
     const res = await publishBase({
       stateDir,
@@ -293,16 +265,13 @@ describe("overlay-base: rolling-base publish CAS", () => {
     const c1 = commit("c1");
     await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }), isAncestor });
 
-    // A candidate that diverges from the base but is NOT the current default —
-    // e.g. it was built on an older default snapshot while `main` moved on. This
-    // must skip, not clobber the healthy base with a reset.
     const diverged = forcePushDivergentHistory();
     const res = await publishBase({
       stateDir,
       scope: SCOPE,
       candidate: candidate({ commit: diverged }),
       isAncestor,
-      currentDefaultCommit: "0000000000000000000000000000000000000000", // some other current HEAD
+      currentDefaultCommit: "0000000000000000000000000000000000000000",
     });
     expect(res.outcome).toBe("skipped-not-forward");
     expect(res.pointer).toMatchObject({ commit: c1, depth: 1, generation: 1 });
@@ -323,7 +292,6 @@ describe("overlay-base: rolling-base publish CAS", () => {
       });
       expect(res.outcome).toBe("skipped-ineligible");
     }
-    // None of them created a base.
     expect(readBasePointer(stateDir, SCOPE)).toBeNull();
   });
 
@@ -342,9 +310,6 @@ describe("overlay-base: rolling-base publish CAS", () => {
     const commits = [commit("c1"), commit("c2"), commit("c3"), commit("c4")];
     const newest = commits[commits.length - 1];
 
-    // A materialize that records when it enters/exits, with an await in between,
-    // so two overlapping CAS bodies would be detectable (a broken lock would let
-    // a second publisher start materializing before the first finished).
     let active = 0;
     let maxConcurrent = 0;
     const materialize = async (snapshotDir: string, scopeHash: string, generation: number): Promise<string> => {
@@ -358,7 +323,6 @@ describe("overlay-base: rolling-base publish CAS", () => {
       }
     };
 
-    // Fire all publishers concurrently in shuffled order.
     const shuffled = [commits[2], commits[0], commits[3], commits[1]];
     const results = await Promise.all(
       shuffled.map((c) =>
@@ -372,12 +336,8 @@ describe("overlay-base: rolling-base publish CAS", () => {
       ),
     );
 
-    // The lock must have kept every CAS body strictly sequential.
     expect(maxConcurrent).toBe(1);
-    // Decision is ancestry, not submission order: newest wins regardless.
     expect(readBasePointer(stateDir, SCOPE)?.commit).toBe(newest);
-    // Exactly one base was created; behind candidates either advanced (when they
-    // arrived in order) or skipped — never a second "created".
     expect(results.filter((r) => r.outcome === "created")).toHaveLength(1);
     expect(results.every((r) => r.outcome !== "skipped-ineligible")).toBe(true);
   });
@@ -400,7 +360,6 @@ describe("overlay-base: rolling-base publish CAS", () => {
       }),
     ).rejects.toThrow("boom");
 
-    // A second publish for the same scope must still acquire the lock and succeed.
     const res = await publishBase({
       stateDir,
       scope: SCOPE,
@@ -444,7 +403,6 @@ describe("overlay-base: rolling-base publish CAS", () => {
       isAncestor,
       depthCap,
     });
-    // depth is 1; next would be 2 === cap.
     expect(shouldFlattenNext(stateDir, SCOPE, depthCap)).toBe(true);
     expect(shouldFlattenNext(stateDir, { ...SCOPE, repoUrl: "other" }, depthCap)).toBe(false);
   });
@@ -476,9 +434,7 @@ describe("overlay-base: copySnapshotToBase", () => {
 
     expect(base2).toBe(overlayBaseGenDir(stateDir, scopeHash, 2));
     expect(fs.readFileSync(path.join(base2, "node_modules", "a.js"), "utf8")).toBe("new");
-    // Generation 1 is untouched — a live mount may pin it as lowerdir.
     expect(fs.readFileSync(path.join(base1, "node_modules", "a.js"), "utf8")).toBe("old");
-    // No leftover temp dirs in the scope dir.
     const entries = fs.readdirSync(overlayBaseDir(stateDir, scopeHash));
     expect(entries.filter((e) => e.startsWith(".tmp-"))).toEqual([]);
   });
@@ -487,7 +443,6 @@ describe("overlay-base: copySnapshotToBase", () => {
     const stateDir = path.join(tmpDir, "state");
     fs.mkdirSync(stateDir, { recursive: true });
     const scopeHash = "deadbeefdeadbeef";
-    // Simulate the orphan: g3 exists with stale content but no pointer named it.
     const orphan = overlayBaseGenDir(stateDir, scopeHash, 3);
     fs.mkdirSync(orphan, { recursive: true });
     fs.writeFileSync(path.join(orphan, "stale.txt"), "leftover");
@@ -552,7 +507,6 @@ describe("overlay-base: hardlink-dedup materialize (docs/183 generation dedup)",
       2,
       g1,
     );
-    // Identical content → shared inode; changed content → its own inode.
     expect(ino(path.join(g2, "node_modules/lib/index.js"))).toBe(
       ino(path.join(g1, "node_modules/lib/index.js")),
     );
@@ -560,15 +514,12 @@ describe("overlay-base: hardlink-dedup materialize (docs/183 generation dedup)",
       ino(path.join(g1, "node_modules/lib/v.js")),
     );
     expect(fs.readFileSync(path.join(g2, "node_modules/lib/v.js"), "utf8")).toBe("2.0.0");
-    // g1 untouched — a live mount may pin it.
     expect(fs.readFileSync(path.join(g1, "node_modules/lib/v.js"), "utf8")).toBe("1.0.0");
   });
 
   it("does NOT link a same-size, same-mtime file whose content changed (npm's constant mtimes)", async () => {
     const s1 = snap("s1", { "node_modules/x.js": "AAAA" });
     const s2 = snap("s2", { "node_modules/x.js": "BBBB" });
-    // npm normalizes package mtimes to a fixed epoch — reproduce that worst case
-    // so a size+mtime heuristic would wrongly call these "unchanged".
     const epoch = new Date("1985-10-26T08:15:00Z");
     fs.utimesSync(path.join(s1, "node_modules/x.js"), epoch, epoch);
     fs.utimesSync(path.join(s2, "node_modules/x.js"), epoch, epoch);
@@ -622,12 +573,6 @@ describe("overlay-base: hardlink-dedup materialize (docs/183 generation dedup)",
     const g2 = await copySnapshotToBase(stateDir, s2, scopeHash, 2, g1);
 
     expect(ino(path.join(g2, "node_modules/run.sh"))).not.toBe(ino(path.join(g1, "node_modules/run.sh")));
-    // The EXECUTE bit is what this test is about, and it is still not copied
-    // from the superseded generation. The group-write bit is docs/270's shared
-    // handoff (a base file must be group-writable, or copy-up produces an
-    // unwritable upper for every session that is not its owner), and it is
-    // applied uniformly to both generations — which is exactly why it does not
-    // make two differing modes compare equal.
     const mode = fs.lstatSync(path.join(g2, "node_modules/run.sh")).mode & 0o777;
     expect(mode & 0o111).toBe(0);
     expect(mode).toBe(process.env.SHIPIT_SESSION_WORKER_UID ? 0o664 : 0o644);
@@ -686,17 +631,6 @@ describe("overlay-base: hardlink-dedup materialize (docs/183 generation dedup)",
   });
 });
 
-/**
- * A strictly-forward commit that changed no dependency input must NOT rotate the
- * base generation. Production, 2026-09-03: a code-only `main` commit rotated the
- * generation, and the next agent-container creation therefore force-removed the
- * two running Compose service containers holding the session's overlay volumes
- * (exit 137) so they could be recreated over a generation whose contents were
- * byte-identical to the one they already had. The generation is the identity the
- * whole eviction chain keys on — `overlayDriverOpts` → volume mismatch →
- * `releaseOverlayVolumeHolders` → `applyOverlayDepDirs` reconcile — so holding it
- * still here is what keeps live containers alive.
- */
 describe("overlay-base: content-equal forward publishes do not rotate the generation", () => {
   let tmpDir: string;
   let repoDir: string;
@@ -723,7 +657,6 @@ describe("overlay-base: content-equal forward publishes do not rotate the genera
     }
   }
 
-  /** A candidate carrying the full marker stamp a real content-keyed install records. */
   function candidate(
     over: Partial<PublishCandidate> & { commit: string },
     stamp: Partial<{ runtimeKey: string; installCommands: string[]; depsHash: string | null }> = {},
@@ -733,9 +666,6 @@ describe("overlay-base: content-equal forward publishes do not rotate the genera
       preUserInstall: true,
       sourceIsDefaultBranch: true,
       snapshotDir: snapshot(over.commit),
-      // The caller vouching that the hashed inputs describe the output tree —
-      // what `overlay-publish.ts` resolves from `hasInstallLifecycleScript` +
-      // `agent.install-inputs`. Overridable per-test via `over`.
       contentKeyDescribesTree: true,
       markerStamp: {
         runtimeKey: RUNTIME_KEY,
@@ -782,23 +712,17 @@ describe("overlay-base: content-equal forward publishes do not rotate the genera
     expect(r1.outcome).toBe("created");
     expect(materialized).toEqual([1]);
 
-    // A strictly-newer commit that touched no dependency input — same depsHash,
-    // same runtime, same install commands.
     const c2 = commit("code-only change");
     const r2 = await publishBase({
       stateDir, scope: SCOPE, candidate: candidate({ commit: c2 }), isAncestor, materialize,
     });
 
     expect(r2.outcome).toBe("lineage-advanced");
-    // The lineage moved…
     expect(r2.pointer?.commit).toBe(c2);
-    // …and nothing else did. A bumped generation is the eviction trigger.
     expect(r2.pointer).toMatchObject({ generation: 1, depth: 1 });
     expect(r2.pointer?.baseDir).toBe(overlayBaseGenDir(stateDir, scopeHash, 1));
-    // No second generation was ever written to disk.
     expect(materialized).toEqual([1]);
     expect(fs.existsSync(overlayBaseGenDir(stateDir, scopeHash, 2))).toBe(false);
-    // The persisted pointer agrees with the returned one.
     expect(readBasePointer(stateDir, SCOPE)).toMatchObject({ commit: c2, generation: 1, depth: 1 });
   });
 
@@ -848,12 +772,6 @@ describe("overlay-base: content-equal forward publishes do not rotate the genera
     expect(res.pointer).toMatchObject({ commit: c2, generation: 2 });
   });
 
-  // The lifecycle-script rule: `npm ci` runs the repo's own `postinstall`, so a
-  // commit changing only `scripts/build.js` or a `patches/*.patch` yields a
-  // different installed tree under an identical key. Skipping an INSTALL on that
-  // key is re-validated by the worker gate; declining to REPUBLISH is not, so the
-  // caller has to vouch. `overlay-publish.ts` resolves the flag; here we pin that
-  // an unvouched candidate keeps rotating.
   it("rotates conservatively when the caller does not vouch that the key describes the tree", async () => {
     const c1 = commit("deps land");
     await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }), isAncestor });
@@ -882,8 +800,6 @@ describe("overlay-base: content-equal forward publishes do not rotate the genera
   });
 
   it("rotates conservatively when the CURRENT pointer's marker records depsHash: null", async () => {
-    // The mirror of the candidate-side null case: an existing base whose content
-    // is explicitly unknown must never compare equal to anything.
     const c1 = commit("deps land");
     await publishBase({
       stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }, { depsHash: null }), isAncestor,
@@ -914,8 +830,6 @@ describe("overlay-base: content-equal forward publishes do not rotate the genera
   });
 
   it("rotates conservatively over a LEGACY pointer written before depsHash existed", async () => {
-    // A base published by an older ShipIt: its pointer's marker has no `depsHash`,
-    // so its content identity is unknown and must never compare equal.
     const c1 = commit("deps land");
     await publishBase({
       stateDir,
@@ -937,8 +851,6 @@ describe("overlay-base: content-equal forward publishes do not rotate the genera
     const c1 = commit("deps land");
     await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }), isAncestor });
 
-    // A rewritten `main`: the content key is unchanged, but a diverged lineage is
-    // never a safe comparison — the base is rebuilt clean, which rotates.
     git(repoDir, "checkout", "-q", "--orphan", "rewritten");
     fs.writeFileSync(path.join(repoDir, "rewrite.txt"), "rewritten");
     git(repoDir, "add", "-A");
@@ -966,8 +878,6 @@ describe("overlay-base: content-equal forward publishes do not rotate the genera
       });
       outcomes.push(res.outcome);
     }
-    // Only the first publish materializes; every later code-only commit rides the
-    // same generation, so depth never climbs toward the cap and no flatten fires.
     expect(outcomes).toEqual(["created", "lineage-advanced", "lineage-advanced", "lineage-advanced"]);
     expect(readBasePointer(stateDir, SCOPE)).toMatchObject({
       commit: commits[commits.length - 1],

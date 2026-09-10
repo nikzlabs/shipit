@@ -47,7 +47,6 @@ describe("reclaimRegenerableSessionDirs (planning#194)", () => {
   });
 
   it("skips a missing target without counting it (orphan overlay, workspace already gone)", async () => {
-    // Only overlay/ exists — the workspace checkout was already reclaimed.
     fs.mkdirSync(path.join(sessionRoot, "overlay"), { recursive: true });
 
     const { removed, failed } = await reclaimRegenerableSessionDirs(workspaceDir);
@@ -65,11 +64,6 @@ describe("reclaimRegenerableSessionDirs (planning#194)", () => {
     expect(failed).toEqual([]);
   });
 
-  // planning#295 — this used to assert the CONTENTS of REGENERABLE_SESSION_SUBDIRS,
-  // which is worthless as a guard: the reclaim built its target list by hand and
-  // never read the constant, so docs/246's addition of `state` passed the test
-  // and changed nothing. The marker kept outliving the clone it describes.
-  // Assert the EFFECT instead — every listed subdir is actually removed.
   it("removes every subdir named in REGENERABLE_SESSION_SUBDIRS", async () => {
     for (const sub of REGENERABLE_SESSION_SUBDIRS) {
       fs.mkdirSync(path.join(sessionRoot, sub, "content"), { recursive: true });
@@ -84,8 +78,6 @@ describe("reclaimRegenerableSessionDirs (planning#194)", () => {
     expect(fs.existsSync(path.join(sessionRoot, "uploads"))).toBe(true);
   });
 
-  // The specific regression: the install marker must not survive the checkout it
-  // describes, or the restored session skips an install it needs.
   it("reclaims the state dir, so the install marker cannot outlive the clone", async () => {
     fs.mkdirSync(path.join(sessionRoot, "state", "shared"), { recursive: true });
     fs.writeFileSync(path.join(sessionRoot, "state", "shared", ".install-done"), "{}");
@@ -98,9 +90,6 @@ describe("reclaimRegenerableSessionDirs (planning#194)", () => {
   });
 });
 
-// planning#296 — the partial reclaim used when an eviction is blocked because the
-// checkout is the only copy of some work: take the regenerable install-delta
-// cache, leave everything that can't be restored.
 describe("reclaimBlockedSessionCaches (planning#296)", () => {
   let tmpDir: string;
   let sessionRoot: string;
@@ -131,17 +120,11 @@ describe("reclaimBlockedSessionCaches (planning#296)", () => {
     expect(message).toBeUndefined();
     expect(removed).toEqual([path.join(sessionRoot, "overlay")]);
     expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false);
-    // The whole point: the work that can't be recovered stays.
     expect(fs.existsSync(path.join(workspaceDir, "src", "wip.ts"))).toBe(true);
     expect(fs.existsSync(path.join(sessionRoot, "uploads"))).toBe(true);
-    // Only the marker is taken from state/ — the rest of the dir is untouched.
     expect(fs.existsSync(path.join(sessionRoot, "state", "ci-logs.json"))).toBe(true);
   });
 
-  // The upper and the marker must move together: with the upper gone, the dep
-  // dir remounts over a POPULATED shared lower, so the present-but-empty
-  // contradiction check never fires and a surviving marker would skip the
-  // install — leaving the session with the base's deps and none of its own.
   it("takes the install marker with the overlay", async () => {
     fs.mkdirSync(workspaceDir, { recursive: true });
     fs.mkdirSync(path.join(sessionRoot, "overlay"), { recursive: true });

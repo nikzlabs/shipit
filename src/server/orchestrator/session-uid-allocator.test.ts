@@ -1,11 +1,3 @@
-/**
- * docs/270 — the per-session uid ledger.
- *
- * The properties worth guarding are the two that requirements 6 and 7 turn on:
- * two live sessions never share a number, and a number is never handed out
- * twice even after the session that held it is deleted.
- */
-
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import {
@@ -31,18 +23,11 @@ function ledger(): Database.Database {
 
 describe("the reserved range", () => {
   it("excludes both egress-sidecar uids", () => {
-    // The netns firewall exempts 911 and 912 by owner-match, so a session
-    // allocated one would run exempt from the tier that names it. The range is
-    // chosen so this cannot happen; the assertion exists because the constants
-    // are editable and the failure would otherwise be silent.
     for (const uid of RESERVED_EGRESS_UIDS) expect(isSessionUid(uid)).toBe(false);
     expect(() => assertSessionUidRange()).not.toThrow();
   });
 
   it("excludes every uid a real image or project would name", () => {
-    // 33 www-data, 101/999 common service accounts, 1000/1001 the conventional
-    // first users, 65534 nobody, 100000 the subuid convention's floor. A
-    // compose `user:` naming any of these must keep working (req 4).
     for (const uid of [0, 33, 101, 999, 1000, 1001, 65534, 100_000, 165_536]) {
       expect(isSessionUid(uid)).toBe(false);
     }
@@ -68,30 +53,20 @@ describe("allocateSessionUid", () => {
   });
 
   it("does not reuse an identity after its session is gone", () => {
-    // Req 7 is satisfied vacuously — by never reusing — rather than by a
-    // cleanup path that has to be correct. This is what a `MAX(uid) + 1` over
-    // the sessions table could not promise: deleting the highest row would
-    // lower the maximum and re-issue its uid to the next session, handing the
-    // new holder whatever the old one left on disk.
     const db = ledger();
     const first = allocateSessionUid(db);
     const second = allocateSessionUid(db);
-    // …the session holding `second` is deleted; nothing writes back to the
-    // ledger, by design.
     const third = allocateSessionUid(db);
     expect(new Set([first, second, third]).size).toBe(3);
     expect(third).toBeGreaterThan(second);
   });
 
   it("survives a ledger that has never been written", () => {
-    // First boot after the migration: the table exists and is empty.
     const db = ledger();
     expect(allocateSessionUid(db)).toBe(SESSION_UID_MIN);
   });
 
   it("refuses loudly when the range is exhausted rather than sharing", () => {
-    // Req 11. Wrapping would hand a live session's identity to a new one, which
-    // is precisely the state this whole feature exists to prevent.
     const db = ledger();
     db.prepare("INSERT INTO session_uid_allocation (id, next_uid) VALUES (1, ?)")
       .run(SESSION_UID_MAX + 1);

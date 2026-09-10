@@ -1,13 +1,3 @@
-/**
- * docs/262 reqs 17, 20, 23 — the companion-CLI invocation container.
- *
- * The assertions that matter are boundary assertions. A companion CLI is
- * third-party code the agent invokes by name, so what this container does NOT
- * hold is as load-bearing as what it does: no `/credentials`, no worker URL, no
- * inherited environment, no session network, and none of the consuming
- * project's secrets beyond the names the plugin declared.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -31,12 +21,7 @@ import {
 } from "./plugin-leases.js";
 import { UNCONTAINED_PLUGIN_EGRESS, type PluginEgressPolicy } from "./plugin-egress.js";
 
-// docs/262 req 24 — the tier launchers shell out to a privileged sidecar on a
-// live host and `buildTierAEgressInputs` fetches GitHub's meta endpoint, so the
-// contained branch below stubs them at the same seam
-// `compose-service-egress.test.ts` does. Everything from `runPluginCommand` down
-// to the namespace decision is the production path; what these stub is the
-// privileged work the namespace decision leads to.
+// Stub privileged setup; keep the namespace decision on the production path.
 vi.mock("./egress-firewall-install.js", async (load) => ({
   // eslint-disable-next-line no-restricted-syntax -- Vitest partial-module mock typing
   ...(await load<typeof import("./egress-firewall-install.js")>()),
@@ -54,7 +39,6 @@ vi.mock("./egress-proxy-install.js", async (load) => ({
   launchEgressProxy: vi.fn(async () => "proxy-id"),
 }));
 
-/** A contained session's posture, as `ContainerSessionManager` would report it. */
 const CONTAINED_EGRESS: PluginEgressPolicy = {
   contained: true,
   config: { contained: true, extraHosts: [] },
@@ -65,9 +49,7 @@ const CONTAINED_EGRESS: PluginEgressPolicy = {
 
 const COMMIT = "d".repeat(40);
 
-/** An address inside the subnet the fake daemon reports for the CLI network. */
 const CLI_SUBNET_ADDRESS = "172.29.0.7";
-/** A session container's own bridge address — a different network entirely. */
 const SESSION_BRIDGE_ADDRESS = "172.18.0.4";
 
 let sessionDir: string;
@@ -112,8 +94,6 @@ function declareConsumer(yaml = CONSUMER): void {
   fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), yaml);
 }
 
-/** req 27 — the repository consuming its OWN export: no generation, no commit,
- * and the working tree as the plugin's tree. `probe`/`probe` throughout. */
 function declareSelfUse(): void {
   declareConsumer(`
 plugins:
@@ -131,13 +111,6 @@ exports:
 `);
 }
 
-/**
- * Publish a live generation of `tools`, the way activation would — including
- * `source`. A real activation always records it, and this path REFUSES a
- * generation whose source it cannot match: the pinned directory is what the
- * invocation container mounts and executes, so an unprovable tree is not one to
- * run. `source` is therefore part of the fixture, not decoration.
- */
 function publishGeneration(manifest = MANIFEST, source = "acme/tools"): void {
   const dir = path.join(stateDir, "plugins", "tools", "generations", COMMIT);
   fs.mkdirSync(dir, { recursive: true });
@@ -153,16 +126,8 @@ function publishGeneration(manifest = MANIFEST, source = "acme/tools"): void {
 }
 
 interface Created {
-  /** The daemon's id, so a `container:<holder>` namespace can be traced to one. */
   id: string;
   opts: Record<string, unknown>;
-  /**
-   * Whether this container's own subnet was already denied at ShipIt's API when
-   * the daemon was asked to create it. Recorded at creation rather than checked
-   * afterwards because the ordering IS the control: an address registered once
-   * the container is running leaves its first request — the one worth making —
-   * unguarded.
-   */
   deniedAtCreate: boolean;
 }
 
@@ -182,20 +147,12 @@ function fakeDocker(opts: {
   exit?: number;
   stdout?: string;
   stderr?: string;
-  /**
-   * At `createContainer`, replace every overlay-named volume with a plain
-   * `Options: null` one — Docker's implicit create when the name is gone
-   * (nikzlabs/shipit#2495). The workspace volume is left alone.
-   */
   vanishNamedVolumesOnCreate?: boolean;
-  /** The daemon refusing to remove the invocation container after it exits. */
   removeError?: string;
 } = {}) {
   const containers: Created[] = [];
   const started: string[] = [];
   const removedContainers: string[] = [];
-  // The workspace volume already exists in production; the overlay's daemon-path
-  // translation inspects it for its mountpoint.
   const volumes = new Set<string>(["shipit-ws"]);
   const volumeOpts = new Map<string, Record<string, string> | null>();
   const networks: string[] = [];
@@ -206,8 +163,6 @@ function fakeDocker(opts: {
 
   const docker = {
     modem: {
-      // The real modem splits Docker's framed stream; the fake just delivers
-      // what the test scripted onto the two sinks.
       demuxStream: (_s: NodeJS.ReadableStream, out: NodeJS.WritableStream, err: NodeJS.WritableStream) => {
         if (opts.stdout) out.write(opts.stdout);
         if (opts.stderr) err.write(opts.stderr);
@@ -218,16 +173,9 @@ function fakeDocker(opts: {
         if (!networks.includes(name)) notFound();
         return { IPAM: { Config: [{ Subnet: "172.29.0.0/16" }] } };
       },
-      // Recorded, never stubbed away: attaching a running container to a second
-      // network is a real pattern in this codebase (`service-manager-setup.ts`),
-      // and it is invisible to every create-time assertion below.
       connect: async (spec: unknown) => { connected.push(spec); },
     }),
     createNetwork: async (spec: { Name: string }) => { networks.push(spec.Name); },
-    // `createOverlayVolume` re-inspects after creating and throws unless the driver
-    // opts come back as the ones it asked for (the 2026-08-19 ops finding — Docker
-    // silently returns the pre-existing volume when the name is taken), so the
-    // double has to remember them.
     createVolume: async (spec: { Name: string; DriverOpts?: Record<string, string> }) => {
       volumes.add(spec.Name);
       volumeOpts.set(spec.Name, spec.DriverOpts ?? {});
@@ -257,8 +205,7 @@ function fakeDocker(opts: {
       return {
         id,
         attach: async () => {
-          // Flowing, so `end()` actually reaches `end`/`close` — the real
-          // hijacked stream is consumed by dockerode's demuxer.
+          // Consume the stream as dockerode's demuxer would, so end/close can fire.
           const s = new PassThrough();
           s.resume();
           return s;
@@ -279,25 +226,9 @@ function fakeDocker(opts: {
   };
 }
 
-/**
- * The req-19 properties that must hold on EVERY branch of `runPluginCommand`,
- * not just the one the main fixture takes.
- *
- * Written as a helper because the branches are where a boundary erodes: a
- * credential mount or a broker variable added inside the settings branch or the
- * `repo: self` branch would evade an assertion made once, on the pinned
- * no-settings path (review finding).
- */
 function expectBoundaryHolds(
   created: Record<string, unknown>,
   expectedTargets: string[],
-  /**
-   * The namespace this container may run in. Defaults to the plugin network —
-   * an uncontained session, and every branch below except the contained one. A
-   * PARAMETER rather than a fixed value because req 24 made a second correct
-   * answer possible (`container:<holder>`), and the wrong one — a session
-   * container's namespace — is neither: see the contained test for why.
-   */
   expectedNetworkMode: string = PLUGIN_CLI_NETWORK,
 ): void {
   const host = created.HostConfig as {
@@ -307,24 +238,13 @@ function expectBoundaryHolds(
     NetworkMode: string;
   };
   expect(host.Mounts.map((m) => m.Target).sort()).toEqual([...expectedTargets].sort());
-  // `Mounts` is not the only way to hand a container a filesystem, and an
-  // exhaustive claim about one field is not exhaustive if a sibling field can
-  // carry the rest. `Binds` is the older spelling of the same thing (the
-  // install container uses it), and `VolumesFrom` copies ANOTHER container's
-  // mounts wholesale — pointed at the session container that would be
-  // `/credentials`, in one line, with the mount assertion still green.
   expect(host.Binds ?? []).toEqual([]);
   expect(host.VolumesFrom ?? []).toEqual([]);
-  // Nor a second network beside `NetworkMode`: a container attached to the
-  // session's bridge as well would reach ShipIt's API from an address in no
-  // registered untrusted subnet, which the guard reads as a browser caller.
   expect(created.NetworkingConfig).toBeUndefined();
   expect(host.NetworkMode).toBe(expectedNetworkMode);
   for (const m of host.Mounts) {
     expect(`${m.Source} ${m.Target}`).not.toMatch(/credential/i);
   }
-  // No ShipIt credential, no worker URL, no port that aims the brokering git
-  // helper at anything, and nothing inherited from this process.
   const env = created.Env as string[];
   for (const e of env) {
     expect(e).not.toMatch(/^(GITHUB_TOKEN|GH_TOKEN|WORKER_URL|WORKER_PORT|SHIPIT_AGENT_OPS_URL|ORCHESTRATOR_URL|PATH)=/);
@@ -362,40 +282,12 @@ describe("runPluginCommand — the container it builds", () => {
     const host = created.HostConfig as { Mounts: Mount[]; NetworkMode: string; CapDrop: string[] };
     expect(mountFor(host, "/plugin")?.Type).toBe("volume");
     expect(mountFor(host, "/project")).toMatchObject({ Type: "bind", Source: workspaceDir });
-    // reqs 7, 15 — a generation is read-only to everything that runs at
-    // runtime, and the answer does not depend on which surface asks: a plugin
-    // SERVICE attaches this very volume read-only (`plugin-compose.ts`). This
-    // mount was read-write until the two surfaces were reconciled, which let a
-    // command copy-up into the generation's layer and change the code its own
-    // services ran, for the rest of the session, under a SHIPIT_PLUGIN_COMMIT
-    // that no longer described it. `install` is the one writer, and it runs
-    // before publication.
     expect(mountFor(host, "/plugin")?.ReadOnly).toBe(true);
-    // …and `/project` is the exact opposite, asserted rather than left to the
-    // absence of a flag, because it is the sentence `shipit-docs/plugins.md` now
-    // makes to agents: a plugin CAN write this project's files. The page said
-    // the reverse until nikzlabs/shipit#2298 — "containment means a plugin
-    // cannot write the project's repository" — while this mount had always been
-    // read-write, which overstates a guarantee rather than merely reading stale.
-    // A blanket flip to read-only would make that deleted sentence true again
-    // and break reqs 21 and 26 (a plugin's durable output IS the project
-    // workspace) with nothing else failing.
-    //
-    // **What this does NOT say is that the WHOLE tree must stay writable**
-    // (review finding, and worth pinning because the assertion invites the
-    // opposite reading). Req 26 wants durable *output*, which needs neither
-    // writable git metadata nor writable control files: `/project` today also
-    // carries `.git` and `shipit.yaml`, and writes to those escape the plugin's
-    // container entirely — a planted hook runs orchestrator-side, a changed
-    // `agent.install` re-runs in the agent's. A hardening that keeps generated
-    // output writable while protecting those should CHANGE this assertion, not
-    // be held back by it.
+    // Project output must be writable; this does not require writable control files.
     expect(mountFor(host, "/project")?.ReadOnly).toBe(false);
     expect(mountFor(host, "/plugin-state")).toMatchObject({
       Type: "bind", Source: path.join(sessionDir, "plugin-data", "reqs", "state"),
     });
-    // The plugin's own entrypoint, resolved inside its own tree — and its args
-    // handed over untouched.
     expect(created.Entrypoint).toEqual(["/plugin/cli/index.mjs"]);
     expect(created.Cmd).toEqual(["list", "--json"]);
     expect(created.WorkingDir).toBe("/project");
@@ -404,13 +296,6 @@ describe("runPluginCommand — the container it builds", () => {
     expect((created.Labels as Record<string, string>)[PLUGIN_CLI_LABEL]).toBe("s1");
   });
 
-  // planning#451 / nikzlabs/shipit#2495 — the volume is the overlay at ensure
-  // time; `createContainer` is ~the next thing that references it, and a
-  // missing name does not fail the create: Docker silently makes a plain empty
-  // local volume. Starting on that would run the command against an empty
-  // `/plugin`. Refusing before start is the same placement as the session
-  // dep-dir path. The container is removed; the shared volume is not (a plugin
-  // service may hold it).
   it("refuses to start when Docker implicitly created a plain overlay volume mid-window", async () => {
     declareConsumer();
     publishGeneration();
@@ -424,18 +309,11 @@ describe("runPluginCommand — the container it builds", () => {
     expect(fake.containers).toHaveLength(1);
   });
 
-  // The defect a review found: the orchestrator sees a session under its own
-  // `/workspace/...`, which in production lives INSIDE a named volume the
-  // daemon knows nothing about. Handing those paths over as bind sources
-  // creates empty, root-owned directories — `/project` would not be the project
-  // and `/plugin-state` would not be the state a plugin service writes to.
   it("translates session paths onto the workspace volume in the production layout", async () => {
     declareConsumer();
     publishGeneration();
     const fake = fakeDocker();
 
-    // `stateRoot` is the orchestrator-visible root of the named volume; the
-    // temp session tree stands in for a session under it.
     const stateRoot = path.dirname(sessionDir);
     const rel = path.basename(sessionDir);
     await runPluginCommand(
@@ -452,15 +330,9 @@ describe("runPluginCommand — the container it builds", () => {
       Type: "volume", Source: "shipit-ws",
       VolumeOptions: { Subpath: `${rel}/plugin-data/reqs/state` },
     });
-    // The plugin's own tree is a NAMED volume either way — a name needs no
-    // translation, which is why `install`'s single mount could be a bind.
     expect(mountFor(host!, "/plugin")?.Type).toBe("volume");
   });
 
-  // The sweeping form of the assertion above, and the one that catches a mount
-  // added later: in the production layout NOTHING may be a bind. A bind here
-  // does not fail — it starts a container in which the path exists and is
-  // empty, which is the whole reason this defect survived dev and dogfood.
   it("leaves no session path as a bind in the production layout, settings file included", async () => {
     declareConsumer();
     publishGeneration();
@@ -475,10 +347,6 @@ describe("runPluginCommand — the container it builds", () => {
 
     const host = fake.containers[0].opts.HostConfig as { Mounts: Mount[] };
     expect(host.Mounts.map((m) => m.Type)).not.toContain("bind");
-    // req 26 — mounted AS A FILE, which the daemon supports (it stats the
-    // resolved path and binds a file as a file). Its parent is the plugin's
-    // writable state directory, so mounting that instead would hand the plugin
-    // its own settings to rewrite.
     expect(mountFor(host, "/plugin-settings.json")).toMatchObject({
       Type: "volume",
       Source: "shipit-ws",
@@ -487,9 +355,6 @@ describe("runPluginCommand — the container it builds", () => {
     });
   });
 
-  // req 27 — a `repo: self` import's `/plugin` IS the session's working tree, so
-  // it is the one plugin-tree mount that is a session path rather than a named
-  // volume, and the one that needs the same translation.
   it("translates a `repo: self` plugin tree too", async () => {
     declareConsumer(`
 plugins:
@@ -520,19 +385,12 @@ exports:
     expect(mountFor(host, "/plugin")).toMatchObject({
       Type: "volume",
       Source: "shipit-ws",
-      // Read-WRITE: under `repo: self` the plugin is deliberately live and
-      // editable, which is req 27's whole point — and it is the same tree this
-      // container already has read-write at `/project`, so the plugin service
-      // that mounts it gets the same rights (`plugin-compose.ts`).
       ReadOnly: false,
       VolumeOptions: { Subpath: `${rel}/workspace` },
     });
     expect(host.Mounts.map((m) => m.Type)).not.toContain("bind");
   });
 
-  // Fail closed. With a volume runtime there is no bind to degrade to: one would
-  // start the command against an empty `/project` and a `/plugin-state` nothing
-  // else writes to, and report success. Refusing is the only honest answer.
   it("refuses rather than binding when a session path is outside the volume root", async () => {
     declareConsumer();
     publishGeneration();
@@ -549,8 +407,6 @@ exports:
     expect(fake.containers).toHaveLength(0);
   });
 
-  // req 19 — the whole reason a companion CLI does not run in the agent
-  // container. This is the assertion that keeps it true.
   it("hands the plugin no ShipIt credential, worker URL, or inherited environment", async () => {
     declareConsumer();
     publishGeneration();
@@ -566,12 +422,9 @@ exports:
     }
     expect(env).toContain("SHIPIT_PROJECT_DIR=/project");
     expect(env).toContain("SHIPIT_PLUGIN_STATE=/plugin-state");
-    // req 15 — the running commit, readable by the plugin itself.
     expect(env).toContain(`SHIPIT_PLUGIN_COMMIT=${COMMIT}`);
   });
 
-  // req 23 — the plugin's DECLARED names, from the consuming project's store,
-  // and nothing else that happens to be in it.
   it("injects only the credential names the plugin declared", async () => {
     declareConsumer();
     publishGeneration();
@@ -584,10 +437,6 @@ exports:
     expect(env.some((e) => e.startsWith("OTHER="))).toBe(false);
   });
 
-  // reqs 23, 24 — an OPTIONAL credential the project HAS set is delivered
-  // exactly as a required one is. Optionality bounds how an unsatisfied name is
-  // reported; filtering on it here would withhold a value the user deliberately
-  // provided, and the plugin would fail with the card saying nothing is wrong.
   it("injects an optional credential the project has a value for", async () => {
     declareConsumer();
     publishGeneration(`
@@ -605,10 +454,6 @@ exports:
     expect(fake.containers[0].opts.Env as string[]).toContain("FAL_KEY=secret-value");
   });
 
-  // req 23's last sentence, as an assertion: a plugin's store can never resolve
-  // ShipIt's own platform credentials. The dep is typed as `loadSecrets` alone,
-  // and satisfaction is decided by the credential slice's single definition —
-  // so an empty stored value is "missing" here exactly as it is on the card.
   it("treats an empty stored value as missing, the same bar the card applies", async () => {
     declareConsumer();
     publishGeneration();
@@ -622,8 +467,6 @@ exports:
     expect((fake.containers[0].opts.Env as string[]).some((e) => e.startsWith("FAL_KEY"))).toBe(false);
   });
 
-  // A missing key must stay a named gap on the Plugins tab, not an empty
-  // string that surfaces as a third-party authentication error.
   it("omits a declared credential that has no stored value", async () => {
     declareConsumer();
     publishGeneration();
@@ -652,12 +495,6 @@ exports:
     expect(fake.containers[0].opts.Env as string[]).toContain("SHIPIT_SETTINGS=/plugin-settings.json");
   });
 
-  // req 27 — there the plugin IS the working tree, live and editable, and
-  // there is no commit for it to correspond to.
-  // The skew this whole path exists to prevent needs the target's `active`
-  // followed ONCE — `pinGeneration` names the volume, the lowerdir and the
-  // entrypoint out of that one answer. A review found the collision verdict's
-  // lookup following it a second time for a manifest it then discarded.
   it("follows the target repository's `active` exactly once per invocation", async () => {
     declareConsumer();
     publishGeneration();
@@ -686,16 +523,6 @@ exports:
     expect((created.Env as string[]).some((e) => e.startsWith("SHIPIT_PLUGIN_COMMIT"))).toBe(false);
   });
 
-  /**
-   * The toolchain overrides are for a TRACKED generation and must not follow a
-   * self import (independent review). Here `/plugin` is the user's own working
-   * tree, swept by the post-turn `git add -A`, so pointing a lazy browser
-   * download at `/plugin/.shipit-toolchain` would commit a toolchain into their
-   * repository. No exported `install` runs for a self import either, so the
-   * redirect would also aim the plugin away from the browser already baked at
-   * `/opt/playwright-browsers` — readable by any uid — and at a directory that
-   * is always empty.
-   */
   it("leaves the image's toolchain paths alone under `repo: self`", async () => {
     declareSelfUse();
     const fake = fakeDocker();
@@ -710,18 +537,9 @@ exports:
       expect(env.some((e) => e.startsWith(name))).toBe(false);
     }
     expect(env.join("\n")).not.toContain(PLUGIN_BROWSERS_DIR);
-    // The two that are NOT about the overlay still apply: `HOME` has always been
-    // redirected here, and for the same reason.
     expect(env).toContain("HOME=/tmp");
   });
 
-  /**
-   * nikzlabs/shipit#2298 — on an overlay-backed session the clone's dep dirs are
-   * empty mount points and the content lives only in the per-session overlay
-   * volumes. An invocation container attached none, so `/project` — and, under
-   * `repo: self`, `/plugin` with it — held an empty `node_modules` and no entry
-   * point could load a dependency the working tree plainly has.
-   */
   describe("the session's overlay dep dirs (docs/183)", () => {
     const overlayDepDirs = async (): Promise<{ depDir: string; volumeName: string }[]> => [
       { depDir: "node_modules", volumeName: "shipit-s1_overlay-aaaa" },
@@ -745,21 +563,12 @@ exports:
           Source: "shipit-s1_overlay-aaaa",
         });
       }
-      // req 19 — the branch that ADDS mounts is exactly the branch where an
-      // exhaustive claim earns its keep, and the two exhaustive tests below
-      // cover self-without-overlays and tracked-with-overlays but not this
-      // combination (independent review, this branch).
       expectBoundaryHolds(created, [
         "/plugin", "/plugin/node_modules", "/plugin-state", "/project", "/project/node_modules",
       ]);
       expect(fake.connected).toEqual([]);
     });
 
-    // The gate is the reason: a tracked service starts with
-    // `dependsOnInstall: false` because its dependencies are its own, so handing
-    // it the project's `node_modules` would let it read them while
-    // `agent.install` writes them. One rule for both surfaces — see
-    // `compose-generator.ts`'s `overlayMountsForPluginService`.
     it("adds nothing for a tracked generation — its dependencies are its own", async () => {
       declareConsumer();
       publishGeneration();
@@ -773,10 +582,6 @@ exports:
     });
 
     it("degrades to the mounts it has always had when they cannot be resolved", async () => {
-      // On the SELF branch, because that is where degrading actually costs
-      // something: it restores the empty `node_modules` this feature exists to
-      // fix. Asserted deliberately rather than left to the tracked path, where
-      // the branch does nothing either way.
       declareSelfUse();
       const fake = fakeDocker({ stdout: "ok\n" });
 
@@ -785,22 +590,11 @@ exports:
         { alias: "probe", command: "probe", args: [] },
       );
 
-      // A refusal here would withhold every companion CLI in the session,
-      // including the many with no dependencies at all, over a daemon hiccup.
       expect(result.error).toBeUndefined();
       expectBoundaryHolds(fake.containers[0].opts, ["/plugin", "/plugin-state", "/project"]);
     });
   });
 
-  /**
-   * A teardown failure strands a container that nothing running will reap.
-   * `reapOrphanPluginInstalls` is called from the startup janitor alone, boot-only
-   * because an orphan is taken to imply a died process and therefore the restart
-   * that reaps it. A swallowed removal failure is the one case that breaks that
-   * reasoning: the orchestrator keeps running, so no restart is implied, and prod
-   * is deployed by hand. Swallowing stays right — the exit code and the output are
-   * already computed and must not change; being silent about it does not.
-   */
   describe("when the daemon refuses to remove the container", () => {
     it("logs the failure and still returns the command's own exit code and output", async () => {
       declareConsumer();
@@ -811,14 +605,10 @@ exports:
       try {
         const result = await runPluginCommand(deps(fake.docker), call);
 
-        // The command's own answer is untouched by a teardown that failed after
-        // it was computed — this is what the swallow is FOR.
         expect(result.error).toBeUndefined();
         expect(result.exitCode).toBe(3);
         expect(result.stdout).toBe("out\n");
         expect(result.stderr).toBe("err\n");
-        // …and the orphan it left is now findable. The session id is what ties
-        // the stranded container to the session whose files it still holds.
         const line = warn.mock.calls.map((c) => c.join(" ")).find((c) => c.includes(fake.containers[0].id));
         expect(line).toBeDefined();
         expect(line).toContain("s1");
@@ -828,8 +618,6 @@ exports:
       }
     });
 
-    // The complement, so the assertion above cannot be satisfied by a warning
-    // this path emits on every call: an ordinary run says nothing.
     it("says nothing when the removal succeeds", async () => {
       declareConsumer();
       publishGeneration();
@@ -841,10 +629,7 @@ exports:
 
         expect(result.exitCode).toBe(0);
         expect(fake.removedContainers).toEqual([fake.containers[0].id]);
-        // Scoped to this path's own line rather than to `console.warn` at
-        // large: the fixture's unprivileged chowns and the fake image's missing
-        // PATH warn on every run, and asserting silence over all of them would
-        // fail for reasons that have nothing to do with teardown.
+        // Exclude unrelated fixture warnings about chown and the image's missing PATH.
         expect(warn.mock.calls.map((c) => c.join(" ")).filter((c) => c.includes(fake.containers[0].id)))
           .toEqual([]);
       } finally {
@@ -854,18 +639,6 @@ exports:
   });
 });
 
-/**
- * docs/262 req 19, the fetch-authority half: "credentials used to fetch
- * repositories are never exposed to plugin code".
- *
- * The tests above assert the container ShipIt MEANT to build. These assert the
- * complement — that it holds nothing else — because that is the half a later
- * change breaks by addition rather than by edit. Each one is written as an
- * exhaustive claim (the whole mount list, the whole environment) rather than a
- * denylist of today's known-bad names: a denylist passes a mount nobody thought
- * to forbid, which is precisely how the withdrawn PR #2202 shipped an install
- * container that could read `/credentials`.
- */
 describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
   it("mounts EXACTLY the in-session usage contract, and nothing else", async () => {
     declareConsumer();
@@ -877,40 +650,11 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
     const created = fake.containers[0].opts;
     const host = created.HostConfig as { Mounts: Mount[] };
     expectBoundaryHolds(created, ["/plugin", "/plugin-state", "/project"]);
-    // …and it is never attached to a second network after the fact, which no
-    // create-time field would record.
     expect(fake.connected).toEqual([]);
-    // `/project` IS the workspace, so it necessarily carries `.git`.
-    //
-    // **Half of that was safe and half of it was an open req-19 gap, and the
-    // difference was worth checking rather than asserting.** The repo-local
-    // `credential.helper` is safe: `github-auth.ts` writes
-    // `CONTAINER_CREDENTIAL_HELPER`, a PATH to a broker (`git-config.ts` —
-    // "this file NEVER contains the token"), and that broker answers only over
-    // the session worker's loopback, which the next test shows this container
-    // does not share. `remote.origin.url` was NOT: `addRepo`
-    // (`services/repos.ts`) trimmed and expanded shorthand but never called
-    // `stripUrlCredentials`, `RepoStore.add` persisted the string verbatim, and
-    // `RepoGit.cloneFromCache` ran `git remote set-url origin <that string>`
-    // — so a repository added as
-    // `https://x-access-token:<pat>@github.com/o/r.git` put a live token in
-    // this container's `/project/.git/config`, where no mount, environment or
-    // network assertion in this file can see it. Found by an independent
-    // review of this branch, and CLOSED under req 19's own rule — a credential a
-    // user types into a repository URL is not kept, and fetches are credentialed
-    // by a helper scoped to that remote. It is stripped where a repository is
-    // added and at every write of a remote URL, with the recorded cost that a
-    // remote whose only working auth is that URL stops working on the helper
-    // path. The guard lives where the file is written,
-    // not here — `repo-git.test.ts` → "no credential is recorded in a git
-    // config", plus the legacy sweep in `startup-tasks.test.ts`.
+    // Git config token checks live in repo-git.test.ts and startup-tasks.test.ts.
     expect(mountFor(host, "/project")?.Source).toBe(workspaceDir);
   });
 
-  // The two branches the fixture above does not take. A boundary erodes at a
-  // branch: a credential mount added "just for settings", or a broker variable
-  // added "just for self-use", would pass every assertion made once on the
-  // pinned no-settings path (review finding).
   it("holds the same boundary when the overlay dep dirs are offered to a tracked import", async () => {
     vi.stubEnv("GITHUB_TOKEN", "ghp-should-never-be-inherited");
     declareConsumer();
@@ -926,11 +670,6 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
       call,
     );
 
-    // Unchanged, because a tracked import takes none of them — and stated as an
-    // EXHAUSTIVE list rather than an absent-mount check, since a dep dir is a
-    // directory name out of a repository's own `shipit.yaml` (`..` is refused
-    // where it is parsed, `normalizeLiteralRelPath`, and this is what would
-    // notice if that stopped being true).
     expectBoundaryHolds(fake.containers[0].opts, ["/plugin", "/plugin-state", "/project"]);
     expect(fake.connected).toEqual([]);
   });
@@ -964,9 +703,6 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
   });
 
   it("carries no ShipIt credential, and nothing from the orchestrator's own environment", async () => {
-    // The failure this rules out is a one-word one: `...process.env` in the Env
-    // array. The orchestrator process holds the fetch token these values stand
-    // in for, so a leak is req 19's exact violation.
     vi.stubEnv("GITHUB_TOKEN", "ghp-should-never-be-inherited");
     vi.stubEnv("GH_TOKEN", "gh-should-never-be-inherited");
     vi.stubEnv("SHIPIT_AGENT_OPS_URL", "http://127.0.0.1:9100");
@@ -977,18 +713,7 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
     await runPluginCommand(deps(fake.docker), call);
 
     const env = fake.containers[0].opts.Env as string[];
-    // Everything ShipIt SUBMITS, exactly: the contract's three names (settings
-    // is absent — this import has no settings file), the two hygiene settings,
-    // and the one credential name the plugin declared.
-    //
-    // Not the container's *effective* environment, and the distinction is not
-    // pedantic (review finding): Docker merges this array with the image's own
-    // `ENV`, and the image here is the session-worker image, which already
-    // supplies `PATH` and `AGENT_HOME`. An `ENV GITHUB_TOKEN=…` added to that
-    // Dockerfile would reach plugin code with this assertion still green. That
-    // is the image's contract to hold, not this call's — but it IS a second
-    // surface, and the writable-path overrides below are what this call can do
-    // about the part of it that broke (see the next test).
+    // Submitted variables only: Docker also inherits the image's ENV.
     expect([...env].sort()).toEqual([
       "AGENT_HOME=/tmp",
       "FAL_KEY=secret-value",
@@ -1001,43 +726,13 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
       "npm_config_update_notifier=false",
     ]);
     expect(env.join("\n")).not.toContain("should-never-be-inherited");
-    // `WORKER_PORT` matters as much as an explicit URL: the brokering credential
-    // helper falls back to `http://127.0.0.1:${WORKER_PORT|9100}`, so an
-    // inherited port would aim it at whatever answers on this container's own
-    // loopback rather than merely being inert.
     expect(env.some((e) => e.startsWith("WORKER_PORT="))).toBe(false);
   });
 
-  /**
-   * The non-obvious one, and the reason the env assertion above is not enough.
-   *
-   * This container runs the SESSION WORKER IMAGE for its toolchain, so
-   * `/usr/local/bin/shipit-git-credential` is present in it, and `/project`'s
-   * git config names that helper. The helper needs no token and no URL: it
-   * POSTs to `http://127.0.0.1:9100/agent-ops/git/credential`, unauthenticated,
-   * and the worker brokers a real GitHub token back. What makes that harmless
-   * here is ONLY that `127.0.0.1` is this container's own loopback. A
-   * `NetworkMode` of `host` or `container:<session>` would share the worker's
-   * network namespace and turn `git -C /project fetch` into a token read — with
-   * no mount and no environment variable changed, so nothing else in this file
-   * would notice.
-   */
-  /**
-   * The run-time half of the 2026-09-03 install failure, and the half that
-   * would have made the fix worse than the bug on its own.
-   *
-   * `install` fetches a browser into the generation's overlay because the
-   * image's `/opt/playwright-browsers` is root-owned and this container runs as
-   * a per-session uid. `/plugin` is that same overlay, mounted at the same path
-   * here — but only if this container ALSO resolves the variable to it. Inherit
-   * the image's value instead and the install succeeds into a directory nothing
-   * ever looks in, which fails later, further from the cause.
-   */
   it("resolves the toolchain paths to the same overlay directories install wrote", async () => {
     declareConsumer();
     publishGeneration();
     const fake = fakeDocker();
-    // The image's own ENV, which `Env` merges over rather than replaces.
     (fake.docker as unknown as Record<string, unknown>).getImage = () => ({
       inspect: async () => ({
         Config: { Env: ["PATH=/usr/local/bin:/usr/bin:/bin", "PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers"] },
@@ -1049,8 +744,6 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
     const env = fake.containers[0].opts.Env as string[];
     expect(env).toContain(`PLAYWRIGHT_BROWSERS_PATH=${PLUGIN_BROWSERS_DIR}`);
     expect(env).toContain(`NPM_CONFIG_PREFIX=${PLUGIN_NPM_PREFIX_DIR}`);
-    // Both under `/plugin`, which is the volume install wrote and this call
-    // mounts — not `/tmp`, which is a tmpfs that never outlived the install.
     for (const dir of [PLUGIN_BROWSERS_DIR, PLUGIN_NPM_PREFIX_DIR]) {
       expect(dir.startsWith("/plugin/")).toBe(true);
     }
@@ -1072,30 +765,13 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
       CapAdd?: string[];
     };
     expect(host.NetworkMode).toBe(PLUGIN_CLI_NETWORK);
-    // Spelled out as well as pinned, because the namespace-sharing modes are
-    // what the assertion above is really for, and a future change that renames
-    // the network must not read as permission to use one of them.
     expect(host.NetworkMode).not.toBe("host");
     expect(host.NetworkMode.startsWith("container:")).toBe(false);
-    // Nor a hand-written route back to the host, where ShipIt's own API is
-    // published — the IP guard denies it, but a second lock costs nothing.
     expect(host.ExtraHosts ?? []).toEqual([]);
     expect(host.Privileged ?? false).toBe(false);
     expect(host.CapAdd ?? []).toEqual([]);
   });
 
-  /**
-   * docs/262 req 24 — and the reason the assertion above is stated as "not a
-   * SESSION container's namespace" rather than "not a `container:` mode at all".
-   *
-   * A contained session's companion CLI DOES run in a shared namespace now, so
-   * that it reaches exactly what the agent reaches. What makes that safe is
-   * WHOSE namespace: a holder ShipIt created for this call, on the same
-   * untrusted plugin network, running nothing. The session's container is on the
-   * session bridge and serves `/agent-ops/*` on its loopback, so joining it
-   * instead would turn `git -C /project fetch` into a token read — with the
-   * mount and environment assertions in this file still green.
-   */
   it("joins a ShipIt-owned holder on the plugin network when the session is contained", async () => {
     declareConsumer();
     publishGeneration();
@@ -1108,28 +784,18 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
 
     expect(result.error).toBeUndefined();
     const [holder, workload] = fake.containers;
-    // The holder is created FIRST and is the namespace the workload joins.
     expect((workload.opts.HostConfig as { NetworkMode: string }).NetworkMode)
       .toBe(`container:${holder.id}`);
-    // …and the holder itself is on the untrusted plugin network, holding
-    // nothing: no repository code, no mounts, no environment. Everything it can
-    // reach, plugin code can reach.
     const holderHost = holder.opts.HostConfig as Record<string, unknown>;
     expect(holderHost.NetworkMode).toBe(PLUGIN_CLI_NETWORK);
     expect(holderHost.Mounts ?? []).toEqual([]);
     expect(holderHost.Binds ?? []).toEqual([]);
     expect(holder.opts.Env ?? []).toEqual([]);
-    // The workload's own boundary is unchanged by any of this — it did not
-    // acquire a mount or a capability along with a namespace.
     expectBoundaryHolds(
       workload.opts, ["/plugin", "/project", "/plugin-state"], `container:${holder.id}`,
     );
   });
 
-  // Fail closed, and at the surface: a contained session whose deployment cannot
-  // install containment gets a refusal, not a plugin container with unrestricted
-  // egress. Nothing is created — not even the holder, since the missing image is
-  // what would have contained it.
   it("refuses to run a contained session's CLI when containment cannot be installed", async () => {
     declareConsumer();
     publishGeneration();
@@ -1145,15 +811,6 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
     expect(fake.containers).toHaveLength(0);
   });
 
-  /**
-   * The ordering is the control, not a detail. `api-container-guard.ts` reads an
-   * unrecognised source IP as a trusted browser/host caller, so between "the
-   * container can send a packet" and "its subnet is registered" it is MORE
-   * privileged at ShipIt's API than the agent container it is isolated from —
-   * and `/api/sessions/<id>/git/credential` is one request. `plugin-install.ts`
-   * carries the same assertion; this is the CLI surface's copy of it, because
-   * the two register different networks and neither implies the other.
-   */
   it("denies its own subnet at ShipIt's API before the container is created", async () => {
     declareConsumer();
     publishGeneration();
@@ -1165,15 +822,9 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
     expect(fake.networks).toEqual([PLUGIN_CLI_NETWORK]);
     expect(fake.containers[0].deniedAtCreate).toBe(true);
     expect(isUntrustedContainerIp(CLI_SUBNET_ADDRESS)).toBe(true);
-    // Scoped to this network: a session container's own bridge address keeps
-    // the treatment the guard's own layers give it.
     expect(isUntrustedContainerIp(SESSION_BRIDGE_ADDRESS)).toBe(false);
   });
 
-  // The dual-stack hole, at the surface that has to survive it: an IPv6 subnet
-  // is one the IPv4-only guard cannot deny, so the container must not start.
-  // Without this, the run proceeds and the plugin reaches ShipIt's API over
-  // IPv6 as an unrecognised — therefore trusted — caller.
   it("refuses to run on a network whose second subnet cannot be denied", async () => {
     declareConsumer();
     publishGeneration();
@@ -1210,17 +861,6 @@ describe("runPluginCommand — what it refuses", () => {
     expect(fake.containers).toHaveLength(0);
   });
 
-  /**
-   * The identity check lives in the readers that follow the `active` symlink
-   * themselves. This path resolves the link ITSELF and then reads through the
-   * directory-scoped readers, which carry no check by design — so without its
-   * own comparison it opts out by construction, and no compiler sweep over
-   * those wrappers can find it. It is also the worst place to miss: the pinned
-   * directory is what the container mounts, so it feeds the entrypoint, the
-   * lowerdir, the volume name and `SHIPIT_PLUGIN_COMMIT`. Between a `repos:`
-   * entry being re-pointed and the activation round that republishes it,
-   * `active` still resolves to the PREVIOUS repository's tree.
-   */
   it("refuses to run a generation built from a repository the declaration no longer names", async () => {
     declareConsumer();
     publishGeneration(MANIFEST, "acme/previous");
@@ -1229,13 +869,9 @@ describe("runPluginCommand — what it refuses", () => {
     const result = await runPluginCommand(deps(fake.docker), call);
 
     expect(result.error).toContain("has no active version in this session yet");
-    // Nothing was mounted, and nothing ran.
     expect(fake.containers).toHaveLength(0);
   });
 
-  // req 20 — the wrapper is a file, and the declaration can change under it.
-  // "Reports the collision before running the ambiguous one" has to hold here,
-  // not only where the wrapper was written.
   it("re-checks the collision at the run boundary and refuses", async () => {
     declareConsumer(`
 plugins:
@@ -1276,13 +912,10 @@ exports:
     expect(fake.containers).toHaveLength(0);
   });
 
-  // Fail closed: a container ShipIt cannot deny at its own API is not one to
-  // start (`plugin-container.ts`).
   it("refuses when its network cannot be declared untrusted", async () => {
     declareConsumer();
     publishGeneration();
     const fake = fakeDocker();
-    // A network with no IPv4 subnet — the guard's CIDR match is IPv4-only.
     (fake.docker as unknown as { getNetwork: (n: string) => unknown }).getNetwork = () => ({
       inspect: async () => ({ IPAM: { Config: [] } }),
     });
@@ -1300,8 +933,6 @@ describe("mapWorkingDir", () => {
   });
 
   it("falls back to the project root for anything else", () => {
-    // Docker CREATES a missing WorkingDir, so a path that does not exist would
-    // otherwise write a stray directory into the user's repository.
     expect(mapWorkingDir(workspaceDir, "/workspace/absent")).toBe("/project");
     expect(mapWorkingDir(workspaceDir, "/tmp")).toBe("/project");
     expect(mapWorkingDir(workspaceDir, "/workspace/../etc")).toBe("/project");
@@ -1309,17 +940,6 @@ describe("mapWorkingDir", () => {
   });
 });
 
-/**
- * docs/262 req 15 — the consumer lease (`plugin-leases.ts`).
- *
- * An invocation container mounts the generation's overlay volume, whose lowerdir
- * is the checkout on disk. A refresh landing mid-command used to prune that
- * checkout, and docs/183's spike records what that does to a live overlay:
- * merged `readdir` comes back empty while path lookups still resolve, so the
- * command misbehaves instead of failing. The lease is the same one a plugin
- * service takes — one mechanism, because both surfaces attach one volume per
- * generation.
- */
 describe("runPluginCommand — the consumer lease", () => {
   const GENERATION = { sessionId: "s1", repoName: "tools", generationId: COMMIT };
 
@@ -1329,8 +949,6 @@ describe("runPluginCommand — the consumer lease", () => {
     declareConsumer();
     publishGeneration();
     const fake = fakeDocker({ stdout: "ok\n" });
-    // Observed at container-creation time, which is inside the call and after
-    // the volume has been ensured — the exact window a prune must not win.
     let heldDuringRun = -1;
     const docker = {
       ...(fake.docker as unknown as Record<string, unknown>),
@@ -1365,10 +983,6 @@ describe("runPluginCommand — the consumer lease", () => {
     declareConsumer();
     publishGeneration();
     const fake = fakeDocker();
-    // A publish has superseded this commit and its prune has the tree claimed:
-    // `active` still resolved to it a moment ago, and the directory is going
-    // away. Mounting it now is the corruption case, so the answer is "run it
-    // again", not a container.
     const done = claimGenerationDeletion(GENERATION)!;
     try {
       const result = await runPluginCommand(deps(fake.docker), call);

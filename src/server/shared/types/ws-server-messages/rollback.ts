@@ -1,8 +1,5 @@
 import type { WsChatHistoryMessage } from "../domain-types.js";
 
-// ---- Rollback messages (server → client) ----
-
-/** Server → Client: a commit was linked to an assistant message. */
 export interface WsCommitLinked {
   type: "commit_linked";
   messageIndex: number;
@@ -10,7 +7,6 @@ export interface WsCommitLinked {
   parentCommitHash: string;
 }
 
-/** Server → Client: rewind completed — remove messages after the rewind point. */
 export type WsRewindComplete =
   | {
       type: "rewind_complete";
@@ -62,7 +58,6 @@ export interface WsRewindPreview {
   fileCount?: number;
 }
 
-/** Server → Client: a new session was forked from a rollback point. */
 export interface WsSessionForked {
   type: "session_forked";
   parentSessionId: string;

@@ -21,11 +21,6 @@ afterEach(() => {
 
 const PROPOSE = `<!--shipit:release {"action":"propose","version":"0.3.0","tag":"v0.3.0","prerelease":false}-->`;
 
-/**
- * docs/171 + docs/214 — release-flow maps the agent's turn-text markers onto the
- * poller. The primary docs/214 driver is the prepare route calling the poller
- * directly, but the `pr-opened` marker path stays supported.
- */
 function makeDeps() {
   const poller = {
     propose: vi.fn(),

@@ -29,10 +29,6 @@ function imageResultContent(): string {
 
 describe("projectToolResult", () => {
   it("ships NO body for a modal-only result (req 1)", () => {
-    // `ToolResult` renders only inside `ToolCallModal`, so nothing draws a Bash
-    // result's content until the user clicks. The transcript therefore carries
-    // none of it — not even a slice, which is what the first implementation
-    // shipped and what made requirement 1 unmet.
     const projected = projectToolResult("s1", { toolUseId: "t1", content: bigOutput }, "Bash");
     expect(projected.content).toBe("");
     expect(projected.truncated).toBe(true);
@@ -41,15 +37,11 @@ describe("projectToolResult", () => {
   });
 
   it("leaves a short body in place rather than paying more metadata than it saves", () => {
-    // Stripping `"ok"` would replace 2 bytes with ~60 of markers AND buy a
-    // fetch round-trip. Below the floor the mechanism costs more than it saves.
     const result = { toolUseId: "t1", content: "ok" };
     expect(projectToolResult("s1", result, "Bash")).toBe(result);
   });
 
   it("still SLICES a result whose tool name can't be resolved", () => {
-    // The conservative fallback: an unknown name might be one of the three the
-    // transcript renders inline, so its body is bounded rather than emptied.
     const projected = projectToolResult("s1", { toolUseId: "t1", content: bigOutput }, undefined);
     expect(projected.truncated).toBe(true);
     expect(projected.content.split("\n")).toHaveLength(TRANSCRIPT_SLICE_LINES);
@@ -57,8 +49,6 @@ describe("projectToolResult", () => {
   });
 
   it("keeps the body for each tool the transcript renders inline", () => {
-    // AskUserQuestion's chosen answer and the present card's artifact id are
-    // both read straight from result content, with no modal and no fetch.
     for (const tool of ["AskUserQuestion", "mcp__shipit__present", "present"]) {
       const projected = projectToolResult("s1", { toolUseId: "t1", content: "pres_abc123" }, tool);
       expect(projected.content).toBe("pres_abc123");
@@ -66,14 +56,6 @@ describe("projectToolResult", () => {
     }
   });
 
-  /**
-   * planning#293. The Ask branch of `MessageToolUse` returns before the output
-   * modal, so a sliced answer's tail is unreachable — not behind a click,
-   * gone. Found by the independent requirements review: it had been recorded
-   * as a requirement-4 shortfall, but it also broke requirement 2 (nothing
-   * displays or fetches the rest) and requirement 8 (the Ask card *is* the
-   * transcript), which made it the feature's only real transcript regression.
-   */
   it("never slices an AskUserQuestion answer, however long", () => {
     const longAnswer = "A".repeat(40_000);
     const projected = projectToolResult("s1", { toolUseId: "t1", content: longAnswer }, "AskUserQuestion");
@@ -83,25 +65,16 @@ describe("projectToolResult", () => {
   });
 
   it("keeps a TaskCreate result — it carries the id the task panel folds on", () => {
-    // The CLI assigns the task id and returns it ONLY here. Emptying this body
-    // strands the task on its provisional key, so every later TaskUpdate misses
-    // it and the panel stops tracking the list after a reload.
     const content = `Task #7 created successfully: ${"long subject ".repeat(30)}`;
     const projected = projectToolResult("s1", { toolUseId: "t1", content }, "TaskCreate");
     expect(projected.content).toBe(content);
     expect(projected.truncated).toBeUndefined();
-    // Only the head is needed, so it is NOT exempt from slicing — a huge body
-    // still gets bounded, and the `Task #N` prefix survives that.
     const huge = projectToolResult("s1", { toolUseId: "t2", content: `Task #7 created\n${bigOutput}` }, "TaskCreate");
     expect(huge.truncated).toBe(true);
     expect(huge.content.startsWith("Task #7 created")).toBe(true);
   });
 
   it("still slices a long result for `present`, whose id survives the head", () => {
-    // The counter-case that keeps the exemption narrow: `present` also reads
-    // result content inline, but only an artifact id out of the head of a
-    // compact producer-controlled payload, which a slice preserves. Exempting
-    // it would ship bytes for nothing.
     const projected = projectToolResult("s1", { toolUseId: "t1", content: bigOutput }, "present");
     expect(projected.truncated).toBe(true);
   });
@@ -118,31 +91,16 @@ describe("projectToolResult", () => {
     expect(projected.truncated).toBe(true);
   });
 
-  /**
-   * docs/109 req 8 — the report used to be exempt from every bound because the
-   * card rendered it whole with nothing to click. It now clamps inline with a
-   * *Show the full report* modal behind it, so the head ships and the tail is
-   * fetched. `Agent` is the name the Claude CLI actually emits; `Task` covers
-   * transcripts persisted before docs/109.
-   */
   it("clamps a subagent final report and marks it fetchable", () => {
     for (const tool of ["Task", "Agent"]) {
       const projected = projectToolResult("s1", { toolUseId: "t1", content: bigOutput }, tool);
       expect(projected.truncated).toBe(true);
       expect(projected.content.length).toBeLessThan(bigOutput.length);
-      // The head is a real prefix — the card renders it as the clamped body.
       expect(bigOutput.startsWith(projected.content)).toBe(true);
       expect(projected.totalLines).toBe(bigOutput.split("\n").length);
     }
   });
 
-  /**
-   * The failure mode this branch exists to avoid. A report's normal encoding is
-   * a `JSON.stringify`'d block array — ONE line — so the generic slice's line
-   * cap never fires and its byte backstop cuts mid-array. The client would then
-   * fail to parse it and render raw JSON at the user, which is planning#289 all over
-   * again.
-   */
   it("keeps a block-array report parseable after clamping", () => {
     const content = JSON.stringify([
       { type: "text", text: Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n") },
@@ -155,8 +113,6 @@ describe("projectToolResult", () => {
     const blocks = JSON.parse(projected.content) as { type: string; text: string }[];
     expect(blocks[0]!.text.split("\n").length).toBeLessThan(200);
     expect(blocks[0]!.text.startsWith("line 0")).toBe(true);
-    // The footer feeds the header chips, which are visible with no click — so
-    // it ships whole rather than being clamped away with the body.
     expect(blocks[1]!.text).toContain("subagent_tokens: 4210");
   });
 
@@ -166,12 +122,6 @@ describe("projectToolResult", () => {
     expect(projected.content).toBe("All three checks passed.");
   });
 
-  /**
-   * From the cross-agent review. A subagent can return a screenshot beside its
-   * report, and that base64 is the heaviest thing in the message — the text
-   * clamp does not touch it. Substitution runs first, so a report is bounded on
-   * both axes, and the image survives as a URL rather than being dropped.
-   */
   it("substitutes a report's images even when the text is short enough to keep", () => {
     const content = JSON.stringify([
       { type: "text", text: "Here is the screenshot." },
@@ -186,10 +136,6 @@ describe("projectToolResult", () => {
   });
 
   it("does slice a Skill result, which renders no report", () => {
-    // docs/109 — `Skill` sits in the layout set (its own top-level element) but
-    // not the report set: the compact renderer shows name + args and never
-    // touches the body, so exempting it from every size bound shipped an
-    // unbounded payload that nothing could display.
     const projected = projectToolResult("s1", { toolUseId: "t1", content: bigOutput }, "Skill");
     expect(projected.truncated).toBe(true);
     expect(projected.content).not.toBe(bigOutput);
@@ -207,10 +153,6 @@ describe("projectToolResult", () => {
   });
 
   it("empties the text of an image result but keeps its image URLs", () => {
-    // The image blocks are modal-only too, but their URLs are ~100 bytes and
-    // keeping them means the screenshot paints as soon as the modal opens,
-    // while the text is still in flight. Emptying the array instead would blank
-    // it until the fetch lands.
     const content = JSON.stringify([
       { type: "text", text: bigOutput },
       { type: "image", source: { type: "base64", media_type: "image/png", data: png } },
@@ -269,10 +211,6 @@ describe("projectToolUse", () => {
   });
 
   it("leaves a small edit alone — the markers would cost more than the body", () => {
-    // The same floor the result path uses, for the same reason: replacing a
-    // 20-byte body with `bodyTruncated` + `inputChars` makes the payload larger
-    // AND buys a fetch round-trip. `DiffBlock` recomputes identical stats from
-    // the strings it still has, so nothing about the summary changes.
     const tool = use("Edit", { file_path: "/a.ts", old_string: "a\nb", new_string: "x\ny\nz" });
     expect(projectToolUse(tool)).toBe(tool);
   });
@@ -282,12 +220,6 @@ describe("projectToolUse", () => {
     expect(projectToolUse(tool)).toBe(tool);
   });
 
-  /**
-   * planning#298. Everything below is what "only Edit/Write are projected" left on
-   * the wire: a megabyte `Bash` command behind an 80-character summary, a
-   * kilobyte subagent prompt behind a collapsed disclosure, an MCP argument
-   * object nothing draws at all.
-   */
   it("ships only the characters of `command` the tool line draws", () => {
     const command = "echo ".concat("x".repeat(5_000));
     const projected = projectToolUse(use("Bash", { command, description: "a".repeat(500) }));
@@ -295,9 +227,7 @@ describe("projectToolUse", () => {
     expect(projected.input.command).toBe(command.slice(0, COMMAND_SUMMARY_CHARS));
     expect(projected.inputChars).toEqual({ command: command.length, description: 500 });
     expect(projected.bodyTruncated).toBe(true);
-    // Modal-only, so not even a prefix.
     expect(projected.input.description).toBeUndefined();
-    // Not a file write — no `+N -M` to invent.
     expect(projected.diffStats).toBeUndefined();
   });
 
@@ -333,10 +263,6 @@ describe("projectToolUse", () => {
   });
 
   it("keeps the whole input of tools that render it as the card itself", () => {
-    // AskUserQuestion and TodoWrite return before any modal, so a dropped key
-    // would be unreachable rather than deferred — the same argument that puts
-    // AskUserQuestion in `WHOLE_RESULT_TOOL_NAMES` on the result side.
-    // `apply_patch`'s inline `+N -M` is derived from the diffs themselves.
     const questions = [{ question: "q".repeat(2_000), options: [] }];
     const ask = projectToolUse(use("AskUserQuestion", { questions }));
     expect(ask.input.questions).toBe(questions);
@@ -356,9 +282,6 @@ describe("projectToolUse", () => {
   });
 
   it("drops a heavy non-string argument with no `inputChars` entry", () => {
-    // `inputChars` exists for the one label drawn from a length (`Prompt (N
-    // chars)`), which is a string measure — an object has no character count to
-    // report, only the flag saying the input is incomplete.
     const args = { rows: Array.from({ length: 500 }, (_, i) => ({ i })) };
     const projected = projectToolUse(use("mcp__db__query_rows", { args }));
     expect(projected.input.args).toBeUndefined();
@@ -366,13 +289,6 @@ describe("projectToolUse", () => {
     expect(projected.inputChars).toBeUndefined();
   });
 
-  /**
-   * The regression this policy exists to prevent. `findPlanContent` renders a
-   * plan document's body as markdown **inline in the transcript**, with no
-   * click and no fetch path — so the blanket Edit/Write strip blanked the plan
-   * card on every history load. `isPlanDocumentWrite` is shared with the reader
-   * so the two cannot drift.
-   */
   it("keeps the body of a Write to a plan document, which PlanApproval renders inline", () => {
     const tool = use("Write", { file_path: "/w/.claude/plans/plan.md", content: bigOutput });
     expect(projectToolUse(tool)).toBe(tool);
@@ -440,8 +356,6 @@ describe("projectMessagesForWire", () => {
       },
     ];
     const [projected] = projectMessagesForWire("s1", msgs);
-    // Both are bounded now, but differently: the report keeps the head the card
-    // draws (req 8), while an ordinary result — modal-only — keeps nothing.
     expect(projected!.toolResults![0]!.truncated).toBe(true);
     expect(projected!.toolResults![0]!.content).not.toBe("");
     expect(projected!.toolResults![1]!.truncated).toBe(true);
@@ -477,8 +391,6 @@ describe("projectMessagesForWire", () => {
   });
 
   it("carries nothing that isn't visible without a click (req 1)", () => {
-    // A transcript of ten near-1 MB results plus a screenshot: the payload must
-    // collapse to the inline artifacts and metadata, not the bodies.
     const heavy = Array.from({ length: 10 }, (_, i) => ({
       role: "assistant" as const,
       text: "",
@@ -515,18 +427,11 @@ describe("projectConsultCardForWire (planning#299)", () => {
 
     expect(projected.outputTruncated).toBe(true);
     expect(projected.outputMarkdown).toBe(subAgentPreviewLine(review));
-    // Nothing past the preview: the viewer is behind a click, so the rest of an
-    // 18-minute review has no business in the transcript payload.
     expect(projected.outputMarkdown).not.toContain("finding 199");
-    // Everything the card face draws WITHOUT opening the viewer survives.
     expect(projected.status).toBe("success");
     expect(projected.spawnId).toBe("sp-1");
   });
 
-  // docs/261 phase 4 (req 9) — the attribution is card FACE, not modal content:
-  // it is drawn without a click and there is no endpoint to fetch it back from,
-  // so a projection that dropped it would leave the served card unable to say
-  // what reviewed the work while the stored one still could.
   it("keeps the run-on attribution on a card whose output it strips", () => {
     const runOn = {
       serviceId: "openai",
@@ -542,9 +447,6 @@ describe("projectConsultCardForWire (planning#299)", () => {
   });
 
   it("re-previewing the server's own preview is a no-op", () => {
-    // The client still calls `previewLine` on whatever it holds, so the shared
-    // function has to be idempotent or the card face would lose a character on
-    // every projected load.
     const long = "word ".repeat(500);
     const once = subAgentPreviewLine(long);
     expect(subAgentPreviewLine(once)).toBe(once);
@@ -561,9 +463,6 @@ describe("projectConsultCardForWire (planning#299)", () => {
   });
 
   it("projects the card on the history path too", () => {
-    // The live emit is only the first delivery; a switch or reload rehydrates
-    // the same card from `subAgentConsult`, and requirement 1 applies there just
-    // as much (it is the path the bytes accumulate on).
     const review = "finding: ".repeat(500);
     const msgs: PersistedMessage[] = [
       { role: "assistant", text: "", subAgentConsult: consultCard({ outputMarkdown: review }) },
@@ -571,27 +470,11 @@ describe("projectConsultCardForWire (planning#299)", () => {
     const [projected] = projectMessagesForWire("s1", msgs);
     expect(projected!.subAgentConsult!.outputTruncated).toBe(true);
     expect(projected!.subAgentConsult!.outputMarkdown!.length).toBeLessThan(200);
-    // …and the stored card is untouched, as every projection in this module.
     expect(msgs[0]!.subAgentConsult!.outputMarkdown).toBe(review);
   });
 });
 
 describe("a body only leaves the wire once its row is on disk", () => {
-  /**
-   * The rule that keeps req 1 from breaking req 2. Only ONE payload class is
-   * committed in the same tick as its emit — a top-level tool result. The other
-   * two reach disk later:
-   *
-   *   - Edit/Write bodies arrive on an `agent_assistant`; nothing commits that
-   *     row until the next tool-result boundary.
-   *   - Nested subagent results are worse: their handler branch calls
-   *     `attachSubagentToolResults` and RETURNS, skipping `replaceInProgress`
-   *     entirely, so they land only at the next *top-level* boundary.
-   *
-   * Strip either early and the fetch behind it 404s. These tests are the reason
-   * the projection takes an option at all — delete it, project everything
-   * everywhere, and every other test in this file still passes.
-   */
   const writeMsg = (): PersistedMessage => ({
     role: "assistant",
     text: "writing",
@@ -606,18 +489,14 @@ describe("a body only leaves the wire once its row is on disk", () => {
   it("the reconnect snapshot strips only what a boundary already committed", () => {
     const [projected] = projectTurnSnapshotForWire("s1", [writeMsg()]);
 
-    // Committed in the same tick as its emit.
     expect(projected!.toolResults![0]!.truncated).toBe(true);
-    // Persisted when the turn opened.
     expect(projected!.images![0]!.data).toBeUndefined();
     expect(projected!.images![0]!.src).toBe(imageUrl("s1", imageHash(png)));
 
-    // NOT committed yet — must stay inline.
     const tool = projected!.toolUse![0]!;
     expect(tool.input.content).toBe(bigOutput);
     expect((tool as { bodyTruncated?: true }).bodyTruncated).toBeUndefined();
 
-    // Nested results skip `replaceInProgress` altogether.
     const nested = projected!.subagentEvents![0] as { toolResults: { content: string; truncated?: true }[] };
     expect(nested.toolResults[0]!.content).toBe(bigOutput);
     expect(nested.toolResults[0]!.truncated).toBeUndefined();
@@ -631,8 +510,6 @@ describe("a body only leaves the wire once its row is on disk", () => {
   });
 
   it("a live nested tool_result event is left whole", () => {
-    // The `parentToolUseId` is the whole signal: the same event shape without
-    // it IS committed in this tick and does get sliced (next test).
     const event = {
       type: "agent_tool_result",
       parentToolUseId: "task-1",
@@ -650,11 +527,7 @@ describe("a body only leaves the wire once its row is on disk", () => {
   });
 
   it("a live assistant event keeps its Edit body whole", () => {
-    // NOTE the shape: the adapter normalizes `raw.message.content` up to
-    // `content` on the event itself (`agents/claude/adapter.ts`). An earlier
-    // version of this test used `message.content`, which the projection never
-    // reads — so it asserted "unchanged" about a shape that could not have
-    // changed, and would have passed straight through a real regression.
+    // The adapter puts content on the event itself, not under message.content.
     const event = {
       type: "agent_assistant",
       content: [
@@ -662,21 +535,13 @@ describe("a body only leaves the wire once its row is on disk", () => {
       ],
     } as unknown as Parameters<typeof projectAgentEventForWire>[1];
 
-    // Same reference: nothing about an assistant event is projectable, so the
-    // emit path must not even allocate a copy.
     const projected = projectAgentEventForWire("s1", event, () => "Write");
     expect(projected).toBe(event);
-    // And the body is still there — the assertion the reference check alone
-    // does not actually make.
     const block = (projected as unknown as { content: { input: Record<string, unknown> }[] }).content[0]!;
     expect(block.input.content).toBe(bigOutput);
   });
 
   it("the snapshot strips the part of the turn a boundary already committed (planning#299)", () => {
-    // The blanket `allRowsPersisted: false` was conservative for the WHOLE turn,
-    // so a mid-turn reconnect re-sent every Edit body and nested result the turn
-    // had accumulated — including ones written to disk several boundaries ago.
-    // The committed set is what tells the two halves apart.
     const msg = writeMsg();
     const committed = createCommittedBodyIds();
     markMessagesCommitted(committed, [msg]);
@@ -692,8 +557,6 @@ describe("a body only leaves the wire once its row is on disk", () => {
   });
 
   it("…and keeps the uncommitted tail of that same turn inline", () => {
-    // The whole point of a per-payload marker: one snapshot legitimately mixes
-    // both. Here only the first group reached a boundary.
     const committedGroup: PersistedMessage = {
       role: "assistant",
       text: "wrote it",
@@ -715,11 +578,6 @@ describe("a body only leaves the wire once its row is on disk", () => {
   });
 
   it("a committed tool INPUT does not license stripping its uncommitted RESULT", () => {
-    // The id-collision the two sets exist for. A subagent's `tool_use` lands in
-    // `subagentEvents` at one boundary; its result skips `replaceInProgress`
-    // entirely and may still be memory-only — under the SAME id. One set would
-    // read "id is committed" off the input and strip the result, promising a
-    // fetch that 404s.
     const persistedSoFar: PersistedMessage = {
       role: "assistant",
       text: "",
@@ -738,7 +596,6 @@ describe("a body only leaves the wire once its row is on disk", () => {
     expect(committed.toolInputs.has("sub-1")).toBe(true);
     expect(committed.toolResults.has("sub-1")).toBe(false);
 
-    // The result arrives after that boundary — same id, not on disk.
     const withResult: PersistedMessage = {
       ...persistedSoFar,
       subagentEvents: [
@@ -754,8 +611,6 @@ describe("a body only leaves the wire once its row is on disk", () => {
   });
 
   it("without a marker the snapshot behaves exactly as before", () => {
-    // Callers that can't supply one (tests, a runner-less path) must not get a
-    // stricter projection by accident.
     const [projected] = projectTurnSnapshotForWire("s1", [writeMsg()]);
     expect(projected!.toolUse![0]!.input.content).toBe(bigOutput);
   });

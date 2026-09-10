@@ -60,29 +60,21 @@ describe("runDiskJanitor", () => {
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
 
-    // Build one active session in the DB. Its compose volumes (matching
-    // the `shipit-<sid12>_` prefix) MUST be preserved even though they're
-    // dangling — that's the idle-evicted state, ready for warm resume.
     const liveSessionId = "abc123def456-aaaa-bbbb-cccc-dddddddddddd";
-    const liveSessionPrefix = liveSessionId.slice(0, 12); // "abc123def456"
+    const liveSessionPrefix = liveSessionId.slice(0, 12);
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
     ).run(liveSessionId, "Live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
 
     const lsRequests: string[][] = [];
     const rmRequests: string[] = [];
-    // Listing includes:
-    //   - one volume for the live session (must be PRESERVED)
-    //   - three volumes for sessions that no longer exist in DB (REMOVE)
-    //   - one user-named volume that doesn't match the strict regex (PRESERVE)
-    //   - the orchestrator's `shipit_workspace` (PRESERVE — underscore prefix)
     const dockerListing = [
       `shipit-${liveSessionPrefix}_node_modules`,
       "shipit-fed987654321_dist",
       "shipit-aaaa11112222_build",
       "shipit-deadbeef0000_cache",
-      "shipit-foo-bar",         // wrong shape — no `_` after 12-hex
-      "shipit_workspace",        // orchestrator volume, different prefix
+      "shipit-foo-bar",
+      "shipit_workspace",
     ].join("\n");
 
     const runDocker = (args: string[]): Promise<string> => {
@@ -104,15 +96,11 @@ describe("runDiskJanitor", () => {
       runDocker,
     });
 
-    // The `ls` call must include the dangling=true safety filter and the
-    // `name=shipit-` scoping filter.
     expect(lsRequests).toHaveLength(1);
     expect(lsRequests[0]).toContain("--filter");
     expect(lsRequests[0]).toContain("dangling=true");
     expect(lsRequests[0]).toContain("name=shipit-");
 
-    // Only the three orphan-session volumes get rm'd. The live session's
-    // volume, the user-named oddball, and the orchestrator volume all stay.
     expect(rmRequests.sort()).toEqual([
       "shipit-aaaa11112222_build",
       "shipit-deadbeef0000_cache",
@@ -127,8 +115,6 @@ describe("runDiskJanitor", () => {
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
 
-    // Active session — represents an idle-evicted session whose container
-    // was stopped but whose row stays in the DB.
     const sessionId = "550e8400-e29b-41d4-a716-446655440000";
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
@@ -187,10 +173,6 @@ describe("runDiskJanitor", () => {
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
 
-    // Three orphan volumes (no live sessions) → three rm calls, each preceded
-    // by a `sleep(paceMs)`. We capture the wall-clock of each rm and assert the
-    // gaps are >= paceMs: setTimeout never fires *early*, so this lower bound is
-    // not flaky (scheduling jitter only ever adds delay).
     const paceMs = 25;
     const rmAt: number[] = [];
     const runDocker = (args: string[]): Promise<string> => {
@@ -216,7 +198,6 @@ describe("runDiskJanitor", () => {
     expect(result.orphanVolumesRemoved).toBe(3);
     expect(rmAt).toHaveLength(3);
     for (let i = 1; i < rmAt.length; i += 1) {
-      // Allow a tiny scheduling epsilon below the nominal pace.
       expect(rmAt[i] - rmAt[i - 1]).toBeGreaterThanOrEqual(paceMs - 5);
     }
   });
@@ -226,28 +207,21 @@ describe("runDiskJanitor", () => {
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
 
-    // Active session — its networks (agent bridge + compose) MUST be
-    // preserved even when dangling: that's the idle-evicted state.
     const liveSessionId = "abc123def456-aaaa-bbbb-cccc-dddddddddddd";
-    const liveSessionPrefix = liveSessionId.slice(0, 12); // "abc123def456"
+    const liveSessionPrefix = liveSessionId.slice(0, 12);
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
     ).run(liveSessionId, "Live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
 
     const lsRequests: string[][] = [];
     const rmRequests: string[] = [];
-    // Listing includes:
-    //   - the live session's agent + compose networks (PRESERVE)
-    //   - an orphan agent network + orphan compose network (REMOVE)
-    //   - a user-named network that doesn't match the strict regex (PRESERVE)
-    //   - the default `bridge` network (PRESERVE — no prefix)
     const dockerListing = [
-      `shipit-session-${liveSessionPrefix}`,                       // agent — live
-      `shipit-session-${liveSessionId}`,                           // compose — live
-      "shipit-session-fed987654321",                               // agent — orphan
-      "shipit-session-deadbeef0000-1111-2222-3333-444444444444",   // compose — orphan
-      "shipit-session-foo",                                        // wrong shape
-      "bridge",                                                    // default network
+      `shipit-session-${liveSessionPrefix}`,
+      `shipit-session-${liveSessionId}`,
+      "shipit-session-fed987654321",
+      "shipit-session-deadbeef0000-1111-2222-3333-444444444444",
+      "shipit-session-foo",
+      "bridge",
     ].join("\n");
 
     const runDocker = (args: string[]): Promise<string> => {
@@ -269,16 +243,11 @@ describe("runDiskJanitor", () => {
       runDocker,
     });
 
-    // The `ls` call must include the dangling=true safety filter and the
-    // `name=shipit-session-` scoping filter.
     expect(lsRequests).toHaveLength(1);
     expect(lsRequests[0]).toContain("--filter");
     expect(lsRequests[0]).toContain("dangling=true");
     expect(lsRequests[0]).toContain("name=shipit-");
 
-    // Only the two orphan networks get rm'd — both the agent-style and
-    // compose-style names. The live session's networks, the user-named
-    // oddball, and the default `bridge` all stay.
     expect(rmRequests.sort()).toEqual([
       "shipit-session-deadbeef0000-1111-2222-3333-444444444444",
       "shipit-session-fed987654321",
@@ -287,12 +256,6 @@ describe("runDiskJanitor", () => {
   });
 
   it("spares a network whose session is created after the listing (docs/113)", async () => {
-    // The sweep is fire-and-forget from boot and paced, so it can still be
-    // running once the server accepts session creates. A session's network
-    // exists BEFORE its container attaches, so it is `dangling` and would be
-    // reaped by a one-shot snapshot of the live set — the same create-vs-prune
-    // race that made `docker network prune -f` in deploy.sh delete 18 live
-    // session networks on 2026-08-10.
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -301,8 +264,7 @@ describe("runDiskJanitor", () => {
     const rmRequests: string[] = [];
     const runDocker = (args: string[]): Promise<string> => {
       if (args[0] === "network" && args[1] === "ls") {
-        // Decoy FIRST so its removal is what opens the race window; the racing
-        // session's network is still an orphan at listing time.
+        // Removing the first network creates the session that owns the second.
         return Promise.resolve([
           "shipit-session-fed987654321",
           `shipit-session-${racingSessionId.slice(0, 12)}`,
@@ -310,9 +272,6 @@ describe("runDiskJanitor", () => {
       }
       if (args[0] === "network" && args[1] === "rm") {
         rmRequests.push(args[2]);
-        // The session is created DURING the sweep — after the listing and the
-        // candidate computation, before the second removal. Only a re-check
-        // immediately before `network rm` can see it.
         underlyingDb!.prepare(
           "INSERT OR IGNORE INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
         ).run(racingSessionId, "Racing", "2026-08-10", "2026-08-10", "https://github.com/example/repo.git");
@@ -397,7 +356,6 @@ describe("runDiskJanitor", () => {
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
 
-    // Build two archived sessions: one old (40 days), one recent (5 days).
     const oldDir = path.join(tmpDir, "sessions", "old-session", "workspace");
     const recentDir = path.join(tmpDir, "sessions", "recent-session", "workspace");
     fs.mkdirSync(oldDir, { recursive: true });
@@ -459,9 +417,7 @@ describe("runDiskJanitor", () => {
 
     expect(result.workspacesRemoved).toBe(1);
     expect(fs.existsSync(workspaceDir)).toBe(false);
-    // The regenerable overlay upper is the ~60 GB prod leak — it must go.
     expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false);
-    // uploads/ is durable, referenced by persisted chat history — it must survive.
     expect(fs.existsSync(path.join(uploadsDir, "photo.png"))).toBe(true);
   });
 
@@ -470,10 +426,8 @@ describe("runDiskJanitor", () => {
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
 
-    // The exact leak shape on prod: an evicted session whose `workspace/` was
-    // already removed by an earlier (buggy) reclaim, leaving only `overlay/`.
     const sessionRoot = path.join(tmpDir, "sessions", "orphan-session");
-    const workspaceDir = path.join(sessionRoot, "workspace"); // never created
+    const workspaceDir = path.join(sessionRoot, "workspace");
     const overlayDir = path.join(sessionRoot, "overlay", "abc123", "upper");
     fs.mkdirSync(overlayDir, { recursive: true });
     fs.writeFileSync(path.join(overlayDir, "dep"), "orphaned install delta");
@@ -495,11 +449,6 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false);
   });
 
-  // planning#199 — the archived-workspace backstop is now ON by default at the single
-  // cold-artifact retention (30d), no longer gated behind a disabled-by-default
-  // knob. It's pure crash-recovery (planning#194 frees the workspace synchronously at
-  // archive time), so a workspace this old only exists if that synchronous
-  // cleanup crashed — exactly what the backstop is here to mop up.
   it("archive backstop runs by default at the cold-artifact retention", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
@@ -512,7 +461,6 @@ describe("runDiskJanitor", () => {
       "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run("old-session", "Old", old, old, oldDir, "https://github.com/example/repo.git");
 
-    // No coldArtifactRetentionDays passed → defaults to COLD_ARTIFACT_RETENTION_DAYS (30).
     const result = await runDiskJanitor({
       sessionManager,
       repoStore,
@@ -532,7 +480,6 @@ describe("runDiskJanitor", () => {
     const oldDir = path.join(tmpDir, "sessions", "no-remote-session", "workspace");
     fs.mkdirSync(oldDir, { recursive: true });
     const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
-    // No remote_url — should be skipped even though it's older than the threshold.
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run("no-remote-session", "No remote", old, old, oldDir);
@@ -560,7 +507,6 @@ describe("runDiskJanitor", () => {
     repoStore.setReady(liveRepo);
 
     const nmRoot = path.join(tmpDir, "dep-cache", liveHash, "nm-store");
-    // Several leftover storeKey dirs of varying age — all dead, all removed.
     fs.mkdirSync(path.join(nmRoot, "fresh-store-key"), { recursive: true });
     const staleDir = path.join(nmRoot, "stale-store-key");
     fs.mkdirSync(staleDir, { recursive: true });
@@ -568,7 +514,6 @@ describe("runDiskJanitor", () => {
     fs.utimesSync(staleDir, backdated, backdated);
     fs.mkdirSync(path.join(nmRoot, ".tmp-deadbeef-store-key"), { recursive: true });
 
-    // The rest of the dep-cache (download cache) for the live repo must survive.
     const depCacheKept = path.join(tmpDir, "dep-cache", liveHash, "_cacache");
     fs.mkdirSync(depCacheKept, { recursive: true });
 
@@ -579,7 +524,6 @@ describe("runDiskJanitor", () => {
       runDocker: () => Promise.resolve(""),
     });
 
-    // The whole nm-store dir is gone (one dir removed), the download cache stays.
     expect(result.nmStoresRemoved).toBe(1);
     expect(fs.existsSync(nmRoot)).toBe(false);
     expect(fs.existsSync(depCacheKept)).toBe(true);
@@ -595,7 +539,6 @@ describe("runDiskJanitor", () => {
     repoStore.add(liveRepo);
     repoStore.setReady(liveRepo);
 
-    // Live repo with a download cache but no nm-store subtree.
     fs.mkdirSync(path.join(tmpDir, "dep-cache", liveHash, "_cacache"), { recursive: true });
 
     const result = await runDiskJanitor({
@@ -613,9 +556,6 @@ describe("runDiskJanitor", () => {
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
 
-    // Stage an old archived workspace so the workspace sweep has something
-    // to do; if the volume sweep failure short-circuited the run we'd see
-    // workspacesRemoved=0 below.
     const oldDir = path.join(tmpDir, "sessions", "old-session", "workspace");
     fs.mkdirSync(oldDir, { recursive: true });
     const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
@@ -636,33 +576,12 @@ describe("runDiskJanitor", () => {
     expect(result.workspacesRemoved).toBe(1);
   });
 
-  // ---- Orphan merged-PR branch sweep ----
-
-  /**
-   * Build a stub GitHubAuthManager-shaped object good enough for the sweep.
-   * `branches` is a per-repo lookup keyed by `owner/repo`. Each entry's
-   * `states` are the (synthetic) PR states associated with that branch
-   * from GitHub's side — we explode them into either the refs response or
-   * the pullRequests response depending on which query is being asked.
-   *
-   * The real `fetchShipitBranchesWithPrStates` issues two paginated
-   * queries — one for `refs(refPrefix: …)`, one for
-   * `pullRequests(states: [OPEN, MERGED])`. The stub dispatches on
-   * substring of the query string. CLOSED PR states are filtered out of
-   * the PR response (mirroring production: `states: [OPEN, MERGED]`),
-   * which yields the same outcome as the previous stub since the sweep
-   * treats CLOSED-only and no-PR identically.
-   */
   function buildGitHubStub(
     branches: Record<string, { name: string; states: string[] }[]>,
     opts: { authenticated?: boolean; token?: string | null } = {},
   ) {
     return {
       authenticated: opts.authenticated ?? true,
-      // planning#426 — the sweep resolves an explicit repo-scoped credential
-      // before pushing, so the stub answers the two reads that resolution makes.
-      // `token: null` is the "authenticated but nothing to authenticate with"
-      // state the sweep must now decline loudly instead of pushing into.
       getToken: () => (opts.token === undefined ? "ghp_test_token" : opts.token),
       appTokensEnabled: () => false,
 
@@ -690,7 +609,6 @@ describe("runDiskJanitor", () => {
           };
         }
 
-        // Default: refs enumeration.
         return {
           data: {
             repository: {
@@ -705,17 +623,9 @@ describe("runDiskJanitor", () => {
     } as unknown as Parameters<typeof runDiskJanitor>[0]["githubAuthManager"];
   }
 
-  /**
-   * Build a stub RepoGit factory that captures `setRemoteUrl` + `deleteBranch`
-   * calls for assertions. Each created instance shares the underlying `calls`
-   * array so we can see what happened across the whole sweep.
-   */
   function buildRepoGitFactory(opts: { deleteFails?: boolean } = {}) {
     const deleted: string[] = [];
     const setRemoteUrlCalls: string[] = [];
-    // planning#426 — the credential the sweep hands each `RepoGit` is recorded, so
-    // a test can assert the push authenticates explicitly rather than leaning on
-    // the orchestrator's ambient global helper.
     const credentials: (GitRemoteCredential | undefined)[] = [];
     const factory = (_dir: string, credential?: GitRemoteCredential) => {
       credentials.push(credential);
@@ -734,12 +644,6 @@ describe("runDiskJanitor", () => {
     return { factory, deleted, setRemoteUrlCalls, credentials };
   }
 
-  /**
-   * planning#426 — the sweep resolves an explicit repo-scoped credential before it
-   * pushes, so a fake auth manager needs the two reads that resolution makes.
-   * These fakes previously carried only `authenticated: true`, which is a state
-   * production cannot be in: `authenticated` IS `_token !== null`.
-   */
   const CREDENTIAL_FIELDS = {
     getToken: () => "ghp_test_token",
     appTokensEnabled: () => false,
@@ -753,9 +657,6 @@ describe("runDiskJanitor", () => {
     const repoUrl = "https://github.com/example/repo.git";
     repoStore.add(repoUrl);
 
-    // One live session pointing at shipit/active-feature — must be preserved
-    // even though its PR is merged (defensive: a session might intentionally
-    // re-push to the same branch).
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, branch, archived) VALUES (?, ?, ?, ?, ?, ?, 0)",
     ).run(
@@ -763,17 +664,16 @@ describe("runDiskJanitor", () => {
       repoUrl, "shipit/active-feature",
     );
 
-    // Bare cache exists on disk so `sweepOrphanMergedBranches` doesn't bail.
     fs.mkdirSync(path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl)), { recursive: true });
 
     const githubAuthManager = buildGitHubStub({
       "example/repo": [
-        { name: "active-feature", states: ["MERGED"] },  // PRESERVED — live session
-        { name: "old-merged", states: ["MERGED"] },      // DELETE
-        { name: "still-open", states: ["OPEN"] },        // PRESERVED — open PR
-        { name: "open-and-merged", states: ["OPEN", "MERGED"] }, // PRESERVED — open wins
-        { name: "closed-no-merge", states: ["CLOSED"] }, // PRESERVED — closed != merged
-        { name: "no-pr", states: [] },                   // PRESERVED — no PR at all
+        { name: "active-feature", states: ["MERGED"] },
+        { name: "old-merged", states: ["MERGED"] },
+        { name: "still-open", states: ["OPEN"] },
+        { name: "open-and-merged", states: ["OPEN", "MERGED"] },
+        { name: "closed-no-merge", states: ["CLOSED"] },
+        { name: "no-pr", states: [] },
       ],
     });
 
@@ -791,17 +691,9 @@ describe("runDiskJanitor", () => {
 
     expect(deleted).toEqual(["shipit/old-merged"]);
     expect(result.orphanBranchesRemoved).toBe(1);
-    // Credentials refreshed exactly once for this repo (lazy: only when we
-    // actually have a deletion to perform).
     expect(setRemoteUrlCalls).toEqual([repoUrl]);
   });
 
-  // planning#426 — the sweep's `push --delete` used to carry no credential of its
-  // own. Its docstring claimed the cache's remote URL embedded the token, but
-  // docs/262 req 19 made `setRemoteUrl` STRIP credentials, so the push depended
-  // entirely on the orchestrator's ambient global helper — and when that answered
-  // nothing it died with `fatal: could not read Username for 'https://github.com'`,
-  // one of the three paths in the planning#410 soak.
   it("hands the bare-cache push an explicit repo-scoped credential", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
@@ -827,18 +719,12 @@ describe("runDiskJanitor", () => {
     });
 
     expect(deleted).toEqual(["shipit/old-merged"]);
-    // Scoped to the origin it is for, never offered to another host — the
-    // ambient global helper is host-blind and this is not.
     expect(credentials).toEqual([{
       origin: "https://github.com",
       token: { username: "x-access-token", password: "ghp_test_token" },
     }]);
   });
 
-  // The other half of the same fix: when no credential can be produced, DECLINE
-  // rather than push. A push with nothing to authenticate with can only produce
-  // the "could not read Username" line this issue is about, so failing closed and
-  // saying so is strictly better than failing open and being unreadable.
   it("declines the sweep, loudly, when no credential can be resolved", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
@@ -848,8 +734,6 @@ describe("runDiskJanitor", () => {
     repoStore.add(repoUrl);
     fs.mkdirSync(path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl)), { recursive: true });
 
-    // `authenticated` true but no token — the inconsistent state a wiped
-    // credentials volume or a `clear` that raced an install produces.
     const githubAuthManager = buildGitHubStub(
       { "example/repo": [{ name: "old-merged", states: ["MERGED"] }] },
       { token: null },
@@ -913,7 +797,6 @@ describe("runDiskJanitor", () => {
 
     const repoUrl = "https://github.com/example/missing-cache.git";
     repoStore.add(repoUrl);
-    // Intentionally do NOT create the cache directory.
 
     const githubAuthManager = buildGitHubStub({
       "example/missing-cache": [
@@ -1015,7 +898,6 @@ describe("runDiskJanitor", () => {
     });
     const { factory } = buildRepoGitFactory({ deleteFails: true });
 
-    // Should not throw. Result count is 0 because every delete failed.
     const result = await runDiskJanitor({
       sessionManager,
       repoStore,
@@ -1038,9 +920,6 @@ describe("runDiskJanitor", () => {
     repoStore.add(repoUrl);
     fs.mkdirSync(path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl)), { recursive: true });
 
-    // Archived session that USED to point at shipit/orphan-branch. Its old
-    // branch is now orphaned — unarchiveSession would generate a fresh branch
-    // anyway, so deletion is safe.
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, branch, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run(
@@ -1068,10 +947,6 @@ describe("runDiskJanitor", () => {
   });
 
   it("preserves the branch of a hot merged session even when it fell out of the sidebar (docs/161)", async () => {
-    // Regression for the docs/161 decoupling: a merged session that dropped out
-    // of `list()` (the per-repo top-N view cap) is still `hot` on disk and
-    // resumable, so its branch MUST NOT be treated as orphaned. The sweep keys
-    // off `listAll()` minus evicted, not `list()`.
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -1080,8 +955,6 @@ describe("runDiskJanitor", () => {
     repoStore.add(repoUrl);
     fs.mkdirSync(path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl)), { recursive: true });
 
-    // Merged, hot (default disk_tier), NOT user-archived. Points at a branch
-    // whose PR is merged — the old `list()`-based sweep would have deleted it.
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, branch, merged_at, archived) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
     ).run(
@@ -1109,17 +982,6 @@ describe("runDiskJanitor", () => {
   });
 
   it("joins refs by PR head ref (regression: associatedPullRequests returned empty)", async () => {
-    // Regression for the bug observed on the real ShipIt repo: 186
-    // `shipit/*` branches existed, 181 had MERGED PRs, but the previous
-    // `Ref.associatedPullRequests` sub-selection returned empty PR lists
-    // for all of them, so the sweep deleted 0. The fix is to enumerate
-    // PRs from the `pullRequests(states: [OPEN, MERGED])` side and join
-    // by `headRefName` instead.
-    //
-    // This test stubs the two queries directly (not via buildGitHubStub)
-    // and proves that a refs query returning a branch *without* PR data
-    // attached is correctly joined to a separate pullRequests query that
-    // does return the MERGED PR for that head ref.
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -1146,8 +1008,6 @@ describe("runDiskJanitor", () => {
             },
           };
         }
-        // Refs query — no PR data attached, mirroring how the broken
-        // server-side response looked for the historical backlog.
         return {
           data: {
             repository: {
@@ -1178,9 +1038,6 @@ describe("runDiskJanitor", () => {
   });
 
   it("paginates the pullRequests query across pages", async () => {
-    // A two-page pullRequests response is correctly joined to the refs
-    // query — important because real repos with many PRs will exceed the
-    // 100-per-page limit.
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -1261,17 +1118,13 @@ describe("runDiskJanitor", () => {
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
     ).run(liveId, "Live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
-    // archivedId is USER-archived (also disk-evicted, as archive sets both).
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run(archivedId, "Archived", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
-    // planning#181: disk-evicted but NOT user-archived — still LIVE (re-clones on
-    // activation), so its credentials must be PRESERVED.
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 0, 0, 'evicted')",
     ).run(evictedLiveId, "Evicted live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
 
-    // Lay down per-session credential dirs for all four.
     const credentialsDir = path.join(tmpDir, "credentials");
     for (const id of [liveId, archivedId, evictedLiveId, goneId]) {
       const dir = path.join(credentialsDir, "sessions", id);
@@ -1287,7 +1140,6 @@ describe("runDiskJanitor", () => {
       runDocker: () => Promise.resolve(""),
     });
 
-    // Live and disk-evicted-but-live are preserved; user-archived and untracked are reaped.
     expect(fs.existsSync(path.join(credentialsDir, "sessions", liveId))).toBe(true);
     expect(fs.existsSync(path.join(credentialsDir, "sessions", evictedLiveId))).toBe(true);
     expect(fs.existsSync(path.join(credentialsDir, "sessions", archivedId))).toBe(false);
@@ -1314,7 +1166,6 @@ describe("runDiskJanitor", () => {
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run(archivedId, "Archived", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
 
-    // Lay down per-session `logs/` dirs for all four.
     const sessionsRoot = path.join(tmpDir, "sessions");
     for (const id of [liveId, evictedLiveId, archivedId, goneId]) {
       const dir = path.join(sessionsRoot, id, "logs");
@@ -1351,11 +1202,9 @@ describe("runDiskJanitor", () => {
 
     const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
     const remote = "https://github.com/example/repo.git";
-    // Disk-evicted, NOT user-archived — workspace must be PRESERVED.
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 'evicted')",
     ).run("evicted-live", "Evicted live", old, old, liveDir, remote);
-    // User-archived — eligible for the safety-net reclaim.
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run("user-archived", "User archived", old, old, archivedDir, remote);
@@ -1388,14 +1237,7 @@ describe("runDiskJanitor", () => {
     expect(result.credentialDirsRemoved).toBe(0);
   });
 
-  // -------------------------------------------------------------------------
-  // docs/183 Phase 2/3 — overlay resources
-  // -------------------------------------------------------------------------
-
   it("reclaims an orphan `shipit-<id>_overlay` volume (existing orphan-volume sweep)", async () => {
-    // The overlay volume name deliberately matches the `^shipit-([a-f0-9-]{12})_`
-    // pattern, so no new sweep is needed — the existing one reclaims it once no
-    // live session owns the prefix. This locks that contract.
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -1407,8 +1249,8 @@ describe("runDiskJanitor", () => {
 
     const rmRequests: string[] = [];
     const dockerListing = [
-      `shipit-${liveId.slice(0, 12)}_overlay`, // live session — PRESERVE
-      "shipit-deadbeef0000_overlay",            // orphan — REMOVE
+      `shipit-${liveId.slice(0, 12)}_overlay`,
+      "shipit-deadbeef0000_overlay",
     ].join("\n");
 
     const runDocker = (args: string[]): Promise<string> => {
@@ -1425,11 +1267,6 @@ describe("runDiskJanitor", () => {
   });
 
   it("reclaims ALL N per-dep-dir orphan overlay volumes and preserves a live session's N", async () => {
-    // The dep-dir design names overlay volumes `shipit-<id12>_overlay-<hash8>`,
-    // one per declared dep dir. The existing `^shipit-([a-f0-9-]{12})_` orphan
-    // sweep keys on the session-ID prefix, so it reclaims EVERY crash-orphaned
-    // per-dep-dir volume of a dead session and preserves every one of a live
-    // session's — no per-dep-dir sweep logic needed. This locks that for N>1.
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -1458,14 +1295,7 @@ describe("runDiskJanitor", () => {
     expect(result.orphanVolumesRemoved).toBe(2);
   });
 
-  // -------------------------------------------------------------------------
-  // planning#224 — orphan egress-sidecar sweep (backstop for the crash-site reap)
-  // -------------------------------------------------------------------------
-
   it("reaps egress sidecars whose netns parent is gone, and spares the live ones", async () => {
-    // Note what this sweep does NOT do: cross-reference active sessions. Both
-    // sessions here are live; the test is purely "is your netns parent running?"
-    // — which is what makes it correct for a session that OOM'd and recreated.
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -1479,10 +1309,7 @@ describe("runDiskJanitor", () => {
     ]);
     const removed: string[] = [];
     const docker = {
-      // Honours `all` — real `listContainers` returns RUNNING containers only
-      // without it, and the orphans this sweep exists to collect have exited. A
-      // fake that ignores `all` lets someone delete `all: true` from the reaper and
-      // watch every test stay green while the feature finds nothing, forever.
+      // Match Docker's default: stopped containers require all=true.
       listContainers: async (opts: { all?: boolean; filters?: { label?: string[] } }) => {
         const key = opts.filters?.label?.[0] ?? "";
         return [...store.entries()]

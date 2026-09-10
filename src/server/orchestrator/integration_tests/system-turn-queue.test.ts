@@ -1,29 +1,3 @@
-/**
- * A dispatched SYSTEM turn must survive a busy session (planning#256 + planning#257).
- *
- * Both regressions below are about the same promise, made by docs/196's
- * notify-on-merge and relied on by every other `dispatch({ systemTurn: true,
- * onTurnComplete })` caller (the rebase driver, the CI auto-fix loop): a system
- * turn dispatched while the session is busy is QUEUED, later RUNS AS A SYSTEM
- * TURN, and fires its completion callback when it does.
- *
- * They slipped through because the existing coverage models a busy runner with a
- * fake (`merge-watch.test.ts`), which can't reproduce either failure: both live
- * in the real turn machinery. So these drive a REAL turn through the WS path,
- * with a real runner, a real queue, and the real drain.
- *
- *   • planning#256 — with live steering on, `trySteerDispatch` consulted only whether
- *     the RUNNING turn was a system turn, never whether the INCOMING dispatch
- *     was. A wake-turn arriving during an ordinary streaming user turn was
- *     therefore injected into that turn via `sendUserMessage`, and since the
- *     steer path returns before any enqueue, `onTurnComplete` was dropped
- *     entirely — the merge watch could never reach `delivered`.
- *
- *   • planning#257 — the WS drain re-entered `runAgentWithMessage` with only text,
- *     images, files, and the agent session id, so a queued system turn lost both
- *     `systemTurn` and `onTurnComplete` and ran as an ordinary interactive turn.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -95,7 +69,6 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     } catch { /* ignore cleanup errors */ }
   });
 
-  /** Drain client messages until `predicate` matches (or we run out). */
   async function drainUntil(client: TestClient, predicate: (m: AnyMsg) => boolean, maxMsgs = 30, timeoutMs = 2000): Promise<AnyMsg> {
     for (let i = 0; i < maxMsgs; i++) {
       const msg: AnyMsg = await client.receive(timeoutMs);
@@ -120,11 +93,8 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     credentialStore.setLiveSteering(true);
 
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // A REAL, streaming user turn is in flight — the precondition the fake busy
-    // runner could never model: `isStreamingActive` is true and the resident
-    // process is steerable, so `shouldSteerMessage` says "steer".
     client.send({ type: "send_message", text: "Refactor the parser" });
     const userTurn = await waitForClaude(() => lastClaude);
     userTurn.initSession("user-turn-session");
@@ -133,7 +103,6 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     const runner = runnerFor(client.sessionId);
     await waitUntil(() => runner.running && runner.isStreamingActive, "user turn running + streaming");
 
-    // The wake-turn arrives mid-turn.
     const completions: { errored: boolean }[] = [];
     runner.dispatch(testDispatch({
       text: WAKE_TEXT,
@@ -142,22 +111,16 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
       onTurnComplete: (outcome) => completions.push(outcome),
     }));
 
-    // It must QUEUE. Before the fix it was steered into the user's turn:
-    // `sendUserMessage` (captured by the fake as stdin) carried the wake text
-    // into someone else's context, nothing was enqueued, and the callback was
-    // dropped on the floor.
     const queued = await drainUntil(client, (m) => m.type === "message_queued");
     expect(queued).toMatchObject({ type: "message_queued", text: WAKE_TEXT });
     expect(runner.queueLength).toBe(1);
     expect(userTurn.stdinData.join("")).not.toContain("MERGED");
     expect(completions).toEqual([]);
 
-    // The user turn ends → the queued wake-turn drains and runs…
     userTurn.finish("user-turn-session");
     const wakeTurn = await waitForClaude(() => lastClaude, userTurn);
     expect(wakeTurn.lastPrompt).toContain("merged");
 
-    // …and only when it completes does the callback fire — exactly once.
     wakeTurn.finish("wake-turn-session");
     await waitUntil(() => completions.length > 0, "onTurnComplete fired");
     expect(completions).toEqual([TURN_COMPLETED]);
@@ -167,9 +130,8 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
 
   it("planning#257: a wake-turn queued behind a real INTERACTIVE turn runs as a system turn and fires onTurnComplete (no restart)", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // A real interactive (non-streaming) user turn — the common busy-parent case.
     client.send({ type: "send_message", text: "Write the docs" });
     const userTurn = await waitForClaude(() => lastClaude);
     userTurn.initSession("user-turn-session");
@@ -187,22 +149,13 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     await drainUntil(client, (m) => m.type === "message_queued");
     expect(runner.queueLength).toBe(1);
 
-    // The interactive turn's OWN drain shifts this entry. It used to re-enter
-    // `runAgentWithMessage` with text + attachments only, so the wake-turn ran
-    // as an ordinary interactive turn: no `systemTurn`, no `onTurnComplete`.
     userTurn.finish("user-turn-session");
     const wakeTurn = await waitForClaude(() => lastClaude, userTurn);
     expect(wakeTurn.lastPrompt).toContain("merged");
 
-    // It runs AS A SYSTEM TURN: the flag is set for its duration (so a message
-    // arriving now is queued rather than steered into it), and it does not adopt
-    // the streaming/steerable shape of a user turn.
     expect(runner.systemTurnInProgress).toBe(true);
     expect(wakeTurn.lastUseStreaming).toBe(false);
 
-    // And it reaches its terminal state in-process — the callback fires, which
-    // is what advances a merge watch to `delivered` without an orchestrator
-    // restart. The system-turn flag is cleared on teardown.
     wakeTurn.finish("wake-turn-session");
     await waitUntil(() => completions.length > 0, "onTurnComplete fired");
     expect(completions).toEqual([TURN_COMPLETED]);
@@ -212,14 +165,9 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
   });
 
   it("docs/288 req 6: a typed message is QUEUED while ShipIt is merging, then STARTS when the hold clears", async () => {
-    // The interactive send has its own admission check, separate from
-    // `dispatchOnRunner`'s. Without the hold there, a user typing during a
-    // background merge starts a turn that pushes behind a merge in flight.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // A first turn so the runner exists, then let it finish: the hold has to be
-    // what queues the next message, not a turn still running.
     client.send({ type: "send_message", text: "First" });
     const first = await waitForClaude(() => lastClaude);
     first.initSession("first-session");
@@ -233,12 +181,8 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     await drainUntil(client, (m) => m.type === "message_queued");
     expect(runner.running).toBe(false);
     expect(runner.queueLength).toBe(1);
-    expect(lastClaude).toBe(before); // no new agent was spawned
+    expect(lastClaude).toBe(before);
 
-    // req 6's last sentence: "a turn held back for that reason starts as soon as
-    // the merge has finished". Asserting only the queueing above would pass just
-    // as well if the message were stranded for ever, which is the failure mode
-    // the explicit release exists to prevent.
     runner.mergeHold = false;
     expect(releaseQueuedTurn(runner)).toBe(true);
     const resumed = await waitForClaude(() => lastClaude, before ?? undefined);
@@ -250,18 +194,11 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
   });
 
   it("docs/288 req 6: a message is queued even when the hold arrives DURING the send", async () => {
-    // The check at the top of the handler is separated from the turn start by
-    // attachment resolution, session activation and filesystem reads. A session
-    // whose runner does not exist yet takes exactly that path: the first check
-    // sees no runner at all, the registry creates one seeded held from the
-    // executor's in-flight mark, and only the late re-check can catch it.
     const claims = (app as unknown as { agentMergeClaims: { markMergeInFlight(id: string): void } })
       .agentMergeClaims;
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // The production shape: the container went idle and was reclaimed while the
-    // merge ran, so there is no runner when the message arrives.
     const registry = (app as unknown as {
       runnerRegistry: { dispose(id: string, o?: { force?: boolean }): void; get(id: string): unknown };
     }).runnerRegistry;
@@ -283,13 +220,9 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
   });
 
   it("docs/288 req 6: a resident streaming agent is not steered into during a merge", async () => {
-    // `shouldSteerMessage` asks about a *running* turn. With live steering on and
-    // a resident process left over from the previous turn, the merge-held branch
-    // is reached with the session idle — and steering there injects the message
-    // into an agent that would start work against a branch a merge is landing.
     credentialStore.setLiveSteering(true);
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "First" });
     const first = await waitForClaude(() => lastClaude);
@@ -297,15 +230,9 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     first.finish("first-session");
     const runner = runnerFor(client.sessionId);
     await waitUntil(() => !runner.running, "first turn finished");
-    // The resident process survives the turn — that is what makes it steerable.
-    // Set explicitly because this harness clears the ref on `finish`; the point
-    // under test is what the HANDLER decides given a steerable session, not how
-    // the process came to be resident.
+    // Restore residency explicitly because finish() clears the fake agent.
     runner.isStreamingActive = true;
     runner.setAgent(first as never);
-    // Preconditions, asserted so this test cannot go quietly blind: with no
-    // resident agent the steer branch is unreachable and the assertion below
-    // would pass for the wrong reason.
     expect(runner.getAgent()).not.toBeNull();
     expect(credentialStore.getLiveSteering()).toBe(true);
 
@@ -313,7 +240,6 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     client.send({ type: "send_message", text: "steer me mid-merge" });
     await drainUntil(client, (m) => m.type === "message_queued");
 
-    // `sendUserMessage` writes to stdin — the steer's only observable effect.
     expect(first.stdinData).toEqual([]);
     expect(runner.queueLength).toBe(1);
     expect(runner.running).toBe(false);
@@ -322,11 +248,8 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
   });
 
   it("docs/288 req 6: an AskUserQuestion answer is QUEUED while ShipIt is merging", async () => {
-    // `answer_question` does not go through `dispatch` at all — it sets
-    // `running = true` and calls `runAgentWithMessage` itself, which is exactly
-    // why it was the turn-start path most easily missed.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "First" });
     const first = await waitForClaude(() => lastClaude);
@@ -346,10 +269,6 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
     expect(runner.queueLength).toBe(1);
     expect(lastClaude).toBe(before);
 
-    // The queued entry carries the answer AND its permission mode. The ordinary
-    // answer path preserves the client's mode (or the resident process's); this
-    // one hand-builds its dispatch, so an omitted field would silently drop the
-    // user out of plan mode because a merge happened to be running.
     const queued = runner.dequeue();
     expect(queued?.text).toContain("yes");
     expect(queued?.permissionMode).toBe("plan");
@@ -358,11 +277,8 @@ describe("Integration: a dispatched system turn behind a real turn (planning#256
   });
 
   it("an ordinary user message queued behind a running turn still drains on the interactive path (no server echo bubble)", async () => {
-    // The routing tag must not change what a user-typed queued message does: it
-    // stays interactive, so the drain does NOT emit a `system_user_message` echo
-    // on top of the client's optimistic bubble.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "First" });
     const first = await waitForClaude(() => lastClaude);

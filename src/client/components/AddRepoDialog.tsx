@@ -16,36 +16,26 @@ interface AddRepoDialogProps {
   onClose: () => void;
   onAdd: (url: string) => Promise<void>;
   onCreateNew: () => void;
-  /** Called when a newly-added repo finishes cloning and is ready. */
   onRepoReady?: (url: string) => void;
   searchResults: { fullName: string; description: string | null; private: boolean; cloneUrl: string }[];
   onSearch: (query: string) => void | Promise<void>;
-  /** Current repos from the store — used to track clone progress. */
   repos: RepoInfo[];
-  /** Whether GitHub is connected. Adding/creating repos is GitHub-backed, so
-   *  when false we show a connect prompt instead of the search/add form. */
   githubAuthenticated: boolean;
-  /** Submit a GitHub PAT to connect. Returns false on an invalid token. */
   onGitHubTokenSubmit: (token: string) => Promise<boolean | undefined>;
 }
 
 export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, searchResults, onSearch, repos, githubAuthenticated, onGitHubTokenSubmit }: AddRepoDialogProps) {
   const [query, setQuery] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  /** URL of the repo we just added — tracked for clone progress. */
   const [pendingUrl, setPendingUrl] = useState<string | null>(null);
-  /** True while the initial GitHub repos list is being fetched. */
   const [loadingRepos, setLoadingRepos] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  // Reset state when dialog opens (inline state reset during render)
   const prevOpenRef = useRef(false);
   if (open && !prevOpenRef.current) {
     setQuery("");
     setPendingUrl(null);
-    // Lazy-load the user's GitHub repos on first open (only when connected —
-    // the search endpoint is GitHub-backed and 401s otherwise).
     if (githubAuthenticated && searchResults.length === 0) {
       setLoadingRepos(true);
       queueMicrotask(() => {
@@ -60,7 +50,6 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
   }
   prevOpenRef.current = open;
 
-  // Auto-close and navigate when the pending repo becomes ready
   const pendingRepo = pendingUrl ? repos.find((r) => r.url === pendingUrl) : null;
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
@@ -106,10 +95,6 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
 
   const isCloning = pendingRepo?.status === "cloning";
 
-  // docs/222 — labels of repos already added but hidden. A search result whose
-  // canonical label is in this set is "already added · hidden": selecting it
-  // re-adds via the same onAdd path, which clears the hidden flag server-side
-  // (RepoStore.add), so the action reads as "Show" rather than a fresh add.
   const hiddenLabels = new Set(repos.filter((r) => r.hidden).map((r) => parseRepoLabel(r.url)));
 
   return (
@@ -135,7 +120,6 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
           </div>
         ) : (
         <div className="p-4">
-          {/* Clone progress indicator */}
           {isCloning && (
             <Alert variant="warning" className="mb-3 items-center">
               <Spinner size={ICON_SIZE.SM} className="text-(--color-warning)" />
@@ -158,7 +142,6 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
             />
           </div>
 
-          {/* Loading spinner while fetching initial repo list */}
           {loadingRepos && !isCloning && (
             <div className="mt-4 flex items-center justify-center gap-2 py-6">
               <Spinner size={ICON_SIZE.SM} className="text-(--color-text-tertiary)" />
@@ -166,7 +149,6 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
             </div>
           )}
 
-          {/* Search results */}
           {searchResults.length > 0 && !isCloning && (
             <div className="mt-2 max-h-64 overflow-y-auto rounded-md border border-(--color-border-secondary)">
               {searchResults.map((repo) => {

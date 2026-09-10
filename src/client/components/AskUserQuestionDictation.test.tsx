@@ -1,14 +1,3 @@
-/**
- * docs/144 — dictation provenance on an AskUserQuestion "Other" answer.
- *
- * An "Other" answer becomes the next turn's prompt, so a spoken one carries
- * exactly the transcription artifacts a spoken chat message does and gets the
- * same `<dictated_input>` hint. The interesting rule is the negative one: a
- * question the user dictated into and then ABANDONED for a preset option
- * contributes no transcript to the prompt, so it must not flag the turn.
- *
- * `useVoiceInput` is faked at the module boundary — no mic, no fetch.
- */
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
 import type { VoiceInputApi } from "../voice/use-voice-input.js";
@@ -97,8 +86,6 @@ describe("AskUserQuestion dictation provenance (docs/144)", () => {
   });
 
   it("flags a dictated 'Other' that rides alongside checked multi-select boxes", () => {
-    // The free text is appended to the checked labels, so the flag can't be a
-    // whole-string match against the transcript.
     const onAnswer = vi.fn(() => true);
     const multi: AskQuestionItem[] = [{ ...question[0], multiSelect: true }];
     render(
@@ -117,8 +104,6 @@ describe("AskUserQuestion dictation provenance (docs/144)", () => {
   });
 
   it("does not flag a preset option picked after abandoning a dictated 'Other'", () => {
-    // Nothing spoken reaches the prompt, so the hint would be describing text
-    // that isn't there.
     const onAnswer = vi.fn(() => true);
     render(
       <AskUserQuestion toolUseId="t1" questions={question} onAnswer={onAnswer} disabled={false} />,
@@ -130,10 +115,6 @@ describe("AskUserQuestion dictation provenance (docs/144)", () => {
   });
 
   it("does not flag a preset whose label happens to equal the abandoned transcript", () => {
-    // The trap that killed the old text-matching approach: the submitted answer
-    // is byte-identical to the abandoned transcript, yet nothing spoken reached
-    // the prompt. Provenance has to come from which box was ticked, not from
-    // comparing strings.
     const onAnswer = vi.fn(() => true);
     render(
       <AskUserQuestion toolUseId="t1" questions={question} onAnswer={onAnswer} disabled={false} />,
@@ -152,7 +133,7 @@ describe("AskUserQuestion dictation provenance (docs/144)", () => {
     );
     fireEvent.click(screen.getByTestId("option-other"));
     dictate("Redis");
-    fireEvent.click(screen.getByTestId("option-other")); // untick — text drops out
+    fireEvent.click(screen.getByTestId("option-other"));
     fireEvent.click(screen.getByTestId("option-Redis"));
     fireEvent.click(screen.getByTestId("submit-answer"));
     expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Redis" }, "Redis");

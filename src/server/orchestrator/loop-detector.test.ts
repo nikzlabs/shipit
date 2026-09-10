@@ -39,10 +39,8 @@ describe("SessionLoopDetector", () => {
       d.recordContainerStarted("s1");
       clock.advance(1_000);
     }
-    // The 3rd call returned an alert; the 4th within cooldown should not.
     const second = d.recordContainerStarted("s1");
     expect(second).toBeNull();
-    // After cooldown elapses AND we cross threshold again, alert fires.
     clock.advance(30_000);
     const third = d.recordContainerStarted("s1");
     expect(third).not.toBeNull();
@@ -55,7 +53,6 @@ describe("SessionLoopDetector", () => {
     d.recordContainerStarted("s1");
     clock.advance(70_000);
     expect(d.countInWindow("s1")).toBe(0);
-    // Should not alert because the prior 2 fell out of the window.
     expect(d.recordContainerStarted("s1")).toBeNull();
   });
 
@@ -67,7 +64,6 @@ describe("SessionLoopDetector", () => {
     expect(d.recordContainerStarted("s1")).toBeNull();
     expect(d.recordContainerStarted("s2")).toBeNull();
     expect(d.recordContainerStarted("s1")).not.toBeNull();
-    // s2 still at 2 — no alert.
     expect(d.recordContainerStarted("s2")).not.toBeNull();
   });
 
@@ -78,7 +74,6 @@ describe("SessionLoopDetector", () => {
     d.recordContainerStarted("s1");
     d.forget("s1");
     expect(d.countInWindow("s1")).toBe(0);
-    // Cooldown is also reset — so a fresh threshold breach should alert.
     expect(d.recordContainerStarted("s1")).toBeNull();
     expect(d.recordContainerStarted("s1")).toBeNull();
     expect(d.recordContainerStarted("s1")).not.toBeNull();

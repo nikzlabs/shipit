@@ -1,13 +1,3 @@
-/**
- * docs/262 — GET /api/plugin-repos: the snapshot behind the Plugins tab.
- *
- * Exercises the path a `plugins:` declaration takes end to end: shipit.yaml →
- * config parser (phase-1 validation) → snapshot projection → the route the tab
- * fetches. The config is read per request, so an edit must change the answer
- * on the very next call — that property is asserted, since the client's
- * files-changed refetch depends on it.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -31,7 +21,6 @@ import { initGlobalGitConfig } from "../git-config.js";
 import type { PluginReposSnapshot } from "../../shared/plugin-repos.js";
 import { expectInvalidShipitConfig } from "../../shared/shipit-config-test-guard.js";
 
-/** The two-repo fixture shape (plan §5): self + a tracked repo by owner/name. */
 const DECLARE_FIXTURE = `
 exports:
   plugins:
@@ -113,14 +102,9 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
 
     const dev = snap.repos.find((r) => r.name === "dev")!;
     expect(dev).toMatchObject({ source: "self", status: "self", ref: null, commit: null });
-    // Self resolves its selectors against the same file's manifest (its
-    // phase 2 needs no fetch).
     expect(dev.uses).toEqual([{ plugin: "probe", alias: "probe", found: true, credentials: [], hosts: [] }]);
 
     const tools = snap.repos.find((r) => r.name === "tools")!;
-    // Nothing has been activated in this test (activation is a lifecycle
-    // trigger, never a GET side effect), so the tracked repo reads as
-    // unavailable with no commit — req 13's "session runs without it".
     expect(tools).toMatchObject({ source: "nikzlabs/shipit", status: "unavailable", ref: "branch main", commit: null });
     expect(tools.uses).toEqual([{ plugin: "probe", alias: "remote-probe", found: null, credentials: [], hosts: [] }]);
   });
@@ -149,9 +133,6 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
     expect(dev.issues).toContainEqual(expect.stringContaining("`ghost`"));
   });
 
-  // req 26 — a settings value that cannot take effect is a card issue, and it
-  // is computed by re-resolving the declaration against the live manifest, so
-  // it shows before any activation round has run.
   it("a settings value the plugin does not declare becomes a card issue", async () => {
     writeConfig(
       "exports:\n  plugins:\n    probe:\n      settings:\n        greeting:\n          default: hello\n"
@@ -164,10 +145,6 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
     expect(dev.issues[0]).toContain("`p`");
   });
 
-  // `constructor`, `toString` and friends are valid declared names, and reading
-  // an issues map keyed by repo name on a plain object returns an inherited
-  // FUNCTION for a repository that has no issues at all — truthy, non-zero
-  // `.length`, and fatal at the first spread (review finding).
   it("a repository named after an Object prototype member is an ordinary card", async () => {
     writeConfig(
       "exports:\n  plugins:\n    probe:\n      settings:\n        greeting:\n          default: hello\n"
@@ -190,9 +167,6 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
     expect((await snapshot()).repos[0].issues).toEqual([]);
   });
 
-  // docs/262 reqs 3, 20 — the card reports a service problem BEFORE anything has
-  // been started, because the collector the service path runs is pure and the
-  // route re-derives from it. A GET still activates nothing.
   it("reports a plugin service that collides with the project's own (req 20)", async () => {
     fs.writeFileSync(
       path.join(workspaceDir, "docker-compose.yml"),
@@ -228,13 +202,7 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
     expect((await snapshot()).repos[0].issues[0]).toContain("declare an `image:` instead");
   });
 
-  // docs/262 resolve-once. Five readers answer for one repository on this
-  // request — the commit, the manifest behind the settings verdict, the one
-  // behind the command verdict, the credential names, and the compose fragment.
-  // Each used to follow `active` itself, so a refresh landing mid-request could
-  // compose ONE card from several generations.
   it("resolves each declared repository's `active` once per request", async () => {
-    // A live generation for the tracked repo, so there is a symlink to follow.
     const stateDir = path.join(tmpDir, "state");
     const generation = path.join(stateDir, "plugins", "tools", "generations", "abc123");
     fs.mkdirSync(generation, { recursive: true });
@@ -268,9 +236,6 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
     expect((await snapshot("?sessionId=nope")).declared).toBe(false);
   });
 
-  // "Not yet knowable" must not be cached as "declares nothing" — the client
-  // retries on `pending`, which is what keeps an evicted session's Plugins tab
-  // from vanishing until the next shipit.yaml event.
   it("reports pending for an evicted session instead of an empty declaration", async () => {
     writeConfig(DECLARE_FIXTURE);
     sessionManager.setDiskTier("sess", "evicted");
@@ -283,7 +248,6 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
   it("reports pending when the workspace directory is gone (mid-restore)", async () => {
     fs.rmSync(workspaceDir, { recursive: true, force: true });
     expect((await snapshot()).pending).toBe(true);
-    // …and stops once the checkout is back.
     fs.mkdirSync(workspaceDir, { recursive: true });
     writeConfig(DECLARE_FIXTURE);
     const snap = await snapshot();
@@ -305,8 +269,6 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
     expect(snap.warnings).toEqual([]);
   });
 
-  // docs/262 req 23 — the tab is where a missing key becomes visible, and the
-  // store it resolves against is the CONSUMING project's own.
   describe("credential needs", () => {
     const WITH_CREDENTIAL = `
 exports:
@@ -333,7 +295,6 @@ plugins:
 
     it("flips to satisfied once the value is in THIS project's store", async () => {
       writeConfig(WITH_CREDENTIAL);
-      // Same database the app's own SecretStore reads.
       new SecretStore(dbManager).saveSecrets("https://github.com/code-owner/app.git", {
         FAL_KEY: "fixture-live",
       });
@@ -341,9 +302,6 @@ plugins:
       expect(snap.repos[0].uses[0].credentials).toEqual([{ name: "FAL_KEY", satisfied: true, optional: false }]);
     });
 
-    // req 23's platform boundary, end to end: the app under test holds a real,
-    // populated CredentialStore, and the plugin asks for exactly the names
-    // ShipIt keeps there. Every one must still read as a gap.
     it("ShipIt's own platform credentials never satisfy a plugin, through the route", async () => {
       writeConfig(`
 exports:
@@ -358,7 +316,6 @@ plugins:
     - plugin: probe
       from: dev
 `);
-      // `credentialStore` is the very instance this app was built with.
       credentialStore.setGithubToken("fixture-the-users-github-identity");
       credentialStore.setLinearToken("fixture-the-users-tracker-token");
       credentialStore.setAgentEnv("ANTHROPIC_API_KEY", "fixture-the-users-agent-token");
@@ -369,15 +326,12 @@ plugins:
         { name: "LINEAR_API_KEY", satisfied: false, optional: false },
         { name: "ANTHROPIC_API_KEY", satisfied: false, optional: false },
       ]);
-      // The platform store really is populated — the gaps are the boundary.
       expect(credentialStore.getGithubToken()).toBeTruthy();
       expect(credentialStore.getLinearToken()).toBeTruthy();
       expect(credentialStore.getAllAgentEnv().ANTHROPIC_API_KEY).toBeTruthy();
     });
 
     it("a value stored against another repository does not satisfy it", async () => {
-      // The store trap (plan §3): the plugin repository has its own store, and
-      // a key saved there is a key saved where nothing reads it.
       writeConfig(WITH_CREDENTIAL);
       new SecretStore(dbManager).saveSecrets("https://github.com/nikzlabs/shipit.git", {
         FAL_KEY: "fixture-wrong-store",
@@ -387,9 +341,6 @@ plugins:
     });
   });
 
-  // docs/262 req 24 — the tab is where a declared host becomes visible, and the
-  // answer beside it comes from the SESSION's egress configuration, never from
-  // the manifest that named the host.
   describe("host needs", () => {
     const WITH_HOST = `
 exports:
@@ -415,11 +366,6 @@ plugins:
     });
 
     it("a session with no containment reports no gap — nothing is denied there", async () => {
-      // This app has no container manager, so `isEgressContained` is false and
-      // the session reaches everything. Naming a gap here would send the user
-      // to grant what was never blocked. The predicate's contained branch is
-      // covered directly in `egress-host-reach.test.ts`, where a store can be
-      // built.
       writeConfig(WITH_HOST);
       const snap = await snapshot();
       expect(snap.repos[0].uses[0].hosts.every((h) => h.reach === "allowed")).toBe(true);
@@ -429,8 +375,6 @@ plugins:
     it("a GET grants nothing — the declaration alone never widens reach (req 24)", async () => {
       writeConfig(WITH_HOST);
       await snapshot();
-      // The allowlist the session actually runs on is untouched by reading the
-      // card: granting is a POST the user makes, on a browser-only route.
       const view = await app.inject({ method: "GET", url: "/api/egress/allowlist?session=sess" });
       expect(view.statusCode).toBe(200);
       const entries = (view.json() as { entries: { host: string }[] }).entries;

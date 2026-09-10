@@ -53,7 +53,6 @@ beforeEach(async () => {
   const addr = app.server.address();
   const port = typeof addr === "object" && addr ? addr.port : 0;
   client = await TestClient.connect(port);
-  // consume initial preview_status
   await client.receive();
 });
 
@@ -64,16 +63,13 @@ afterEach(async () => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-/** Create a session and return its app session ID and workspace directory. */
 async function createSession(): Promise<{ sessionId: string; sessionDir: string }> {
   client.send({ type: "send_message", text: "hello" });
   const claude = await waitForClaude(() => latestClaude);
 
-  // Emit a system/init event so the server sends session_started
   claude.emit("event", { type: "system", subtype: "init", session_id: "test-session-1" });
   claude.finish("test-session-1");
 
-  // Drain messages from the first turn
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
     try {
@@ -83,7 +79,6 @@ async function createSession(): Promise<{ sessionId: string; sessionDir: string 
     }
   }
 
-  // Get session ID from the filesystem (directory name = session UUID)
   const sessionsDir = path.join(tmpDir, "sessions");
   const entries = fs.readdirSync(sessionsDir);
   const sessionId = entries[0];
@@ -92,7 +87,6 @@ async function createSession(): Promise<{ sessionId: string; sessionDir: string 
   return { sessionId, sessionDir };
 }
 
-/** Drain all messages from the client until timeout. */
 async function drainMessages(timeoutMs = 2000): Promise<WsServerMessage[]> {
   const messages: WsServerMessage[] = [];
   const deadline = Date.now() + timeoutMs;
@@ -109,10 +103,8 @@ async function drainMessages(timeoutMs = 2000): Promise<WsServerMessage[]> {
 
 describe("auto-push: skip conditions", () => {
   it("does not push when not authenticated", async () => {
-    // Not authenticated — no setToken call
     const { sessionId, sessionDir } = await createSession();
 
-    // Create bare remote so the only missing condition is auth
     const bareDir = path.join(tmpDir, "bare-remote.git");
     fs.mkdirSync(bareDir, { recursive: true });
     execSync("git init --bare -b main", { cwd: bareDir, env: { ...process.env, HOME: tmpDir } });
@@ -138,7 +130,6 @@ describe("auto-push: skip conditions", () => {
     const claude2 = await waitForClaude(() => latestClaude, prevClaude);
     claude2.finish("test-session-1");
 
-    // Wait past the debounce (100ms) — no push_result should appear
     const messages = await drainMessages();
     const pushResult = messages.find((m) => m.type === "github_push_result");
     expect(pushResult).toBeUndefined();
@@ -147,7 +138,6 @@ describe("auto-push: skip conditions", () => {
   it("does not push when no origin remote is configured", async () => {
     await githubAuth.setToken("test-token");
     const { sessionId, sessionDir } = await createSession();
-    // No remote added
 
     fs.writeFileSync(path.join(sessionDir, "file.txt"), "no remote test");
 
@@ -156,7 +146,6 @@ describe("auto-push: skip conditions", () => {
     const claude2 = await waitForClaude(() => latestClaude, prevClaude);
     claude2.finish("test-session-1");
 
-    // Wait past the debounce (100ms) — no push_result should appear
     const messages = await drainMessages();
     const pushResult = messages.find((m) => m.type === "github_push_result");
     expect(pushResult).toBeUndefined();

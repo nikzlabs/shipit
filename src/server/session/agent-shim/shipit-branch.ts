@@ -1,18 +1,3 @@
-/**
- * `shipit branch` — the agent-facing branch operations ShipIt performs on the
- * agent's behalf (docs/239).
- *
- * Exactly one subcommand today: `reset-to-base`, the explicit mode over the
- * docs/218 reset core. The orchestrator does the git work (it owns the merged-PR
- * facts and the safety anchor), then hands workspace ownership back so the
- * agent's next edit doesn't hit EACCES.
- *
- * The CLI contract is deliberately blunt, because the agent's behavior is the
- * same for every failure: **exit 0 means the branch is ready to build on**
- * (either it was reset, or it was already at the base), **nonzero means stop and
- * report**. "Unsafe" and "errored" are not distinguished — the agent must not
- * proceed in either case, and must not hand-roll a reset instead.
- */
 
 import { parseFlags, fail, success } from "./shim-common.js";
 import { REJECTED_HELP, type RunDeps } from "./shipit.js";
@@ -55,9 +40,6 @@ export async function handleBranchResetToBase(args: string[], deps: RunDeps): Pr
     fail(deps.io, `shipit branch reset-to-base takes no arguments.\n${RESET_USAGE}`);
   }
 
-  // planning#279 — the reason is what replaces the safety clause `--force` removes,
-  // so it is required. Checked here for a good local error, and again
-  // orchestrator-side because the HTTP route is reachable on its own.
   const force = parsed.booleans.has("force");
   const reason = (parsed.values.reason ?? "").trim();
   if (force && !reason) {
@@ -81,8 +63,6 @@ export async function handleBranchResetToBase(args: string[], deps: RunDeps): Pr
     return;
   }
 
-  // A transport / server failure is a refusal as far as the agent is concerned:
-  // the branch was not verified as ready, so it must not proceed.
   if (res.status < 200 || res.status >= 300) {
     fail(
       deps.io,
@@ -120,14 +100,7 @@ export async function handleBranchResetToBase(args: string[], deps: RunDeps): Pr
   );
 }
 
-/**
- * Load-bearing copy, not decoration. The gate is prompt-mediated: a refused
- * agent still has a shell and `git reset --hard` is two words away, so the
- * refusal has to say WHY and forbid the workaround explicitly. The orchestrator
- * carries the same sentence (`RESET_REFUSAL_GUIDANCE` in
- * `services/pre-turn-reset.ts`); it is repeated here so the message survives a
- * transport failure, where no orchestrator body ever arrives.
- */
+// Keep local guidance for transport failures that return no orchestrator body.
 const REFUSAL_GUIDANCE =
   "Do NOT work around this — do not run `git reset --hard`, `git checkout -f`, `git push --force`, "
   + "`git rebase`, or any other manual reset or rewrite. It refused because a reset here would destroy work that cannot be "

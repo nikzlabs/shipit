@@ -26,7 +26,7 @@ destination once it is up.
 ```markdown
 [the settings page](shipit-preview://web/settings)
 [requirement 7](shipit-preview://web/requirements?focus=7#req-7)
-[the app](shipit-preview://web)          <!-- no path: the app as a whole -->
+[the app](shipit-preview://web)
 ```
 
 The path, query string and fragment are the URL the page is navigated to, so

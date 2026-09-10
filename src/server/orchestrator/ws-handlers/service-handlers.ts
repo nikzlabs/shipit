@@ -1,9 +1,3 @@
-/**
- * WS handlers for compose service control (start_service, stop_service).
- *
- * These handlers delegate to the ServiceManager for the active session.
- */
-
 import type { WsClientMessage, WsLogRecord, LogSource } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx } from "./types.js";
 import type { ServiceManager } from "../service-manager.js";
@@ -17,7 +11,6 @@ type WsLogClear = Extract<WsClientMessage, { type: "log_clear" }>;
 
 export interface ServiceCtx {
   getServiceManager: () => ServiceManager | null;
-  /** docs/192 — durable per-session log store, for the unified log channels. */
   logStore?: LogStore;
 }
 
@@ -39,12 +32,6 @@ export async function handleStartService(
   }
 }
 
-/**
- * Unified log-channel subscribe (docs/192). Replies with one `log_snapshot`
- * for the requested channel — the durable backlog that RESETS the client
- * model. Live lines then arrive as `log_append`. Serves both the agent Logs
- * tab (`channel: "agent"`) and every service panel (`channel: "service:<name>"`).
- */
 export async function handleSubscribeLogs(
   ctx: ConnectionCtx & ServiceCtx,
   msg: WsSubscribeLogs,
@@ -71,9 +58,6 @@ export async function handleSubscribeLogs(
       ctx.send({ type: "log_snapshot", channel, records: [] });
       return;
     }
-    // snapshotLogs() prefers the durable store (full history across
-    // reconcile / restart / container rm) and never rejects. The raw text is
-    // a single sourceless record — ANSI preserved for the xterm renderer.
     const buffer = await mgr.snapshotLogs(name);
     ctx.send({ type: "log_snapshot", channel, records: buffer ? [{ ts: "", text: buffer }] : [] });
     return;
@@ -82,12 +66,6 @@ export async function handleSubscribeLogs(
   ctx.send({ type: "log_snapshot", channel, records: [] });
 }
 
-/**
- * Unified log-channel clear (docs/192). Agent → drop the durable backlog +
- * in-memory ring (the Logs tab "Clear" action). Service → drop the durable
- * channel file (best-effort; the service panel has no Clear button today, but
- * the channel-keyed handler is symmetric).
- */
 export function handleLogClear(
   ctx: ConnectionCtx & RunnerCtx & ServiceCtx,
   msg: WsLogClear,
@@ -95,8 +73,6 @@ export function handleLogClear(
   const { channel } = msg;
   if (channel === "agent") {
     ctx.clearLogBuffer();
-    // Also clear the runner's buffered terminal output (preserves the prior
-    // clear_logs behavior — the Logs "Clear" button drops both backlogs).
     resolveRunner(ctx)?.clearTerminalOutputBuffer();
     return;
   }

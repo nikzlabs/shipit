@@ -141,8 +141,8 @@ to make for them.
 You can only name what you can see, so both are readable from inside the session:
 
 ```
-shipit agent roles     # every role on this install: name, what it is for, what it runs on
-shipit agent params    # every parameter an override may name here, and the flag that names each
+shipit agent roles
+shipit agent params
 ```
 
 `roles` is how you map an intent onto a role ("review the PR" → `reviewer`) and
@@ -274,8 +274,8 @@ If a run does get killed — or you truncated its output — the work is not los
 the spawn completes server-side and its output is persisted. Fetch it with:
 
 ```
-shipit agent result            # the most recent run in this session
-shipit agent result <RUN-ID>   # a specific run (a unique id prefix works)
+shipit agent result
+shipit agent result <RUN-ID>
 ```
 
 That prints the same artifact the user sees in the card. Use it to recover a
@@ -300,8 +300,8 @@ output on stdout in the ordinary case, and this changes nothing about a run you
 ### Waiting for a backgrounded run — use `--wait`, never a poll loop
 
 ```
-shipit agent result <RUN-ID> --wait                  # block up to 5 minutes
-shipit agent result <RUN-ID> --wait --timeout 600    # …or up to 10, max 30
+shipit agent result <RUN-ID> --wait
+shipit agent result <RUN-ID> --wait --timeout 600
 ```
 
 `--wait` returns as soon as the run reaches a terminal status. It absorbs
@@ -324,12 +324,11 @@ from the persisted card, so an interrupted wait has lost nothing. Pick a
 Do **not** write a `sleep`-and-`grep` loop:
 
 ```sh
-# WRONG — gives up after 45s on a run that can last 30 minutes, and a finished
-# review whose text happens to contain "pending" reads as still-running.
+# Wrong: stops after 45s and mistakes "pending" in a finished report for status.
 for i in 1 2 3; do sleep 15; shipit agent result "$ID" 2>&1 | tee /tmp/r.txt;
   if ! grep -q 'pending' /tmp/r.txt; then break; fi; done
 
-# RIGHT
+# Correct
 shipit agent result "$ID" --wait --timeout 540
 ```
 

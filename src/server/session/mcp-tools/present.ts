@@ -1,13 +1,3 @@
-/**
- * present tool — `present` (docs/093). Pure transport: POSTs the artifact PATH to
- * the worker's `/agent-ops/present/submit` broker, which records its metadata,
- * emits the `present_content` SSE event, and returns `{ presentId, viewUrl }`.
- * The broker's `presentId` is internal (derived from the path) — the agent never
- * passes it back, so the tool surfaces only `{ status, viewUrl }` to the agent.
- * Extracted from the former standalone `mcp-present-bridge.ts` for the
- * consolidated bridge; its server-level guidance becomes part of the merged
- * `shipit` server instructions.
- */
 
 import type { ToolDescriptor } from "./types.js";
 
@@ -46,12 +36,6 @@ const TOOL_DESCRIPTION = [
   "sees (markdown→HTML, SVG/image wrapping) and the raw file does not. Then fix",
   "any layout/contrast/clipping defects, edit the file, and call `present` again",
   "with the same path to update it in place.",
-  // The tool used to claim a ~1 MB cap that would reject larger artifacts. That
-  // cap was the old `PresentBuffer`'s and it is gone (docs/093 — the registry
-  // holds metadata only and reads bytes from disk on demand, so there is
-  // nothing to cap; `present-registry.ts` says so at its top). A stated limit
-  // that does not exist is the same defect as an enforced limit that is never
-  // stated: it makes the model split or withhold an artifact for no reason.
   "Nothing is rejected for being big — there is no size cap. But keep an inline",
   "artifact small: the chat card is bounded in height, so a large one reads",
   "badly in a box. That is the reason to leave `inline` off, not a limit.",
@@ -63,8 +47,6 @@ const inputSchema = {
   properties: {
     file: {
       type: "string",
-      // The worker rejects an empty path (session-worker.ts). `required` does
-      // not say that — an empty string satisfies `required` — so declare it.
       minLength: 1,
       description:
         "Path to the file to present. Relative paths resolve against the workspace; absolute paths (e.g. /persist/chart.html) are read as-is. Write the file first, then present it.",
@@ -88,10 +70,6 @@ const inputSchema = {
   required: ["file"],
 };
 
-// Server-level guidance. Both Claude Code's tool search and Codex's BM25 tool
-// index rank/surface deferred MCP tools using the server's instructions, so this
-// is what helps either agent reach for `present` when it produces something
-// visual. Kept concise (Claude truncates instructions at ~2 KB). See docs/188.
 const INSTRUCTIONS = [
   "Use the `present` tool to show the user a visual artifact in ShipIt's Present",
   "tab without a dev server: a diagram, chart, graph, mockup, wireframe, rendered",
@@ -142,9 +120,6 @@ export const presentTool: ToolDescriptor = {
           isError: true,
         };
       }
-      // The agent acts only on `viewUrl` (to screenshot the rendered artifact)
-      // and re-presents by the same file PATH to update an entry — it never
-      // passes an id back, so we don't echo `presentId` (it's internal).
       return {
         content: [
           {

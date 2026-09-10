@@ -1,13 +1,3 @@
-/**
- * Unit tests for the resilient child-session readiness check (docs/182).
- *
- * `waitForChildIdle` is exercised here against a real (in-memory) SessionManager
- * and a stub runner whose `verifyRunningState()` we drive directly — that lets
- * us cover the durable / level-triggered outcomes (idle / error / archived /
- * pending) and, critically, the headless-reconcile regression (vector #5)
- * without a Docker container or a full app.
- */
-
 import { describe, it, expect, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { DatabaseManager } from "../../shared/database.js";
@@ -16,11 +6,6 @@ import { SessionRunnerRegistry, type SessionRunnerInterface } from "../session-r
 import { waitForChildIdle, registerMergeWatch } from "./child-sessions.js";
 import { ServiceError } from "./types.js";
 
-/**
- * Minimal runner stub: only the members `waitForChildIdle` / `buildChildView`
- * actually read. `verifyRunningState` runs `verifyEffect` (e.g. a worker probe
- * that resets a stuck flag) then returns the current `running` value.
- */
 class StubRunner extends EventEmitter {
   running = false;
   queueLength = 0;
@@ -53,7 +38,6 @@ describe("waitForChildIdle (docs/182)", () => {
     sessionManager.setParentSession(CHILD, PARENT);
   });
 
-  /** Build a registry whose `getOrCreate`/`get` hand back the given stub. */
   function registryWith(stub: StubRunner): SessionRunnerRegistry {
     const registry = new SessionRunnerRegistry({ runnerFactory: () => asRunner(stub) });
     registry.getOrCreate(CHILD, "/tmp/child", "claude");
@@ -82,8 +66,6 @@ describe("waitForChildIdle (docs/182)", () => {
   });
 
   it("derives the error outcome from the persisted flag after a runner restart", async () => {
-    // No runner in the registry (rebuilt-and-gone), but the session row records
-    // the last turn errored — the durable fallback must still report `error`.
     sessionManager.setLastTurnErrored(CHILD, true);
     const registry = new SessionRunnerRegistry({ runnerFactory: () => asRunner(new StubRunner()) });
     const result = await waitForChildIdle(sessionManager, registry, PARENT, CHILD, {
@@ -94,7 +76,7 @@ describe("waitForChildIdle (docs/182)", () => {
 
   it("returns archived when the child has been user-archived", async () => {
     const stub = new StubRunner();
-    stub.running = true; // even a 'running' runner loses to a torn-down session
+    stub.running = true;
     sessionManager.archive(CHILD);
     const result = await waitForChildIdle(sessionManager, registryWith(stub), PARENT, CHILD, {
       timeoutMs: 10_000,
@@ -104,14 +86,10 @@ describe("waitForChildIdle (docs/182)", () => {
   });
 
   it("reconciles a stuck running=true on a viewerless child (vector #5)", async () => {
-    // The runner believes it's running with ZERO viewers, but a worker probe
-    // (modeled by verifyEffect) reports idle. The readiness check must call
-    // verifyRunningState and resolve `idle` within the wait — not block for the
-    // full timeout, which is the worst-case bug this feature targets.
     const stub = new StubRunner();
     stub.running = true;
     stub.verifyEffect = () => {
-      stub.running = false; // worker says no agent is running — reset the flag
+      stub.running = false;
     };
     const start = Date.now();
     const result = await waitForChildIdle(sessionManager, registryWith(stub), PARENT, CHILD, {
@@ -119,13 +97,12 @@ describe("waitForChildIdle (docs/182)", () => {
     });
     expect(stub.verifyCalls).toBe(1);
     expect(result.outcome).toBe("idle");
-    // Resolved via the reconcile, not by waiting out the 60s timeout.
     expect(Date.now() - start).toBeLessThan(5_000);
   });
 
   it("returns pending when a bounded segment elapses with the child still running", async () => {
     const stub = new StubRunner();
-    stub.running = true; // stays running across the probe and the segment
+    stub.running = true;
     const result = await waitForChildIdle(sessionManager, registryWith(stub), PARENT, CHILD, {
       timeoutMs: 10_000,
       segmentMs: 40,
@@ -151,7 +128,6 @@ describe("waitForChildIdle (docs/182)", () => {
     const waitPromise = waitForChildIdle(sessionManager, registryWith(stub), PARENT, CHILD, {
       timeoutMs: 10_000,
     });
-    // Finish the turn and fire the fast-wakeup event after the wait has armed.
     await new Promise((r) => setTimeout(r, 20));
     stub.running = false;
     stub.emit("idle");
@@ -184,8 +160,6 @@ describe("registerMergeWatch — arm-time archived guards (docs/196)", () => {
   it("refuses to arm a watch whose PARENT is archived (would only ever be dropped on fire)", () => {
     sessionManager.archive(PARENT);
     expect(() => registerMergeWatch(sessionManager, PARENT, CHILD)).toThrow(/Parent session is archived/);
-    // No watch was persisted — an archived parent receives nothing, so there is
-    // nothing to deliver.
     expect(sessionManager.getMergeWatch(CHILD)).toBeUndefined();
   });
 

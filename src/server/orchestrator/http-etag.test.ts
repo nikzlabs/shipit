@@ -19,15 +19,6 @@ describe("matchesIfNoneMatch", () => {
     expect(matchesIfNoneMatch(tag, tag)).toBe(true);
   });
 
-  /**
-   * The reason this module exists. ShipIt is served through Cloudflare, which
-   * re-compresses the response (`content-encoding: zstd` in a production trace)
-   * and therefore weakens the validator: the origin sends `"abc"`, the browser
-   * receives and stores `W/"abc"`, and that is what comes back. An exact-match
-   * comparison never fires, so the revalidation silently does nothing and every
-   * attach re-downloads the whole transcript — which is precisely the cost the
-   * ETag was added to remove (planning#375).
-   */
   it("matches the weak form a CDN produces", () => {
     expect(matchesIfNoneMatch(`W/${tag}`, tag)).toBe(true);
   });

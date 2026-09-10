@@ -3,21 +3,14 @@ import { LimitsRegistry } from "./limits-registry.js";
 import type { LimitsProvider } from "./agents/types.js";
 import type { SubscriptionLimits } from "../shared/types.js";
 
-/** The single route id these registry-level tests drive through. */
 const STUB_ROUTE = "acct-stub";
 
-/**
- * docs/252 req 10 — the registry is keyed by `(service, billing mode)` now, so
- * the stubs are named by the mode they report for. `anthropic:sub` is what the
- * Claude provider declares; `openai:sub` is Codex's.
- */
 const ANTHROPIC = "anthropic:sub";
 const OPENAI = "openai:sub";
 
 class StubLimitsProvider implements LimitsProvider {
   readonly serviceId: string;
   readonly billingMode = "sub" as const;
-  /** Sequence of snapshots returned by consecutive `fetch()` calls. */
   snapshots: (SubscriptionLimits | null)[] = [];
   fetchCallCount = 0;
 
@@ -25,22 +18,11 @@ class StubLimitsProvider implements LimitsProvider {
     this.serviceId = serviceId;
   }
 
-  /**
-   * docs/150 — the registry drives one route at a time. These tests use a
-   * single stub route unless a snapshot names another, which keeps the
-   * pre-existing single-account cases readable while still exercising the
-   * per-route plumbing.
-   */
   routeIds(): string[] {
     return [...this.liveRoutes];
   }
   liveRoutes = new Set<string>([STUB_ROUTE]);
 
-  /**
-   * Per-route snapshots for the multi-account cases. When a route has an entry
-   * here it wins; otherwise the shared `snapshots` queue drives the
-   * single-route cases unchanged.
-   */
   byRoute = new Map<string, SubscriptionLimits | null>();
 
   async fetch(routeId: string): Promise<SubscriptionLimits | null> {
@@ -59,9 +41,6 @@ class StubLimitsProvider implements LimitsProvider {
     return this;
   }
 
-  // `setRateLimits` is part of the LimitsProvider interface (docs/155), but
-  // these registry tests drive the snapshot through `fetch()` directly. The
-  // no-op is enough to satisfy the type contract.
   setRateLimits(): void {
     /* unused in registry-level tests */
   }
@@ -136,15 +115,10 @@ describe("LimitsRegistry", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(claude.fetchCallCount).toBe(2);
-    // Snapshot fields are identical → no extra SSE event.
     expect(spy.calls).toHaveLength(1);
   });
 
   it("rebroadcasts when usedPct transitions from null to a number", async () => {
-    // Claude CLI 2.1.140 first reports the window without `utilization`
-    // (anthropics/claude-code#50518) and only fills it in once a warning
-    // threshold trips. The registry must broadcast on each side of that
-    // transition so the badge upgrades from countdown-only to a full meter.
     const claude = new StubLimitsProvider("anthropic")
       .enqueue(
         makeSnapshot({
@@ -202,7 +176,7 @@ describe("LimitsRegistry", () => {
 
   it("getSnapshot returns the cached map and omits unfetchable providers", async () => {
     const claude = new StubLimitsProvider("anthropic").enqueue(makeSnapshot());
-    const codex = new StubLimitsProvider("openai"); // never received an event
+    const codex = new StubLimitsProvider("openai");
     const spy = makeBroadcastSpy();
 
     const registry = new LimitsRegistry({
@@ -234,7 +208,6 @@ describe("LimitsRegistry", () => {
 
     registry.markSignedOut(ANTHROPIC);
     expect(registry.getSnapshot()[ANTHROPIC]).toBeUndefined();
-    // Second broadcast carries the empty map so the client drops the pill.
     expect(spy.calls).toHaveLength(2);
     expect(
       (spy.calls[1].data as { limits: Record<string, unknown> }).limits[ANTHROPIC],
@@ -254,9 +227,6 @@ describe("LimitsRegistry", () => {
   });
 
   it("keeps two accounts of one provider independent (docs/150-multiple-provider-subscriptions req 10)", async () => {
-    // The defect this shape exists to prevent: with a provider-keyed cache,
-    // whichever account reported last overwrote the other, so the badge showed
-    // one number that silently jumped between subscriptions.
     const provider = new StubLimitsProvider("anthropic");
     provider.liveRoutes = new Set(["acct-a", "acct-b"]);
     provider.byRoute.set("acct-a", makeSnapshot({ routeId: "acct-a", session: { usedPct: 90, resetAt: "2026-05-19T18:00:00Z" } }));
@@ -276,10 +246,6 @@ describe("LimitsRegistry", () => {
   });
 
   it("refreshes only the named route, and fans out only without one", async () => {
-    // The pill's button names its route: each route is a separate upstream
-    // `/api/oauth/usage` call against a budget of a handful per ~30 min, so a
-    // fan-out press spends every other subscription's share. The sign-in seed
-    // passes no route and still covers everything.
     const provider = new StubLimitsProvider("anthropic");
     provider.liveRoutes = new Set(["acct-a", "acct-b"]);
     provider.byRoute.set("acct-a", makeSnapshot({ routeId: "acct-a" }));
@@ -331,7 +297,6 @@ describe("LimitsRegistry", () => {
     const snap = registry.getSnapshot();
     expect(snap[ANTHROPIC]?.["acct-a"]).toBeUndefined();
     expect(snap[ANTHROPIC]?.["acct-b"]).toBeDefined();
-    // The provider was told too, so a later refresh can't resurrect it.
     expect(provider.routeIds()).toEqual(["acct-b"]);
   });
 });

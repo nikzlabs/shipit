@@ -6,11 +6,7 @@ import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { highlightCode } from "../syntax-highlight.js";
 
-/**
- * highlight.js escapes `"` as `&quot;`; the DOM serializes it back to a bare
- * quote in `innerHTML`. Round-trip the expectation so both sides match on
- * markup rather than on escaping.
- */
+// Normalize highlight.js entities to DOM serialization.
 function asRendered(html: string | null): string | null {
   if (html === null) return null;
   const el = document.createElement("code");
@@ -35,7 +31,6 @@ describe("DiffBlock", () => {
       render(
         <DiffBlock filePath="src/app.ts" oldString="old" newString="replaced" />
       );
-      // The verb renders as an icon labeled with the verb, not the raw word.
       expect(screen.getByLabelText("Edit")).toBeInTheDocument();
     });
 
@@ -46,13 +41,11 @@ describe("DiffBlock", () => {
 
     it("shows a 'Delete' verb icon for a Codex delete (label override)", () => {
       render(<DiffBlock filePath="src/app.ts" unifiedDiff={"-old\n-line"} label="Delete" />);
-      // Delete maps to the trash glyph, surfaced via aria-label/title.
       expect(screen.getByLabelText("Delete")).toBeInTheDocument();
     });
 
     it("falls back to the raw verb text when there's no glyph for it", () => {
       render(<DiffBlock filePath="src/app.ts" unifiedDiff={"+x"} label="Rename" />);
-      // Unmapped verbs (e.g. a future Codex kind) render as plain text, not a glyph.
       expect(screen.getByText("Rename")).toBeInTheDocument();
       expect(screen.queryByLabelText("Rename")).toBeNull();
     });
@@ -127,12 +120,6 @@ describe("DiffBlock", () => {
     });
   });
 
-  /**
-   * Long lines wrap instead of scrolling sideways. This isn't only taste: each
-   * diff line paints its own add/remove background, and a background only spans
-   * the *container* width — so with a horizontal scrollbar everything past the
-   * fold rendered as uncolored text. Wrapping is what keeps the coloring whole.
-   */
   describe("long-line wrapping", () => {
     const diffBody = () => screen.getByLabelText("Diff view").querySelector("pre:last-of-type")!;
 
@@ -164,19 +151,11 @@ describe("DiffBlock", () => {
     });
   });
 
-  /**
-   * The modal is already showing the file's path one line above the body, so
-   * the highlighter never has to guess at it. Auto-detection re-highlights the
-   * whole file once per registered grammar, which a production trace measured
-   * at ~274 ms per call inside a synchronous render.
-   */
   describe("write-content highlighting", () => {
     const writeBody = () => screen.getByLabelText("Diff view").querySelector("code.hljs");
 
     it("highlights a written file as the language of its path", () => {
-      // Ambiguous on purpose: as JSON an object, as Python a dict literal. The
-      // two produce different markup, so this can tell "used the path" from
-      // "guessed" — a plain .ts file would auto-detect correctly anyway.
+      // Valid JSON and Python, with different highlighting.
       const content = '{"a": 1, "b": [2, 3]}';
       render(<DiffBlock filePath="/workspace/config.py" newString={content} isWrite />);
       fireEvent.click(screen.getByRole("button", { name: "Show diff" }));
@@ -209,17 +188,6 @@ describe("DiffBlock", () => {
   });
 });
 
-/**
- * docs/244 — the lazy Edit/Write body. The server strips `oldString`/`newString`
- * from the transcript and sends `stats` plus the `toolUseId` to fetch with; the
- * modal is the moment the body has to arrive.
- *
- * The independent requirements review flagged this half as unpinned: an
- * integration test proved the *endpoint*, but nothing proved the UI calls it,
- * renders what comes back, or degrades sanely when it doesn't. So a refactor
- * that dropped the fetch would have left every diff modal permanently blank
- * with a green suite.
- */
 describe("DiffBlock lazy body (docs/244)", () => {
   const LAZY_PROPS = { filePath: "src/app.ts", toolUseId: "toolu_lazy", stats: { added: 3, removed: 1 } };
 
@@ -235,8 +203,6 @@ describe("DiffBlock lazy body (docs/244)", () => {
     stubSession();
     render(<DiffBlock {...LAZY_PROPS} />);
 
-    // The whole point: the inline row looks identical to a non-lazy one, so
-    // requirement 8's "no loading states in the transcript" holds.
     expect(screen.getByText("+3")).toBeInTheDocument();
     expect(screen.getByText("-1")).toBeInTheDocument();
   });
@@ -250,7 +216,6 @@ describe("DiffBlock lazy body (docs/244)", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<DiffBlock {...LAZY_PROPS} />);
-    // Nothing is fetched until the user asks for it.
     expect(fetchMock).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Show diff" }));
@@ -262,7 +227,6 @@ describe("DiffBlock lazy body (docs/244)", () => {
 
   it("shows a loading state while the body is in flight, not a false empty diff", async () => {
     stubSession();
-    // A fetch that never settles — the state the user sees on a slow link.
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
 
     render(<DiffBlock {...LAZY_PROPS} />);
@@ -273,7 +237,6 @@ describe("DiffBlock lazy body (docs/244)", () => {
 
   it("surfaces an error rather than an empty diff when the fetch fails", async () => {
     stubSession();
-    // A 404 is the realistic failure: the row was rewound out from under the id.
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
 
     render(<DiffBlock {...LAZY_PROPS} />);
@@ -282,9 +245,6 @@ describe("DiffBlock lazy body (docs/244)", () => {
     await waitFor(() => {
       const modal = screen.getByLabelText("Diff view");
       expect(modal.textContent).not.toContain("Loading diff");
-      // The claim under test is "an ordinary error is surfaced", not the exact
-      // sentence — but an empty modal would pass a looser check, so anchor on
-      // the failure being *stated*.
       expect(modal.textContent).toContain("load this diff");
     });
   });

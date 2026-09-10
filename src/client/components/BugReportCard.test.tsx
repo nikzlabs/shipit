@@ -3,14 +3,6 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { BugReportCard } from "./BugReportCard.js";
 import { useBugReportStore, type BugReportCardState } from "../stores/bug-report-store.js";
 
-/**
- * Tests for the in-chat `BugReportCard` (docs/164). The card reads its live
- * payload + lifecycle from the bug-report store keyed by cardId. These cover
- * the consent gate (Submit fires the handler with the edited fields), the
- * Stage-2 "didn't run" flag, the filed terminal state, and the scope-error
- * banner on a failed submit.
- */
-
 const CARD_ID = "bug-card-1";
 
 function seedCard(overrides: Partial<Omit<BugReportCardState, "phase">> = {}) {
@@ -69,7 +61,6 @@ describe("BugReportCard", () => {
     expect(onSubmit).toHaveBeenCalledOnce();
     expect(onSubmit.mock.calls[0][0]).toBe(CARD_ID);
     expect(onSubmit.mock.calls[0][1]).toBe("Edited title");
-    // The card optimistically flips to a disabled "Filing…" state.
     expect(screen.getByRole("button", { name: /filing/i })).toBeDisabled();
   });
 
@@ -88,7 +79,6 @@ describe("BugReportCard", () => {
       .setFailed(CARD_ID, "Your GitHub token can't file issues on the ShipIt repo. Reconnect …", true);
     render(<BugReportCard cardId={CARD_ID} />);
     expect(screen.getByText(/can't file issues on the ShipIt repo/)).toBeInTheDocument();
-    // Back to an editable draft — Submit is available again.
     expect(screen.getByRole("button", { name: /submit report/i })).toBeEnabled();
   });
 
@@ -101,11 +91,6 @@ describe("BugReportCard", () => {
     expect(screen.queryByLabelText("Bug report title")).not.toBeInTheDocument();
   });
 
-  /**
-   * nikzlabs/shipit#2350 — Cancel used to be local component state, so the decision reached
-   * neither the server nor the agent. It now round-trips, and the collapsed
-   * state comes from the STORE phase, which is what a reload rehydrates.
-   */
   it("reports the Cancel to the server and records a terminal dismissed phase", () => {
     const onDismiss = vi.fn();
     render(<BugReportCard cardId={CARD_ID} onDismiss={onDismiss} />);

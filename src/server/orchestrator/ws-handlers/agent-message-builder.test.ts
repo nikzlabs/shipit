@@ -37,10 +37,8 @@ describe("accumulateAssistantGroups", () => {
     accumulateAssistantGroups(r, "the plan", []);
     r.needsNewMessageGroup = true;
     accumulateAssistantGroups(r, "", [tool("p1", "ExitPlanMode")]);
-    // Merged into the existing group, not a new empty-text group.
     expect(r.chatMessageGroups).toHaveLength(1);
     expect(r.chatMessageGroups[0].toolUse.map((t) => t.name)).toEqual(["ExitPlanMode"]);
-    // Boundary stays armed so the next non-standalone event splits.
     expect(r.needsNewMessageGroup).toBe(true);
     r.dispose({ force: true });
   });
@@ -61,7 +59,7 @@ describe("attachToolResultsToGroup", () => {
   it("appends results to the last group and is a no-op when there are none", () => {
     const r = runner();
     attachToolResultsToGroup(r, [{ toolUseId: "x", content: "ok", isError: false }]);
-    expect(r.chatMessageGroups).toHaveLength(0); // no group yet → no-op
+    expect(r.chatMessageGroups).toHaveLength(0);
 
     accumulateAssistantGroups(r, "", [tool("t1", "Read")]);
     attachToolResultsToGroup(r, [{ toolUseId: "t1", content: "ok", isError: false }]);

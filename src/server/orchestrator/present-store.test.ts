@@ -1,12 +1,3 @@
-/**
- * Unit tests for the durable Present-tab store (docs/093).
- *
- * The store is the orchestrator-side persistence that lets the Present tab
- * survive a session-container restart: a fresh runner seeds its cache from
- * here, and `proxyPresentRaw` re-registers a persisted entry with the new
- * worker. These assert the record/update-in-place/clear reducer and round-trip.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
 import { PresentStore, type PersistedPresentation } from "./present-store.js";
@@ -85,8 +76,6 @@ describe("PresentStore", () => {
     store.record(makeEntry({ presentId: "a" }));
     store.record(makeEntry({ presentId: "b" }));
     store.record(makeEntry({ presentId: "c" }));
-    // The same file re-presented derives the same id; the middle entry must keep
-    // slot 1 (not jump to the end) and refresh its fields in place.
     store.record(makeEntry({ presentId: "b", title: "B v2" }));
     const ids = store.list("s1").map((p) => p.presentId);
     expect(ids).toEqual(["a", "b", "c"]);
@@ -125,16 +114,11 @@ describe("PresentStore", () => {
 
   it("survives a fresh store over the same database (restart simulation)", () => {
     store.record(makeEntry({ presentId: "a" }));
-    // A new store instance over the SAME db = the orchestrator outliving a
-    // session container; a freshly-created runner reads the persisted metadata.
     const reopened = new PresentStore(dbManager);
     expect(reopened.list("s1").map((p) => p.presentId)).toEqual(["a"]);
     expect(reopened.get("a")?.resolvedPath).toBe("/tmp/chart.html");
   });
 
-  // docs/280 — `inlineCardIsNew` is the transcript card's emit gate, so what
-  // matters is that it answers true EXACTLY once per artifact, whatever the
-  // screenshot loop does afterwards.
   describe("inline (docs/280)", () => {
     it("is false for an ordinary present, and the artifact is not inline", () => {
       expect(store.record(makeEntry()).inlineCardIsNew).toBe(false);
@@ -155,8 +139,6 @@ describe("PresentStore", () => {
 
     it("keeps inline set when the screenshot loop re-presents without the flag", () => {
       store.record(makeEntry({ inline: true }));
-      // The iteration loop calls `present({ file })` with no `inline` — the card
-      // is already in the scrollback, so it must not be demoted.
       expect(store.record(makeEntry({ title: "v2" })).inlineCardIsNew).toBe(false);
       expect(store.get("pres_1")?.inline).toBe(true);
       expect(store.get("pres_1")?.title).toBe("v2");

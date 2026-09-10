@@ -7,7 +7,6 @@ import {
   type GitHubAppConfig,
 } from "./github-app-token.js";
 
-/** A throwaway RSA keypair so the JWT signing path is exercised for real. */
 function testKeyPair(): { publicKey: string; privateKey: string } {
   return generateKeyPairSync("rsa", {
     modulusLength: 2048,
@@ -20,7 +19,6 @@ function decodeSegment(seg: string): Record<string, unknown> {
   return JSON.parse(Buffer.from(seg, "base64url").toString("utf8")) as Record<string, unknown>;
 }
 
-/** A `fetch` stub that records calls and replays scripted JSON responses. */
 function fetchStub(
   responses: { status: number; body: unknown }[],
 ): { impl: typeof fetch; calls: { url: string; init?: RequestInit }[] } {
@@ -51,8 +49,8 @@ describe("buildAppJwt", () => {
     const payload = decodeSegment(payloadSeg);
     expect(header).toEqual({ alg: "RS256", typ: "JWT" });
     expect(payload.iss).toBe("12345");
-    expect(payload.iat).toBe(nowSec - 60); // backdated for clock skew
-    expect(payload.exp).toBe(nowSec + 9 * 60); // under GitHub's 10-min cap
+    expect(payload.iat).toBe(nowSec - 60);
+    expect(payload.exp).toBe(nowSec + 9 * 60);
 
     const verify = createVerify("RSA-SHA256");
     verify.update(`${headerSeg}.${payloadSeg}`);
@@ -108,10 +106,8 @@ describe("GitHubAppTokenMinter", () => {
     const token = await minter.getRepoToken("octo", "hello");
     expect(token).toBe("ghs_installation");
 
-    // Installation lookup is repo-scoped, token mint targets that installation
     expect(calls[0].url).toBe("https://api.github.com/repos/octo/hello/installation");
     expect(calls[1].url).toBe("https://api.github.com/app/installations/999/access_tokens");
-    // The mint body scopes to the single repo with a minimal permission set.
     const mintBody = JSON.parse(calls[1].init?.body as string) as Record<string, unknown>;
     expect(mintBody.repositories).toEqual(["hello"]);
     expect(mintBody.permissions).toEqual({ contents: "write", pull_requests: "write", metadata: "read" });
@@ -126,12 +122,11 @@ describe("GitHubAppTokenMinter", () => {
 
     expect(await minter.getRepoToken("o", "r")).toBe("ghs_a");
     expect(await minter.getRepoToken("o", "r")).toBe("ghs_a");
-    expect(calls.length).toBe(2); // only one mint round-trip total
+    expect(calls.length).toBe(2);
   });
 
   it("re-mints once the cached token is within the refresh margin of expiry", async () => {
     let now = 1_700_000_000_000;
-    // Token expires 6 minutes out; refresh margin is 5 minutes.
     const expiresAt = new Date(now + 6 * 60 * 1000).toISOString();
     const { impl, calls } = fetchStub([
       { status: 200, body: { id: 1 } },
@@ -142,7 +137,7 @@ describe("GitHubAppTokenMinter", () => {
     const minter = new GitHubAppTokenMinter({ config: config(), fetchImpl: impl, now: () => now });
 
     expect(await minter.getRepoToken("o", "r")).toBe("ghs_first");
-    now += 2 * 60 * 1000; // now 4 min to expiry — inside the 5-min margin
+    now += 2 * 60 * 1000;
     expect(await minter.getRepoToken("o", "r")).toBe("ghs_second");
     expect(calls.length).toBe(4);
   });
@@ -162,7 +157,6 @@ describe("GitHubAppTokenMinter", () => {
     expect(await minter.getRepoToken("o", "r")).toBeNull();
   });
 
-  // docs/262 reqs 7, 10 — the plugin-repository path.
   it("mints a read-scoped token with no write permission at all", async () => {
     const { impl, calls } = fetchStub([
       { status: 200, body: { id: 42 } },
@@ -173,8 +167,6 @@ describe("GitHubAppTokenMinter", () => {
     const result = await minter.getRepoTokenResult("octo", "tools", "read");
     expect(result).toEqual({ ok: true, token: "ghs_ro" });
     const mintBody = JSON.parse(calls[1].init?.body as string) as Record<string, unknown>;
-    // A declaration grants a fetch, never a push (req 7): no `contents: write`,
-    // and no pull-request surface either.
     expect(mintBody.permissions).toEqual({ contents: "read", metadata: "read" });
   });
 

@@ -1,16 +1,3 @@
-/**
- * Voice service layer (docs/144).
- *
- * Composes the credential store, the Claude OAuth auth manager, the provider
- * registry, and the TTS cache into pure-ish async functions the route calls.
- * Routes never touch providers directly — this is the documented service-layer
- * pattern (CLAUDE.md "Service layer pattern").
- *
- * Provider selection is data-driven: the request names a provider id, the
- * service validates it against the shared catalog and dispatches through the
- * registry. Adding a provider needs no change here.
- */
-
 import type { CredentialStore } from "../credential-store.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import { ServiceError } from "./types.js";
@@ -33,11 +20,9 @@ import {
 
 const DEFAULT_STT_PROVIDER = "openai";
 const DEFAULT_TTS_PROVIDER = "openai";
-/** Provider whose key backs the OpenAI cleanup fallback. */
 const CLEANUP_OPENAI_PROVIDER = "openai";
 
 export interface VoiceCredentialStatus {
-  /** Provider ids that currently have a server-side key. */
   configured: string[];
 }
 
@@ -50,7 +35,6 @@ export interface TranscribeResult {
 
 function mapProviderError(err: unknown, fallback: string): ServiceError {
   if (err instanceof VoiceProviderError) {
-    // Surface upstream auth/rate-limit/4xx status; collapse 5xx onto 502.
     const status = err.statusCode >= 400 && err.statusCode < 500 ? err.statusCode : 502;
     console.warn(`[voice] provider error ${err.statusCode}: ${err.message}`);
     const detail = err.message.trim().replace(/\s+/g, " ");
@@ -60,8 +44,6 @@ function mapProviderError(err: unknown, fallback: string): ServiceError {
   console.warn(`[voice] unexpected error:`, err);
   return new ServiceError(502, fallback);
 }
-
-// ---- Credentials ----
 
 export function setVoiceKey(
   credentialStore: CredentialStore,
@@ -90,11 +72,6 @@ export function getVoiceCredentialStatus(credentialStore: CredentialStore): Voic
   return { configured: credentialStore.getConfiguredVoiceProviders() };
 }
 
-/**
- * Which cleanup provider would run, without leaking credentials. Returns the
- * provider id or null when none is available — drives the Settings status
- * string.
- */
 export async function getCleanupStatus(
   credentialStore: CredentialStore,
   authManager: AuthManager,
@@ -105,8 +82,6 @@ export async function getCleanupStatus(
   const provider = await pickCleanupProvider(authManager, key, fetchImpl, credentialDir);
   return { provider: provider?.id ?? null };
 }
-
-// ---- Transcription (STT + cleanup) ----
 
 export async function transcribeVoice(
   credentialStore: CredentialStore,
@@ -161,13 +136,6 @@ export async function transcribeVoice(
   };
 }
 
-// ---- Speech (TTS) ----
-
-/**
- * Synthesize speech for the given prose. Returns null when the stripped text
- * is empty (route replies 204). Cache hit returns immediately without hitting
- * the provider.
- */
 export async function speakVoice(
   credentialStore: CredentialStore,
   ttsCache: TtsCache,

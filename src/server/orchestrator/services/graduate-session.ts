@@ -1,38 +1,4 @@
-/**
- * graduateSession — SINGLE SOURCE OF TRUTH for the warm → active session
- * transition. Every session-creation surface in the orchestrator MUST end
- * with a call to this function. The current call sites are:
- *
- *   - ws-handlers/send-message.ts   (warm-graduation on first message)
- *   - services/agent.ts             (POST /api/sessions/:id/agent/dispatch —
- *                                    warm-graduation on a system-initiated
- *                                    button press, docs/150)
- *   - services/headless-sessions.ts (POST /api/sessions/headless)
- *   - services/child-sessions.ts    (POST /api/sessions/:parentId/spawn)
- *   - services/session-fork-merge.ts (POST /api/sessions/:id/fork +
- *                                     rollback-driven fork via
- *                                     handleRewindAtGap)
- *
- * If you are adding a further surface, it MUST end here too. If you find
- * yourself calling any of the following directly outside this module:
- *
- *   sessionManager.setWarm(id, false)
- *   sessionManager.track(id)
- *   sessionManager.setBranchRenamed(...)
- *   scheduleSessionNaming(...)       // it's private to this file — don't re-export
- *   repoStore.touch(remoteUrl)
- *   sseBroadcast("session_list", ...) // as part of session creation
- *
- * STOP and call graduateSession() instead. Hand-rolling subsets of these
- * is the bug class docs/156 was opened to make impossible.
- *
- * Note: `warmSessionForRepo` is intentionally NOT part of this contract.
- * Quick / child / fork all reach graduation via `claimSessionService.claim`,
- * which already re-warms the pool. Warm-graduation is the only surface that
- * doesn't go through claim, so `send-message.ts` calls `warmSessionForRepo`
- * inline. See docs/156 "warmSessionForRepo is deliberately NOT a step."
- */
-
+/** Shared warm-to-active transition. Callers handle pool refill separately. */
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { RepoStore } from "../repo-store.js";
@@ -60,129 +26,36 @@ export interface GraduateSessionDeps {
   runnerRegistry: SessionRunnerRegistry;
   repoStore: RepoStore;
   createGitManager: (dir: string) => GitManager;
-  /**
-   * Optional — runtimes without a PR poller (tests, dogfood-local mode) omit
-   * it. When undefined, the AI-naming finalizer skips the "PR already
-   * tracked?" short-circuit and emits the PR-ready card anyway.
-   */
   prStatusPoller?: PrStatusPoller;
   sseBroadcast: (event: string, data: unknown) => void;
-  /**
-   * docs/179 — heal the agent's OAuth source token before the AI-naming CLI
-   * runs. `generateSessionName` shells out to `claude -p` against the source
-   * credentials; without this, naming silently 401s (and returns null →
-   * placeholder title sticks) in the same stale-token window that breaks the
-   * first turn. A no-op for a healthy token. Optional — tests / local omit it.
-   */
   ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
-  /**
-   * docs/150 — forwarded to the naming CLI so it reads the account a turn for
-   * this agent would use, rather than the singleton root (which resolves via
-   * the legacy alias to the migrated default account). Optional; omitting them
-   * keeps the previous singleton behaviour.
-   */
   providerAccountManager?: ProviderAccountManager;
   credentialsDir?: string;
-  /**
-   * docs/252 phase 7 (req 9) — where naming's `(service, billing mode, model)`
-   * setting is read from. Without it naming falls back to the pre-feature
-   * behaviour: the session's own harness, its own credential root, and no model
-   * at all. Optional so minimal setups (tests, local mode) keep working.
-   */
   credentialStore?: CredentialStore;
-  /**
-   * docs/252 phase 7 — where the failure notice is persisted. Required for the
-   * notice to survive a reload, which req 9 is explicit about; a setup without
-   * it logs the failure and keeps the placeholder title, exactly as before.
-   */
   chatHistoryManager?: NonTurnFailurePersister;
-  /** docs/252 phase 7 — naming's own usage row (req 16). */
   usageManager?: UsageManager;
 }
 
 export interface GraduateSessionOpts {
   sessionId: string;
-  /**
-   * First-message text. Drives the placeholder title and the AI-naming
-   * prompt. Pass an empty string for surfaces that have no first message
-   * (fork) — AI naming will skip anyway whenever `explicitTitle` /
-   * `explicitBranch` is set.
-   */
   userText: string;
-  /** Effective agent id for the AI-naming CLI call. */
   agentId: AgentId;
-  /**
-   * When set, the caller has chosen this title and AI naming must NOT
-   * overwrite it. Becomes the placeholder title; `setBranchRenamed(true)`
-   * is then set synchronously.
-   */
   explicitTitle?: string;
-  /**
-   * When set, the caller has chosen this branch and AI naming must NOT
-   * touch it. The branch row is assumed to already match — graduate does
-   * not call `setBranch`.
-   */
+  /** Caller must already have set the branch on disk and in the session row. */
   explicitBranch?: string;
-  /**
-   * When true, AI naming (if it runs at all) only updates the title and
-   * leaves the on-disk branch + `session.branch` row alone. Required for
-   * child sessions: `POST /spawn` returns the branch in its response body
-   * and the CLI shim prints it, so a delayed rename would make the printed
-   * value stale.
-   */
+  /** Keep branches stable after the spawn API has returned their names. */
   skipBranchRename?: boolean;
-  /** Optional model override (quick + child). */
   model?: string;
-  /**
-   * docs/252 — the rest of the selection triple for {@link model}, when the
-   * caller knows it. Quick Capture does: its seed is the browser's
-   * `vibe-model-id` slot, which holds the full triple. Without these the bare id
-   * would be re-resolved here to the FIRST service offering it, silently moving
-   * a gateway selection onto whichever gateway sorts first — the exact ambiguity
-   * the triple exists to remove. Ignored when the pair names no catalogue row.
-   */
   serviceId?: string;
   billingMode?: BillingMode;
-  /**
-   * docs/217 — optional per-session reasoning effort (Control B), set on the
-   * session row before the first turn runs. Quick-capture only; assumed already
-   * validated against the agent's options by the caller.
-   */
   reasoning?: string;
-  /** Optional parent linkage (child only). */
   parentSessionId?: string;
-  /** Optional spawn-turn id paired with `parentSessionId`. */
   spawnedByTurn?: string;
-  /**
-   * docs/264-agent-roles req 14 — the role this session was created from, when one created
-   * it (`shipit session create --role deep-dive`). Written once here and never
-   * again: it is a snapshot of the name, not a live link to the role (req 11).
-   */
   originRoleName?: string;
-  /**
-   * docs/201 — top-level ancestor of the spawn tree, paired with
-   * `parentSessionId`. The spawn caller computes it as
-   * `parent.rootSessionId ?? parent.id`; forwarded verbatim to
-   * `setParentSession` so the sidebar can group a whole brood under one root.
-   */
   rootSessionId?: string;
 }
 
-/**
- * Promote a session row from warm / placeholder to user-visible active.
- *
- * Synchronous. AI naming runs in the background; the function returns
- * before it completes.
- *
- * Preconditions (callers are responsible for):
- *   - The session row exists in `sessionManager`.
- *   - The workspace exists on disk (when `session.workspaceDir` is set).
- *   - `session.remoteUrl` is set when the caller wants pool-warming /
- *     repoStore.touch to take effect. Quick / child / fork already do this
- *     via their claim or fork-specific setup.
- *   - `session.branch` is set to the desired branch name when the caller
- *     intends `explicitBranch` semantics.
- */
+/** Requires an existing session and workspace. AI naming completes in the background. */
 export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSessionOpts): void {
   const {
     sessionManager, runnerRegistry, repoStore, createGitManager, prStatusPoller, sseBroadcast,
@@ -191,21 +64,13 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
   } = deps;
   const { sessionId, userText, agentId, explicitTitle, explicitBranch, skipBranchRename, model, serviceId, billingMode, reasoning, parentSessionId, spawnedByTurn, rootSessionId, originRoleName } = opts;
 
-  // 1. Activation — flip warm to false (no-op when already active, e.g. fork).
   sessionManager.setWarm(sessionId, false);
-
-  // 2. Persistence — refresh last_used_at; idempotent on existing rows.
   sessionManager.track(sessionId);
 
-  // 3. Placeholder title (explicit caller value wins; otherwise prompt slice).
   const placeholderTitle = explicitTitle?.trim() || userText.slice(0, 60) || "New session";
   sessionManager.rename(sessionId, placeholderTitle);
 
-  // 4. Optional model + reasoning + parent linkage (child + quick concerns).
-  // docs/252 — the caller's full triple when it has one (Quick Capture seeds
-  // from the browser slot, which does), otherwise resolve the bare id biased
-  // toward the agent's own vendor. `selectionExists` is the gate: a caller must
-  // not be able to persist a triple naming a row the catalogue does not carry.
+  // Preserve the full selection: one model ID can exist on several services.
   if (model) {
     const supplied = serviceId && billingMode ? { serviceId, billingMode, modelId: model } : undefined;
     if (supplied && selectionExists(supplied)) {
@@ -215,24 +80,14 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
     }
   }
   if (reasoning) sessionManager.setReasoning(sessionId, reasoning);
-  // docs/264-agent-roles req 14 — provenance, before any linkage: which role started this
-  // session. `setOriginRoleName` is write-once, so a re-graduation (a fork, a
-  // rollback) cannot rewrite what the original creation recorded.
   if (originRoleName) sessionManager.setOriginRoleName(sessionId, originRoleName);
   if (parentSessionId) {
     sessionManager.setParentSession(sessionId, parentSessionId, spawnedByTurn, rootSessionId);
   } else if (spawnedByTurn) {
-    // docs/205 — a `--detached` spawn is deliberately parentless (flat in the
-    // sidebar, uncoordinatable) but still records its originating turn so the
-    // per-turn spawn cap can count it. `setParentSession` couples the turn id to
-    // a parent, so persist it on its own here when there's no parent to write.
+    // Detached sessions still count toward the originating turn's spawn cap.
     sessionManager.setSpawnedByTurn(sessionId, spawnedByTurn);
   }
 
-  // 5. Naming policy: AI rename only when caller pinned nothing AND the
-  //    workspace exists. Either explicit field opts out — the caller's
-  //    chosen value is authoritative and graduation must not silently
-  //    overwrite it.
   const session = sessionManager.get(sessionId);
   const shouldAutoName = !explicitTitle && !explicitBranch && session?.workspaceDir;
   if (shouldAutoName) {
@@ -252,21 +107,10 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
     sessionManager.setBranchRenamed(sessionId, true);
   }
 
-  // 6. Repo usage tracking — drives "most recently used repo" ordering in
-  //    the sidebar. Read remoteUrl *after* the placeholder rename above so
-  //    we pick up the latest row.
   const updated = sessionManager.get(sessionId);
   if (updated?.remoteUrl) repoStore.touch(updated.remoteUrl);
-
-  // 7. Single SSE broadcast. Every previous per-route broadcast is deleted
-  //    (docs/156 "Removing the duplicate `session_list` broadcasts").
   sseBroadcast("session_list", { sessions: sessionManager.list() });
 }
-
-// ---------------------------------------------------------------------------
-// Private — fire-and-forget AI naming. Folded in from the previous fix's
-// `session-graduation.ts`. Not exported: every entry point is graduate().
-// ---------------------------------------------------------------------------
 
 interface ScheduleSessionNamingDeps {
   sessionManager: SessionManager;
@@ -275,17 +119,8 @@ interface ScheduleSessionNamingDeps {
   prStatusPoller?: PrStatusPoller;
   sseBroadcast: (event: string, data: unknown) => void;
   ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
-  /**
-   * docs/150 — resolves which provider account the naming CLI runs on. Without
-   * it, naming falls back to the singleton credential root, which resolves via
-   * the legacy alias to the *migrated default* account regardless of which
-   * account is actually primary — and stops working altogether once that
-   * account is disconnected. Optional so minimal setups (tests, local mode)
-   * keep the previous behaviour.
-   */
   providerAccountManager?: ProviderAccountManager;
   credentialsDir?: string;
-  /** docs/252 phase 7 (req 9) — see {@link GraduateSessionDeps}. */
   credentialStore?: CredentialStore;
   chatHistoryManager?: NonTurnFailurePersister;
   usageManager?: UsageManager;
@@ -295,12 +130,6 @@ interface ScheduleSessionNamingOpts {
   sessionId: string;
   userText: string;
   agentId: AgentId;
-  /**
-   * When true, the AI-renamed title is applied but the on-disk branch is
-   * left untouched and `session.branch` is not rewritten. Used by child
-   * sessions whose branch is returned synchronously to the agent by the
-   * spawn API — a delayed rename would make that response stale.
-   */
   skipBranchRename: boolean;
 }
 
@@ -312,13 +141,7 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
   } = deps;
   const { sessionId, userText, agentId, skipBranchRename } = opts;
 
-  // docs/252 phase 7 (req 9) — naming runs on the model chosen FOR non-turn
-  // work, not on the session's. That independence is the whole requirement: the
-  // incident behind it was a lapsed Claude subscription breaking naming for a
-  // user who had already moved to Codex, and following the session's model
-  // would have left the same implicit dependency in place, merely pointed
-  // elsewhere. The harness is derived from that selection (`non-turn-model.ts`),
-  // so `agentId` — the SESSION's harness — no longer decides what naming spawns.
+  // Naming has its own model selection, independent of the session's model.
   const resolution = credentialStore
     ? resolveNonTurnModel({
         credentialStore,
@@ -326,28 +149,11 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
       })
     : undefined;
   const target = resolution?.ok ? resolution.target : undefined;
-  // **A stale pin stops naming; "nothing eligible" does not.** The two absences
-  // are different facts. A pin the install can no longer run is a service the
-  // user chose that went away — req 9's notice reports exactly that, and
-  // spawning something else would defeat the choice. Nothing eligible is ShipIt
-  // having no opinion: `listConfiguredCredentials` sees the credential store and
-  // the environment, not a CLI logged in on the host outside both, so a dev
-  // checkout and a hand-authenticated deployment both land there — and both
-  // named their sessions perfectly well before this feature. Falling back to
-  // what they did before is the only answer that cannot regress them.
+  // A missing pinned model stops naming; no eligible selection allows the legacy CLI fallback.
   const pinUnavailable = resolution !== undefined && !resolution.ok
     && resolution.reason === "pin_unavailable";
-  // With no credential store wired (tests, minimal local setups) and in the
-  // nothing-eligible case, naming keeps its pre-feature shape exactly: the
-  // session's harness, its own account root, no model, no shaping.
   const namingHarness = target?.harnessId ?? agentId;
 
-  // docs/150 — naming is a real provider call, so it runs on a real account.
-  // The route now comes from the resolved selection rather than from a
-  // per-`AgentId` question, so a naming call on a custom service resolves that
-  // service's credential instead of the harness vendor's. A reserved route
-  // (API key / env OAuth) has no account root, so `undefined` keeps the
-  // singleton path, which is what those routes legitimately use.
   const namingRoute = target
     ? target.route
     : (providerAccountManager?.selectRouteForTurn(accountServiceForHarness(namingHarness)) ?? null);
@@ -356,13 +162,7 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
     ? providerAccountCredentialRoot(credentialsDir, namingHarness, namingAccountId)
     : undefined;
 
-  /**
-   * req 9's notice: the operation completed with its fallback (the placeholder
-   * title), and the user is told which service failed. Persisted through
-   * `emitChatCard`, because naming is fire-and-forget — it routinely finishes
-   * with the user on another session — so a transient message would be silent
-   * in exactly the case this exists for.
-   */
+  // Persist failures: background naming can finish after the user switches sessions.
   const reportNamingFailure = (detail: string | undefined): void => {
     if (!chatHistoryManager) return;
     if (resolution && !resolution.ok) {
@@ -383,7 +183,7 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
       );
       return;
     }
-    if (!target) return; // pre-feature path: no selection to report a failure of
+    if (!target) return;
     emitNonTurnFailure(
       { getRunnerRegistry: () => runnerRegistry, chatHistoryManager },
       { sessionId, purpose: "session-naming", target, detail },
@@ -395,14 +195,11 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
       sessionManager.setBranchRenamed(sessionId, true);
       const s = sessionManager.get(sessionId);
       if (!s?.remoteUrl || !s.workspaceDir) return;
-      if (prStatusPoller?.getStatus(sessionId)) return; // PR already exists
-      if (s.mergedAt) return; // PR was already merged
+      if (prStatusPoller?.getStatus(sessionId)) return;
+      if (s.mergedAt) return;
       try {
         const git = createGitManager(s.workspaceDir);
         const headBranch = s.branch || await git.getCurrentBranch();
-        // The repo's own default branch, not a hard-coded "main" — on a
-        // `master`/`trunk` repo the latter has no ref to diff against, so the
-        // ready card reported +0/-0 for a branch full of changes.
         const { insertions, deletions } = await git.diffStatVsBranch(await git.getDefaultBranch());
         const runner = runnerRegistry.get(sessionId);
         runner?.emitMessage({
@@ -415,33 +212,23 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
           totalDeletions: deletions,
         });
       } catch {
-        // Diff stats may fail if no commits yet — post-commit will retry
+        // Post-commit retries stats if there are no commits yet.
       }
     } catch (err) {
       console.warn("[graduate-session] finalizeBranchRenamed failed:", getErrorMessage(err));
     }
   };
 
-  // docs/179 — heal the OAuth source token before the naming CLI reads it, so
-  // AI naming doesn't silently 401 in the stale-token window. A no-op for a
-  // healthy token; best-effort (a failed heal just falls through to the CLI,
-  // which returns null → placeholder title sticks, exactly as before).
   const nameAfterHeal = async (): Promise<SessionNameResult> => {
     if (pinUnavailable) {
-      // The model the user chose is gone. Do not silently name on something
-      // else; let the caller's `null` branch keep the placeholder title and
-      // raise the notice that says which service went away.
       return { name: null };
     }
     if (ensureAgentTokenFresh) {
       try {
-        // docs/150 — heal the account naming will actually use. Provider-wide,
-        // this refreshes every connected account and aggregates with `every()`,
-        // so an unrelated revoked account both wastes a refresh and reports
-        // failure for a token that was fine.
+        // Refresh only the account naming will use; an unrelated revoked account must not interfere.
         await ensureAgentTokenFresh(namingHarness, namingAccountId);
       } catch {
-        // Best-effort — never block naming on a heal failure.
+        // Let the CLI try even if credential refresh fails.
       }
     }
     const result = await generateSessionName(userText, {
@@ -451,17 +238,7 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
       ...(target?.credentialSecret ? { credentialSecret: target.credentialSecret } : {}),
       ...(namingCredentialRoot ? { credentialRoot: namingCredentialRoot } : {}),
     });
-    // req 16 — naming can now be pointed at a metered service, so what it spent
-    // gets a row of its own rather than disappearing. Recorded whether or not
-    // the title parsed: the tokens were consumed either way.
-    //
-    // Recorded whether or not a target resolved, too (planning#343). With no
-    // eligible model naming still runs — on the session's own harness, unshaped
-    // — and both harnesses report their tokens. Gating the row on `target`
-    // dropped them: real volume, measured and then discarded, invisible by
-    // construction because nobody notices a row that was never written. Req 16
-    // puts it in the legacy group, unattributed and unpriced, which is what
-    // `recordNonTurnUsage` writes when it is handed no target.
+    // Count usage even when title parsing fails or the legacy fallback has no target.
     if (result.usage) {
       recordNonTurnUsage(
         { ...(usageManager ? { usageManager } : {}) },
@@ -481,8 +258,6 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
   nameAfterHeal().then(async (result) => {
     const nameResult = result.name;
     if (!nameResult) {
-      // req 9 — the operation completes with its fallback (the placeholder
-      // title stays) AND the user is told. Both halves, in that order.
       reportNamingFailure(result.failure);
       await finalizeBranchRenamed();
       return;
@@ -495,21 +270,13 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
       }
       const currentBranch = session.branch;
       if (!skipBranchRename && currentBranch && session.workspaceDir) {
-        // Extract the random slug from the prefix (e.g. "shipit/abc123" →
-        // "abc123") and rebuild as shipit/<descriptive-name>-<random-slug>.
         const randomSlug = currentBranch.replace(/^shipit\//, "");
         const newBranchName = `shipit/${nameResult.slug}-${randomSlug}`;
         const sessionGit = createGitManager(session.workspaceDir);
         await sessionGit.renameBranch(currentBranch, newBranchName);
         sessionManager.setBranch(sessionId, newBranchName);
       }
-      // docs/250 (requirement 8) — never overwrite a title the user or the agent
-      // has already set. The `session` read above is deliberately re-used here
-      // rather than the one captured before `nameAfterHeal()`: the CLI call is a
-      // multi-second window, and a rename landing inside it is the entire case
-      // this guard exists for. The branch rename above is NOT gated — a branch
-      // slug is a separate concern from the title, and skipping it would strand
-      // the branch on its random placeholder name forever.
+      // Use the post-CLI row to respect titles set while naming ran. Branch naming stays independent.
       if (!isTitleLockedAgainst(session, undefined)) {
         sessionManager.rename(sessionId, nameResult.title);
         const updatedSession = sessionManager.get(sessionId);

@@ -31,7 +31,6 @@ beforeEach(async () => {
 
   githubAuth = new StubGitHubAuthManager();
 
-  // Create a session with a git repo
   sessionId = crypto.randomUUID();
   sessionDir = path.join(tmpDir, "sessions", sessionId);
   fs.mkdirSync(sessionDir, { recursive: true });
@@ -79,7 +78,6 @@ describe("PR status via HTTP", () => {
   it("returns null when no PR exists for current branch", async () => {
     await githubAuth.setToken("test-token");
 
-    // Add a remote to the session's git repo
     const git = new GitManager(sessionDir);
     await git.addRemote("origin", "https://github.com/test-user/test-repo.git");
 
@@ -92,7 +90,6 @@ describe("PR status via HTTP", () => {
   it("returns PR data when a PR exists", async () => {
     await githubAuth.setToken("test-token");
 
-    // Add a remote to the session's git repo
     const git = new GitManager(sessionDir);
     await git.addRemote("origin", "https://github.com/test-user/test-repo.git");
 
@@ -122,9 +119,6 @@ describe("PR status via HTTP", () => {
     const git = new GitManager(sessionDir);
     await git.addRemote("origin", "https://github.com/test-user/test-repo.git");
 
-    // No OPEN PR for the branch, but a prior PR already merged. Resolution is
-    // by branch name (rebase-stable), and the any-state fallback surfaces it
-    // instead of reporting "No PR for the current branch".
     githubAuth.setPrData(null);
     githubAuth.setFindPrAnyStateResult({
       url: "https://github.com/test-user/test-repo/pull/7",
@@ -182,8 +176,6 @@ describe("PR status via HTTP", () => {
       pr: { number: 7, state: "closed", merged: true },
     });
 
-    // docs/255 — the conversation is opt-in, so a view without `comments=true`
-    // carries no conversation fields at all.
     expect(res.json().pr).not.toHaveProperty("comments");
   });
 

@@ -7,7 +7,6 @@ import type { GitManager } from "../../shared/git.js";
 import type { SessionInfo, SessionTitleSource, WsServerMessage } from "../../shared/types.js";
 import { TEST_CREDENTIALS_DIR } from "../credentials-test-helpers.js";
 
-// Drain microtasks until `predicate()` is true, or fail after `maxTicks`.
 async function flush(predicate: () => boolean, maxTicks = 50): Promise<void> {
   for (let i = 0; i < maxTicks; i++) {
     if (predicate()) return;
@@ -19,7 +18,6 @@ async function flush(predicate: () => boolean, maxTicks = 50): Promise<void> {
 interface FakeSessionState {
   id: string;
   title: string;
-  /** docs/250 — provenance for `title`; drives the AI namer's overwrite guard. */
   titleSource?: SessionTitleSource;
   branch?: string;
   workspaceDir?: string;
@@ -187,9 +185,6 @@ describe("graduateSession", () => {
     expect(types).toContain("session_renamed");
   });
 
-  // docs/250 (requirement 8) — the AI naming CLI call is a multi-second window,
-  // and a rename landing inside it is exactly what these guard. The namer reads
-  // the session again after the call precisely so it sees such a rename.
   it("does not overwrite a title the user set by hand while naming was in flight", async () => {
     vi.doMock("../session-namer.js", () => ({
       generateSessionName: vi.fn(async () => ({ name: { slug: "fix-flaky", title: "Fix flaky test" } })),
@@ -204,15 +199,12 @@ describe("graduateSession", () => {
     });
 
     graduateSession(deps, { sessionId: "s1", userText: "Fix the flaky test", agentId: "claude" });
-    // The user renames from the sidebar while the naming CLI is still running.
     state.title = "My own name";
     state.titleSource = "user";
 
     await flush(() => state.branchRenamed === true);
 
     expect(state.title).toBe("My own name");
-    // The branch slug is a separate concern and is NOT gated — skipping it would
-    // strand the branch on its random placeholder name forever.
     expect(spies.renameBranch).toHaveBeenCalledWith("shipit/abc123", "shipit/fix-flaky-abc123");
     expect(spies.sseBroadcast.mock.calls.map((c) => c[0] as string)).not.toContain("session_renamed");
   });
@@ -239,10 +231,6 @@ describe("graduateSession", () => {
     expect(state.title).toBe("Agent's own name");
   });
 
-  // docs/150 — naming is a real provider call, so it must run on the account a
-  // turn would use and heal that account's token. Previously it forced
-  // HOME=/root, which aliases to the migrated default account, and healed the
-  // provider (every account, aggregated with `every()`).
   it("names on the account a turn would use, and heals that account", async () => {
     const generateSessionName = vi.fn(async () => ({ name: { slug: "s", title: "T" } }));
     vi.doMock("../session-namer.js", () => ({ generateSessionName }));
@@ -267,9 +255,6 @@ describe("graduateSession", () => {
     await flush(() => state.branchRenamed === true);
 
     expect(ensureAgentTokenFresh).toHaveBeenCalledWith("claude", "acct_work");
-    // docs/252 phase 7 — the namer now takes the resolved TARGET. With no
-    // credential store wired (this setup has none), it keeps the pre-feature
-    // shape exactly: the session's harness, its account root, no model.
     expect(generateSessionName).toHaveBeenCalledWith("hi", {
       harnessId: "claude",
       credentialRoot: `${TEST_CREDENTIALS_DIR}/provider-accounts/claude/acct_work`,
@@ -297,8 +282,6 @@ describe("graduateSession", () => {
 
     await flush(() => state.branchRenamed === true);
 
-    // A reserved route has no account root; `undefined` keeps the singleton
-    // path, which is what those routes legitimately use.
     expect(generateSessionName).toHaveBeenCalledWith("hi", { harnessId: "claude" });
   });
 
@@ -380,11 +363,7 @@ describe("graduateSession", () => {
       rootSessionId: "root-1",
     });
 
-    // docs/252 — the third argument biases the bare id's resolution into a
-    // `(service, mode, model)` triple toward the agent's own vendor, which is
-    // the frozen fact for a model id chosen before services existed.
     expect(spies.setModelSpy).toHaveBeenCalledWith("s1", "claude-opus-4-7", "anthropic");
-    // docs/201 — root ancestor is threaded through to setParentSession as the 4th arg.
     expect(spies.setParentSpy).toHaveBeenCalledWith("s1", "parent-1", "turn-42", "root-1");
     expect(state.model).toBe("claude-opus-4-7");
     expect(state.parentSessionId).toBe("parent-1");
@@ -438,12 +417,6 @@ describe("graduateSession", () => {
     expect(state.branchRenamed).toBe(true);
   });
 
-  // docs/252 phase 7 (req 9) — the two absences are different facts.
-  //
-  // "Nothing eligible" is ShipIt having no opinion: `listConfiguredCredentials`
-  // sees the credential store and the environment, not a CLI logged in on the
-  // host outside both, so a dev checkout lands here — and named its sessions
-  // perfectly well before this feature. It must keep doing so.
   it("still names on the session's own harness when nothing is eligible", async () => {
     const generateSessionName = vi.fn(async () => ({ name: { slug: "s", title: "T" } }));
     vi.doMock("../session-namer.js", () => ({ generateSessionName }));
@@ -474,15 +447,9 @@ describe("graduateSession", () => {
 
     expect(generateSessionName).toHaveBeenCalledWith("hi", { harnessId: "claude" });
     expect(state.title).toBe("T");
-    // Nothing failed, so nothing to report — a notice here would fire on every
-    // session of a half-configured install and name nothing actionable.
     expect(appended).toHaveLength(0);
   });
 
-  // planning#343 (req 16) — naming that resolves NO model still spends tokens,
-  // and both harnesses now report them. Gating the usage row on a resolved
-  // target dropped them silently. They belong in the legacy group: recorded for
-  // their volume, with no attribution and no price.
   it("records an unattributed, unpriced usage row when nothing is eligible", async () => {
     const generateSessionName = vi.fn(async () => ({
       name: { slug: "s", title: "T" },
@@ -524,21 +491,14 @@ describe("graduateSession", () => {
 
     expect(recorded).toHaveLength(1);
     expect(recorded[0]!.sessionId).toBe("s1");
-    // Unpriced. NOT the harness's own $0.02: with no service there is no rate
-    // table, and the CLI's figure is not a substitute for one.
     expect(recorded[0]!.costUsd).toBe(0);
-    // All-null attribution IS the legacy bucket — no discriminator of its own.
     expect(recorded[0]!.extra?.attribution).toBeUndefined();
     expect(recorded[0]!.extra?.model).toBeUndefined();
-    // The harness that actually ran it — the session's own, since none resolved.
     expect(recorded[0]!.extra?.subAgentId).toBe("claude");
-    // `per-turn`, so this zero never becomes a cumulative baseline.
     expect(recorded[0]!.extra?.costSource).toBe("per-turn");
     expect(recorded[0]!.extra?.cacheRead).toBe(30);
   });
 
-  // The volume is the whole point of the row, so a run that reports only a
-  // dollar figure has nothing left to record once the figure is discarded.
   it("records nothing when an unattributed naming run reports no tokens", async () => {
     const generateSessionName = vi.fn(async () => ({
       name: { slug: "s", title: "T" },
@@ -569,8 +529,6 @@ describe("graduateSession", () => {
     expect(recorded).toHaveLength(0);
   });
 
-  // A pin the install can no longer run IS a service the user chose that went
-  // away: naming stops, the placeholder title stays, and the notice says which.
   it("stops naming and persists a notice for a stale pin", async () => {
     const generateSessionName = vi.fn(async () => ({ name: { slug: "s", title: "T" } }));
     vi.doMock("../session-namer.js", () => ({ generateSessionName }));
@@ -600,8 +558,6 @@ describe("graduateSession", () => {
     await flush(() => state.branchRenamed === true);
 
     expect(generateSessionName).not.toHaveBeenCalled();
-    // The surrounding operation completed with its fallback — graduation's own
-    // placeholder title (the first-message slice), not an AI-generated one.
     expect(state.title).toBe("hi");
     expect(appended).toHaveLength(1);
     expect(appended[0].nonTurnFailure?.serviceName).toBe("OpenAI");

@@ -1,8 +1,3 @@
-/**
- * docs/262 req 8 — durable pin resolutions, scoped to the consuming project's
- * declaration rather than to a session.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -36,7 +31,6 @@ describe("resolveDurablePin", () => {
     const resolve = vi.fn(async () => SHA_A);
     expect(await resolveDurablePin({ storePath, consumerKey: "proj", repo, resolve })).toEqual({ commit: SHA_A });
 
-    // Second call: the tag still points at the same commit, so no warning.
     const again = await resolveDurablePin({ storePath, consumerKey: "proj", repo, resolve });
     expect(again).toEqual({ commit: SHA_A });
   });
@@ -50,8 +44,6 @@ describe("resolveDurablePin", () => {
   });
 
   it("honors the record when the tag can no longer be resolved at all", async () => {
-    // The point of durability: a deleted or newly-ambiguous tag must not cost
-    // the project the commit it pinned.
     await resolveDurablePin({ storePath, consumerKey: "proj", repo, resolve: async () => SHA_A });
 
     const gone = await resolveDurablePin({
@@ -66,12 +58,10 @@ describe("resolveDurablePin", () => {
   });
 
   it("is scoped to the consuming project, so every session of it agrees", async () => {
-    // Two sessions of ONE project share the record…
     await resolveDurablePin({ storePath, consumerKey: "proj-a", repo, resolve: async () => SHA_A });
     const sameProject = await resolveDurablePin({ storePath, consumerKey: "proj-a", repo, resolve: async () => SHA_B });
     expect(sameProject.commit).toBe(SHA_A);
 
-    // …while a different project resolves independently.
     const otherProject = await resolveDurablePin({ storePath, consumerKey: "proj-b", repo, resolve: async () => SHA_B });
     expect(otherProject.commit).toBe(SHA_B);
   });
@@ -105,9 +95,6 @@ describe("resolveDurablePin", () => {
 });
 
 describe("concurrent writers", () => {
-  // The regression this guards: read → resolve → write without a critical
-  // section let two concurrent activations each read an empty store and the
-  // second rename drop the first one's pin.
   it("concurrent first-resolutions all survive", async () => {
     const repos: DeclaredPluginRepo[] = Array.from({ length: 8 }, (_, i) => ({
       name: `tools-${i}`,
@@ -122,8 +109,7 @@ describe("concurrent writers", () => {
           consumerKey: "proj",
           repo: r,
           resolve: async () => {
-            // Yield, so every caller would observe the same empty store under
-            // the old read-modify-write.
+            // Allow concurrent callers to read before this resolution completes.
             await new Promise((res) => setTimeout(res, 1));
             return String(i).repeat(40);
           },

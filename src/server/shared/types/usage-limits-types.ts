@@ -1,154 +1,32 @@
-/**
- * SubscriptionLimits — single-snapshot shape for an agent's
- * subscription rate-limit usage. Client-importable; the provider
- * interface that produces these snapshots lives in
- * `src/server/orchestrator/limits/types.ts` and is orchestrator-only.
- *
- * See docs/135-subscription-limits-badge/plan.md.
- */
-
 import type { BillingMode } from "../catalogue/types.js";
 import { credentialModeKey } from "./domain-types/credential-route.js";
 
-/** One of the two windows a subscription reading can describe. */
 export type SubscriptionWindowName = "session" | "weekly";
 
 export interface SubscriptionLimitsWindow {
-  /**
-   * Percentage of the window currently consumed (0–100, clamped). `null`
-   * means utilization was not reported by the provider at this usage
-   * level (e.g. Claude CLI 2.1.140 only includes `utilization` in
-   * `rate_limit_event` once a warning threshold trips). The window still
-   * exists and has a `resetAt` — the UI should render the countdown
-   * without a percentage rather than fake a number.
-   */
+  /** 0–100; null means unreported, so show the countdown without a percentage. */
   usedPct: number | null;
-  /** ISO timestamp of when the window resets. */
   resetAt: string;
-  /** Stable beginning of the displayed window, when the provider supplies it. */
   startedAt?: string;
-  /**
-   * Where this window's number came from. `"event"` = the CLI's
-   * `rate_limit_event` stream (free, live near the limit, but `usedPct` is
-   * `null` below a warning threshold). `"usage-api"` = an on-demand
-   * `/api/oauth/usage` fetch (the only source of a low-usage number). Lets
-   * the tooltip explain provenance. Absent on legacy/Codex windows.
-   */
   source?: "event" | "usage-api";
 }
 
 export interface SubscriptionLimits {
-  /**
-   * docs/252 req 10 — usage is reported per **billing mode of a service**, not
-   * per agent. `agentId` was the conflation this feature removes: a harness is
-   * not a vendor, so it cannot own a quota, and one service can hold both a
-   * subscription (which has an allowance) and a key (which has none).
-   *
-   * Only a `sub` mode ever produces a snapshot — a key has no allowance and
-   * nothing that resets, and req 10 keeps that slot empty rather than filling
-   * it with a placeholder. The mode is still carried explicitly so the key is
-   * uniform with every other `(service, mode)` map in this feature.
-   */
   serviceId: string;
   billingMode: BillingMode;
-  /**
-   * docs/150-multiple-provider-subscriptions req 10 — which *route* produced these numbers: a provider-account
-   * id (`acct_…`) or a reserved route id (`claude-env-oauth`,
-   * `claude-api-key`).
-   *
-   * Quota belongs to the subscription, not the provider: two connected
-   * Anthropic accounts have two independent 5h windows, and keying only by
-   * provider made the badge show whichever account last took a turn.
-   * Duplicated from the map key so a snapshot stays self-describing once it has
-   * been pulled out of the map.
-   */
   routeId: string;
-  /**
-   * Subscription tier name to render in the tooltip
-   * (e.g. "Pro", "Max 20x", "Plus"). Null when the provider can't
-   * determine it.
-   */
   plan: string | null;
-  /**
-   * Rolling short-window quota (Claude: 5h, Codex: 5h).
-   *
-   * **`null` is ambiguous and must not be read as "this plan has no 5h
-   * window"** — see {@link SubscriptionLimits.availableWindows}, which is how a
-   * provider says that. It can equally mean "not delivered yet": Claude's
-   * `rate_limit_event` carries ONE window per event, so the first reading of a
-   * session legitimately has the other side null on a plan that has both.
-   */
+  /** Null can mean not yet delivered, not necessarily absent from the plan. */
   session: SubscriptionLimitsWindow | null;
-  /** Weekly quota across all models. `null` as for {@link SubscriptionLimits.session}. */
   weekly: SubscriptionLimitsWindow | null;
-  /**
-   * Which windows this plan HAS — **set only by a provider whose source states
-   * them all at once**, and omitted by one whose readings arrive piecemeal.
-   *
-   * This exists because `session: null` cannot carry the fact. Two very
-   * different situations produce it and the pill has to tell them apart
-   * (planning#454): SuperGrok genuinely has one weekly pool and no short
-   * window, so a `5h · —` beside its real figure is a read-out nothing can ever
-   * fill; but Claude's event stream delivers `five_hour` and `seven_day` in
-   * separate events, so a null there means "not yet". Deriving the answer from
-   * the null was tried and is wrong for exactly that reason — it would have
-   * dropped a real 7d meter for the whole of a first turn, and longer if the
-   * `/api/oauth/usage` seed was 429'd.
-   *
-   * So the provider that KNOWS answers, and the one that cannot stays quiet:
-   *
-   *   - `XaiLimitsProvider`, `ZaiLimitsProvider`, `CodexLimitsProvider` — one
-   *     payload describes the whole plan, so an unmentioned window is absent.
-   *   - `ClaudeLimitsProvider` — omits this, and both meters render as they
-   *     always have.
-   *
-   * Omitted or empty ⇒ the reader says nothing and every window is drawn. A
-   * reading that carries only a lockout countdown is exactly that case.
-   */
+  /** Set only from complete plan readings. Absent or empty leaves all windows visible. */
   availableWindows?: SubscriptionWindowName[];
-  /** Epoch ms when this snapshot was last updated. */
   fetchedAt: number;
-  /**
-   * Epoch ms until which an on-demand `/api/oauth/usage` refresh is locked
-   * out after a 429 (Anthropic rate-limits that endpoint to a handful of
-   * calls, then 429s for ~30 min — see docs/161). The client disables the
-   * refresh button and shows a countdown while `now < lockedUntil`. Absent
-   * when not locked. Providers without an on-demand path (Codex) never set
-   * it.
-   */
+  /** Epoch ms; suppress refresh during the provider's 429 lockout. */
   lockedUntil?: number;
 }
 
-/**
- * Does this window's reading still describe **now**? (docs/260-turn-level-account-routing req 8)
- *
- * A percentage describes the window it was measured in. Once `resetAt` passes,
- * that window is gone and the number is a fact about a period that has ended;
- * with no usable `resetAt` at all, there is no period to attach it to. Neither
- * one is evidence about the current window, so neither may answer a routing
- * question.
- *
- * The rule is one function because every reader of a percentage needs it and
- * they are spread across the manager, the credential store, the rate-limit
- * normalizer and the client. Reading `usedPct` without it was a genuine bug:
- * snapshots are **event-fed only** (`limits-registry.ts` polls nothing, by
- * design — Anthropic's usage API locks out after a handful of calls), so a
- * reading refreshes when a turn runs on that credential, or when the user
- * presses refresh. Any rule that demotes a credential on a reading it can no
- * longer replace is self-sustaining: the demotion keeps turns off the
- * credential whose turns are the only source of a newer reading. docs/260
- * removed that shape from the blocking checks; it survived in the ordering
- * ones until this rule existed.
- *
- * Discarding a reading is safe because it only ever means "try this credential
- * again": a credential that is genuinely spent is refused by the harness, and
- * that refusal — not telemetry — is the authoritative signal (req 5), bounded
- * and remembered by refusal memory (req 9).
- *
- * This is about **evidence**, not display: `meterDisplay` in
- * `SubscriptionLimitsBadge.tsx` keeps its own three-way split, because a
- * rolled-over window and an unreported number look different to a reader.
- */
+// Expired telemetry must not demote a route whose next turn supplies the only fresh reading.
 export function subscriptionWindowIsCurrent(
   window: { resetAt?: unknown } | null | undefined,
   now: number,
@@ -158,68 +36,26 @@ export function subscriptionWindowIsCurrent(
   return !Number.isNaN(at) && at > now;
 }
 
-/**
- * Map sent over the wire on every `subscription_limits` SSE broadcast:
- * **`${serviceId}:${billingMode}` → route → limits** (docs/150-multiple-provider-subscriptions req 10,
- * re-keyed by docs/252 req 10).
- *
- * The OUTER key moved off `AgentId`; the inner one deliberately did not.
- * Dropping the route would be a regression, not a simplification: two connected
- * subscriptions have two independent 5h windows, two independent
- * `/api/oauth/usage` results and two independent 429 lockouts, and req 12's
- * failover has to know *which* subscription is exhausted before moving to
- * another.
- *
- * So a user with two Anthropic subscriptions gets two independent entries under
- * `anthropic:sub` rather than one that flickers between whichever account last
- * took a turn.
- * Routes with no snapshot are **omitted** (not stored as `null`). Connected
- * provider accounts still render an unknown-state pill from the account
- * registry; this map supplies readings, not account visibility. Reserved
- * routes have no account row, so their pill remains snapshot-driven. The
- * client replaces its store map wholesale on each broadcast so stale readings
- * and signed-out reserved routes propagate naturally.
- */
+/** serviceId:billingMode → route → snapshot. Broadcasts replace the map; missing readings are omitted. */
 export type SubscriptionLimitsMap = Record<string, Record<string, SubscriptionLimits> | undefined>;
 
-/** The outer key of {@link SubscriptionLimitsMap} for one snapshot. */
 export function limitsModeKey(of: { serviceId: string; billingMode: BillingMode }): string {
   return credentialModeKey(of.serviceId, of.billingMode);
 }
 
-/**
- * Why an on-demand usage refresh did or didn't produce new numbers.
- *
- * Every one of these except `"updated"` used to be a silent `return` inside the
- * provider, which is what made the refresh button look broken: the click
- * spun, the pill stayed at `—`, and nothing anywhere said why. The outcome
- * travels back on the `POST /api/limits/refresh` response so the button can
- * explain itself.
- */
 export type LimitsRefreshOutcome =
-  /** Fresh numbers fetched and cached. */
   | "updated"
-  /** A previous 429 is still locked out; no request was made. */
   | "locked"
-  /** This attempt was 429'd — `lockedUntil` says until when. */
   | "rate-limited"
-  /** No usable OAuth token on disk for this route (signed out / never signed in). */
   | "no-credentials"
-  /** The route's access token is at/past expiry, so the call would 401. */
   | "expired-token"
-  /** Network error, non-429 HTTP error, or an unparseable payload. */
   | "failed"
-  /** Nothing to do: unknown route, or a provider with no on-demand path (Codex). */
   | "unavailable"
-  /** `reason: "seed"` self-skip — this route already has a usage-api snapshot. */
   | "skipped";
 
-/** One route's refresh outcome, returned per route by `POST /api/limits/refresh`. */
 export interface LimitsRefreshResult {
   routeId: string;
   outcome: LimitsRefreshOutcome;
-  /** Epoch ms the lockout elapses, when `outcome` is `locked` / `rate-limited`. */
   lockedUntil?: number;
-  /** Short human-readable detail for the button tooltip (HTTP status, error text). */
   detail?: string;
 }

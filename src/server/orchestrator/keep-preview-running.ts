@@ -15,7 +15,6 @@ interface KeepPreviewRuntimeDeps {
   setTimer?: typeof setTimeout;
 }
 
-/** Activate through the canonical runner factory; runner creation owns Compose startup. */
 export function activateReservedPreview(
   session: SessionInfo,
   deps: Pick<KeepPreviewRuntimeDeps, "runnerRegistry" | "defaultAgentId">,
@@ -29,44 +28,17 @@ export function activateReservedPreview(
   return true;
 }
 
-/**
- * Restore durable reservations that have no live runtime after startup.
- *
- * **The test is "no runner", not "no running container"** (docs/290). A
- * reservation promises the preview stays up across an orchestrator restart, and
- * a preview is only up when it is REACHABLE: `preview-proxy.ts` resolves a
- * service port through `serviceManagers`, which is process-local and empty at
- * boot. So a reserved session whose agent container happened to survive the
- * restart used to be skipped here — leaving it with no runner, no manager, an
- * unroutable Compose stack, and the reservation quietly broken until someone
- * opened the session. `compose-stack-reaper.ts` exempts reserved sessions on the
- * strength of this function, so that exemption was resting on a guarantee the
- * code did not provide (review finding).
- *
- * Keying on the runner is also what keeps the old guard's intent. `getOrCreate`
- * ADOPTS a rediscovered running container rather than creating a second one —
- * it is the same call `reattachInFlightTurns` makes to adopt a live turn — so
- * nothing is duplicated; what it adds is the runner and the ServiceManager that
- * make the preview routable again.
- */
 export function restoreReservedPreviews(deps: KeepPreviewRuntimeDeps): string[] {
   const activated: string[] = [];
   for (const session of deps.sessionManager.listAll()) {
     if (!session.keepPreviewRunning) continue;
-    // Already live — the boot adoption sweep took its turn, or a viewer beat us
-    // to it. Nothing to restore.
+    // A surviving container still needs a runner to restore process-local preview routing.
     if (deps.runnerRegistry.get(session.id)) continue;
     if (activateReservedPreview(session, deps)) activated.push(session.id);
   }
   return activated;
 }
 
-/**
- * Bounded crash recovery for reserved agent containers. Each attempt reuses the
- * normal runner factory. Successful `container_started` events cancel the
- * remaining budget; exhaustion leaves the durable flag set and logs a terminal
- * error for the existing Logs/session surfaces.
- */
 export function createKeepPreviewRestartSupervisor(deps: KeepPreviewRuntimeDeps): {
   handleUnexpectedExit: (sessionId: string) => void;
   dispose: () => void;

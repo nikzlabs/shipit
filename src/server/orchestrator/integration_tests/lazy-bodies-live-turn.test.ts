@@ -1,25 +1,3 @@
-/**
- * The docs/244 same-tick commit claim, exercised end-to-end (planning#269).
- *
- * The live emit strips a top-level tool result's body and replaces it with a
- * fetch. That is only safe because `replaceInProgress` is a synchronous
- * better-sqlite3 write in the *same tick* as the emit, so the row reaches disk
- * before the WebSocket frame reaches the network. If that ordering is ever
- * broken — a promise inserted between the emit and the persist, a handler split
- * across ticks — a client that opens the tool-call modal on a just-arrived
- * result gets a 404 and an output that never loads.
- *
- * Every other test of this feature drives the *history* path, where the rows
- * came out of the database and the claim is trivially true. This one drives the
- * real agent → WS path and then immediately fetches, which is the only way the
- * ordering is actually asserted rather than argued from reading the code.
- *
- * The two exceptions the projection makes for the same reason — Edit/Write
- * inputs and nested subagent results, whose rows are NOT committed at that
- * point — are asserted here too: they must still arrive whole, because a
- * `truncated` marker on them would promise a fetch that 404s.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -86,14 +64,13 @@ describe("Integration: lazy bodies on a live turn (planning#269)", () => {
     } catch { /* ignore */ }
   });
 
-  /** Drive a turn to the point where a Bash tool_result has just been emitted. */
   async function runTurnWithToolResult(): Promise<{
     client: TestClient;
     sessionId: string;
     events: Record<string, unknown>[];
   }> {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "run the tests" });
     await waitForClaude(() => lastClaude);
@@ -122,7 +99,6 @@ describe("Integration: lazy bodies on a live turn (planning#269)", () => {
       },
     });
 
-    // Everything the browser received, as it received it.
     const events = (await client.drain())
       .filter((m) => m.type === "agent_event")
       .map((m) => (m as unknown as { event: Record<string, unknown> }).event);
@@ -147,8 +123,6 @@ describe("Integration: lazy bodies on a live turn (planning#269)", () => {
   });
 
   it("the row is already committed when that frame arrives — the fetch cannot 404", async () => {
-    // The claim itself. No polling, no waiting: as soon as the emit is
-    // observable, the endpoint must serve the whole body.
     const { client, sessionId } = await runTurnWithToolResult();
 
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-results/bash-live` });
@@ -158,9 +132,6 @@ describe("Integration: lazy bodies on a live turn (planning#269)", () => {
   });
 
   it("does NOT strip an Edit/Write input on the live path — its row isn't committed yet", async () => {
-    // The stripped-body rule is "only once the row holding it is committed".
-    // A tool_use reaches disk at the NEXT tool-result boundary, so marking it
-    // here would advertise a fetch that 404s.
     const { client, sessionId, events } = await runTurnWithToolResult();
 
     const assistant = events.find((e) => e.type === "agent_assistant");
@@ -171,7 +142,6 @@ describe("Integration: lazy bodies on a live turn (planning#269)", () => {
     expect(toolUse!.bodyTruncated).toBeUndefined();
     expect((toolUse!.input as Record<string, unknown>).content).toBe(FILE_BODY);
 
-    // ...and the history path, where the row IS committed, does strip it.
     const history = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
     const messages = (history.json() as { messages: { toolUse?: { id: string; bodyTruncated?: true }[] }[] }).messages;
     const persisted = messages.flatMap((m) => m.toolUse ?? []).find((t) => t.id === "write-live");
@@ -180,14 +150,6 @@ describe("Integration: lazy bodies on a live turn (planning#269)", () => {
   });
 
   it("a mid-turn reconnect no longer re-sends the bodies a boundary already committed (planning#299)", async () => {
-    // The third browser-facing path. The snapshot is built from the runner's
-    // in-memory groups, so it can't tell "on disk" from "in memory" on its own
-    // and used to ship the whole turn whole — re-sending, on every switch back,
-    // exactly the megabytes the history path had just removed.
-    //
-    // The turn above has passed one tool-result boundary, so the Write input IS
-    // committed by now; the snapshot must say so AND the fetch behind it must
-    // work, which is the pair that makes stripping legal at all.
     const { client, sessionId } = await runTurnWithToolResult();
     client.close();
     await new Promise((r) => setTimeout(r, 100));
@@ -214,9 +176,6 @@ describe("Integration: lazy bodies on a live turn (planning#269)", () => {
   });
 
   it("persists the whole body even though the wire copy was emptied", async () => {
-    // The projection must never reach the write path: the emitted event and the
-    // persisted row are built from the same object, so an in-place projection
-    // would destroy the body it just promised to serve.
     const { client, sessionId } = await runTurnWithToolResult();
 
     const stored = chatHistoryManager.load(sessionId) as { toolResults?: { toolUseId: string; content: string }[] }[];

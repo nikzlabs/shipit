@@ -1,9 +1,3 @@
-/**
- * Builds the chat-visible warning shown when `GitManager.autoCommit` refuses
- * to commit because git reports an in-progress merge/rebase. Shared so both
- * the WS path (`post-turn.ts`) and the system-turn path
- * (`dispatched-turn.ts`) produce the same message.
- */
 export function formatUnresolvedConflictNotice(args: {
   conflictedFiles: string[];
   rebaseInProgress: boolean;

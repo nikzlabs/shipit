@@ -68,18 +68,17 @@ describe("Integration: Session isolation — creation", () => {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     } catch {
-      // Ignore cleanup errors — temp dir will be cleaned by OS
+      // Ignore cleanup errors.
     }
   });
 
   it("send_message without sessionId creates an isolated session directory", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Build me an app" });
     await waitForClaude(() => lastClaude);
 
-    // Simulate system init
     lastClaude.emit("event", {
       type: "system",
       subtype: "init",
@@ -91,23 +90,15 @@ describe("Integration: Session isolation — creation", () => {
     expect(session.id).toBeTruthy();
     expect(session.title).toBeTruthy();
     expect(session.workspaceDir).toBeTruthy();
-    // docs/153 Fix 2 — agent_session_id is not persisted until the CLI
-    // produces content (agent_assistant) or completes (agent_result), to
-    // protect a previously-stored / freshly-recovered id from a doomed
-    // init UUID emitted just before a `--resume` failure.
     lastClaude.emit("event", {
       type: "result",
       subtype: "success",
       session_id: "agent-session-1",
     });
-    // Drain the agent_event so the listener's synchronous setAgentSessionId
-    // has run.
     await client.receiveType("agent_event");
     expect(sessionManager.get(session.id)?.agentSessionId).toBe("agent-session-1");
 
-    // Verify session directory was created on disk
     expect(fs.existsSync(session.workspaceDir)).toBe(true);
-    // Session dir should be under tmpDir/sessions/
     expect(session.workspaceDir).toContain(path.join(tmpDir, "sessions"));
 
     client.close();
@@ -115,9 +106,8 @@ describe("Integration: Session isolation — creation", () => {
 
   it("two sessions get independent workspace directories", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // --- Session A: create via template using HTTP ---
     const resA = await app.inject({
       method: "POST",
       url: "/api/sessions/new/template",
@@ -126,7 +116,6 @@ describe("Integration: Session isolation — creation", () => {
     expect(resA.statusCode).toBe(200);
     const sessionA = resA.json().session;
 
-    // --- Session B: create via template using HTTP ---
     const resB = await app.inject({
       method: "POST",
       url: "/api/sessions/new/template",
@@ -135,18 +124,14 @@ describe("Integration: Session isolation — creation", () => {
     expect(resB.statusCode).toBe(200);
     const sessionB = resB.json().session;
 
-    // Sessions should have different IDs and directories
     expect(sessionA.id).not.toBe(sessionB.id);
     expect(sessionA.workspaceDir).not.toBe(sessionB.workspaceDir);
 
-    // Both directories should exist
     expect(fs.existsSync(sessionA.workspaceDir)).toBe(true);
     expect(fs.existsSync(sessionB.workspaceDir)).toBe(true);
 
-    // Files are isolated — session A has HTML files, session B has React files
     expect(fs.existsSync(path.join(sessionA.workspaceDir, "style.css"))).toBe(true);
     expect(fs.existsSync(path.join(sessionB.workspaceDir, "src/App.tsx"))).toBe(true);
-    // Cross-check: session A should NOT have React files
     expect(fs.existsSync(path.join(sessionA.workspaceDir, "src/App.tsx"))).toBe(false);
 
     client.close();
@@ -154,9 +139,8 @@ describe("Integration: Session isolation — creation", () => {
 
   it("file_tree shows files from the active session directory", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Create a session via apply_template using HTTP
     const templateRes = await app.inject({
       method: "POST",
       url: "/api/sessions/new/template",
@@ -166,17 +150,14 @@ describe("Integration: Session isolation — creation", () => {
     const session = templateRes.json().session;
     const sessionDir = session.workspaceDir;
 
-    // Request the file tree via HTTP
     const res = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/files` });
     expect(res.statusCode).toBe(200);
     const body = res.json();
 
-    // Should include files from the template in the session directory
     const flatNames = body.tree.map((n: any) => n.name);
     expect(flatNames).toContain("index.html");
     expect(flatNames).toContain("style.css");
 
-    // Files should exist in the session directory, not the root
     expect(fs.existsSync(path.join(sessionDir, "index.html"))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, "index.html"))).toBe(false);
 
@@ -185,12 +166,11 @@ describe("Integration: Session isolation — creation", () => {
 
   it("ClaudeProcess.run() receives the session directory as cwd", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Hello" });
     await waitForClaude(() => lastClaude);
 
-    // The claude process should have been called with the session directory as cwd
     expect(lastClaude.lastCwd).toBeTruthy();
     expect(lastClaude.lastCwd).toContain(path.join(tmpDir, "sessions"));
 

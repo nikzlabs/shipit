@@ -12,7 +12,6 @@ const ROUTING: ServiceRouting = {
   credentialTarget: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY" },
 };
 
-/** The single provider block a shaped spawn writes, for the given routing. */
 function block(routing: ServiceRouting, modelId = "claude-haiku-4-5") {
   const config = opencodeProviderConfig(routing, modelId);
   return (config?.shipit ?? {}) as {
@@ -37,11 +36,6 @@ describe("opencodeProviderConfig", () => {
   });
 
   it("declares image input, which is what makes an attachment reach the model (planning#458)", () => {
-    // The block is the ONLY source of modality for a synthetic `shipit/<id>` —
-    // there is no models.dev entry to fall back to, and OpenCode resolves a
-    // missing declaration to image:false, which silently drops the `read` tool's
-    // file part. Probed live 2026-08-20 (CLI 1.18.18): without this the model is
-    // blind to an attached image; with it, it reads pixel-only content verbatim.
     for (const style of ["anthropic-messages", "openai-chat-completions"] as const) {
       const modalities = block({ ...ROUTING, style }).models?.["claude-haiku-4-5"]?.modalities;
       expect(modalities?.input).toEqual(["text", "image"]);
@@ -50,12 +44,6 @@ describe("opencodeProviderConfig", () => {
   });
 
   it("withholds image input for a model the catalogue knows is text-only (planning#460)", () => {
-    // `deepseek-v4-flash` is text-only at BOTH public gateway catalogues
-    // (`model-vision.ts`), and it is the exact model planning#460 names: with the
-    // blanket claim, attaching an image here made the request itself malformed
-    // and the service rejected the turn. The visible half of the fix is
-    // `imageAttachmentRefusal`; this is the half that stops the malformed
-    // request in the paths a refusal cannot cover.
     const modalities = block(
       { ...ROUTING, style: "openai-chat-completions", baseUrl: "https://opencode.ai/zen/v1" },
       "deepseek-v4-flash",
@@ -65,10 +53,6 @@ describe("opencodeProviderConfig", () => {
   });
 
   it("declares image input for a model it cannot resolve — not knowing is not a refusal", () => {
-    // The fail-open that keeps planning#460 from reintroducing planning#458's
-    // silent drop by the back door. An id the catalogue does not carry resolves
-    // to `"unverified"`, which declares, so an unrecognised route behaves exactly
-    // as it did before this change.
     const modalities = block(ROUTING, "no-such-model").models?.["no-such-model"]?.modalities;
     expect(modalities?.input).toEqual(["text", "image"]);
   });
@@ -78,10 +62,6 @@ describe("opencodeProviderConfig", () => {
   });
 
   it("omits the levels @ai-sdk/anthropic refuses, and keeps the rest (docs/272 §7)", () => {
-    // Measured 2026-08-17 against Zen: the package validates `effort` against a
-    // zod enum, so a declared `none` variant threw AI_TypeValidationError before
-    // any request went out — it did not degrade to the default. An unknown
-    // `--variant` IS ignored by the CLI, so not declaring one is the safe half.
     const variants = block(ROUTING).models?.["claude-haiku-4-5"]?.variants ?? {};
     expect(Object.keys(variants)).not.toContain("none");
     expect(Object.keys(variants)).not.toContain("minimal");

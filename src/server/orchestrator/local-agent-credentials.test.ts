@@ -10,13 +10,6 @@ import {
 import { resolveRuntimeMode } from "./app-di.js";
 import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 
-/**
- * planning#284 — local mode (`RUNTIME_MODE=local`, the dogfood `dev` service) could
- * never authenticate an agent, because every credential-provisioning branch in
- * `session-agent-env.ts` is gated on `runner instanceof ContainerSessionRunner`
- * and local mode has no container. These pin the local-mode replacement.
- */
-
 let tmp: string;
 let home: string;
 let credentials: string;
@@ -47,22 +40,10 @@ afterEach(() => {
 });
 
 describe("isLocalRuntime", () => {
-  /**
-   * The one property that keeps this module out of a developer's real home:
-   * the linking call site is gated on it, and it must be false everywhere
-   * except the dogfood. A test suite that flipped it would start writing
-   * symlinks into `agentHome()` — the same class of accident
-   * `resolveCredentialsDir` guards against for the credentials volume.
-   */
   it("is false under the test suite", () => {
     expect(isLocalRuntime()).toBe(false);
   });
 
-  /**
-   * Deliberately duplicated from `resolveRuntimeMode` rather than imported —
-   * importing `app-di` from the credential module would close a cycle. This is
-   * what keeps the two readings from drifting.
-   */
   it("agrees with resolveRuntimeMode for every RUNTIME_MODE spelling", () => {
     const original = process.env.RUNTIME_MODE;
     try {
@@ -94,29 +75,19 @@ describe("linkAgentHomeToCredentials", () => {
     });
 
     expect(outcomes).toEqual({ ".claude": "linked", ".claude.json": "linked" });
-    // What actually matters: the CLI, reading `$HOME/.claude/...`, gets the
-    // account's file — not a copy of it.
     expect(fs.readFileSync(path.join(home, ".claude/.credentials.json"), "utf8")).toBe('{"token":"a"}');
     expect(fs.realpathSync(path.join(home, ".claude"))).toBe(fs.realpathSync(path.join(root, ".claude")));
   });
 
-  /**
-   * The reason this links instead of copying. A copy would need the per-turn
-   * `syncAgentTokenIn` / `syncAgentTokenBack` pair to stay alive — both also
-   * container-gated — because the OAuth refresh token is single-use and
-   * rotating. With one physical file there is nothing to keep in step.
-   */
   it("leaves one physical file, so a source rotation is visible immediately", () => {
     const root = seedAccount("claude", ACCOUNT_A, { ".claude/.credentials.json": '{"token":"old"}' });
     linkAgentHomeToCredentials({ credentialsDir: credentials, agentId: "claude", accountId: ACCOUNT_A, home });
 
-    // The orchestrator's refresher rotates the source, as it does hourly.
     fs.writeFileSync(path.join(root, ".claude/.credentials.json"), '{"token":"new"}');
 
     expect(fs.readFileSync(path.join(home, ".claude/.credentials.json"), "utf8")).toBe('{"token":"new"}');
   });
 
-  /** ...and the CLI's own write-back reaches the source, so no sync-back is needed. */
   it("carries a CLI-side token rotation back to the source", () => {
     const root = seedAccount("claude", ACCOUNT_A, { ".claude/.credentials.json": '{"token":"old"}' });
     linkAgentHomeToCredentials({ credentialsDir: credentials, agentId: "claude", accountId: ACCOUNT_A, home });
@@ -137,11 +108,6 @@ describe("linkAgentHomeToCredentials", () => {
     });
   });
 
-  /**
-   * Why the call site runs this every turn rather than once at pin time: the
-   * home is shared, so a sibling local session pinned to another account will
-   * have repointed it.
-   */
   it("repoints when the turn routes to a different account", () => {
     seedAccount("claude", ACCOUNT_A, { ".claude/.credentials.json": '{"token":"a"}' });
     const rootB = seedAccount("claude", ACCOUNT_B, { ".claude/.credentials.json": '{"token":"b"}' });
@@ -166,8 +132,6 @@ describe("linkAgentHomeToCredentials", () => {
   });
 
   it("covers Codex's own subtree, which failed identically", () => {
-    // The bug was gated on the runner type, not the agent — so Codex was just
-    // as dead as Claude, and the fix has to reach it through the same call.
     const root = seedAccount("codex", ACCOUNT_A, { ".codex/auth.json": '{"token":"c"}' });
 
     expect(
@@ -203,12 +167,6 @@ describe("linkAgentHomeToCredentials", () => {
     expect(fs.existsSync(path.join(home, ".claude"))).toBe(false);
   });
 
-  /**
-   * `AuthManager`'s pre-docs/150 singleton flow logged in with `HOME=/root`,
-   * which in local mode IS the agent home. A real `.claude` there is somebody's
-   * login and their conversation jsonl — recreating it is not possible, so it
-   * gets renamed, never removed.
-   */
   it("moves a pre-existing real credential dir aside instead of deleting it", () => {
     fs.mkdirSync(path.join(home, ".claude/projects"), { recursive: true });
     fs.writeFileSync(path.join(home, ".claude/projects/old.jsonl"), "legacy conversation");
@@ -232,15 +190,6 @@ describe("linkAgentHomeToCredentials", () => {
   });
 });
 
-/**
- * The reserved-route seam left behind when `local-agent-home.ts` and this
- * module landed four minutes apart. `resolveLocalAgentHome` answers `undefined`
- * for a reserved route, so `scrubEnvAuthForScopedHome` does not run and the env
- * credential (correctly) stays — but Step 1b used to leave whatever an earlier
- * account-routed turn had linked. The home then carried one route's
- * subscription credentials while the turn ran on another, and only the CLI's
- * env-beats-disk preference kept the billing right. docs/150-multiple-provider-subscriptions req 12.
- */
 describe("clearAgentHomeCredentialLinks", () => {
   it("removes a previous account turn's links so an env-authenticated turn has no account credentials", () => {
     seedAccount("claude", ACCOUNT_A, { ".claude/.credentials.json": "{}", ".claude.json": "{}" });
@@ -253,11 +202,6 @@ describe("clearAgentHomeCredentialLinks", () => {
     expect(fs.existsSync(path.join(home, ".claude.json"))).toBe(false);
   });
 
-  /**
-   * The property that makes clearing safe to run on every reserved-route turn:
-   * unlinking the LINK never touches the one physical credentials file, so the
-   * account is still signed in and still refreshable afterwards.
-   */
   it("leaves the account's own credentials intact", () => {
     const root = seedAccount("claude", ACCOUNT_A, { ".claude/.credentials.json": "{\"token\":\"live\"}" });
     linkAgentHomeToCredentials({ credentialsDir: credentials, agentId: "claude", accountId: ACCOUNT_A, home });
@@ -277,11 +221,6 @@ describe("clearAgentHomeCredentialLinks", () => {
     expect(clearAgentHomeCredentialLinks({ agentId: "codex", home })).toEqual({ ".codex": "absent" });
   });
 
-  /**
-   * Same stance as the link path's rename-aside: a real path here is a
-   * pre-docs/150 singleton login whose conversation jsonl we cannot recreate.
-   * Only links this module made are ours to remove.
-   */
   it("does not touch a real credential directory", () => {
     fs.mkdirSync(path.join(home, ".claude/projects"), { recursive: true });
     fs.writeFileSync(path.join(home, ".claude/projects/old.jsonl"), "legacy conversation");
@@ -292,17 +231,10 @@ describe("clearAgentHomeCredentialLinks", () => {
     expect(fs.readFileSync(path.join(home, ".claude/projects/old.jsonl"), "utf8")).toBe("legacy conversation");
   });
 
-  /**
-   * The reconciled invariant: a link and a scoped spawn address the same bytes,
-   * so the two mechanisms can coexist without a copy to go stale. Both sides
-   * compute the path with `providerAccountCredentialRoot`; this pins that they
-   * agree.
-   */
   it("links resolve to the same file a scoped spawn's HOME would read", () => {
     const root = seedAccount("claude", ACCOUNT_B, { ".claude/.credentials.json": "{\"v\":1}" });
     linkAgentHomeToCredentials({ credentialsDir: credentials, agentId: "claude", accountId: ACCOUNT_B, home });
 
-    // The scoped spawn's HOME *is* the account root (`resolveLocalAgentHome`).
     expect(fs.realpathSync(path.join(home, ".claude/.credentials.json")))
       .toBe(fs.realpathSync(path.join(root, ".claude/.credentials.json")));
   });

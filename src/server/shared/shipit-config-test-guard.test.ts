@@ -1,14 +1,4 @@
-/**
- * planning#480 — the guard that stops a malformed `shipit.yaml` fixture from
- * silently disabling the check a test claims to exercise.
- *
- * The guard is installed by `server-test-setup.ts` for the whole server project,
- * so these tests exercise the LIVE hook rather than a locally-installed copy:
- * `fs.writeFileSync` is already wrapped by the time this file loads. That is the
- * point — a test asserting the guard works against its own private instance
- * would pass even if the setup file stopped installing it.
- */
-
+// Exercise the hook installed by server-test-setup.ts, not a private instance.
 import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -30,8 +20,6 @@ describe("shipit.yaml fixture guard", () => {
   });
 
   it("rejects the exact fixture that made three dep-dir tests vacuous", () => {
-    // YAML parses the unquoted `true` as a boolean; `parseInstallList` rejects
-    // it, and every opportunistic reader then checks nothing.
     expect(() =>
       fs.writeFileSync(at(), "agent:\n  install:\n    - true\n  dep-dirs:\n    - node_modules\n"),
     ).toThrow(/Invalid shipit.yaml fixture/);
@@ -45,8 +33,6 @@ describe("shipit.yaml fixture guard", () => {
       message = err instanceof Error ? err.message : String(err);
     }
     expect(message).toContain("`agent.install[0]` must be a string");
-    // The fixture is echoed because a fixture is often built by interpolation,
-    // where the offending value is not visible in the test source.
     expect(message).toContain("- 42");
   });
 
@@ -60,8 +46,6 @@ describe("shipit.yaml fixture guard", () => {
   });
 
   it("accepts an empty fixture, matching resolveShipitConfig's own tolerance", () => {
-    // An empty shipit.yaml resolves to defaults rather than throwing, so the
-    // guard must not be stricter than the product it is protecting.
     expect(() => fs.writeFileSync(at(), "")).not.toThrow();
     expect(() => fs.writeFileSync(at(), "\n  \n")).not.toThrow();
   });
@@ -93,9 +77,6 @@ describe("shipit.yaml fixture guard", () => {
   });
 
   it("restores the guard even when the opted-out body throws", () => {
-    // The usual shape of such a test is an assertion that something rejects, so
-    // the body throwing is the normal path, not the edge case. A guard left off
-    // would silently un-protect the rest of the file.
     expect(() =>
       expectInvalidShipitConfig(() => {
         throw new Error("boom");

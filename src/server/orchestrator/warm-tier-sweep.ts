@@ -1,18 +1,3 @@
-/**
- * Periodic repair of the warm tier (planning#501, docs/288 req 10).
- *
- * Nothing else notices when a standby container dies: it has no runner, so the
- * orphan reconciler skips it, and `warmSessionForRepo` will not rebuild while
- * the warm session row exists. That made the state absorbing — a repo whose
- * standby exited for ANY reason kept a warm session forever, and every later
- * claim silently paid the full cold cost while still reporting a warm hit.
- *
- * The sweep compares state — what the warm tier should hold against what Docker
- * has — rather than reacting to an event. A transition is observed once, so a
- * repair that missed it never happens; a comparison gives the same answer
- * however the system got there.
- */
-
 import type { RepoStore } from "./repo-store.js";
 import type { SessionManager } from "./sessions.js";
 import type { SessionContainerManager } from "./session-container.js";
@@ -22,29 +7,11 @@ import { isUnderEvictionPressure } from "./memory-pressure.js";
 import { getErrorMessage } from "./validation.js";
 import path from "node:path";
 
-/** How often the warm tier is compared against reality. */
 export const WARM_SWEEP_INTERVAL_MS = 5 * 60_000;
 
-/**
- * How long a warm session is left alone before the sweep will judge it.
- *
- * Warming sets `warmSessionId` and then builds the standby fire-and-forget, so
- * a session that was warmed seconds ago legitimately has no container yet. The
- * in-flight warm promise covers most of that window; this covers the rest —
- * the gap between `warmSessionForRepo` resolving and `createStandby` returning,
- * which is a `docker create` + `start` and can run for tens of seconds on a
- * loaded host.
- */
+// Standby creation continues after the warm promise resolves.
 export const WARM_REPAIR_GRACE_MS = 5 * 60_000;
 
-/**
- * Run the sweep on a timer.
- *
- * The overlap guard is the reason this is here rather than inline at the call
- * site: a pass can legitimately run for minutes (a `docker create` plus a
- * pre-install), and a second one started on top of it would probe and rebuild
- * the same repo twice.
- */
 export function startWarmTierSweep(
   deps: WarmTierSweepDeps,
   opts: { intervalMs?: number } = {},
@@ -58,7 +25,6 @@ export function startWarmTierSweep(
       .catch((err: unknown) => { console.error("[warm-sweep] pass failed:", err); })
       .finally(() => { inFlight = false; });
   }, opts.intervalMs ?? WARM_SWEEP_INTERVAL_MS);
-  // Never hold the event loop open for a speculative repair.
   timer.unref?.();
   return timer;
 }
@@ -67,53 +33,15 @@ export interface WarmTierSweepDeps {
   repoStore: RepoStore;
   sessionManager: SessionManager;
   containerManager: SessionContainerManager | null;
-  /** Full warm path — for a repo with no usable warm session row at all. */
   warmSessionForRepo: (repoUrl: string) => Promise<void>;
-  /** Standby-only repair — the row and the clone are fine, the container is not. */
   ensureStandbyForWarmSession: (opts: EnsureStandbyOptions) => Promise<void>;
-  /** In-flight warm for this repo, if any: never judge a session mid-build. */
   waitForWarmSession?: (repoUrl: string) => Promise<void> | undefined;
-  /**
-   * docs/288 — drop the warm session's pre-started ServiceManager before the
-   * standby is rebuilt.
-   *
-   * Load-bearing, not tidiness. The repair below destroys the dead container,
-   * and `destroy()` sweeps its compose siblings with it — but the MANAGER stays
-   * in the registry. `preStartWarmPreview` declines when it finds one there (a
-   * claim may have built it), so without this the rebuilt standby would come
-   * back with a manager that owns nothing and no preview, and the repair would
-   * quietly restore only half the warm tier.
-   */
+  // Remove the manager as well as its containers so preview repair can rebuild it.
   stopPreview?: (sessionId: string) => void;
-  /**
-   * docs/288 req 10 — re-run the preview pre-start for a warm session whose
-   * standby is healthy.
-   *
-   * The sweep's original question, "is the standby container running?", stopped
-   * being the whole question the moment a warm session could also own a
-   * pre-started stack: a preview that never came up (the `compose up` failed) or
-   * that was reclaimed (tier 0 drops warm previews FIRST under memory pressure)
-   * leaves a perfectly healthy worker with no preview, and every later claim
-   * pays the full cold cost while still reporting a warm hit — the same
-   * absorbing state this sweep exists to break, one level down.
-   *
-   * The design leans on this directly: tier 0 is allowed to be aggressive about
-   * warm previews *because* they come back on their own once memory is not
-   * tight. Nothing else brings them back.
-   *
-   * Called unconditionally for a healthy standby, because the pre-start is
-   * self-declining: it no-ops when a manager is already registered, when the
-   * repo has fallen outside the recency window, and when the project declares no
-   * stack.
-   */
   repairPreview?: (opts: { sessionId: string; workspaceDir: string; repoUrl: string }) => Promise<void>;
   getMemoryStats?: () => DockerMemoryStats | null;
 }
 
-/**
- * Build the sweep. The returned function runs one pass; the caller owns the
- * interval.
- */
 export function createWarmTierSweep(deps: WarmTierSweepDeps): () => Promise<void> {
   const {
     repoStore, sessionManager, containerManager,
@@ -121,47 +49,27 @@ export function createWarmTierSweep(deps: WarmTierSweepDeps): () => Promise<void
     getMemoryStats,
   } = deps;
 
-  /**
-   * Does this warm session have a container that is actually running?
-   *
-   * Docker's answer, not the tracking map's. The map is updated from container
-   * events and from a health monitor that standbys are outside of, so it is the
-   * very thing that can be wrong here — trusting it would make the sweep blind
-   * to the failure it exists to catch.
-   *
-   * `undefined` means Docker could not answer (daemon busy, inspect failed).
-   * That is not evidence of death: during a daemon blip every session looks
-   * dead at once, and rebuilding them all is worse than waiting 5 minutes.
-   */
+  // Probe Docker; the tracking map can miss standby exits. Undefined is not proof of death.
   async function standbyIsUp(sessionId: string): Promise<boolean | undefined> {
     if (!containerManager) return undefined;
     const tracked = containerManager.get(sessionId);
     if (!tracked) return false;
-    // A container mid-create has no answer to give yet, and the runner factory
-    // already knows how to wait for one (`app-lifecycle.ts`, the `starting`
-    // branch). Leave it alone.
     if (tracked.status === "starting") return true;
     return containerManager.isTrackedContainerRunning(sessionId);
   }
 
   return async () => {
     if (!containerManager) return;
-    // Rebuilding a speculative container while the machine is already at its
-    // budget is the one thing the warm pool must never do — the enforcer would
-    // drop it again on the next pass, and the two would take turns.
+    // Avoid rebuilding containers the memory enforcer will immediately discard.
     if (isUnderEvictionPressure(getMemoryStats?.() ?? null)) return;
 
     for (const repo of repoStore.list()) {
       if (repo.status !== "ready") continue;
-      // A warm in flight owns this repo; its own completion is the repair.
       if (waitForWarmSession?.(repo.url)) continue;
 
       try {
         const warmId = repo.warmSessionId;
         if (!warmId) {
-          // No warm session at all. The event-driven paths (boot, repo add,
-          // trust, claim re-warm, graduation) each had their chance; this is
-          // the backstop for a repo none of them reached.
           await warmSessionForRepo(repo.url);
           continue;
         }
@@ -178,11 +86,7 @@ export function createWarmTierSweep(deps: WarmTierSweepDeps): () => Promise<void
 
         const up = await standbyIsUp(warmId);
         if (up !== false) {
-          // The container is fine; the PREVIEW may not be. Re-asked every pass
-          // because the pre-start declines on its own when there is nothing to
-          // do — see `repairPreview`. The pointer re-check is the same one the
-          // rebuild below does: a claim may have taken this session during the
-          // Docker probe, and its own activation owns the stack from then on.
+          // A healthy standby may have lost its preview under memory pressure.
           if (up === true && repoStore.get(repo.url)?.warmSessionId === warmId) {
             await repairPreview?.({
               sessionId: warmId,
@@ -193,20 +97,12 @@ export function createWarmTierSweep(deps: WarmTierSweepDeps): () => Promise<void
           continue;
         }
 
-        // Re-read the pointer after the await. A claim clears `warmSessionId`
-        // and takes the session for a user who is opening it right now; the
-        // Docker probe above is long enough for that to happen underneath us,
-        // and destroying their container would turn a warm claim cold at the
-        // worst possible moment.
+        // A claim during the Docker probe transfers ownership to the user.
         if (repoStore.get(repo.url)?.warmSessionId !== warmId) continue;
 
         console.log(
           `[warm-sweep] ${repo.url}: standby for warm session ${warmId} is not running — rebuilding it`,
         );
-        // Drop the dead tracking entry (and whatever the missed `die` would
-        // have reaped) before building its replacement, or `createStandby`
-        // collides with the old container's name. docs/288 — the pre-started
-        // stack goes with it, MANAGER included: see `stopPreview`.
         stopPreview?.(warmId);
         await containerManager.destroy(warmId).catch(() => undefined);
         await ensureStandbyForWarmSession({
@@ -214,13 +110,9 @@ export function createWarmTierSweep(deps: WarmTierSweepDeps): () => Promise<void
           sessionDir: path.dirname(session.workspaceDir),
           workspaceDir: session.workspaceDir,
           repoUrl: repo.url,
-          // Re-asked after the build's own preflight, which is the last moment
-          // before a container exists to mislabel.
           stillWanted: () => repoStore.get(repo.url)?.warmSessionId === warmId,
         });
       } catch (err) {
-        // One repo's failure must not end the pass — the next repo may be the
-        // one the user is about to open.
         console.error(`[warm-sweep] ${repo.url}: repair failed:`, getErrorMessage(err));
       }
     }

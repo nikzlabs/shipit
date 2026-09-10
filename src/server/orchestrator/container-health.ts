@@ -1,9 +1,3 @@
-/**
- * Container health monitoring via Docker event stream.
- *
- * Extracted from SessionContainerManager for single-responsibility modules.
- */
-
 import type Docker from "dockerode";
 import type { EventEmitter } from "node:events";
 import type {
@@ -16,145 +10,32 @@ import { COMPOSE_EGRESS_SIDECAR_LABEL } from "./compose-service-egress.js";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 
-/**
- * Label stamped on Compose-managed (user-service) containers by
- * `compose-generator.ts`. Lets the health monitor identify containers
- * belonging to a specific session even when they don't carry the agent
- * container's `shipit-session=true` label.
- *
- * Kept as a string literal here (instead of importing from
- * `compose-generator.ts`) to avoid a circular dependency between
- * orchestrator subsystems. The value is the same — see
- * docs/124-session-rescue-and-diagnostics §1.2.
- */
+// Local literals avoid a dependency cycle with compose-generator.
 const COMPOSE_PARENT_SESSION_LABEL = "shipit-parent-session";
-/**
- * Stamped by `compose-generator.ts` on every service it generates, and on those
- * only. It is what separates one of the PROJECT's services from the other
- * containers ShipIt parents to a session — see Path 2 below, where that
- * distinction is the difference between "the user's dev server crashed" and
- * "ShipIt replaced a sidecar". Literal for the same reason as the label above.
- *
- * The egress labels this file also reads ARE imported: they live in the egress
- * modules, which pull in nothing from this side of the orchestrator, so there is
- * no cycle to avoid and a compile-time link is strictly better.
- */
 const COMPOSE_SERVICE_NAME_LABEL = "shipit-service-name";
-/**
- * Compose's OWN service label, written by `docker compose` itself and by nobody
- * here — ShipIt sets no `com.docker.compose.*` label anywhere, and every sidecar
- * is created through the Docker API with an explicit `Labels` map. It is the
- * second half of Path 2's positive test, for a stack the session brought up
- * through the Docker proxy rather than through `ServiceManager`.
- */
 const DOCKER_COMPOSE_SERVICE_LABEL = "com.docker.compose.service";
-
-// ---------------------------------------------------------------------------
-// Internal types for dependency injection
-// ---------------------------------------------------------------------------
 
 export interface HealthDeps {
   docker: Docker;
   containers: Map<string, SessionContainer>;
   standbySessionIds: Set<string>;
   emitter: EventEmitter<SessionContainerManagerEvents>;
-  /**
-   * Retained for API compatibility with `DiscoveryDeps`. The Docker event
-   * stream itself no longer applies a label filter — it dispatches by
-   * label inside the handler (see implementation note in
-   * `startHealthMonitor`).
-   */
   labelFilters: () => string[];
-  /**
-   * Called when a container carrying `shipit-parent-session` STARTS, whoever
-   * started it.
-   *
-   * The API trust boundary (`api-container-guard.ts`) resolves a caller through
-   * an IP index that answers from a periodically-refreshed snapshot, and an
-   * unrecognised source IP reads as "browser or host" — MORE trusted than a
-   * session container. The paths ShipIt drives bracket themselves
-   * (`SessionContainerManager.beginContainerTopologyChange`); this covers the
-   * one nobody drives — a Compose service that Docker's own restart policy
-   * brings back on a NEW address.
-   *
-   * Deliberately narrow. `die` is not reported: it can only REMOVE an entry, and
-   * a stale positive fails toward denial. Unlabelled starts are not reported
-   * either: they cannot change the labelled set, and reporting them would let
-   * unrelated churn on a shared daemon drop the freshness stamp continuously —
-   * which is the latency bug this index was rebuilt to fix. This is a backstop
-   * for a delivery-ordered stream, never the ordering mechanism.
-   */
+  /** Invalidates the source-IP trust index for starts outside ShipIt's creation paths. */
   onLabelledContainerStarted?: () => void;
 }
 
-// ---------------------------------------------------------------------------
-// Event stream state
-// ---------------------------------------------------------------------------
-
 export interface HealthMonitorState {
   eventStream: (NodeJS.ReadableStream & { destroy?: () => void }) | null;
-  /**
-   * `true` when `stopHealthMonitor()` has been called explicitly (e.g.
-   * during shutdown). Used to distinguish a deliberate stop from a
-   * transient stream error so the auto-restart path knows when to
-   * give up.
-   */
   stopped: boolean;
-  /**
-   * Pending auto-restart timer scheduled after the Docker event stream
-   * errors out. Cleared on `stopHealthMonitor()` and replaced on each
-   * subsequent failure to debounce restart attempts.
-   */
   restartTimer: ReturnType<typeof setTimeout> | null;
-  /**
-   * Wall-clock timestamp (Date.now()) when the stream most recently
-   * went down — set on `error`/`end` and on the catch path of
-   * `startHealthMonitor()`, cleared on successful (re-)connect. When
-   * non-null, the next successful connect emits a
-   * `health_monitor_resumed` event with the gap duration so the
-   * orchestrator can warn that die/oom events during this window may
-   * have been missed.
-   */
   lastLossAt: number | null;
-  /**
-   * Containers whose cgroup OOM-killer fired recently: **concrete container id**
-   * (the event's `Actor.ID`, or the tracked `sc.id` when the daemon omitted it)
-   * → `Date.now()` of the `oom` event.
-   *
-   * A Docker `oom` event is **not** a container death — it fires when the cgroup's
-   * killer kills *a process*. If that process wasn't PID 1 the container survives,
-   * and no `die` follows. So `oom` no longer mutates session state; it only
-   * records that an OOM happened, and the `die` that follows (if any) reads this
-   * to report "Out of memory" instead of a bare exit code.
-   *
-   * The key is NEVER the session id. Session ids are reused across container
-   * recreations, so a session-keyed record can outlive its incarnation — e.g. when
-   * the matching `die` is swallowed by the `status === "stopping"` guard — and get
-   * pinned on a REPLACEMENT container's unrelated death within the window, feeding
-   * a false count into the OOM circuit breaker. Keying by incarnation makes that
-   * structurally impossible: a record can only ever label the death of the exact
-   * container that OOMed. If neither the event nor the map names a container,
-   * nothing is recorded — an unattributable label is worse than none, and the
-   * breaker's `exitCode === 137` fallback still catches the real OOMs.
-   *
-   * Entries are consumed by the matching `die` and pruned after
-   * {@link OOM_ATTRIBUTION_WINDOW_MS}, so a container that *survived* its OOM
-   * doesn't leave the map growing forever.
-   */
+  // Key by container ID: a session ID can refer to a replacement container.
   recentOoms: Map<string, number>;
 }
 
-/**
- * How long after an `oom` event a `die` is still attributed to it.
- *
- * Docker emits the pair back-to-back (milliseconds apart) when the OOM killer
- * takes PID 1, so this is generous. It exists to bound the map and to stop a
- * survived-OOM container from being labelled "Out of memory" when it eventually
- * dies of something else entirely.
- */
 const OOM_ATTRIBUTION_WINDOW_MS = 60_000;
 
-/** Drop OOM records too old to explain a `die` we're about to see. */
 function pruneRecentOoms(state: HealthMonitorState): void {
   const cutoff = Date.now() - OOM_ATTRIBUTION_WINDOW_MS;
   for (const [key, at] of state.recentOoms) {
@@ -162,14 +43,6 @@ function pruneRecentOoms(state: HealthMonitorState): void {
   }
 }
 
-/**
- * Did this exact container's cgroup OOM-killer fire recently? Consumes the record.
- *
- * Takes a single concrete incarnation id — the same shape the `oom` handler keys
- * by — so a hit is always same-incarnation by construction. No session-id
- * fallback: that was the path by which a stale record labelled a *replacement*
- * container's death "Out of memory" (see {@link HealthMonitorState.recentOoms}).
- */
 function takeRecentOom(state: HealthMonitorState, incarnationId: string): boolean {
   pruneRecentOoms(state);
   if (incarnationId && state.recentOoms.has(incarnationId)) {
@@ -179,7 +52,6 @@ function takeRecentOom(state: HealthMonitorState, incarnationId: string): boolea
   return false;
 }
 
-/** Default state for a fresh monitor. */
 export function createHealthMonitorState(): HealthMonitorState {
   return {
     eventStream: null,
@@ -190,48 +62,21 @@ export function createHealthMonitorState(): HealthMonitorState {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Start / stop health monitor
-// ---------------------------------------------------------------------------
-
-/** Debounce delay before reattaching to the Docker event stream after an error. */
 const RESTART_DEBOUNCE_MS = 5_000;
 
-/**
- * Start listening for Docker events to detect container crashes (OOM, exit).
- * Emits "container_exited" when a session container dies unexpectedly.
- *
- * The stream is fragile: a Docker daemon restart, network blip, or socket
- * EAGAIN can drop it. When that happens, the monitor schedules an
- * auto-reconnect with a 5s debounce so `container_exited` events resume
- * firing as soon as the daemon is reachable. Without this, OOMs and
- * crashes become invisible to the orchestrator after the first failure.
- */
 export async function startHealthMonitor(
   deps: HealthDeps,
   state: HealthMonitorState,
 ): Promise<void> {
   if (state.eventStream || state.stopped) return;
 
-  // Clear any pending restart timer — we're connecting now.
   if (state.restartTimer) {
     clearTimeout(state.restartTimer);
     state.restartTimer = null;
   }
 
   try {
-    // Note: we deliberately do NOT pass the `label` filter to Docker here.
-    // The agent-container filter (`shipit-session=true`) excludes
-    // Compose-managed children (which carry `shipit-parent-session=<sid>`
-    // instead), so service OOM kills used to be invisible to the event
-    // loop and only surfaced ~5s later via `pollStatus` as a generic
-    // "Exited with code 137". We now dispatch by label inside the handler.
-    // See docs/124-session-rescue-and-diagnostics §1.2.
-    // `start` is subscribed to for a different consumer than `die`/`oom`: it is
-    // the only signal that tells the API trust boundary's IP index a container
-    // came up that no ShipIt code path created — a Compose service restarted by
-    // Docker's own restart policy, on a new bridge address. The crash handler
-    // below ignores it.
+    // An agent-only label filter would hide Compose service events.
     state.eventStream = await deps.docker.getEvents({
       filters: {
         type: ["container"],
@@ -239,11 +84,6 @@ export async function startHealthMonitor(
       },
     });
 
-    // Successful (re-)connect. If the stream had been down, emit a
-    // resumed event so the orchestrator can leave a breadcrumb saying
-    // die/oom events during the gap may have been missed. Without this,
-    // the missing-container reconciler is the only signal that a
-    // container vanished — and it can't say *why* it wasn't noticed.
     if (state.lastLossAt !== null) {
       const gapMs = Date.now() - state.lastLossAt;
       state.lastLossAt = null;
@@ -251,12 +91,6 @@ export async function startHealthMonitor(
     }
 
     state.eventStream.on("data", (chunk: Buffer) => {
-      // Docker streams newline-delimited JSON records, and a single `data` chunk
-      // carries whatever the socket happened to deliver — which is routinely
-      // SEVERAL records when a `compose up` starts a stack. Parsing the chunk as
-      // one object threw on every such batch and swallowed the whole batch,
-      // crash events included; subscribing to `start` made those batches
-      // commonplace, so it is split here.
       for (const line of chunk.toString().split("\n")) {
         if (line.trim()) handleEvent(line);
       }
@@ -270,90 +104,23 @@ export async function startHealthMonitor(
         };
         const attrs = event.Actor?.Attributes ?? {};
         const action = event.Action;
-        // Ahead of the crash dispatch below, and scoped to the label the trust
-        // boundary's index is built from — see `onLabelledContainerStarted` for
-        // why `die` and unlabelled starts are deliberately not reported.
+        // Unlabelled churn cannot change the index; stale entries after exits fail toward denial.
         if (action === "start" && attrs[COMPOSE_PARENT_SESSION_LABEL]) {
           deps.onLabelledContainerStarted?.();
         }
         if (action !== "die" && action !== "oom") return;
-        // Read the real container ID from `Actor.ID` — `attrs.id` is never
-        // populated by Docker, so the old `attrs.id ?? ""` was always "".
-        // This ID is what disambiguates container incarnations below.
         const containerId = event.Actor?.ID ?? "";
 
-        // ---- Path 1: agent container -----------------------------------
         const sessionId = attrs[CONTAINER_SESSION_ID_LABEL];
         if (sessionId) {
           const sc = deps.containers.get(sessionId);
 
-          // planning#224 — the agent container is the netns PARENT of the Tier B/C
-          // egress sidecars (docs/172). When it dies, their shared namespace dies
-          // with it and they are dead weight. Reap them HERE, at the crash site:
-          // the map-entry delete below LATCHES the leak, because every later
-          // `destroyContainer(sessionId)` early-returns on `if (!sc) return` — so
-          // archiving the session afterwards would never run the label sweep and
-          // the sidecars would outlive the session entirely.
-          //
-          // This sits ABOVE every early-return below, and that ordering is
-          // load-bearing. A PID-1 OOM emits TWO events: `oom`, then `die` a few ms
-          // later. The `oom` arrives while the daemon still reports the container
-          // `Running`, so the reap's liveness gate correctly DECLINES — an `oom`
-          // is not proof of death (the cgroup killer may have taken a non-PID-1
-          // process, leaving the container very much alive). By the time `die`
-          // lands — the event that IS proof — this handler has already dropped the
-          // map entry, so a reap placed below `if (!sc) return` would never run at
-          // all. That left the leak wide open in exactly the crash mode planning#224 is
-          // named for.
-          //
-          // Calling it unconditionally is safe because the reap is (a) scoped to
-          // the id of the container that died, so it can never touch a REPLACEMENT
-          // incarnation's sidecars, (b) liveness-gated, so it declines while that
-          // container is still running, and (c) idempotent — a second call after
-          // the first already removed them finds nothing and does nothing.
-          //
-          // Prefer the event's `Actor.ID` over the tracked `sc.id`: it names the
-          // container that ACTUALLY died, which for a stale event is a previous
-          // incarnation whose sidecars are genuine orphans worth collecting. Fall
-          // back to `sc.id` only when the daemon omitted the ID (older event
-          // shapes) — the liveness gate is what keeps that fallback from reaping a
-          // healthy container's sidecars.
-          //
-          // Deliberately targeted at the egress labels, NOT
-          // `cleanupSessionDockerResources`: that sweeps every
-          // `shipit-parent-session` child, which on an agent OOM would also drop
-          // the user's compose services, networks, and volumes (their database
-          // included). An agent crash must not cost them that.
-          //
-          // Fire-and-forget: we're inside the Docker event stream's handler, and
-          // `reapSessionEgressSidecars` never rejects.
+          // Reap before map-entry guards, including for old containers. The reaper checks liveness
+          // and targets only egress sidecars, preserving user services and volumes.
           void reapSessionEgressSidecars(deps.docker, sessionId, containerId || sc?.id || "");
 
-          // An `oom` is NOT a container death, and must not be treated as one.
-          //
-          // Docker fires it when the cgroup's OOM-killer kills *a process* in the
-          // container. In a session container PID 1 is `docker-init` (planning#508),
-          // the worker is its direct child and the agent CLI a grandchild, so the
-          // common case is precisely the one where the container SURVIVES: the CLI
-          // gets killed, the worker keeps running. Acting on the
-          // event would then delete a healthy container's map entry, emit
-          // `container_exited`, finalize the live turn as crashed, dispose the
-          // runner, and trip the OOM circuit breaker — all against a container that
-          // is still up and serving.
-          //
-          // If the WORKER was the victim, Docker emits `die` a few milliseconds
-          // later — `docker-init` exits once the child it supervises does — and
-          // that event IS proof. So we record the OOM and let `die` do the work
-          // — which also means the map entry survives until then, keeping `sc.id`
-          // available to scope the reap on daemons that omit `Actor.ID`. (Deleting
-          // it here used to strand the sidecars in exactly that case: the follow-up
-          // `die` had neither an `Actor.ID` nor an `sc` to fall back to.)
+          // OOM can kill a child while the container survives. Only die changes session state.
           if (action === "oom") {
-            // Key by incarnation, never by session (see the recentOoms doc). When
-            // the daemon omits `Actor.ID`, the tracked `sc.id` names the only
-            // container this session-labelled event can be about. If neither is
-            // known, record nothing — the 137 fallback in startup-tasks.ts still
-            // counts the real OOM if the container actually dies.
             const oomContainerId = containerId || sc?.id || "";
             if (oomContainerId) {
               pruneRecentOoms(state);
@@ -363,27 +130,10 @@ export async function startHealthMonitor(
           }
 
           if (!sc) return;
-          // Stale-incarnation guard: the container name (`agent-<shortId>`)
-          // and `shipit-session-id` label are reused across recreations. A
-          // `die` event for a PREVIOUS container (e.g. the one Rescue just
-          // stopped) must not be attributed to the current container —
-          // doing so deletes a healthy container's map entry and emits a
-          // phantom `container_exited`, which is the root of the
-          // Rescue-doesn't-work create/phantom-exit loop. An empty `sc.id`
-          // means the new container is mid-create (id not yet assigned); a
-          // non-matching id is unambiguously a stale event.
-          //
-          // Note this guards the SESSION-STATE mutation below, not the reap above:
-          // a stale event carries a real dead container id, and reaping that
-          // container's orphaned sidecars is correct precisely when its exit must
-          // NOT be attributed to the current one.
+          // Session labels survive recreation; an old container's exit must not delete its replacement.
           if (containerId && containerId !== sc.id) return;
-          // Skip if destroy() is already in-flight — it will handle cleanup
           if (sc.status === "stopping") return;
           const exitCode = Number(attrs.exitCode ?? 1);
-          // The stale-incarnation guard above ensures `containerId`, when present,
-          // equals `sc.id` — so this lookup names the same incarnation the `oom`
-          // handler keyed, whichever of the two shapes each event arrived in.
           const error = takeRecentOom(state, containerId || sc.id) ? "Out of memory" : undefined;
           sc.status = "stopped";
           deps.containers.delete(sessionId);
@@ -392,51 +142,16 @@ export async function startHealthMonitor(
           return;
         }
 
-        // ---- Path 2: compose child (user service) ----------------------
-        // Catches OOM / crash on the dev server, db, etc. Without this,
-        // service OOMs (exit code 137) only surface 5s later via
-        // `pollStatus` with the unhelpful "Exited with code 137" message,
-        // and the OOM signal itself is silently lost.
         const parentSessionId = attrs[COMPOSE_PARENT_SESSION_LABEL];
         if (parentSessionId) {
           const exitCode = Number(attrs.exitCode ?? 1);
           const oom = action === "oom";
-          // `shipit-parent-session` does NOT mean "a project service". It is
-          // stamped on every container ShipIt parents to a session: the
-          // generated Compose services, yes, but ALSO the egress sidecars
-          // (`compose-service-egress.ts`, `container-lifecycle.ts`,
-          // `egress-reload.ts`) and anything the session creates through the
-          // Docker proxy.
-          //
-          // Keying on the parent label reported ShipIt's own plumbing as the
-          // user's dev server crashing: containment replaces a service's
-          // sidecars whenever that service starts or its policy changes, so a
-          // HEALTHY start emitted a burst of anonymous `[compose] service exited
-          // with code 137.` lines. See
-          // docs/124-session-rescue-and-diagnostics §1.2a for the field report.
-          //
-          // A ShipIt egress sidecar is NEVER a project service, whatever else it
-          // carries. That is a hard precondition rather than something the name
-          // lookup below merely happens to imply: it is the one guarantee this
-          // handler owes the incident, so it is stated where it cannot be
-          // weakened by a later widening of what counts as a service name.
+          // Parent labels include infrastructure: sidecar replacement is not a user-service crash.
           const egressSidecar = Boolean(
             attrs[COMPOSE_EGRESS_SIDECAR_LABEL]
               || attrs[EGRESS_RESOLVER_LABEL]
               || attrs[EGRESS_PROXY_LABEL],
           );
-          // Otherwise a POSITIVE identification, in two forms, so a container
-          // ShipIt cannot name as a service stays silent by default rather than
-          // becoming the next false alarm nobody thought to exclude:
-          //
-          //  - `shipit-service-name` — `compose-generator.ts` stamps it on every
-          //    service it generates, the repository's own and a plugin's alike.
-          //  - `com.docker.compose.service` — Compose's own label, which a stack
-          //    the SESSION brought up through the Docker proxy carries and the
-          //    generated override does not reach. `docker-proxy-sanitize.ts`
-          //    stamps the parent label on those but adds no ShipIt service name,
-          //    so without this they would lose the exit line they had before.
-          //    Nothing ShipIt creates through the Docker API carries it.
           const serviceName = egressSidecar
             ? undefined
             : attrs[COMPOSE_SERVICE_NAME_LABEL] || attrs[DOCKER_COMPOSE_SERVICE_LABEL];
@@ -457,14 +172,11 @@ export async function startHealthMonitor(
           });
         }
       } catch {
-        // Malformed event — ignore
+        // Ignore malformed events.
       }
     }
 
     state.eventStream.on("error", () => {
-      // Event stream disconnected unexpectedly — clear the handle and
-      // schedule a reconnect. Without this, container OOMs and crashes
-      // become invisible after the first daemon hiccup.
       state.eventStream = null;
       state.lastLossAt ??= Date.now();
       scheduleRestart(deps, state);
@@ -476,15 +188,12 @@ export async function startHealthMonitor(
       scheduleRestart(deps, state);
     });
   } catch {
-    // Docker events not available — try again later in case the daemon
-    // is restarting.
     state.eventStream = null;
     state.lastLossAt ??= Date.now();
     scheduleRestart(deps, state);
   }
 }
 
-/** Stop the Docker event stream and cancel any pending auto-restart. */
 export function stopHealthMonitor(state: HealthMonitorState): void {
   state.stopped = true;
   if (state.restartTimer) {
@@ -497,11 +206,6 @@ export function stopHealthMonitor(state: HealthMonitorState): void {
   }
 }
 
-/**
- * Reset a stopped monitor so `startHealthMonitor` can be called again.
- * Used by tests; production code creates a fresh state via
- * `createHealthMonitorState()`.
- */
 export function resetHealthMonitor(state: HealthMonitorState): void {
   state.stopped = false;
 }
@@ -513,7 +217,5 @@ function scheduleRestart(deps: HealthDeps, state: HealthMonitorState): void {
     if (state.stopped) return;
     void startHealthMonitor(deps, state);
   }, RESTART_DEBOUNCE_MS);
-  // Don't keep the event loop alive solely for this timer (e.g. during
-  // graceful shutdown without an explicit stop call).
   state.restartTimer.unref?.();
 }

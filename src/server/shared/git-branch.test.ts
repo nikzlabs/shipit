@@ -23,8 +23,6 @@ describe("GitManager: branch operations", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // ---- checkoutNewBranch ----
-
   it("creates and checks out a new branch", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
@@ -46,8 +44,6 @@ describe("GitManager: branch operations", () => {
     expect(log.some((c) => c.message === "Add file")).toBe(true);
   });
 
-  // ---- renameBranch ----
-
   it("renames the current branch", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
@@ -63,13 +59,12 @@ describe("GitManager: branch operations", () => {
 describe("generateBranchPrefix", () => {
   it("returns a shipit/-prefixed lowercase string with 6-char slug", () => {
     const prefix = generateBranchPrefix();
-    expect(prefix).toHaveLength(13); // "shipit/" (7) + 6 random chars
+    expect(prefix).toHaveLength(13);
     expect(prefix).toMatch(/^shipit\/[a-z0-9_-]{6}$/);
   });
 
   it("generates unique prefixes", () => {
     const prefixes = new Set(Array.from({ length: 20 }, () => generateBranchPrefix()));
-    // With 20 random prefixes, collisions are extremely unlikely
     expect(prefixes.size).toBeGreaterThan(15);
   });
 });

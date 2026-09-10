@@ -6,21 +6,6 @@ import {
   type AgentSystemInstructionOptions,
 } from "./agent-instructions.js";
 
-// These tests cover the COMPOSITION and CACHING behavior of the builder: that
-// each (agentId, isOps, isSandbox) axis selects a DISTINCT precomputed variant,
-// that the per-turn path is a pure lookup of a frozen constant, and that every
-// variant renders with its `.md` fragments loaded and no leftover `{{TOKEN}}`.
-//
-// They deliberately do NOT assert any literal prompt prose, section header, or
-// doc-path string. That text lives in `prompts/*.md`, and a markdown-only edit
-// there must NOT require touching this file — CI skips markdown-only changes
-// (`ci.yml` › `paths-ignore: '**.md'`), so a test coupled to `.md` wording
-// would go red only later, on an unrelated code PR. So we assert BEHAVIOR
-// ("the sandbox variant differs from the ops variant"), never WORDING ("the
-// sandbox variant contains `## Sandbox session`"). The trade-off is deliberate:
-// fragment-selection coverage proves the switch fired and produced a distinct
-// prompt, not that a specific landmark string landed. See CLAUDE.md ›
-// "Testing prompts".
 describe("buildAgentSystemInstructions", () => {
   it("is static — every call returns the same string as AGENT_SYSTEM_INSTRUCTIONS", () => {
     expect(buildAgentSystemInstructions()).toBe(AGENT_SYSTEM_INSTRUCTIONS);
@@ -28,11 +13,6 @@ describe("buildAgentSystemInstructions", () => {
   });
 
   it("every variant is a precomputed constant — same reference each call (cache stability)", () => {
-    // Reference equality (toBe on a string returned by two separate calls)
-    // proves the per-turn path is a pure lookup of a frozen constant, not a
-    // re-assembly. Re-assembly would produce an equal-but-distinct string and
-    // still pass `toEqual`; only `toBe` on the precomputed instance catches a
-    // regression back to per-call composition. Cover all axes.
     const variants: AgentSystemInstructionOptions[] = [
       {},
       { agentId: "claude" },
@@ -47,18 +27,12 @@ describe("buildAgentSystemInstructions", () => {
         buildAgentSystemInstructions(opts),
       );
     }
-    // `isOps: false` must be the exact same instance as the no-options default.
     expect(buildAgentSystemInstructions({ isOps: false })).toBe(
       buildAgentSystemInstructions(),
     );
   });
 
   it("renders every variant with the .md fragments loaded and no unresolved tokens", () => {
-    // Prompt text lives in `prompts/*.md` loaded at module init (see CLAUDE.md ›
-    // "Prompts"). This guards the load + token-fill: a missing/renamed fragment
-    // or an un-mapped `{{TOKEN}}` must fail here, not ship a literal placeholder
-    // to the model. Covers all axes. (Checks output PROPERTIES — length, no
-    // residual `{{...}}` — never the wording of any fragment.)
     const variants: AgentSystemInstructionOptions[] = [
       {},
       { agentId: "claude" },
@@ -75,23 +49,15 @@ describe("buildAgentSystemInstructions", () => {
     }
   });
 
-  // docs/117 Phase 2 — per-agent "Parallel sessions" guidance is composed in
-  // only when an `agentId` is supplied, and the Claude/Codex fragments differ.
-  // Assert the variants DIFFER (the switch fired), not which words landed.
   it("composes a distinct variant per agentId, and omits per-agent guidance when none is given", () => {
     const none = buildAgentSystemInstructions();
     const claude = buildAgentSystemInstructions({ agentId: "claude" });
     const codex = buildAgentSystemInstructions({ agentId: "codex" });
-    // Supplying an agentId composes additional guidance in → a distinct prompt.
     expect(claude).not.toBe(none);
     expect(codex).not.toBe(none);
-    // The Claude and Codex fragments are different → distinct prompts.
     expect(claude).not.toBe(codex);
   });
 
-  // docs/245 — Codex's conservative default needs an explicit tie-breaker for
-  // confirmation-shaped continuations. Keep it backend-specific: Claude
-  // already acts on these requests and must not receive a prompt change.
   it("tells Codex, but not Claude, to execute clearly implied in-scope actions", () => {
     const fragment = fs.readFileSync(
       new URL("./agents/codex/implied-action.md", import.meta.url),
@@ -102,9 +68,6 @@ describe("buildAgentSystemInstructions", () => {
     expect(buildAgentSystemInstructions({ agentId: "claude" })).not.toContain(fragment);
     expect(buildAgentSystemInstructions()).not.toContain(fragment);
 
-    // The behavioral boundaries are part of the regression contract: act on
-    // a clear continuation, preserve information-only questions, and do not
-    // infer authority for risky or out-of-scope work.
     expect(fragment).toContain("answer the question and perform that action");
     expect(fragment).toContain("genuine information-only questions read-only");
     expect(fragment).toContain("ambiguous, destructive, externally consequential");
@@ -112,9 +75,6 @@ describe("buildAgentSystemInstructions", () => {
     expect(fragment).toContain("without requiring the user to ping you");
     expect(fragment).toContain("genuinely requires user input or new authority");
 
-    // req 8 — the gate paragraph above covers a *pending* review; this covers
-    // the one that came back. Codex was relaying a cross-backend review's
-    // findings and ending the turn instead of fixing them.
     expect(fragment).toContain("input to your work, not the deliverable");
     expect(fragment).toContain("shipit agent run");
     expect(fragment).toContain("do not relay them and stop");
@@ -126,19 +86,12 @@ describe("buildAgentSystemInstructions", () => {
       "utf8",
     );
 
-    // Before docs/245 the skeleton placed exactly one newline between the
-    // parallel-sessions token and this heading. The optional Codex token must
-    // not leave another blank line in Claude's rendered prompt.
     expect(buildAgentSystemInstructions({ agentId: "claude" })).toContain(
       `${claudeParallelSection}\n## ShipIt platform docs`,
     );
   });
 
-  // docs/128 — ops overlay. docs/211 — sandbox overlay. Both are mutually
-  // exclusive composition switches layered on the shared base.
   it("omits the overlays by default and renders byte-identically", () => {
-    // The non-overlay rendering must be unchanged, so the prompt cache and the
-    // existing static contract are preserved.
     expect(buildAgentSystemInstructions({ isOps: false })).toBe(
       buildAgentSystemInstructions(),
     );
@@ -151,11 +104,9 @@ describe("buildAgentSystemInstructions", () => {
     const std = buildAgentSystemInstructions();
     const ops = buildAgentSystemInstructions({ isOps: true });
     const sandbox = buildAgentSystemInstructions({ isSandbox: true });
-    // Each overlay produces a prompt distinct from the default and each other.
     expect(ops).not.toBe(std);
     expect(sandbox).not.toBe(std);
     expect(sandbox).not.toBe(ops);
-    // ...and each is a pure lookup of a frozen constant (cache stability).
     expect(buildAgentSystemInstructions({ isOps: true })).toBe(ops);
     expect(buildAgentSystemInstructions({ isSandbox: true })).toBe(sandbox);
   });
@@ -166,19 +117,11 @@ describe("buildAgentSystemInstructions", () => {
     );
   });
 
-  // docs/211 — the per-agent "Parallel sessions" section teaches
-  // `shipit session create`, and the skeleton composes it AFTER the overlay.
-  // A sandbox can't spawn (spawning claims the parent's repo; a sandbox has
-  // none), so the sandbox overlay carries the override — which only works if
-  // the overlay lands in EVERY sandbox variant, including the ones that also
-  // get the per-agent section. Assert composition + the command token the
-  // override has to name; never the surrounding wording.
   it("composes the sandbox overlay, which overrides the spawn guidance, into every sandbox variant", () => {
     const fragment = fs.readFileSync(
       new URL("./prompts/sandbox-session.md", import.meta.url),
       "utf8",
     ).trim();
-    // The override is only meaningful if it names the command it overrides.
     expect(fragment).toContain("shipit session create");
 
     const sandboxVariants: AgentSystemInstructionOptions[] = [
@@ -189,17 +132,11 @@ describe("buildAgentSystemInstructions", () => {
     for (const opts of sandboxVariants) {
       expect(buildAgentSystemInstructions(opts)).toContain(fragment);
     }
-    // ...and nowhere else: a std or ops session has a repo and can spawn.
     expect(buildAgentSystemInstructions()).not.toContain(fragment);
     expect(buildAgentSystemInstructions({ agentId: "claude" })).not.toContain(fragment);
     expect(buildAgentSystemInstructions({ isOps: true })).not.toContain(fragment);
   });
 
-  // docs/128 / docs/211 — ShipIt does not auto-commit ops or sandbox sessions
-  // (`services/auto-commit-gate.ts`), so neither may be told "ShipIt commits for
-  // you". That instruction is not merely stale for ops, it is harmful: it tells
-  // the agent not to commit work nothing else will commit. Asserted by
-  // COMPOSITION (which fragment is spliced), never by wording.
   it("gives each kind its own Git fragment, and keeps auto-commit guidance out of ops and sandbox", () => {
     const read = (name: string) =>
       fs.readFileSync(new URL(`./prompts/${name}`, import.meta.url), "utf8").trim();
@@ -207,27 +144,17 @@ describe("buildAgentSystemInstructions", () => {
     const ops = read("git-workflow-ops.md");
     const sandbox = read("git-workflow-sandbox.md");
 
-    // The three fragments are genuinely different documents. Ops does NOT reuse
-    // the sandbox text: a sandbox has no root repo and creates branches freely,
-    // an ops workspace is a repo on a branch it may not leave.
     expect(new Set([standard, ops, sandbox]).size).toBe(3);
 
     for (const opts of [{}, { agentId: "claude" as const }, { agentId: "codex" as const }]) {
       expect(buildAgentSystemInstructions(opts)).toContain(standard);
       expect(buildAgentSystemInstructions({ ...opts, isOps: true })).toContain(ops);
       expect(buildAgentSystemInstructions({ ...opts, isSandbox: true })).toContain(sandbox);
-      // ...and the auto-commit fragment reaches neither privileged kind.
       expect(buildAgentSystemInstructions({ ...opts, isOps: true })).not.toContain(standard);
       expect(buildAgentSystemInstructions({ ...opts, isSandbox: true })).not.toContain(standard);
     }
   });
 
-  // The sentence that would actively mislead an ops agent, pinned on its own:
-  // it must not survive anywhere in the privileged renderings, however the
-  // fragments are later reshuffled. Taken FROM the standard fragment at runtime
-  // rather than hardcoded, so rewording `git-workflow.md` cannot make this pass
-  // vacuously (the repo's prompt-testing convention: assert composition, never
-  // literal wording).
   it("never tells an ops or sandbox agent that ShipIt commits for it", () => {
     const claim = fs
       .readFileSync(new URL("./prompts/git-workflow.md", import.meta.url), "utf8")
@@ -244,10 +171,8 @@ describe("buildAgentSystemInstructions", () => {
   it("composes each overlay with the per-agent axis into a distinct variant", () => {
     const opsClaude = buildAgentSystemInstructions({ agentId: "claude", isOps: true });
     const sandboxClaude = buildAgentSystemInstructions({ agentId: "claude", isSandbox: true });
-    // Adding the per-agent axis on top of an overlay changes the prompt...
     expect(opsClaude).not.toBe(buildAgentSystemInstructions({ isOps: true }));
     expect(sandboxClaude).not.toBe(buildAgentSystemInstructions({ isSandbox: true }));
-    // ...and the two overlays remain distinct under the same agentId.
     expect(opsClaude).not.toBe(sandboxClaude);
   });
 });

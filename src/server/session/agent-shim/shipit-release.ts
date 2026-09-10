@@ -1,22 +1,3 @@
-/**
- * `shipit release *` handlers (docs/214 Phase 2) — the deterministic release
- * mechanics surfaced to the inner agent as a thin shim over the orchestrator.
- *
- * `shipit release plan [<patch|minor|major|VERSION>]` — READ-ONLY: detect the
- *   version source + compute the next version; reflects a `proposed` card.
- * `shipit release prepare [<bump|VERSION>] [--pick <sha>…] [--from <branch>]
- *   [--release-branch <name>] [--bootstrap] [--allow-empty] [--prerelease]
- *   [--confirm] [--notes <text>]` — open the version-bump PR against the release
- *   branch (final release; the human-act gate is merging it, CI publishes), OR
- *   cut the `vX.Y.Z-rc.N` tag (prerelease; confirmation-gated via `--confirm`).
- *   A bare `prepare` (no `--pick`/`--from`) is refused as content-free — it would
- *   ship only the version bump; pass `--from <branch>` to bring content, or
- *   `--allow-empty` to cut a bump-only release on purpose.
- *
- * There is intentionally NO `shipit release tag`/`publish`/`push` for final
- * releases — publishing is CI's job (the rejected subcommands live in
- * `shipit.ts`). The agent never hand-runs `git tag`.
- */
 
 import {
   asString,
@@ -27,7 +8,6 @@ import {
 } from "./shim-common.js";
 import { REJECTED_HELP, formatError, type RunDeps } from "./shipit.js";
 
-/** Pretty-print a plan/prepare JSON result, or emit it raw with `--json`. */
 function report(io: ShimIO, body: Record<string, unknown>, json: boolean, lines: string[]): void {
   if (json) {
     io.stdout(`${JSON.stringify(body)}\n`);
@@ -62,8 +42,6 @@ export async function handleReleasePlan(args: string[], deps: RunDeps): Promise<
     `bump:       ${asString(b.bumpType)}`,
     `source:     ${asString(b.versionSource)}`,
     ...(b.prerelease ? ["prerelease: yes"] : []),
-    // docs/214 cold-start guard — set when merging into the maintenance branch
-    // won't auto-publish yet (no / legacy workflow on the branch).
     ...(b.warning ? ["", asString(b.warning)] : []),
   ]);
 }
@@ -110,15 +88,10 @@ export async function handleReleasePrepare(args: string[], deps: RunDeps): Promi
   switch (b.kind) {
     case "pr-opened":
       report(deps.io, b, json, [
-        // `prepareFinalRelease` refuses to return a merged/closed PR, so
-        // "updated" can never name a dead one.
         `${b.alreadyExisted ? "updated" : "opened"} release PR #${asString(b.prNumber)} → ${asString(b.prUrl)}`,
         `version:    ${asString(b.version)} (tag ${asString(b.tag)})`,
         `base:       ${asString(b.releaseBranch)}`,
         "",
-        // docs/214 cold-start guard: when the maintenance branch can't
-        // auto-publish on merge yet, lead with the warning instead of the
-        // (misleading) "merge to publish" line so the no-op is impossible to miss.
         ...(b.warning
           ? [asString(b.warning)]
           : ["Merge the PR to publish — CI tags the merged commit and creates the GitHub Release."]),

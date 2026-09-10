@@ -1,27 +1,3 @@
-/**
- * planning#264 — the queue must not drain before the finished turn's work is
- * committed.
- *
- * `turn-executor.ts` used to end a turn with `tryDrain()` → `broadcastFinished`
- * → `runCommitAndPr()`, so the next queued turn started while the previous
- * turn's edits were still only on disk. That was harmless as long as no turn
- * began by discarding working-tree state — but the moment one does
- * (`git reset --hard`, `git checkout -f`, a branch reset), the previous turn's
- * edits are destroyed with no reflog entry and no way back, because they never
- * entered git at all.
- *
- * The fix lives inside `tryDrain` rather than at the call sites, which matters:
- * the NON-streaming path drains at `agent_result` and commits later in `done`,
- * so swapping the two statements in the `done` handler would have fixed
- * nothing. Every drain path funnels through `tryDrain`, so that is where the
- * guarantee belongs.
- *
- * These tests drive the real `SessionRunner.dispatch` → `runDispatchedTurn` →
- * `executeAgentTurn` path in-process (no Docker) against a REAL git repo in a
- * temp dir, with fake agents standing in for the CLI. The first test is the one
- * that matters: it lets the queued turn actually run `git reset --hard` and
- * asserts the previous turn's edits survived.
- */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -62,7 +38,6 @@ async function waitFor(fn: () => boolean, label = "condition", timeoutMs = 5000)
   throw new Error(`Timed out waiting for ${label}`);
 }
 
-/** Minimal listener deps — enough for `wireAgentListeners` to run end to end. */
 function makeListenerDeps(sseBroadcast = vi.fn()): SystemTurnDeps["listenerDeps"] {
   return {
     sessionManager: {
@@ -111,9 +86,6 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
     const agents: FakeAgent[] = [];
     const filePath = path.join(repoDir, "file.txt");
 
-    // Turn 1 writes an edit and never commits it itself — exactly what a normal
-    // agent turn does. Turn 2 is the destructive queued turn: it starts by
-    // throwing away working-tree state, which is the whole hazard.
     const onRunByTurn = [
       () => fs.writeFileSync(filePath, "turn-1 work\n"),
       () => execFileSync("git", ["reset", "--hard", "HEAD"], { cwd: repoDir, stdio: "pipe" }),
@@ -126,7 +98,6 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
         agents.push(a);
         return a as unknown as ReturnType<SystemTurnDeps["agentFactory"]>;
       },
-      // The real thing — `postTurnCommit`'s fallback path in `turn-executor`.
       autoCommit: async (sessionDir: string, summary: string) => {
         const git = new GitManager(sessionDir);
         const parentHash = await git.getHeadHash();
@@ -143,19 +114,14 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "turn 1 started");
     expect(fs.readFileSync(filePath, "utf8")).toBe("turn-1 work\n");
 
-    // Queued behind the running turn.
     runner.dispatch(testDispatch({ text: "reset the tree" }));
     expect(runner.queueLength).toBe(1);
 
-    // End turn 1. Non-streaming: `agent_result` drains, `done` finishes up.
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     agents[0]!.emit("done", 0);
 
     await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "turn 2 started");
 
-    // Turn 2 has now run `git reset --hard`. Turn 1's edit survives ONLY if it
-    // was committed before the drain handed control over. With the pre-planning#264
-    // ordering this reads "base\n" — the work is gone, and gone for good.
     expect(fs.readFileSync(filePath, "utf8")).toBe("turn-1 work\n");
 
     const log = execFileSync("git", ["log", "--oneline"], { cwd: repoDir, encoding: "utf8" });
@@ -190,8 +156,6 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
         return { ...r, parentHash };
       },
       scheduleAutoPush: vi.fn(),
-      // Makes the first dispatched turn spawn as a resident streaming process,
-      // which routes the whole post-turn flow through `agent_result`.
       steerInputs: () => ({ liveSteering: true, steeringCapable: true }),
       listenerDeps: makeListenerDeps(),
       buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
@@ -202,9 +166,7 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "turn 1 started");
     expect(runner.isStreamingActive).toBe(true);
 
-    // A system turn is never steerable, so it queues behind the streaming turn
-    // — the docs/239 shape: a wake turn that resets the branch, queued behind a
-    // user turn whose edits are not committed yet.
+    // A system turn queues instead of steering the streaming turn.
     runner.dispatch(testDispatch({ text: "reset the tree", systemTurn: true }));
     expect(runner.queueLength).toBe(1);
 
@@ -235,14 +197,9 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
       },
       autoCommit: async () => {
         order.push("commit");
-        // A real edit would produce a hash; return one so the PR flow is reached.
         return { commitHash: "abc1234", parentHash: "def5678", conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null };
       },
       scheduleAutoPush: vi.fn(),
-      // Stands in for the GitHub round-trip — and never resolves. If the drain
-      // were moved behind the whole of `runCommitAndPr` (the naive "just swap
-      // the two lines" fix), the second message would never start at all; here
-      // the worst a real slow GitHub call can do is run alongside it.
       postTurnPrFlow: vi.fn(() => {
         order.push("pr-flow-entered");
         return new Promise<void>((resolve) => { releasePrFlow = resolve; });
@@ -260,12 +217,8 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     agents[0]!.emit("done", 0);
 
-    // Starts while the PR flow is still outstanding — that is the whole point.
     await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "turn 2 started");
 
-    // Only the LOCAL commit gates the drain (that's the planning#264 fix). The PR
-    // flow is still parked on its unresolved promise, so it demonstrably ran
-    // alongside the queued turn rather than in front of it.
     expect(order.indexOf("turn-1-started")).toBe(0);
     expect(order.indexOf("commit")).toBeLessThan(order.indexOf("turn-2-started"));
     expect(deps.postTurnPrFlow).toHaveBeenCalledTimes(1);
@@ -309,8 +262,6 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
     await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "turn 2 started");
     await waitFor(() => postTurnPrFlow.mock.calls.length === 1, "pr flow ran");
 
-    // `commitOnce` memoizes the promise, so the `done` handler's
-    // `runCommitAndPr` reuses the drain-time commit rather than staging twice.
     expect(autoCommit).toHaveBeenCalledTimes(1);
     expect(postTurnPrFlow).toHaveBeenCalledWith("s1", repoDir, "abc1234", expect.any(Function));
 
@@ -352,9 +303,6 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
     agents[0]!.emit("done", 0);
     await waitFor(() => order.includes("commit"), "commit ran");
 
-    // Nothing is queued, so nothing can start against an uncommitted tree — the
-    // ordering that keeps other tabs' sidebars prompt (see
-    // `turn-finished-ordering.test.ts`) is preserved unchanged.
     expect(order).toEqual(["finished", "commit"]);
 
     runner.dispose({ force: true });

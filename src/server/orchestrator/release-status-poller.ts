@@ -1,52 +1,15 @@
-/**
- * ReleaseStatusPoller — orchestrator-level release lifecycle poller (docs/171
- * Phase 1), modeled on `pr-status-poller.ts`.
- *
- * Lifecycle: the agent proposes a release (card → `proposed`), the user confirms
- * on the card, the agent bumps + tags + pushes (card → `gating`), and this
- * poller reflects the gate/CI status and the published GitHub Release inline.
- * Every phase transition goes through `setCard → onCard`, the single injected
- * hook the orchestrator wires to (a) upsert the card into chat history by
- * `cardId` and (b) emit a per-session `release_card` WS message to the session's
- * viewers (see `bootstrap-managers.ts`).
- *
- * The card is a persisted transcript card (docs/171, like the bug-report /
- * issue-write cards): in-memory `cards` here is the live state-machine, but
- * durability lives in chat history (the `release_card` column), so the card
- * survives a reload AND an orchestrator restart. This replaces the previous
- * in-memory-only `release_status` SSE, which a restart lost entirely.
- *
- * Idempotency / dedup: a release is keyed by `{repoKey, tag}`. Once a tag is
- * observed as published/released, that `{repoKey, tag}` is remembered so a
- * second confirm of the same release surfaces the existing result instead of
- * re-polling a duplicate card (docs/171 "Idempotency races").
- */
-
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { ReleaseStatusSummary, ReleasePhase } from "../shared/types/release-types.js";
 import { parseGitHubRemote } from "./git-utils.js";
 
-/** Fast bucket — a release mid-gate/deploy wants prompt CI feedback. */
 export const RELEASE_POLL_INTERVAL_MS = 15_000;
-/** Slow bucket — a settled (published, awaiting deploy) release. */
 export const RELEASE_SLOW_INTERVAL_MS = 120_000;
-/**
- * Keep polling for this long after the last viewer detaches before pausing —
- * tolerates page reloads. Aligned with the PR poller's grace window.
- */
 const VIEWER_DETACH_GRACE_MS = 60_000;
 
-/**
- * Phases that still need polling (a remote artifact may still change):
- * - `pr_open`   — poll the release PR until it merges (docs/214).
- * - `pr_merged` / `gating` / `deploying` — poll the gate + published Release.
- */
 const ACTIVE_PHASES: ReadonlySet<ReleasePhase> = new Set(["pr_open", "pr_merged", "gating", "deploying"]);
-/** Terminal phases — no further polling. */
 const TERMINAL_PHASES: ReadonlySet<ReleasePhase> = new Set(["released", "failed", "cancelled"]);
 
-/** Stable transcript-card id for a release, shared across all its phases. */
 function cardIdFor(sessionId: string, tag: string): string {
   return `release:${sessionId}:${tag}`;
 }
@@ -63,7 +26,6 @@ export interface ReleaseProposeInput {
   prerelease: boolean;
   bumpType?: ReleaseStatusSummary["bumpType"];
   versionSource?: string;
-  /** Release mechanism — drives the card's confirm wording (release-branch vs tag). */
   mechanism?: ReleaseStatusSummary["mechanism"];
   notes?: string;
 }
@@ -90,26 +52,16 @@ export interface ReleasePrOpenedInput {
 
 export class ReleaseStatusPoller {
   private githubAuth: GitHubAuthManager;
-  /**
-   * Single sink for every card transition: persist (chat-history upsert by
-   * `cardId`) + live emit (per-session `release_card` WS). Wired in
-   * `bootstrap-managers.ts`. Defaults to a no-op so unit tests can inspect cards
-   * via `getStatus` without wiring persistence.
-   */
+  // bootstrap-managers wires this to history persistence and live emission.
   private onCard: (card: ReleaseStatusSummary) => void;
   private runnerRegistry?: SessionRunnerRegistry;
 
-  /** Single supervisor timer (one for the whole poller). */
   private supervisor: ReturnType<typeof setInterval> | null = null;
-  /** sessionId → current card snapshot. */
   private cards = new Map<string, ReleaseStatusSummary>();
-  /** sessionId → repo coordinates. */
   private sessionRepos = new Map<string, TrackedRepo>();
-  /** sessionId → timestamp of this session's last poll. */
   private lastPolledAt = new Map<string, number>();
-  /** `${repoKey}#${tag}` → published release snapshot, for dedup across sessions. */
   private releasedByKey = new Map<string, ReleaseStatusSummary>();
-  /** `0` means viewers present / never seen; else the last-detach timestamp. */
+  // Zero means viewers present or no detach observed.
   private lastViewerDetachAt = 0;
 
   constructor(opts: {
@@ -122,8 +74,6 @@ export class ReleaseStatusPoller {
     this.runnerRegistry = opts.runnerRegistry;
   }
 
-  // ---- Global gate (mirrors PrStatusPoller) ----
-
   private anyViewersConnected(): boolean {
     const registry = this.runnerRegistry;
     if (!registry) return true;
@@ -134,7 +84,6 @@ export class ReleaseStatusPoller {
     return false;
   }
 
-  /** True when any tracked release is mid-flight (its result still changes). */
   private anyActiveRelease(): boolean {
     for (const card of this.cards.values()) {
       if (ACTIVE_PHASES.has(card.phase)) return true;
@@ -159,8 +108,6 @@ export class ReleaseStatusPoller {
     if (card && ACTIVE_PHASES.has(card.phase)) return RELEASE_POLL_INTERVAL_MS;
     return RELEASE_SLOW_INTERVAL_MS;
   }
-
-  // ---- Public hooks ----
 
   notifyViewerAttached(): void {
     this.lastViewerDetachAt = 0;
@@ -187,10 +134,6 @@ export class ReleaseStatusPoller {
     return tracked;
   }
 
-  /**
-   * Record an agent-proposed release. Sets the card to `proposed` (Confirm &
-   * publish / Cancel) — no tag exists yet, so nothing is polled.
-   */
   propose(sessionId: string, repoUrl: string | undefined, input: ReleaseProposeInput): void {
     this.resolveRepo(sessionId, repoUrl);
     const card: ReleaseStatusSummary = {
@@ -208,18 +151,6 @@ export class ReleaseStatusPoller {
     this.setCard(card);
   }
 
-  /**
-   * docs/214 — record that a version-bump PR was opened against the release
-   * branch (driven directly from the `shipit release prepare` route, so the
-   * agent is out of the state-reporting loop). Moves the card to `pr_open` and
-   * starts polling the PR until it merges; once merged the card advances to
-   * `pr_merged` and folds into the existing tag/Release polling.
-   *
-   * Re-prepares for the SAME tag (the release branch was reset + the PR updated)
-   * reuse the same card — keyed by `{sessionId, tag}` — patching `prNumber`/
-   * `prUrl` in place rather than appending a duplicate card. If the tag was
-   * already observed as published (dedup), surface that terminal result instead.
-   */
   markPrOpened(sessionId: string, repoUrl: string | undefined, input: ReleasePrOpenedInput): void {
     const repo = this.resolveRepo(sessionId, repoUrl);
     const prev = this.cards.get(sessionId);
@@ -253,12 +184,6 @@ export class ReleaseStatusPoller {
     });
   }
 
-  /**
-   * Record that the agent has tagged + pushed (post-confirmation). Moves the
-   * card to `gating` and starts polling the gate + the published Release. If
-   * this `{repoKey, tag}` was already observed as released, surface that result
-   * instead (dedup).
-   */
   markTagged(sessionId: string, repoUrl: string | undefined, input: ReleaseTaggedInput): void {
     const repo = this.resolveRepo(sessionId, repoUrl);
     const prev = this.cards.get(sessionId);
@@ -290,10 +215,6 @@ export class ReleaseStatusPoller {
     });
   }
 
-  /**
-   * Record that the tag already existed (idempotency no-op). Reads the existing
-   * Release (if any) and shows the card in a terminal "already released" state.
-   */
   markAlreadyReleased(
     sessionId: string,
     repoUrl: string | undefined,
@@ -319,7 +240,6 @@ export class ReleaseStatusPoller {
     });
   }
 
-  /** Read the existing Release for an "already released" card and fold it in. */
   private async loadAlreadyReleased(sessionId: string, repo: TrackedRepo, tag: string): Promise<void> {
     const release = await this.githubAuth.getReleaseByTag(repo.owner, repo.repo, tag);
     if (!release) return;
@@ -344,12 +264,6 @@ export class ReleaseStatusPoller {
     this.releasedByKey.set(`${repo.repoKey}#${tag}`, next);
   }
 
-  /**
-   * User declined the proposal on the card. Collapse the card to a terminal
-   * `cancelled` state (persisted + emitted via `setCard`) rather than removing
-   * it — the decision belongs in the transcript and must survive a reload. No-op
-   * if nothing was proposed for this session.
-   */
   cancel(sessionId: string): void {
     const prev = this.cards.get(sessionId);
     if (!prev) return;
@@ -357,11 +271,6 @@ export class ReleaseStatusPoller {
     this.setCard({ ...prev, phase: "cancelled" });
   }
 
-  /**
-   * Drop in-memory state for a session (archive / untrack). The persisted
-   * transcript card goes away with the session's chat history, so there's no
-   * card to retract — this just clears the poller's live maps.
-   */
   untrackSession(sessionId: string): void {
     this.cards.delete(sessionId);
     this.sessionRepos.delete(sessionId);
@@ -377,15 +286,11 @@ export class ReleaseStatusPoller {
     this.lastPolledAt.clear();
   }
 
-  // ---- Internals ----
-
   private setCard(card: ReleaseStatusSummary): void {
     const prev = this.cards.get(card.sessionId);
     if (prev && JSON.stringify(prev) === JSON.stringify(card)) return;
     this.cards.set(card.sessionId, card);
     if (TERMINAL_PHASES.has(card.phase)) this.lastPolledAt.delete(card.sessionId);
-    // Single sink: persist (chat-history upsert by cardId) + live emit
-    // (per-session `release_card` WS). See `onCard` wiring in bootstrap-managers.
     this.onCard(card);
   }
 
@@ -419,13 +324,6 @@ export class ReleaseStatusPoller {
     }
   }
 
-  /**
-   * Poll one session's gate + published Release and advance its card.
-   *
-   *   - Release published → `released` (and remember for dedup).
-   *   - No Release yet, gate failed → `failed`.
-   *   - No Release yet, gate pending/none → stay `gating`.
-   */
   private async pollSession(sessionId: string): Promise<void> {
     const card = this.cards.get(sessionId);
     const repo = this.sessionRepos.get(sessionId);
@@ -434,20 +332,15 @@ export class ReleaseStatusPoller {
 
     this.lastPolledAt.set(sessionId, Date.now());
 
-    // docs/214 — `pr_open`: poll the release PR until it merges. On merge, fold
-    // into the tag/Release polling below (phase `pr_merged`); on a close without
-    // a merge, terminate the card as `failed`.
     if (card.phase === "pr_open") {
       if (typeof card.prNumber !== "number") return;
       const pr = await this.githubAuth.viewPullRequest(repo.owner, repo.repo, card.prNumber);
       const current = this.cards.get(sessionId);
       if (!current) return;
       if (current.tag !== card.tag || current.phase !== "pr_open") return;
-      if (!pr) return; // transient read failure — keep polling
+      if (!pr) return;
       if (pr.merged) {
         this.setCard({ ...current, phase: "pr_merged" });
-        // Immediately probe the gate/Release so a fast CI publish shows up
-        // without waiting a full poll interval.
         void this.pollSession(sessionId).catch((err: unknown) => {
           console.error(`[release-poller] post-merge poll error for ${sessionId}:`, err);
         });
@@ -468,7 +361,7 @@ export class ReleaseStatusPoller {
       : undefined;
     const release = await this.githubAuth.getReleaseByTag(repo.owner, repo.repo, card.tag);
 
-    // Re-read after the awaits — the session may have been cancelled/retagged.
+    // Cancellation or a new tag can arrive during the awaits.
     const current = this.cards.get(sessionId);
     if (!current) return;
     if (current.tag !== card.tag || !ACTIVE_PHASES.has(current.phase)) return;
@@ -504,7 +397,6 @@ export class ReleaseStatusPoller {
       return;
     }
 
-    // Still gating — surface check progress if we have it.
     if (checks) this.setCard({ ...current, phase: "gating", checks });
   }
 }

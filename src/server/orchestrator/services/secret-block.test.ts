@@ -12,7 +12,6 @@ const finding = (over: Partial<SecretFinding> = {}): SecretFinding => ({
   ...over,
 });
 
-/** In-memory stand-in for the persisted `sessions.secret_block` column. */
 function harness() {
   let stored: SessionSecretBlock | undefined;
   const emitted: WsServerMessage[] = [];
@@ -65,15 +64,11 @@ describe("recordSecretBlock", () => {
     expect(h.dispatch).toHaveBeenCalledTimes(1);
     const prompt = h.dispatch.mock.calls[0]?.[0] as { text: string; systemTurn?: boolean };
     expect(prompt.systemTurn).toBe(true);
-    // The findings reach the agent, redacted — it needs the file:line to act.
     expect(prompt.text).toContain("src/config.ts:11");
     expect(prompt.text).toContain("ghp_…[redacted, 40 chars]");
   });
 
   it("forbids the agent from silencing the scanner instead of fixing it", () => {
-    // The cheapest way to make the error go away is an allow-comment, which
-    // defeats the guard while looking like a fix. If this assertion is ever
-    // relaxed, the feature is actively harmful.
     const h = harness();
     recordSecretBlock(h.ctx, [finding()]);
     const { text } = h.dispatch.mock.calls[0]?.[0] as { text: string };
@@ -82,9 +77,6 @@ describe("recordSecretBlock", () => {
   });
 
   it("re-blocking with the SAME findings keeps the original timestamp and budget", () => {
-    // The block re-arises every turn while the credential sits in the tree.
-    // Without this, the banner would reset its age and the agent would be
-    // re-nagged on every single turn, forever.
     const h = harness();
     recordSecretBlock(h.ctx, [finding()]);
     h.ctx.now = () => new Date("2026-08-04T13:00:00.000Z");
@@ -101,7 +93,6 @@ describe("recordSecretBlock", () => {
 
     expect(h.dispatch).toHaveBeenCalledTimes(MAX_SECRET_BLOCK_NOTIFY);
     expect(h.stored?.notifyCount).toBe(MAX_SECRET_BLOCK_NOTIFY);
-    // The banner never gives up even after the agent is done being asked.
     expect(h.stored?.findings).toHaveLength(1);
   });
 

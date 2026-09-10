@@ -1,19 +1,3 @@
-/**
- * TurnAccumulator — owns per-turn runner state for ContainerSessionRunner.
- *
- * Holds the message queue, accumulated assistant text / tool-use blocks,
- * turn summary, chat-message-group log, and the turn-event WS buffer used
- * by reconnecting viewers to replay post-turn messages.
- *
- * Extracted from container-session-runner.ts so the runner class can focus
- * on lifecycle and worker plumbing. Behavior is unchanged — every public
- * method preserves the same observable semantics as the inlined version.
- *
- * The accumulator deliberately does NOT broadcast: WS-message emission is
- * still owned by the runner (which keeps the `EventEmitter` "message" event
- * contract intact). Callers use `pushTurnEvent` to add a message to the
- * replay buffer, then perform their own emit.
- */
 import type { WsServerMessage, ClaudeContentBlockToolUse } from "../shared/types.js";
 import type { QueuedMessage, ChatMessageGroup, SteeredMessage, RecordedChatCard } from "./session-runner.js";
 import { settleDroppedQueueEntries } from "./turn-settlement.js";
@@ -23,7 +7,6 @@ const MAX_QUEUE_SIZE = 50;
 const MAX_TURN_BUFFER = 1000;
 
 export class TurnAccumulator {
-  // Per-turn assistant accumulation
   accumulatedText = "";
   accumulatedToolUse: ClaudeContentBlockToolUse[] = [];
   turnSummary = "";
@@ -32,17 +15,10 @@ export class TurnAccumulator {
   steeredMessages: SteeredMessage[] = [];
   recordedCards: RecordedChatCard[] = [];
 
-  // Message queue
   private _messageQueue: QueuedMessage[] = [];
-
-  // Turn-event replay buffer
   private _turnEventBuffer: WsServerMessage[] = [];
   lastPersistedBufferIndex = 0;
-
-  /** docs/244 / planning#299 — see `SessionRunnerInterface.committedBodyIds`. */
   readonly committedBodyIds = createCommittedBodyIds();
-
-  // ---- Queue ----
 
   get messageQueue(): QueuedMessage[] { return this._messageQueue; }
   get queueLength(): number { return this._messageQueue.length; }
@@ -60,10 +36,7 @@ export class TurnAccumulator {
   }
 
   clearQueue(): void {
-    // docs/240 — settle what we throw away. A queued turn someone is awaiting
-    // (a notify-on-merge wake-turn, a rebase resolution step) used to have its
-    // completion signal silently eaten here, leaving the consumer permanently
-    // "pending" with no way to tell that from "lost".
+    // Settle discarded turns so their callers do not wait forever.
     settleDroppedQueueEntries(this._messageQueue, "queue cleared");
     this._messageQueue.length = 0;
   }
@@ -72,8 +45,6 @@ export class TurnAccumulator {
     return this._messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 }));
   }
 
-  // ---- Turn event buffer ----
-
   getTurnEventBuffer(): WsServerMessage[] { return [...this._turnEventBuffer]; }
 
   clearTurnEventBuffer(): void {
@@ -81,21 +52,14 @@ export class TurnAccumulator {
     this.lastPersistedBufferIndex = 0;
   }
 
-  /**
-   * Add a message to the replay buffer. Mirrors the eviction rules from
-   * the original ContainerSessionRunner.emitMessage: under the cap, append;
-   * exactly at the cap, evict the middle (keep first 10 init events +
-   * recent tail) then append; over the cap, drop silently.
-   *
-   * Returns true if the message was buffered. The caller is responsible
-   * for actually emitting the WS message to viewers.
-   */
+  /** Buffer only; the caller must emit the message. */
   pushTurnEvent(msg: WsServerMessage): boolean {
     if (this._turnEventBuffer.length < MAX_TURN_BUFFER) {
       this._turnEventBuffer.push(msg);
       return true;
     }
     if (this._turnEventBuffer.length === MAX_TURN_BUFFER) {
+      // Retain initialization events and the recent tail.
       const keep = 10;
       const recent = this._turnEventBuffer.length - keep;
       this._turnEventBuffer = [
@@ -108,17 +72,7 @@ export class TurnAccumulator {
     return false;
   }
 
-  /**
-   * Drop the queue and turn-event buffer — used by dispose().
-   *
-   * Matches the original ContainerSessionRunner.dispose behavior: only the
-   * queue and event buffer are explicitly cleared. The per-turn
-   * accumulators (`accumulatedText`, `turnSummary`, etc.) are left as-is
-   * — the runner is about to be discarded, so retaining their final values
-   * for any in-flight consumer is intentional.
-   */
   reset(): void {
-    // docs/240 — same settle-what-you-drop rule as `clearQueue`.
     settleDroppedQueueEntries(this._messageQueue, "runner disposed");
     this._messageQueue.length = 0;
     this._turnEventBuffer = [];

@@ -1,13 +1,3 @@
-/**
- * Tool names each agent CLI exposes, for UI mapping.
- *
- * Split out of `agent-registry.ts` (docs/252 phase 1) so the harness catalogue
- * can carry them without importing that module: `agent-registry.ts` now derives
- * its `AGENT_DEFS` from the catalogue, so a catalogue → registry import would
- * close a cycle. `agent-registry.ts` re-exports both constants, so existing
- * import sites are unchanged.
- */
-
 export const CLAUDE_TOOL_NAMES = [
   "Agent",
   "AskUserQuestion",
@@ -52,8 +42,6 @@ export const CLAUDE_TOOL_NAMES = [
   "Write",
 ] as const;
 
-// Verified against a live `opencode run` turn (CLI 1.18.15, 2026-08-16);
-// docs/268-opencode-harness/plan.md. OpenCode tool ids are lowercase.
 export const OPENCODE_TOOL_NAMES = [
   "bash",
   "edit",
@@ -67,16 +55,6 @@ export const OPENCODE_TOOL_NAMES = [
   "write",
 ] as const;
 
-/**
- * Grok Build's advertised tool set, read verbatim off the `system`/`init` event
- * of a real headless turn (CLI 1.0.1, 2026-08-18 — identical across the
- * `grok-4.20-0309-non-reasoning` and `grok-4.6` captures;
- * docs/274-grok-build-harness/plan.md). Grok tool ids are lower_snake_case.
- *
- * This is the CLI's whole advertised list, not the subset ShipIt's transcript
- * gives dedicated treatment — the docs/272 recognition matrix is what decides
- * that, and it is a separate exercise from declaring what the CLI can call.
- */
 export const GROK_TOOL_NAMES = [
   "ask_user_question",
   "enter_plan_mode",

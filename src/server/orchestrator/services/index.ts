@@ -1,10 +1,3 @@
-/**
- * Barrel re-export for the service layer.
- *
- * Import from "./services/index.js" (or just "./services/") to get all
- * service functions and types.
- */
-
 export * from "./types.js";
 export * from "./files.js";
 export * from "./skills.js";

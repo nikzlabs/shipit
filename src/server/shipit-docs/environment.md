@@ -209,7 +209,7 @@ headless-browser codec support, a corrupt asset) all look plausible. **Before
 chasing any of those, check the file itself**:
 
 ```bash
-head -c 120 path/to/asset.png     # a "git-lfs.github.com/spec/v1" header means it's a stub
+head -c 120 path/to/asset.png
 ```
 
 If it is a stub, fetch the content rather than debugging the renderer:

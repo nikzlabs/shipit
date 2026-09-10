@@ -28,8 +28,6 @@ describe("parseReleaseMarkers", () => {
       { action: "propose", version: "0.3.0", tag: "v0.3.0", prerelease: false, mechanism: "release-branch" },
     ]);
 
-    // An unknown mechanism is silently dropped (the card falls back to the
-    // tag-triggered default) rather than half-driving the confirm wording.
     const bogus = `<!--shipit:release {"action":"propose","version":"0.3.0","tag":"v0.3.0","prerelease":false,"mechanism":"nonsense"}-->`;
     expect(parseReleaseMarkers(bogus)).toEqual([
       { action: "propose", version: "0.3.0", tag: "v0.3.0", prerelease: false },

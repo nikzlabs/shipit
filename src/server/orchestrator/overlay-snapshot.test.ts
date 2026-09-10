@@ -10,7 +10,6 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { extractTarStream, fetchDepSnapshotStream } from "./overlay-snapshot.js";
 
-/** Stream a directory's CONTENTS as a tar (mirrors the worker dep-snapshot producer). */
 function tarContents(dir: string): Readable {
   const proc = spawn("tar", ["-c", "-f", "-", "-C", dir, "."], { stdio: ["ignore", "pipe", "ignore"] });
   if (!proc.stdout) throw new Error("tar produced no stdout");
@@ -65,12 +64,8 @@ describe("extractTarStream", () => {
   });
 
   it("rejects (never hangs) when the source already errored before extraction starts", async () => {
-    // The window the prod crash lived in: the fetched body can terminate during
-    // the `await` tick between the pull and `extractTarStream`, so the 'error'
-    // event has already fired by the time we attach — nothing would ever end
-    // tar's stdin and the extract would hang forever.
     const src = new Readable({ read() {} });
-    src.on("error", () => {}); // latch, as `fetchDepSnapshotStream` does
+    src.on("error", () => {});
     src.destroy(new Error("terminated"));
     await delay(10);
 
@@ -78,16 +73,6 @@ describe("extractTarStream", () => {
   });
 });
 
-/**
- * Regression guard for the prod orchestrator crash of 2026-07-30: a session was
- * archived (→ `dispose(force)` → container SIGKILL) while a ~295 MB dep-snapshot
- * pull was in flight. undici raised `TypeError: terminated` (`UND_ERR_SOCKET`) as
- * an `'error'` EVENT on the body stream, not a rejection, so the publish flow's
- * try/catch never saw it and the process died with an uncaughtException.
- *
- * The local server here reproduces exactly that: it starts streaming a real tar
- * body and then destroys the TCP socket mid-archive.
- */
 describe("fetchDepSnapshotStream: worker dies mid-stream", () => {
   let server: http.Server;
   let workerUrl: string;
@@ -97,7 +82,6 @@ describe("fetchDepSnapshotStream: worker dies mid-stream", () => {
   const onUncaught = (err: unknown): void => { uncaught.push(err); };
 
   beforeEach(async () => {
-    // A tar big enough that a partial write is unambiguously mid-archive.
     const src = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-kill-src-"));
     fs.writeFileSync(path.join(src, "big.js"), "x".repeat(512 * 1024));
     tarBytes = execFileSync("tar", ["-c", "-f", "-", "-C", src, "."], { maxBuffer: 8 << 20 });
@@ -106,14 +90,12 @@ describe("fetchDepSnapshotStream: worker dies mid-stream", () => {
 
     server = http.createServer((_req, res) => {
       res.writeHead(200, { "content-type": "application/x-tar" });
-      // Write a prefix of the archive, then kill the connection under the client.
       res.write(tarBytes.subarray(0, 8192), () => res.socket?.destroy());
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     workerUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
-    // Installing our own handler both records escapes AND keeps the vitest worker
-    // alive, so a regression fails this assertion instead of taking the run down.
+    // Keep the test worker alive so an escaped error fails an assertion.
     uncaught.length = 0;
     process.on("uncaughtException", onUncaught);
   });
@@ -134,9 +116,6 @@ describe("fetchDepSnapshotStream: worker dies mid-stream", () => {
 
   it("stays crash-free when the socket dies before the consumer attaches", async () => {
     const stream = await fetchDepSnapshotStream(workerUrl, "node_modules");
-    // Widen the gap the prod crash fell into: the body terminates while nothing
-    // is piping it yet. The latched listener inside `fetchDepSnapshotStream` is
-    // the only thing standing between this and an uncaughtException.
     await delay(150);
 
     await expect(extractTarStream(stream, dest)).rejects.toThrow();

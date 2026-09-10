@@ -1,17 +1,3 @@
-// docs/262 — the test plugin's one service (`probe` in the compose fragment).
-// A dependency-free HTTP server that renders the probe report from the
-// service surface: /project mount, shared state dir, settings file, env.
-//
-//   GET  /             HTML report (reads never mutate the counter)
-//   GET  /report.json  the raw report
-//   POST /increment    bump the shared counter (what `probe --bump` also bumps)
-//
-// The page also exercises the Agent Interface SDK (req 3, plan §5): it awaits
-// `window.shipit.ready`, feature-detects `embedded` (presence alone proves
-// nothing — /shipit-docs/agent-interface-sdk.md), and a button sends the
-// current counter to the agent via `window.shipit.agent.sendMessage()` — the
-// real-instance E2E's browser-to-agent click.
-
 import http from "node:http";
 import { buildReport, bumpCounter } from "../lib/report.mjs";
 

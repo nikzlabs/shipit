@@ -1,12 +1,3 @@
-/**
- * docs/252 phase 9 (req 14) — the declared harness set.
- *
- * The distinction under test throughout is `null` (nothing declared → fall back to
- * probing $PATH) versus `[]` (declared, and empty). Collapsing them would make a
- * missing or corrupt report silently empty the picker on every existing
- * deployment, which is the failure this file exists to prevent.
- */
-
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,7 +14,6 @@ let tmpDir: string;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-harnesses-"));
-  // The parser warns on every rejection; silence it so a passing run is quiet.
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 
@@ -56,14 +46,10 @@ describe("parseInstallReport", () => {
   });
 
   it("ignores ids this build does not know, keeping the rest", () => {
-    // An image can outlive a harness rename; a stale id must not poison the set.
     expect(parseInstallReport('{"harnesses":["claude","cursor"]}')).toEqual(["claude"]);
   });
 
   it("returns null when it named harnesses but none are recognizable", () => {
-    // Distinct from the case above: nothing survived, so the report tells us
-    // nothing. Answering `[]` would disable every harness on an install that has
-    // them — the installer never writes a selection with no recognizable id.
     expect(parseInstallReport('{"harnesses":["cursor"]}')).toBeNull();
     expect(parseInstallReport('{"harnesses":[null]}')).toBeNull();
     expect(parseInstallReport('{"harnesses":[{"id":"claude"}]}')).toBeNull();

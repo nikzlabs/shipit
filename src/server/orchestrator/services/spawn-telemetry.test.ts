@@ -6,15 +6,6 @@ import {
   resetSpawnTelemetry,
 } from "./spawn-telemetry.js";
 
-/**
- * Tests for the spawn-invocation telemetry (docs/117 cross-cutting follow-up).
- *
- * The counters are module-level singletons so the tests reset them around
- * each case. The `[spawn-telemetry]` log line is captured by spying on
- * `console.log` — that's the structured surface external log scrapers
- * consume.
- */
-
 describe("classifySpawnFailure", () => {
   it("maps 404 to parent_missing", () => {
     expect(classifySpawnFailure(404, "Parent session not found")).toBe("parent_missing");

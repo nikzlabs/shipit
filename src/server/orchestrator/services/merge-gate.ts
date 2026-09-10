@@ -1,21 +1,6 @@
-/**
- * docs/287-agent-merge-per-repo §3 — the one live read an agent merge is decided
- * from, and the table that decides it.
- *
- * Nothing existing is reused: the poller's summary can be stale and has no head
- * SHA, its query has no `isDraft`, and `getCheckStatus()` maps "no checks" and a
- * swallowed API failure to one value the merge path treats as permission — a
- * live fail-open, which this replaces for BOTH session kinds.
- *
- * One round trip, both SHAs: `headRefOid` is the branch tip and the rollup's
- * `commit.oid` is what the checks describe, differing exactly when something
- * advanced the branch after CI started. `mergeable` is never consulted and
- * `contexts` never enumerated — counting a bounded list builds a fail-open.
- */
-
 import type { GitHubAuthManager } from "../github-auth.js";
 
-/** The merge decision's query. Written for this decision and used nowhere else. */
+// Read both SHAs and the aggregate rollup; a bounded check list can omit failures.
 export const MERGE_GATE_QUERY = `
 query MergeGate($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
@@ -44,32 +29,19 @@ interface MergeGateResponse {
   errors?: unknown[];
 }
 
-/**
- * What the read saw — structured, not a boolean, so each refusal says the right
- * thing and docs/288 can reuse the same facts without a second read.
- */
 export type MergeObservation =
   | { kind: "unreadable"; reason: string }
   | {
     kind: "read";
-    /** `OPEN` | `CLOSED` | `MERGED`, as GitHub spells it. */
     prState: string;
     isDraft: boolean;
-    /** `APPROVED` | `CHANGES_REQUESTED` | `REVIEW_REQUIRED`, or null when no review is configured. */
     reviewDecision: string | null;
-    /** The branch tip right now. */
     headRefOid: string;
-    /** The commit the rollup describes — not necessarily `headRefOid`. */
     rollupCommitOid: string;
-    /** `SUCCESS` | `PENDING` | `EXPECTED` | `FAILURE` | `ERROR`, or null for zero checks. */
     rollupState: string | null;
   };
 
-/**
- * Read the pull request for a merge decision. **Any GraphQL `errors` makes this
- * unreadable**: `graphqlQuery()` returns the body anyway, so a partial response
- * can carry `errors` AND a null rollup, which would read as "no CI" and merge.
- */
+// Reject partial GraphQL responses: their null rollup can otherwise appear to mean no CI.
 export async function readMergeObservation(
   githubAuthManager: Pick<GitHubAuthManager, "graphqlQuery">,
   owner: string,
@@ -84,8 +56,6 @@ export async function readMergeObservation(
   } catch (err) {
     return { kind: "unreadable", reason: err instanceof Error ? err.message : String(err) };
   }
-  // `graphqlQuery` returns null for unauthenticated, non-2xx, rate-limited and
-  // unparseable-body alike. All mean the same thing here.
   if (!body) return { kind: "unreadable", reason: "GitHub did not answer the pull-request read" };
   if (Array.isArray(body.errors) && body.errors.length > 0) {
     return { kind: "unreadable", reason: "GitHub answered the pull-request read with errors" };
@@ -110,15 +80,10 @@ export async function readMergeObservation(
     reviewDecision: pr.reviewDecision ?? null,
     headRefOid,
     rollupCommitOid,
-    // Absent and explicitly null both mean "no checks for this commit".
     rollupState: lastCommit?.statusCheckRollup?.state ?? null,
   };
 }
 
-/**
- * docs/287 req 15 — why a merge stopped at the flush, in the agent's words. Not
- * collapsed, because each has a different remedy.
- */
 export function mergeFlushRefusal(
   flush: { kind: "blocked-secret" | "blocked-unreadable" | "blocked-conflict" | "partial-unreadable" },
 ): string {
@@ -142,8 +107,6 @@ export function mergeFlushRefusal(
   }
 }
 
-/** Why a merge was refused. The caller branches only on `checks-pending`, the
- * one state a sandbox `--auto` turns into an arming. */
 export type MergeRefusalReason =
   | "unreadable"
   | "already-merged"
@@ -159,39 +122,23 @@ export type MergeRefusalReason =
 
 export type MergeDecision =
   | { action: "merge"; sha: string }
-  /** docs/288 — record a request to merge `sha` once its checks pass. */
   | { action: "arm"; sha: string }
   | { action: "already-merged" }
   | { action: "refuse"; reason: MergeRefusalReason; message: string };
 
-/**
- * The observation table (docs/287 plan §3). The ORDER is the design: unreadable
- * refuses before any field is read, and the SHA comparisons precede the state
- * checks so a stale answer is not reported as a CI failure.
- */
+// Check SHAs before CI status so stale results are not reported as current failures.
 export async function decideMerge(args: {
   observation: MergeObservation;
   prNumber: number;
-  /**
-   * Three DISTINCT answers. A sandbox genuinely skips req 14's check; a
-   * repo-bound workspace whose HEAD could not be read has NOT passed it, and
-   * separate values stop a caller expressing that failure as the exemption.
-   */
+  /** A failed HEAD read must not be treated as the sandbox exemption. */
   localHead:
     | { kind: "sandbox" }
     | { kind: "head"; sha: string }
     | { kind: "unreadable"; reason: string };
   graceSaysWait: () => Promise<boolean>;
-  /**
-   * docs/288 — decide for a repo-bound `--auto`. ONE table, two verdicts: every
-   * refusal below is a refusal for arming too, and the three answers that mean
-   * "this commit may merge, now or once CI reports" become `arm` instead.
-   */
   arming?: boolean;
 }): Promise<MergeDecision> {
   const { observation, prNumber } = args;
-  // The verdict for a commit that is allowed to merge. An arming binds to it and
-  // ShipIt performs the merge later; `--auto` never merges inline.
   const proceed = (sha: string): MergeDecision =>
     args.arming ? { action: "arm", sha } : { action: "merge", sha };
 
@@ -205,19 +152,9 @@ export async function decideMerge(args: {
     };
   }
 
-  // Terminal beats everything below: nothing can change the answer for a pull
-  // request that already merged, and the SHA checks would report a moved head to
-  // somebody whose merge has happened. Nothing is merged on this path.
   if (observation.prState === "MERGED") return { action: "already-merged" };
 
-  // req 16 — the checks describe a commit that is no longer the head. Merging on
-  // the strength of them would merge code CI never saw.
-  //
-  // docs/288 — and it is exactly what an arming is FOR: the push that just
-  // happened is why the rollup lags, and the request binds to `headRefOid` and
-  // waits for that commit's own checks. Skipping the rule keeps the rest of the
-  // order intact, so an arming still refuses on a draft, a review or a failure
-  // rather than being recorded and cancelled a tick later.
+  // Arming binds to the new head and waits for its checks; immediate merging cannot.
   if (!args.arming && observation.rollupCommitOid !== observation.headRefOid) {
     return {
       action: "refuse",
@@ -228,9 +165,6 @@ export async function decideMerge(args: {
     };
   }
 
-  // req 14 — the head must be what this session just committed and pushed.
-  // `guardMergeSync` cannot cover it: that compares the remote-TRACKING ref and
-  // proceeds when it cannot tell, while this reads live and fails closed.
   if (args.localHead.kind === "unreadable") {
     return {
       action: "refuse",
@@ -266,16 +200,10 @@ export async function decideMerge(args: {
     };
   }
 
-  // docs/288 — when arming past a lagging rollup, that rollup describes a
-  // DIFFERENT commit and says nothing about the one being armed, in either
-  // direction: reading a failure from it refuses the request the push was made
-  // to arm, and reading a success from it would arm on checks that never ran.
-  // Not yet reported is the honest value, and the one the request waits on.
+  // An older commit's rollup cannot approve or reject the new head.
   const rollup = args.arming && observation.rollupCommitOid !== observation.headRefOid
     ? "PENDING"
     : observation.rollupState;
-  // req 7 — EVERY check GitHub reports must pass, required or not. The rollup
-  // aggregates all of them, which is why this reads it rather than enumerating.
   if (rollup === "FAILURE" || rollup === "ERROR") {
     return {
       action: "refuse",
@@ -286,8 +214,7 @@ export async function decideMerge(args: {
     };
   }
 
-  // req 8 — checked after CI so the more actionable message wins. A WHITELIST:
-  // naming today's refusals lets one GitHub adds tomorrow fall through.
+  // Only approved or absent reviews permit merging; unknown states must stop it.
   if (observation.reviewDecision !== null && observation.reviewDecision !== "APPROVED") {
     const reason =
       observation.reviewDecision === "CHANGES_REQUESTED" ? "changes requested"
@@ -301,9 +228,7 @@ export async function decideMerge(args: {
   }
 
   if (rollup === "PENDING" || rollup === "EXPECTED") {
-    // docs/288 req 1 — the state the whole feature exists for.
     if (args.arming) return proceed(observation.headRefOid);
-    // req 17 — the command never waits by itself.
     return {
       action: "refuse",
       reason: "checks-pending",
@@ -313,10 +238,8 @@ export async function decideMerge(args: {
   }
 
   if (rollup === null) {
-    // Zero checks is either a repository with no CI or a push whose workflows
-    // are not registered yet — indistinguishable now, hence the grace window.
+    // No checks can mean no CI or workflows not yet registered; wait out the grace period.
     if (await args.graceSaysWait()) {
-      // docs/288 — an arming waits out the grace in the executor, not here.
       if (args.arming) return proceed(observation.headRefOid);
       return {
         action: "refuse",
@@ -330,7 +253,6 @@ export async function decideMerge(args: {
   }
 
   if (rollup !== "SUCCESS") {
-    // An unrecognised rollup state is not permission to merge.
     return {
       action: "refuse",
       reason: "checks-failing",

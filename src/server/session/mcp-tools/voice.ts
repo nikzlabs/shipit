@@ -1,11 +1,3 @@
-/**
- * voice tool — `voice_note` (docs/163). Pure transport: POSTs the ear-shaped
- * payload to the worker's `/agent-ops/voice/note` broker, which relays to the
- * orchestrator's voice router (native note, webhook, or both — the user's
- * setting). Reports the orchestrator's real `delivered` outcome rather than
- * defaulting to success. Extracted from the former standalone
- * `mcp-voice-bridge.ts` for the consolidated bridge.
- */
 
 import type { ToolDescriptor } from "./types.js";
 
@@ -33,8 +25,6 @@ const inputSchema = {
   properties: {
     summary: {
       type: "string",
-      // The route rejects a blank summary (it trims first), which `required`
-      // alone does not say.
       minLength: 1,
       description:
         "A one-or-two-sentence spoken headline written for the ear. No markdown, code, file paths, commit hashes, or PR numbers. When asking a question, voice the actual question plus a brief gist of the options (a compressed version answerable by ear) — never just 'options are on screen'.",
@@ -83,9 +73,6 @@ export const voiceTool: ToolDescriptor = {
           isError: true,
         };
       }
-      // Report the orchestrator's real delivery outcome. Treat a missing field
-      // as NOT delivered rather than defaulting to true, so a genuine no-sink /
-      // torn-down-runner case isn't masked as success (see docs/163).
       const delivered = body.delivered === true;
       return {
         content: [

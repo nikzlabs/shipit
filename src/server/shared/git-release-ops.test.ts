@@ -6,10 +6,6 @@ import simpleGit from "simple-git";
 import { GitManager } from "./git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
-/**
- * docs/214 — the release-prepare git primitives: createBranchFrom/resetBranchTo
- * (checkout -B), cherryPick (abort + surface on conflict), and listTags.
- */
 describe("GitManager: release-prepare git ops", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
@@ -32,8 +28,6 @@ describe("GitManager: release-prepare git ops", () => {
     await git.autoCommit(message);
   }
 
-  // ---- createBranchFrom / resetBranchTo ----
-
   it("createBranchFrom creates a branch at a start point and checks it out", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
@@ -44,7 +38,6 @@ describe("GitManager: release-prepare git ops", () => {
 
     await git.createBranchFrom("release/1.0.0", base!);
     expect(await git.getCurrentBranch()).toBe("release/1.0.0");
-    // The head branch was created at `base`, so the second commit's file is gone.
     expect(fs.existsSync(path.join(tmpDir, "b.txt"))).toBe(false);
   });
 
@@ -59,14 +52,11 @@ describe("GitManager: release-prepare git ops", () => {
     await git.createBranchFrom("release/1.0.0", base!);
     await commit(git, "c.txt", "3", "work on release branch");
 
-    // Re-running prepare resets the same head branch back to the (advanced) base.
     await git.resetBranchTo("release/1.0.0", advanced!);
     expect(await git.getCurrentBranch()).toBe("release/1.0.0");
     expect(await git.getHeadHash()).toBe(advanced);
     expect(fs.existsSync(path.join(tmpDir, "c.txt"))).toBe(false);
   });
-
-  // ---- cherryPick ----
 
   it("cherryPick applies a commit from another branch onto the current branch", async () => {
     const git = new GitManager(tmpDir);
@@ -74,11 +64,9 @@ describe("GitManager: release-prepare git ops", () => {
     await commit(git, "a.txt", "base", "base");
     const base = await git.getHeadHash();
 
-    // A fix commit on main.
     await commit(git, "fix.txt", "fixed", "hotfix");
     const fixSha = await git.getHeadHash();
 
-    // Branch off base, cherry-pick the fix.
     await git.createBranchFrom("release/1.0.1", base!);
     const res = await git.cherryPick([fixSha!]);
     expect(res.success).toBe(true);
@@ -91,18 +79,15 @@ describe("GitManager: release-prepare git ops", () => {
     await commit(git, "shared.txt", "base\n", "base");
     const base = await git.getHeadHash();
 
-    // Conflicting change on main.
     await commit(git, "shared.txt", "main-change\n", "main change");
     const conflictSha = await git.getHeadHash();
 
-    // Branch off base and make a divergent change to the same file.
     await git.createBranchFrom("release/1.0.1", base!);
     await commit(git, "shared.txt", "release-change\n", "release change");
 
     const res = await git.cherryPick([conflictSha!]);
     expect(res.success).toBe(false);
     expect(res.conflictedSha).toBe(conflictSha);
-    // The pick was aborted — the tree is clean (no conflict markers committed).
     expect(await git.isClean()).toBe(true);
     expect(fs.readFileSync(path.join(tmpDir, "shared.txt"), "utf8")).toBe("release-change\n");
   });
@@ -113,9 +98,6 @@ describe("GitManager: release-prepare git ops", () => {
     expect(await git.cherryPick([])).toEqual({ success: true });
   });
 
-  // ---- mergeOverride (docs/214 — take incoming tree wholesale, conflict-proof) ----
-
-  /** Read a worktree file (relative path), or "" if absent. */
   function readFile(rel: string): string {
     try {
       return fs.readFileSync(path.join(tmpDir, rel), "utf8");
@@ -124,12 +106,6 @@ describe("GitManager: release-prepare git ops", () => {
     }
   }
 
-  /**
-   * Build a stable↔main divergence that WOULD conflict on a regular merge:
-   *   base → main commit (touches code.ts + package.json, adds new.txt)
-   *        → release/1.0.0 off stable (which independently touches the same files)
-   * Leaves the repo checked out on `release/1.0.0` with a `mainref` tag at main.
-   */
   async function setupDivergence(git: GitManager): Promise<void> {
     await git.init();
     fs.writeFileSync(path.join(tmpDir, "code.ts"), "base\n");
@@ -137,15 +113,12 @@ describe("GitManager: release-prepare git ops", () => {
     await git.autoCommit("base");
     const baseSha = await git.getHeadHash();
 
-    // main diverges: edits the shared source file, the version file, adds a file.
     fs.writeFileSync(path.join(tmpDir, "code.ts"), "main-code\n");
     fs.writeFileSync(path.join(tmpDir, "package.json"), `${JSON.stringify({ version: "1.0.0" })}\n`);
     fs.writeFileSync(path.join(tmpDir, "main-only.ts"), "main-only\n");
     await git.autoCommit("main change");
     await tagLocal(tmpDir, "mainref");
 
-    // stable/release diverges off base: a hotfix that edits the SAME source file
-    // (real code conflict) plus a stale-only file main never had.
     await git.createBranchFrom("release/1.0.0", baseSha!);
     fs.writeFileSync(path.join(tmpDir, "code.ts"), "stable-hotfix\n");
     fs.writeFileSync(path.join(tmpDir, "stable-only.ts"), "stable-only\n");
@@ -157,23 +130,17 @@ describe("GitManager: release-prepare git ops", () => {
     await setupDivergence(git);
     const releaseTip = await git.getHeadHash();
 
-    // A plain merge here WOULD conflict on code.ts — prove that first.
     const plain = await git.merge("mainref");
     expect(plain.success).toBe(false);
     expect(plain.conflicts).toContain("code.ts");
 
-    // mergeOverride never conflicts and yields main's tree exactly.
     await git.mergeOverride("mainref");
     expect(await git.isClean()).toBe(true);
 
-    // Tree == mainref's tree byte-for-byte: incoming content, main-only file
-    // present, stable-only file GONE (fully overridden).
     expect(readFile("code.ts")).toBe("main-code\n");
     expect(readFile("main-only.ts")).toBe("main-only\n");
     expect(fs.existsSync(path.join(tmpDir, "stable-only.ts"))).toBe(false);
 
-    // 2-parent merge commit whose FIRST parent is the release tip (so the bump PR
-    // stays a clean descendant of stable) and second parent is main.
     const sg = simpleGit(tmpDir);
     const parents = (await sg.raw(["log", "-1", "--format=%P"])).trim().split(/\s+/);
     expect(parents).toHaveLength(2);
@@ -193,8 +160,6 @@ describe("GitManager: release-prepare git ops", () => {
     expect(headTree).toBe(refTree);
   });
 
-  // ---- listTags ----
-
   it("listTags returns tags, optionally filtered by a glob", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
@@ -212,7 +177,6 @@ describe("GitManager: release-prepare git ops", () => {
   });
 });
 
-/** Create a lightweight tag at HEAD without pushing (test helper). */
 async function tagLocal(dir: string, tag: string): Promise<void> {
   const { default: simpleGit } = await import("simple-git");
   await simpleGit(dir).raw(["tag", tag]);

@@ -1,12 +1,3 @@
-/**
- * Custom Vitest reporter optimized for LLM consumption.
- *
- * Design goals:
- * - Minimal output for passing tests (single summary line)
- * - Concise failure details: test name, error message, and source context
- * - Clear summary line for quick pass/fail determination
- * - No ANSI color codes, no progress bars, no durations for passing tests
- */
 import type { TestModule, TestCase, TestRunEndReason } from "vitest/reporters";
 import type { SerializedError, TestError } from "@vitest/utils";
 import { readFileSync } from "node:fs";
@@ -37,7 +28,6 @@ function stripAnsi(str: string): string {
   return str.replace(ANSI_RE, "");
 }
 
-/** Read source lines around a failure location, returning formatted context. */
 function getCodeContext(
   filePath: string,
   line: number,
@@ -55,7 +45,6 @@ function getCodeContext(
       const lineNum = String(i + 1).padStart(gutterWidth);
       const marker = i === line - 1 ? ">" : " ";
       result.push(`    ${marker} ${lineNum} | ${lines[i]}`);
-      // Add column indicator on the failure line
       if (i === line - 1 && column > 0) {
         const padding = " ".repeat(gutterWidth + column);
         result.push(`      ${padding}^`);
@@ -69,24 +58,20 @@ function getCodeContext(
 
 function formatError(error: TestError | SerializedError): string {
   const message = stripAnsi(error.message || "Unknown error");
-  // Truncate long error messages to first 5 lines
   const lines = message.split("\n");
   const truncated =
     lines.length > 5
       ? lines.slice(0, 5).join("\n") + `\n... (${lines.length - 5} more lines)`
       : message;
 
-  // Include diff if present (useful for assertion failures)
   let diff = "";
   if ("diff" in error && error.diff) {
     diff = "\n    Diff:\n" + stripAnsi(error.diff);
   }
 
-  // Extract code context from the first in-project stack frame
   let context = "";
   if (error.stacks && error.stacks.length > 0) {
     for (const frame of error.stacks) {
-      // Skip node_modules frames, find the first project source frame
       if (frame.file && !frame.file.includes("node_modules")) {
         const code = getCodeContext(frame.file, frame.line, frame.column);
         if (code) {
@@ -147,7 +132,6 @@ export default class LLMReporter {
       }
     }
 
-    // Output failed modules with details
     if (failedModules.length > 0) {
       output.push("FAILURES:");
       output.push("");
@@ -160,7 +144,6 @@ export default class LLMReporter {
         }
         for (const test of mod.tests) {
           output.push(`  FAIL ${mod.moduleId} > ${test.name}`);
-          // Indent error message
           for (const line of test.error.split("\n")) {
             output.push(`    ${line}`);
           }
@@ -169,7 +152,6 @@ export default class LLMReporter {
       }
     }
 
-    // Unhandled errors
     if (unhandledErrors.length > 0) {
       output.push("UNHANDLED ERRORS:");
       for (const err of unhandledErrors) {
@@ -183,7 +165,6 @@ export default class LLMReporter {
       output.push("");
     }
 
-    // Summary
     const status = totalFailed > 0 || reason === "failed" ? "FAIL" : "PASS";
     const parts = [`${totalPassed} passed`];
     if (totalFailed > 0) parts.push(`${totalFailed} failed`);

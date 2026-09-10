@@ -19,29 +19,14 @@ import {
   type Violation,
 } from "./check-dependency-age.js";
 
-/**
- * Regression coverage for the dependency-age gate.
- *
- * The defect these guard against: the script read only the root `package.json`,
- * so `docker/agent-cli/package.json` — the agent CLIs baked into the
- * session-worker image — was never age-checked. Renovate's per-package
- * `minimumReleaseAge` was the only cooldown on those bumps, and a package the
- * rule's name list did not mention got no cooldown at all. #2502 bumped
- * `opencode-ai` to a version published that same morning and CI went green.
- *
- * The lookup is injected, so nothing here touches the registry: the rules are
- * what is under test, not npm's reachability.
- */
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = Date.parse("2026-08-21T12:00:00.000Z");
 
-/** A lookup over a fixed `name@version` → ISO-stamp table. */
 function lookupFrom(table: Record<string, string>): PublishLookup {
   return (name, version) => table[`${name}@${version}`];
 }
 
-/** Days before NOW, as the ISO string the registry would return. */
 function daysAgo(days: number): string {
   return new Date(NOW - days * DAY_MS).toISOString();
 }
@@ -201,8 +186,6 @@ describe("findViolations", () => {
   });
 
   it("does not fail open on an unparseable publish timestamp", () => {
-    // `Date.parse` gives NaN and `NaN < MIN_AGE_MS` is false, so a malformed or
-    // hostile registry response would otherwise read as "old enough".
     const violations = findViolations([manifest("package.json", { demo: "1.0.0" })], {
       now: NOW,
       lookup: () => "not-a-date",
@@ -233,18 +216,11 @@ describe("findViolations", () => {
     );
     expect(violations).toHaveLength(1);
     expect(violations[0]).toMatchObject({ name: "broken", kind: "lookup-failed" });
-    // Only the first line of the error reaches the report — a stack would bury it.
     expect(violations[0].detail).not.toContain("stack line");
   });
 });
 
-/**
- * The age waiver — `.dependency-age-allowlist.json`. It is an escape hatch on a
- * supply-chain control, so what it must NOT waive is as load-bearing as what it
- * does: a different version, a different manifest, an expired entry, and any
- * violation that is not `too-new` all have to survive it.
- */
-const TODAY = new Date(NOW).toISOString().slice(0, 10); // "2026-08-21"
+const TODAY = new Date(NOW).toISOString().slice(0, 10);
 
 function waiver(over: Partial<AgeWaiver> = {}): AgeWaiver {
   return {
@@ -281,7 +257,6 @@ describe("applyWaivers", () => {
     const result = applyWaivers([tooNew({ version: "2.1.257" })], [waiver()], NOW);
     expect(result.violations).toHaveLength(1);
     expect(result.violations[0].version).toBe("2.1.257");
-    // The 2.1.251 entry now matches nothing, so it is reported as dead weight.
     expect(result.stale).toHaveLength(1);
   });
 
@@ -292,8 +267,6 @@ describe("applyWaivers", () => {
   });
 
   it("does not leak across packages sharing a manifest and version", () => {
-    // The near-miss the version and manifest cases do not cover: same manifest,
-    // same version string, different package.
     const result = applyWaivers([tooNew({ name: "opencode-ai" })], [waiver()], NOW);
     expect(result.violations).toHaveLength(1);
     expect(result.violations[0].name).toBe("opencode-ai");
@@ -370,8 +343,6 @@ describe("parseWaivers", () => {
   });
 
   it("rejects a duplicate key — the diff would not mean what JSON.parse reads", () => {
-    // Valid JSON. `JSON.parse` keeps the LAST "package", so a reviewer reading
-    // the diff approves opencode-ai and the file waives claude-code.
     const raw = `[{
       "manifest": "docker/agent-cli/package.json",
       "package": "opencode-ai",
@@ -380,7 +351,7 @@ describe("parseWaivers", () => {
       "reason": "approved only opencode-ai",
       "expires": "2026-08-25"
     }]`;
-    expect(JSON.parse(raw)[0].package).toBe("@anthropic-ai/claude-code"); // the trap is real
+    expect(JSON.parse(raw)[0].package).toBe("@anthropic-ai/claude-code");
     expect(() => parseWaivers(raw, NOW)).toThrow(/duplicate "package" key/);
   });
 
@@ -417,8 +388,6 @@ describe("loadWaivers", () => {
   });
 
   it("parses the repo's own allowlist, whatever is in it today", () => {
-    // Guards a hand-edit: a malformed entry fails here rather than at the point
-    // where it would have silently waived nothing.
     expect(() => loadWaivers(REPO_ROOT)).not.toThrow();
     for (const entry of loadWaivers(REPO_ROOT)) {
       expect(POLICY_MANIFESTS).toContain(entry.manifest);
@@ -436,12 +405,6 @@ describe("loadWaivers", () => {
   });
 });
 
-/**
- * The wiring, not the pieces. Every helper above can be correct and green while
- * `evaluatePolicy` never loads the allowlist or never calls `applyWaivers` —
- * a regression no pure-helper test can fail on, because those call the helpers
- * directly. These drive the composition over a temp repo root instead.
- */
 describe("evaluatePolicy", () => {
   function repoWith(pins: Record<string, string>, allowlist?: unknown): string {
     const dir = mkdtempSync(join(os.tmpdir(), "check-deps-"));

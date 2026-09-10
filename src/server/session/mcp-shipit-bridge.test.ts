@@ -4,17 +4,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createShipitBridgeServer, selectTools, TOOL_REGISTRY } from "./mcp-shipit-bridge.js";
 import type { ToolDescriptor } from "./mcp-tools/types.js";
 
-/**
- * planning#130 — the consolidated `shipit` bridge serves a configurable subset of all
- * internal tools from ONE stdio process. These tests drive a real MCP `Client`
- * over an in-memory transport, with `globalThis.fetch` stubbed, so they exercise
- * the production ListTools/CallTool path: tool selection, per-tool dispatch and
- * forwarding, the permission tool's resilient request→await poll, and the unknown
- * tool guard.
- */
-
 const WORKER = "http://worker.test";
-/** Instant backoff so the permission retry/poll loop doesn't actually sleep. */
 const deps = { workerUrl: WORKER, sleep: () => Promise.resolve() };
 
 async function connect(tools: ToolDescriptor[]): Promise<{ client: Client; close: () => Promise<void> }> {
@@ -39,7 +29,6 @@ function jsonResponse(status: number, body: unknown): Response {
   } as unknown as Response;
 }
 
-/** Extract the text of the first content block of a CallTool result. */
 function firstText(result: unknown): string {
   const content = (result as { content?: { type: string; text?: string }[] }).content ?? [];
   return content[0]?.text ?? "";
@@ -81,15 +70,9 @@ describe("createShipitBridgeServer — ListTools", () => {
     expect(tools.map((t) => t.name).sort()).toEqual(
       ["permission_prompt", "present", "propose_actions", "report_shipit_bug", "voice_note"],
     );
-    // ask was not selected.
     expect(tools.find((t) => t.name === "AskUserQuestion")).toBeUndefined();
   });
 
-  // A bound the tool ENFORCES but the advertised schema does not declare is
-  // invisible to the model, which is how propose_actions kept rejecting calls
-  // (docs/207). `AskUserQuestion` rejects a question with an empty `options`
-  // array, so the schema has to say so. The schema literal is hand-written, so
-  // this can drift and fail.
   it("declares the option bound `AskUserQuestion` actually enforces", async () => {
     bridge = await connect(selectTools("ask"));
     const askSchema = (await bridge.client.listTools()).tools.find(
@@ -101,7 +84,6 @@ describe("createShipitBridgeServer — ListTools", () => {
     expect(askSchema?.properties?.questions?.minItems).toBe(1);
     expect(askSchema?.properties?.questions?.items?.properties?.options?.minItems).toBe(1);
 
-    // …and that declared bound matches the rejection the model would hit.
     const result = await bridge.client.callTool({
       name: "AskUserQuestion",
       arguments: { questions: [{ question: "Which?", header: "Pick", options: [] }] },
@@ -109,10 +91,6 @@ describe("createShipitBridgeServer — ListTools", () => {
     expect((result as { isError?: boolean }).isError).toBe(true);
   });
 
-  // A blank label is DROPPED by `normalizeAskQuestions`, leaving the question
-  // with no options and the worker returning 400 — so a pre-check that only
-  // counts the array is weaker than what it pre-checks, and the round trip it
-  // exists to avoid happens anyway.
   it("rejects a blank-labelled option in-box, not after a round trip", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -202,9 +180,6 @@ describe("createShipitBridgeServer — CallTool dispatch", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  // docs/207: the cap that trips in practice. The pre-check runs the same
-  // validator as the orchestrator, so an over-long payload is rejected in-box —
-  // no round trip — with a message naming the measured size and the repair.
   it("fails `propose_actions` fast on an over-long payload, naming the size and the fix", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -251,9 +226,9 @@ describe("permission tool — resilient request → await poll", () => {
 
   it("opens the request, polls past `pending`, and returns an allow envelope", async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(200, { requestId: "req-1" })) // /request
-      .mockResolvedValueOnce(jsonResponse(200, { pending: true })) //       /await #1
-      .mockResolvedValueOnce(jsonResponse(200, { behavior: "allow" })); // /await #2
+      .mockResolvedValueOnce(jsonResponse(200, { requestId: "req-1" }))
+      .mockResolvedValueOnce(jsonResponse(200, { pending: true }))
+      .mockResolvedValueOnce(jsonResponse(200, { behavior: "allow" }));
     vi.stubGlobal("fetch", fetchMock);
     bridge = await connect(selectTools("permission"));
 
@@ -262,7 +237,6 @@ describe("permission tool — resilient request → await poll", () => {
       arguments: { tool_name: "Edit", input: { file_path: ".env" }, tool_use_id: "tu-1" },
     });
 
-    // `updatedInput` echoes the original input back (mandatory on allow).
     expect(JSON.parse(firstText(result))).toEqual({
       behavior: "allow",
       updatedInput: { file_path: ".env" },
@@ -280,7 +254,6 @@ describe("permission tool — resilient request → await poll", () => {
       arguments: { tool_name: "Edit", input: {}, tool_use_id: "tu-2" },
     });
     expect(JSON.parse(firstText(result)).behavior).toBe("deny");
-    // A definite HTTP rejection is not retried.
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

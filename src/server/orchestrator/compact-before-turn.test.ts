@@ -1,9 +1,3 @@
-/**
- * docs/295 — the decision's gates. What happens on `yes` is a `/compact` turn
- * and a queued message, covered end to end by
- * `integration_tests/pre-turn-compaction.test.ts`. The eligibility predicate
- * itself belongs to `services/pre-turn-reset.test.ts`.
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { SessionInfo } from "../shared/types.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
@@ -52,7 +46,6 @@ function makePrStatus(over: Partial<PrStatusSummary> = {}): PrStatusSummary {
   } as unknown as PrStatusSummary;
 }
 
-/** An eligible tree: merged, clean, HEAD still exactly at the merged commit. */
 function makeGit(over: Partial<Record<keyof GitManager, unknown>> = {}): GitManager {
   return {
     isClean: vi.fn().mockResolvedValue(true),
@@ -74,7 +67,6 @@ function ask(over: {
   resident?: boolean;
   backgroundWork?: string[];
   conversationReplay?: string;
-  /** Build the `"unsettled"` race through the REAL `recheckMergeBeforeTurn`. */
   unsettled?: boolean;
 } = {}): Promise<boolean> {
   const unsettled = over.unsettled === true;
@@ -97,8 +89,6 @@ function ask(over: {
         : sessionRef.value),
       getPrStatus: () => (unsettled ? makePrStatus({ prState: "open" }) : makePrStatus()),
       createGitManager: () => over.git ?? (unsettled
-        // `origin/<branch>` at HEAD, so the probe's "has the branch moved?"
-        // clause passes and it reaches the network step under test.
         ? makeGit({
             getRefHash: vi.fn((ref: string) =>
               Promise.resolve(ref === "origin/shipit/fix-login" ? MERGED_SHA : BASE_TIP)),
@@ -107,12 +97,9 @@ function ask(over: {
       getAutoResetMergedBranch: () => over.setting ?? true,
       mergeRecheckDeps: {
         verifyPrState: () => {
-          // The probe found the merge and stamped `merged_at`…
           if (unsettled) sessionRef.value = makeSession();
           return Promise.resolve();
         },
-        // …and the rest of the bookkeeping is still in flight when the budget
-        // expires.
         awaitMergeHandling: () => (unsettled
           ? new Promise<void>(() => { /* never settles */ })
           : Promise.resolve()),
@@ -132,7 +119,6 @@ describe("shouldCompactBeforeTurn", () => {
   });
 
   it("says yes with no per-send intent at all — the programmatic path (req 13)", async () => {
-    // No tick box exists on a dispatch, so the global setting alone decides.
     expect(await ask({ intent: undefined })).toBe(true);
   });
 

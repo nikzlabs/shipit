@@ -67,7 +67,6 @@ describe("pickLatestFinalTag (docs/214 Option A)", () => {
   });
 
   it("compares by semver precedence, not lexically", () => {
-    // Lexically "v0.9.0" > "v0.10.0"; by semver 0.10.0 is higher.
     expect(pickLatestFinalTag(["v0.9.0", "v0.10.0"])).toBe("v0.10.0");
     expect(pickLatestFinalTag(["v1.2.3", "v2.0.0", "v1.10.0"])).toBe("v2.0.0");
   });

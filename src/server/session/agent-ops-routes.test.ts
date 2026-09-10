@@ -1,10 +1,3 @@
-/**
- * Unit tests for the worker's /agent-ops/* router. These test the broker
- * layer in isolation: the router takes shim-style requests and forwards them
- * to a stubbed orchestrator client. Stubs let us assert the exact path and
- * body the broker forwards without spinning up the orchestrator.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
@@ -58,9 +51,6 @@ describe("agent-ops routes", () => {
     await app.close();
   });
 
-  // docs/250 — the rename relay. The route carries NO session id: the client is
-  // constructed with this container's own SESSION_ID and prefixes every path
-  // with it, which is what makes the command self-scoped.
   it("POST /agent-ops/session/rename forwards the title to /rename", async () => {
     client.setResponse("POST", "/rename", {
       ok: true, status: 200,
@@ -174,8 +164,6 @@ describe("agent-ops routes", () => {
   });
 
   it("GET /agent-ops/pr/view forwards ?comments=true, and only when asked", async () => {
-    // docs/255 — the conversation is a second GitHub round-trip, so the relay
-    // must pass the shim's opt-in through and must not invent it.
     client.setResponse("GET", "/pr/view", { ok: true, status: 200, body: { pr: { number: 5 } } });
     await app.inject({ method: "GET", url: "/agent-ops/pr/view?number=5&comments=true" });
     expect(client.calls[0].path).toContain("comments=true");
@@ -190,12 +178,6 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].path).toContain("/pr/list?state=closed");
   });
 
-  /**
-   * This relay is the middle hop of shim → worker → orchestrator. A parameter
-   * it forgets is dropped in silence, with the shim's own test and the
-   * orchestrator's own test both still green — which is how `limit` stayed
-   * capped at 30 after both ends had already been taught to handle it.
-   */
   it("GET /agent-ops/pr/list forwards ?limit= as well as ?state=", async () => {
     client.setResponse("GET", "/pr/list", { ok: true, status: 200, body: { prs: [] } });
     await app.inject({ method: "GET", url: "/agent-ops/pr/list?state=merged&limit=7" });
@@ -253,8 +235,6 @@ describe("agent-ops routes", () => {
     expect(res.json()).toMatchObject({ error: "Not authenticated" });
   });
 
-  // ---- Repo-aware PR brokering (docs/211) ----
-
   it("POST /agent-ops/pr/create forwards cwd/repo in the body", async () => {
     client.setResponse("POST", "/pr/agent-create", { ok: true, status: 200, body: { url: "u" } });
     await app.inject({
@@ -301,8 +281,6 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].path).toBe("/pr/9/close");
     expect(client.calls[0].body).toMatchObject({ cwd: "/workspace/clone", repo: "octocat/hello" });
   });
-
-  // ---- GitHub Actions (gh run / gh workflow) ----
 
   it("GET /agent-ops/run/list forwards filters + cwd/repo to /actions/runs", async () => {
     client.setResponse("GET", "/actions/runs", { ok: true, status: 200, body: { runs: [] } });
@@ -358,8 +336,6 @@ describe("agent-ops routes", () => {
     expect(path).toContain("workflow=CI");
   });
 
-  // ---- Agent-spawned sessions (docs/117) ----
-
   it("POST /agent-ops/session/create forwards to /spawn with body", async () => {
     client.setResponse("POST", "/spawn", {
       ok: true, status: 200,
@@ -380,10 +356,6 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].body).toMatchObject({ prompt: "Port API to TS", branch: "port-api-ts" });
   });
 
-  // docs/264-agent-roles req 20 — the decline crosses this hop intact. It is a
-  // BOOLEAN, and the relay is where that matters: a truthiness-flattening or a
-  // dropped key here would spawn the child under the parent's brief, which is
-  // the one thing the caller said it did not want.
   it("POST /agent-ops/session/create forwards --no-role", async () => {
     client.setResponse("POST", "/spawn", {
       ok: true, status: 200,
@@ -447,8 +419,6 @@ describe("agent-ops routes", () => {
     expect(res.statusCode).toBe(404);
     expect(res.json().error).toBe("Spawned session not found");
   });
-
-  // ---- Agent-spawned sessions: Phase 3 (docs/117) ----
 
   it("POST /agent-ops/session/message/:childId forwards to /children/:childId/message", async () => {
     client.setResponse("POST", "/children/ses_a/message", {
@@ -570,8 +540,6 @@ describe("agent-ops routes", () => {
     await errApp.close();
   });
 
-  // ---- docs/175 read-only issue surface ----
-
   it("GET /agent-ops/issue/view forwards tracker and id", async () => {
     client.setResponse("GET", "/issue/view", {
       ok: true, status: 200, body: { tracker: { id: "github" }, issue: { identifier: "x/y#1" } },
@@ -638,8 +606,6 @@ describe("agent-ops routes", () => {
     expect(res.json().error).toBe("Issue not found: SHI-99");
   });
 
-  // ---- docs/162 read-only source surface ----
-
   it("GET /agent-ops/source/status forwards to /source/status", async () => {
     client.setResponse("GET", "/source/status", { ok: true, status: 200, body: { available: true } });
     const res = await app.inject({ method: "GET", url: "/agent-ops/source/status" });
@@ -690,8 +656,6 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].path).toBe("/source/show?commit=abc123&path=src%2Fa.ts");
   });
 
-  // ---- Upward session reports (docs/233) ----
-
   it("GET /agent-ops/session/cohort forwards to /cohort with no agent-supplied target", async () => {
     client.setResponse("GET", "/cohort", {
       ok: true, status: 200,
@@ -700,7 +664,6 @@ describe("agent-ops routes", () => {
     const res = await app.inject({ method: "GET", url: "/agent-ops/session/cohort" });
     expect(res.statusCode).toBe(200);
     expect(client.calls[0]).toMatchObject({ method: "GET", path: "/cohort" });
-    // The session id is injected by the client, never taken from the request.
     expect(client.calls[0].body).toBeUndefined();
   });
 
@@ -735,18 +698,6 @@ describe("agent-ops routes", () => {
     expect(res.json().error).toContain("rate limit reached");
   });
 
-  /**
-   * docs/261 req 7 — every explicit parameter survives the worker→orchestrator
-   * hop.
-   *
-   * Honest about what this can and cannot catch: the relay forwards
-   * `request.body` verbatim, so it would pass today against a route that named
-   * none of these fields — the drop that actually happened was one hop further
-   * on, at the orchestrator's own route schema (covered in
-   * `integration_tests/agent-spawn-route.test.ts`). What it does catch is the
-   * plausible future edit: someone "tightening" this relay to pick named fields,
-   * and forgetting one.
-   */
   it("POST /agent-ops/agent/spawn forwards the whole explicit target", async () => {
     client.setResponse("POST", "/agent/spawn", { ok: true, status: 200, body: { status: "success", text: "ok" } });
     const payload = {
@@ -764,7 +715,6 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].body).toEqual(payload);
   });
 
-  // docs/261 req 6 — and a role goes over the same hop, alone.
   it("POST /agent-ops/agent/spawn forwards a role", async () => {
     client.setResponse("POST", "/agent/spawn", { ok: true, status: 200, body: { status: "success", text: "ok" } });
     const res = await app.inject({
@@ -776,9 +726,6 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].body).toEqual({ role: "reviewer", prompt: "review", depth: 0 });
   });
 
-  // docs/264-agent-roles req 10 — and a role WITH overrides goes over the same hop. The
-  // combination used to be refused; it is now the override path, so the relay
-  // has to carry both halves.
   it("POST /agent-ops/agent/spawn forwards a role together with its overrides", async () => {
     client.setResponse("POST", "/agent/spawn", { ok: true, status: 200, body: { status: "success", text: "ok" } });
     const payload = { role: "deep dive", modelId: "claude-opus-5", reasoningEffort: "high", prompt: "review", depth: 0 };
@@ -787,8 +734,6 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].body).toEqual(payload);
   });
 
-  // docs/264-agent-roles req 12 — the two reads. They exist so an agent names a role and an
-  // override that are real on THIS install rather than remembered from another.
   it("GET /agent-ops/agent/roles relays the install's roles", async () => {
     client.setResponse("GET", "/agent/roles", {
       ok: true, status: 200, body: { roles: [{ name: "reviewer" }] },
@@ -827,10 +772,6 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].path).toBe("/agent/result");
   });
 
-  // docs/266 — the two relays a consumer needs when a plugin version is live
-  // and unusable. `status` is a GET because it activates nothing; `force` is
-  // normalized to a strict boolean because the body is agent-supplied JSON and
-  // it discards a live version's install output.
   it("GET /agent-ops/plugin/status forwards the repository name", async () => {
     client.setResponse("GET", "/plugin/status", {
       ok: true, status: 200, body: { repos: [{ repo: "tools", usable: false }], warnings: [] },

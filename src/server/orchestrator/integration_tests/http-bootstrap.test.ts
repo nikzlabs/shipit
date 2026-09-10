@@ -79,10 +79,7 @@ describe("Integration: GET /api/bootstrap", () => {
     expect(body.githubStatus.authenticated).toBe(false);
     expect(Array.isArray(body.templates)).toBe(true);
     expect(body.templates.length).toBeGreaterThan(0);
-    // Feature 118: runtimeMode defaults to "containerized" when neither
-    // the RUNTIME_MODE env var nor a deps override is set.
     expect(body.runtimeMode).toBe("containerized");
-    // docs/216: no Tailscale forwarder file → field omitted.
     expect(body.tailnetPreviewHost).toBeUndefined();
   });
 
@@ -91,17 +88,14 @@ describe("Integration: GET /api/bootstrap", () => {
     const prev = process.env.SHIPIT_TAILNET_PREVIEW_HOST_FILE;
     process.env.SHIPIT_TAILNET_PREVIEW_HOST_FILE = hostFile;
     try {
-      // Present + valid → surfaced verbatim (read at request time, not boot).
       fs.writeFileSync(hostFile, "100-64-1-2.sslip.io\n");
       let res = await app.inject({ method: "GET", url: "/api/bootstrap" });
       expect(res.json().tailnetPreviewHost).toBe("100-64-1-2.sslip.io");
 
-      // Garbage content (defensive validation) → omitted, not forwarded.
       fs.writeFileSync(hostFile, "not a host!! rm -rf\n");
       res = await app.inject({ method: "GET", url: "/api/bootstrap" });
       expect(res.json().tailnetPreviewHost).toBeUndefined();
 
-      // File removed → omitted.
       fs.rmSync(hostFile);
       res = await app.inject({ method: "GET", url: "/api/bootstrap" });
       expect(res.json().tailnetPreviewHost).toBeUndefined();
@@ -112,7 +106,6 @@ describe("Integration: GET /api/bootstrap", () => {
   });
 
   it("returns sessions when they exist", async () => {
-    // Create a session
     const sessionDir = path.join(tmpDir, "sessions", "test-id");
     fs.mkdirSync(sessionDir, { recursive: true });
     sessionManager.track("test-id", "Test Session", sessionDir);
@@ -189,7 +182,6 @@ describe("Integration: GET /api/bootstrap", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
 
-    // Templates should have id, name, description, category, icon — but NOT files
     for (const template of body.templates) {
       expect(template).toHaveProperty("id");
       expect(template).toHaveProperty("name");
@@ -209,7 +201,6 @@ describe("Integration: GET /api/bootstrap", () => {
     const body = res.json();
 
     expect(Array.isArray(body.agents)).toBe(true);
-    // At minimum, claude should be listed
     const claude = body.agents.find((a: any) => a.id === "claude");
     expect(claude).toBeDefined();
     expect(claude).toHaveProperty("name");

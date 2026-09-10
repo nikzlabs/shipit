@@ -1,17 +1,3 @@
-/**
- * `shipit session *` handlers — agent-driven session management.
- *
- * `create` spawns a sibling/child session; `list`/`view`/`message`/`wait`/
- * `archive`/`notify-on-merge` coordinate the children this session spawned.
- * Each handler brokers through the worker's `/agent-ops/session/*` routes; the
- * worker injects this container's session id as the parent so the agent can
- * only manage sessions it spawned. The dispatch + the rejected-subcommand gate
- * live in `shipit.ts`.
- *
- * `wait` (docs/182) owns its own resilient, resumable segment loop with an
- * overall deadline, so a parent agent never has to script its own retry loop.
- */
-
 import {
   asString,
   fail,
@@ -22,39 +8,18 @@ import {
 } from "./shim-common.js";
 import { INLINE_PROMPT_FLAGS, REJECTED_HELP, formatError, type RunDeps } from "./shipit.js";
 
-/**
- * Server-enforced cap on `shipit session wait --timeout`. The shim mirrors
- * the orchestrator's `MAX_WAIT_FOR_CHILD_IDLE_MS` so a flag-side check can
- * reject obvious typos (`--timeout 99999h`) without a round-trip.
- */
-const MAX_WAIT_TIMEOUT_SECS = 60 * 60; // 1 hour
+const MAX_WAIT_TIMEOUT_SECS = 60 * 60;
 
-/**
- * docs/182 — resilient-wait tuning. The shim owns the overall deadline and
- * drives a segment loop beneath it, so each network leg is short and a reset
- * costs one retried segment rather than the whole wait.
- */
-const WAIT_DEFAULT_OVERALL_SECS = 5 * 60; // matches the server's old default
-const WAIT_SEGMENT_SECS = 25; // bounded server segment (keepalive-friendly)
+const WAIT_DEFAULT_OVERALL_SECS = 5 * 60;
+const WAIT_SEGMENT_SECS = 25;
 const WAIT_INITIAL_BACKOFF_MS = 500;
 const WAIT_MAX_BACKOFF_MS = 8_000;
-/** Per-request abort budget: one segment plus margin for the server's resolve. */
 const WAIT_REQUEST_MARGIN_MS = 10_000;
 
-/** Exit codes for `shipit session wait` (docs/182 distinguishable outcomes). */
 const WAIT_EXIT_IDLE = 0;
 const WAIT_EXIT_TIMED_OUT = 1;
 const WAIT_EXIT_ERROR = 3;
 
-/**
- * Inline prompt flags the agent might reach for out of muscle memory. We
- * intentionally do NOT accept them: a prompt passed on the command line gets
- * mangled the moment it contains backticks or `$(...)`, which the shell
- * evaluates before the shim ever sees the value. The prompt must come from a
- * file (or stdin via `--prompt-file -`), exactly like the `gh` shim's
- * `--body-file`. Detected here so the agent gets a redirect, not a generic
- * "unsupported flag" error.
- */
 const INLINE_PROMPT_REDIRECT = `shipit session create: inline prompt flags (-p/--prompt/-m) are not supported.
 Pass the prompt via --prompt-file FILE, or --prompt-file - to read it from stdin,
 so backticks and $(...) in the prompt are not evaluated by the shell. Use a
@@ -64,24 +29,13 @@ single-quoted heredoc, exactly like \`gh pr create --body-file -\`:
   Your prompt here, with \`backticks\` and $(literal) preserved verbatim.
   EOF`;
 
-/**
- * Shared 404 copy for the parent→child routes. Deliberately does NOT
- * disambiguate "wrong parent" from "not found" — that's the orchestrator's
- * cross-tenancy contract, and the shim must not leak what the server withholds.
- */
+// Do not disclose whether an inaccessible child exists.
 const CHILD_NOT_FOUND = "Spawned session not found, or not a descendant of this parent.";
 
-/**
- * docs/233 — the id form of `view`/`message`/`wait` is descendant-scoped, so
- * passing your OWN id 404s. That dead end is exactly what planning#243 reported, so
- * every such 404 points at the command that does resolve self.
- */
 const WHOAMI_HINT =
   "To see THIS session (its parent, siblings, and children), run `shipit session whoami`.";
 
 export async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void> {
-  // Catch inline prompt flags before generic flag parsing so the agent gets a
-  // targeted redirect to --prompt-file instead of a vague "unsupported flag".
   const usedInline = args.some(
     (a) =>
       INLINE_PROMPT_FLAGS.includes(a) ||
@@ -96,12 +50,6 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
     values: {
       "--prompt-file": "promptFile", "-f": "promptFile", "-F": "promptFile",
       "-t": "title", "--title": "title",
-      // docs/264-agent-roles req 16 — the SAME target vocabulary `shipit agent run` takes:
-      // a role by name, any subset of its parameters as overrides, or all five
-      // named. `--agent`/`--model` are two of those five and keep working
-      // exactly as they did; `--role`, `--service`, `--billing-mode` and
-      // `--effort` are new here — a child session could not say a service, a
-      // billing mode or a reasoning level at all before this.
       "--role": "role",
       "--agent": "agent",
       "--model": "model",
@@ -114,18 +62,9 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
     },
     booleans: {
       "--json": "json",
-      // docs/205 — spawn a completely separate (parentless) session: no
-      // linkage, no sidebar nesting, no coordination, no chat card.
       "--detached": "detached",
-      // docs/264-agent-roles req 20 — decline the role this session is running,
-      // which the child would otherwise inherit whole. The child still inherits
-      // the parameters; what it does not inherit is the brief.
       "--no-role": "noRole",
-      // docs/162 — Ops-only: target the ShipIt source repo, branched off the
-      // exact deployed commit the Ops session inspected.
       "--shipit-source": "shipitSource",
-      // docs/162 — allow spawning even when the inspected source ref is only
-      // approximate (checkout HEAD, not the exact build commit).
       "--approximate": "approximate",
     },
   });
@@ -142,9 +81,6 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
   if (parsed.booleans.has("approximate") && !parsed.booleans.has("shipitSource")) {
     fail(deps.io, "shipit session create: --approximate only applies with --shipit-source.");
   }
-  // docs/205 — a ShipIt fix session is inherently tracked (it's coordinated and
-  // opens a PR against the ShipIt repo under an incident packet), so detaching
-  // it makes no sense. Reject the combination rather than silently ignoring one.
   if (parsed.booleans.has("detached") && parsed.booleans.has("shipitSource")) {
     fail(deps.io, "shipit session create: --detached cannot be combined with --shipit-source.");
   }
@@ -162,18 +98,9 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
       "shipit session create: the prompt is empty. --prompt-file must hold the initial user message for the new session.",
     );
   }
-  // Defensive client-side validation — the orchestrator also enforces these,
-  // but failing fast on the shim side avoids a network round-trip.
   if (prompt.length > 50_000) {
     fail(deps.io, "shipit session create: the prompt exceeds 50,000 characters.");
   }
-  // A title is REQUIRED for every spawn: the spawning agent already knows what
-  // the session is for and is the best-placed namer, so it must name the
-  // session explicitly rather than leaning on an AI naming round-trip. Fail
-  // fast here with a clear message; the orchestrator (`spawnChildSession`)
-  // enforces this authoritatively too. The `--shipit-source` path gets a
-  // fix-specific message because its diagnosis is wrapped in a verbose incident
-  // packet (docs/162) and can never double as the session name.
   if (!(parsed.values.title ?? "").trim()) {
     fail(
       deps.io,
@@ -185,15 +112,6 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
     );
   }
 
-  // docs/264-agent-roles req 16 — the shared vocabulary, in the wire names both spawn
-  // commands use, so one server-side parser reads both bodies. `--billing-mode`
-  // is checked here for the same reason `agent run` checks it: it is the one
-  // field with a closed value set the shim can reject without the catalogue,
-  // which buys a message instead of a round trip. Everything else — an unknown
-  // role, a model this install does not have, a level the harness does not
-  // declare — is resolved server-side, whose refusal names the roles or the
-  // parameter. The shim buys a message for what it can know and does not pretend
-  // to know the rest.
   const billingMode = parsed.values.billingMode;
   if (billingMode !== undefined && billingMode !== "sub" && billingMode !== "key") {
     fail(
@@ -201,10 +119,6 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
       `shipit session create: --billing-mode must be "sub" (a subscription) or "key" (a metered API key), not "${billingMode}".`,
     );
   }
-  // docs/264-agent-roles req 20 — `--role` and `--no-role` are contradictory
-  // statements about the same thing, so the pair is refused rather than resolved
-  // by precedence: a caller that wrote both had one of the two in mind, and
-  // guessing which one runs a child on a brief it may have meant to decline.
   if (parsed.booleans.has("noRole") && parsed.values.role !== undefined) {
     fail(
       deps.io,
@@ -214,13 +128,7 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
   }
   const payload: Record<string, unknown> = { prompt };
   if (parsed.values.title) payload.title = parsed.values.title;
-  // `!== undefined`, NOT a truthiness test — the same rule `shipit agent run`
-  // states at its own payload builder, and for the same reason: a flag the
-  // caller passed with an empty value is something they TRIED to say, and
-  // dropping it here would run the *bare* role (or the bare inheritance)
-  // instead, which is the dropped override req 10 forbids. It rides along and
-  // the server refuses it by name, so both commands answer `--model=""`
-  // identically — one parser, one refusal rule (req 16).
+  // Forward empty overrides so the server rejects them instead of inheriting defaults.
   if (parsed.values.role !== undefined) payload.role = parsed.values.role;
   if (parsed.booleans.has("noRole")) payload.noRole = true;
   if (parsed.values.agent !== undefined) payload.agentId = parsed.values.agent;
@@ -244,44 +152,27 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
     return;
   }
 
-  // Plain-text rendering. Keep this stable — the agent learns to parse it.
   const session = (res.body.session ?? {}) as Record<string, unknown>;
   const lines = [
     `session-id: ${asString(res.body.sessionId)}`,
     `branch:     ${asString(res.body.branch)}`,
     `status:     ${asString(res.body.status) || "running"}`,
   ];
-  // docs/264-agent-roles req 14 — say which role started it, and that this is where the
-  // role's involvement ends: the child routes like any other session afterwards,
-  // so a later "why is it on a different model?" has its answer up front.
   if (session.originRoleName) {
     lines.push(
       `role:       ${asString(session.originRoleName)} (starting point only — the session routes on its own from here)`,
     );
   }
-  // docs/205 — make it unmistakable that a detached spawn is severed: the agent
-  // must not expect to `wait`/`view`/`message` it afterward.
   if (parsed.booleans.has("detached")) {
     lines.push("detached:   yes (separate session — not a child; cannot be waited on, viewed, or messaged from here)");
   }
   success(deps.io, lines.join("\n"));
 }
 
-/**
- * Read the new session's prompt from a file path, or from stdin when the path
- * is `-`. Mirrors the `gh` shim's `resolveBody` so the two shims read external
- * content the same way. Exits non-zero with a helpful message when the file
- * can't be read.
- */
 async function readPromptFile(promptFile: string, deps: RunDeps): Promise<string> {
   return readBodyFromFileOrStdin(promptFile, deps.io, "shipit session create", "prompt file");
 }
 
-/**
- * docs/255 — the host-inventory query shared by `shipit session find` and
- * `shipit session list --all`. Both are Ops-only; the orchestrator's 403 is
- * surfaced verbatim, so the shim carries no second copy of the gate.
- */
 async function runHostSessionQuery(
   params: URLSearchParams,
   deps: RunDeps,
@@ -306,18 +197,11 @@ async function runHostSessionQuery(
   };
 }
 
-/**
- * The "there is more" footer. Names the exact next command rather than saying
- * "pass --limit", because the server caps `limit` — past the cap, paging with
- * `--offset` is the ONLY way to reach the rest, and a hint that suggests
- * otherwise sends the agent in a loop against a ceiling it cannot raise.
- */
 function moreLine(total: number, nextOffset: number | undefined, noun: string): string {
   const base = `… ${total} ${noun} in total.`;
   return nextOffset === undefined ? base : `${base} Next page: --offset ${nextOffset}`;
 }
 
-/** Render one inventory record as an aligned, scannable text block. */
 function renderHostSession(s: Record<string, unknown>): string {
   const lines = [
     `${asString(s.title) || "(untitled)"} (${asString(s.id)})`,
@@ -344,32 +228,13 @@ function renderHostSession(s: Record<string, unknown>): string {
   return lines.join("\n");
 }
 
-/**
- * Read a PR number out of what an operator actually has in hand: `1744`,
- * `#1744`, or a PR URL in any of its real forms.
- *
- * The `/pull/<n>` branch is checked FIRST and is why this isn't a one-liner. A
- * plain "trailing digits" match reads `…/pull/1744/files` as no match at all
- * and — worse — `…/pull/1744?x=1` as PR **1**, silently looking up the wrong
- * PR. Both URLs are ordinary things to paste out of a browser.
- */
 function parsePrNumber(raw: string): string | undefined {
   const value = raw.trim();
   const fromUrl = /\/pull\/(\d+)(?:[/?#]|$)/.exec(value)?.[1];
   if (fromUrl) return fromUrl;
-  // Not a PR URL: accept `1744` or `#1744`, anchored so a stray number inside
-  // some other string can't be mistaken for the PR.
   return /^#?(\d+)$/.exec(value)?.[1];
 }
 
-/**
- * docs/255 — `shipit session find --branch|--pr|--container|--id`.
- *
- * The one-step answer to "which session produced this?", for an Ops session
- * triaging a branch, a PR, or a container name lifted from `docker ps` or the
- * host journal. Metadata only: the orchestrator never returns another session's
- * conversation, prompts, secrets, or workspace contents.
- */
 export async function handleSessionFind(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: {
@@ -377,9 +242,7 @@ export async function handleSessionFind(args: string[], deps: RunDeps): Promise<
       "--pr": "pr",
       "--container": "container",
       "--id": "id",
-      // Muscle-memory alias. It maps onto the SAME `id=` query param — the
-      // route deliberately doesn't take a `session=` filter, because that is
-      // the param name `api-container-guard.ts` reads as a SCOPE.
+      // `session` is reserved for scope checks; send this filter as `id`.
       "--session": "id",
       "--limit": "limit",
       "--offset": "offset",
@@ -435,30 +298,12 @@ export async function handleSessionFind(args: string[], deps: RunDeps): Promise<
   success(deps.io, blocks.join("\n\n"));
 }
 
-/**
- * docs/264 — `shipit session logs <session-id> [--since t] [--until t]
- * [--lines N] [--json]`.
- *
- * Ops-only. Returns another session's orchestrator lifecycle lines — auto-push
- * outcomes, container recovery, idle disposal, agent process lifecycle. It is
- * NOT the session's Logs panel: the server returns only lines whose whole text
- * is one ShipIt itself authored, so agent output, preview errors, install
- * output, and any line quoting workspace or raw error text are withheld. No
- * flag reaches them; withheld lines are reported as a count, broken down by the
- * ShipIt-authored SHAPE of the producer that wrote them — never by anything
- * taken from the withheld lines themselves.
- *
- * Read from the durable store, so a session whose container is already gone
- * still answers. The orchestrator's 403 is surfaced verbatim — the shim carries
- * no second copy of the Ops gate.
- */
 export async function handleSessionLogs(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: {
       "--since": "since", "-S": "since",
       "--until": "until", "-U": "until",
       "--lines": "lines", "-n": "lines",
-      // Muscle-memory alias for the positional id.
       "--id": "id", "--session": "id",
     },
     booleans: { "--json": "json" },
@@ -498,10 +343,7 @@ export async function handleSessionLogs(args: string[], deps: RunDeps): Promise<
   }
 
   const entries = (res.body.entries as Record<string, unknown>[] | undefined) ?? [];
-  // `withheldTotal` is every withheld line; `withheldUnclassified` is the
-  // residue ShipIt could not name. Fall back to the older field name so a shim
-  // talking to an orchestrator that predates the breakdown still reports a
-  // total rather than silently printing nothing.
+  // Older servers return only withheldUnclassified.
   const unclassified = Number(res.body.withheldUnclassified ?? 0);
   const withheld = Number(res.body.withheldTotal ?? unclassified);
   const byShape = (res.body.withheldByShape as { shape?: unknown; count?: unknown }[] | undefined) ?? [];
@@ -511,19 +353,11 @@ export async function handleSessionLogs(args: string[], deps: RunDeps): Promise<
     `disk:      ${asString(res.body.diskTier)}${res.body.archived === true ? " (archived)" : ""}`,
     `entries:   ${entries.length}${res.body.truncated === true ? ` of ${asString(res.body.total)} (oldest dropped — raise --lines)` : ""}`,
   ];
-  // Never silent: these lines exist and were deliberately not returned. Most
-  // carry workspace or raw error text and never will be — but this count is also
-  // the only signal that a producer's wording drifted off its template.
   if (withheld > 0) {
     header.push(
       `withheld:  ${withheld} server line(s) not on the ops-safe template list `
         + "(they carry workspace or raw error text). Read them with the operator in the session's UI.",
     );
-    // A bare total is not actionable — 384 reads the same whether it is one
-    // chatty producer or the one line that drifted off its template. The
-    // breakdown is ShipIt's own labels and counts; no part of a withheld line
-    // is in it. `unclassified` is listed last and is the number to watch: it is
-    // where a NEW or drifted producer shows up.
     const parts = [
       ...byShape.map((s) => `${asString(s.shape)} ×${Number(s.count ?? 0)}`),
       ...(unclassified > 0 ? [`unclassified ×${unclassified}`] : []),
@@ -531,8 +365,6 @@ export async function handleSessionLogs(args: string[], deps: RunDeps): Promise<
     if (parts.length > 0) header.push(`  by shape: ${parts.join(", ")}`);
   }
   if (entries.length === 0) {
-    // An empty window and a pruned history look identical in the output but mean
-    // opposite things, so never let the caller guess which one they are reading.
     header.push(
       "",
       res.body.logsRetained === true
@@ -561,10 +393,6 @@ export async function handleSessionList(args: string[], deps: RunDeps): Promise<
     fail(deps.io, `Unsupported flag for shipit session list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
 
-  // docs/255 — the host-inventory flags only mean anything alongside `--all`.
-  // Refuse rather than ignore: `shipit session list --include-warm` would
-  // otherwise quietly return the children list, which looks like a successful
-  // answer to a question it never asked.
   const hostOnlyFlags = [
     ...(parsed.booleans.has("includeWarm") ? ["--include-warm"] : []),
     ...(parsed.booleans.has("includeArchived") ? ["--include-archived"] : []),
@@ -578,8 +406,6 @@ export async function handleSessionList(args: string[], deps: RunDeps): Promise<
     );
   }
 
-  // docs/255 — `--all` switches to the HOST inventory (Ops-only). Without it the
-  // command is unchanged: this session's own spawned children, and nothing else.
   if (parsed.booleans.has("all")) {
     const params = new URLSearchParams();
     if (parsed.booleans.has("includeArchived")) params.set("includeArchived", "true");
@@ -646,9 +472,6 @@ export async function handleSessionView(args: string[], deps: RunDeps): Promise<
     fail(deps.io, `Unsupported flag for shipit session view: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
   const id = parsed.positional[0];
-  // docs/233 — a bare `view` used to be an error, which left a session with no
-  // way to look at ITSELF (the id form is descendant-scoped, so passing your own
-  // id 404s). Treat it as `whoami`: describe this session and its cohort.
   if (!id) {
     await handleSessionWhoami(args, deps);
     return;
@@ -682,17 +505,12 @@ export async function handleSessionView(args: string[], deps: RunDeps): Promise<
     `queue:      ${asString(child.queueLength) || "0"}`,
     `spawned-at: ${asString(child.spawnedAt)}`,
   ];
-  // Surface the resolved backend/model so the agent can confirm which model the
-  // child actually runs on, rather than relying on the child's self-report.
   if (child.agent) {
     lines.push(`agent:      ${asString(child.agent)}`);
   }
   if (child.model) {
     lines.push(`model:      ${asString(child.model)}`);
   }
-  // docs/264-agent-roles req 14 — what STARTED it, beside what it runs on now. The two can
-  // legitimately differ: a role hands a child its opening tuple and stops being
-  // involved, so a child may have moved on through ordinary routing.
   if (child.originRoleName) {
     lines.push(`role:       ${asString(child.originRoleName)} (at creation)`);
   }
@@ -763,7 +581,6 @@ export async function handleSessionMessage(args: string[], deps: RunDeps): Promi
   success(deps.io, lines.join("\n"));
 }
 
-/** A terminal or transport classification of one child's wait. */
 type WaitTerminal =
   | "idle"
   | "error"
@@ -776,20 +593,12 @@ interface SingleWaitResult {
   id: string;
   outcome: WaitTerminal;
   child: Record<string, unknown> | null;
-  /** The last server response body (for `--json` passthrough). */
   body: Record<string, unknown>;
-  /** Set when transport errors were swallowed during the wait. */
   lastTransportError?: string;
-  /** Human message for not-found / http-error outcomes. */
   errorMessage?: string;
 }
 
-/**
- * Map a server wait response to a normalized outcome. New servers send an
- * explicit `outcome`; legacy responses are derived from `idle` / `timedOut`.
- * An unrecognized 2xx is treated as `pending` so the loop keeps polling
- * (bounded by the overall deadline) rather than returning a wrong terminal.
- */
+// Unknown 2xx responses remain pending; they do not prove the child finished.
 function normalizeServerOutcome(
   body: Record<string, unknown>,
 ): "idle" | "error" | "archived" | "pending" | "timed-out" {
@@ -802,13 +611,6 @@ function normalizeServerOutcome(
   return "pending";
 }
 
-/**
- * docs/182 — wait on a single child with a resumable segment loop. Each
- * iteration issues a bounded server segment; on `pending` it re-issues, and on
- * a transient transport failure it backs off and retries — all beneath the
- * overall `deadline`. Only a genuine terminal condition (idle / error /
- * archived) or the deadline (`timed-out`) ends the loop. Never throws.
- */
 async function waitForChildOnce(
   id: string,
   deadline: number,
@@ -844,7 +646,6 @@ async function waitForChildOnce(
       };
     }
     if (isTransientStatus(res.status)) {
-      // Transport failure is NEVER an outcome — swallow and retry with backoff.
       lastTransportError = formatError(res, "transport error reaching the ShipIt orchestrator");
       const sleepMs = Math.min(backoff, Math.max(0, deadline - deps.now()));
       if (sleepMs <= 0) break;
@@ -863,12 +664,11 @@ async function waitForChildOnce(
       };
     }
 
-    // 2xx — reset backoff and act on the outcome.
     backoff = WAIT_INITIAL_BACKOFF_MS;
     lastBody = res.body;
     const outcome = normalizeServerOutcome(res.body);
     if (outcome === "pending") continue;
-    if (outcome === "timed-out") break; // legacy server timed out; honor the deadline below
+    if (outcome === "timed-out") break;
     return {
       id,
       outcome,
@@ -878,7 +678,6 @@ async function waitForChildOnce(
     };
   }
 
-  // Overall deadline exhausted (or a legacy server reported timed-out).
   return {
     id,
     outcome: "timed-out",
@@ -888,7 +687,6 @@ async function waitForChildOnce(
   };
 }
 
-/** Map a single wait outcome to its process exit code. */
 function exitCodeForWait(outcome: WaitTerminal): number {
   switch (outcome) {
     case "idle":
@@ -899,19 +697,10 @@ function exitCodeForWait(outcome: WaitTerminal): number {
     case "timed-out":
       return WAIT_EXIT_TIMED_OUT;
     default:
-      return 1; // not-found / http-error
+      return 1;
   }
 }
 
-/**
- * `shipit session wait <id...> [--timeout SECONDS] [--any|--all] [--json]`.
- *
- * docs/182 — resilient, level-triggered, resumable wait with distinguishable
- * outcomes. A single call is the robust unit: the shim owns the overall deadline
- * and absorbs transport resets beneath it, so a parent agent never has to script
- * its own retry loop. Multiple ids fan out over the same resilient single-wait
- * with one shared deadline (`--any` = first finisher, `--all` = every child).
- */
 export async function handleSessionWait(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: { "--timeout": "timeout", "-T": "timeout" },
@@ -928,7 +717,6 @@ export async function handleSessionWait(args: string[], deps: RunDeps): Promise<
     fail(deps.io, "shipit session wait: --any and --all are mutually exclusive.");
   }
 
-  // Defense-in-depth client-side validation. The orchestrator also enforces.
   let overallSecs = WAIT_DEFAULT_OVERALL_SECS;
   if (parsed.values.timeout) {
     const n = Number(parsed.values.timeout);
@@ -941,15 +729,12 @@ export async function handleSessionWait(args: string[], deps: RunDeps): Promise<
   const json = parsed.booleans.has("json");
   const deadline = deps.now() + overallSecs * 1000;
 
-  // Single id — the common case. Preserve the legacy text/JSON shape.
   if (ids.length === 1) {
     const result = await waitForChildOnce(ids[0], deadline, deps);
     renderSingleWait(result, deps, json);
     return;
   }
 
-  // Multi id (docs/182 §F) — fan out over the resilient single-wait, sharing
-  // one overall deadline so `--timeout` bounds the whole call, not each child.
   const mode: "any" | "all" = parsed.booleans.has("any") ? "any" : "all";
   if (mode === "any") {
     const winner = await waitAnyChild(ids, deadline, deps);
@@ -960,12 +745,6 @@ export async function handleSessionWait(args: string[], deps: RunDeps): Promise<
   renderMultiWait(results, ids, mode, deps, json);
 }
 
-/**
- * `--any` — resolve as soon as the first listed child reaches a terminal
- * (non-timed-out) outcome; if none do before the shared deadline, resolve with
- * the first (timed-out) result. Returns the winner so the parent can act on it
- * and wait on the rest.
- */
 function waitAnyChild(ids: string[], deadline: number, deps: RunDeps): Promise<SingleWaitResult> {
   return new Promise<SingleWaitResult>((resolve) => {
     let done = false;
@@ -986,7 +765,6 @@ function waitAnyChild(ids: string[], deadline: number, deps: RunDeps): Promise<S
   });
 }
 
-/** Render a single-child wait result (text or JSON) and exit. */
 function renderSingleWait(result: SingleWaitResult, deps: RunDeps, json: boolean): void {
   if (result.outcome === "not-found") {
     fail(deps.io, result.errorMessage ?? "Spawned session not found.", 1);
@@ -1028,17 +806,12 @@ function renderSingleWait(result: SingleWaitResult, deps: RunDeps, json: boolean
   deps.io.exit(exitCodeForWait(result.outcome));
 }
 
-/**
- * Aggregate exit code for a multi-child wait: any reaching error (3) takes
- * precedence, then any not-found/http-error/timed-out (1), else idle (0).
- */
 function aggregateExitCode(results: SingleWaitResult[]): number {
   if (results.some((r) => r.outcome === "error")) return WAIT_EXIT_ERROR;
   if (results.some((r) => exitCodeForWait(r.outcome) !== WAIT_EXIT_IDLE)) return WAIT_EXIT_TIMED_OUT;
   return WAIT_EXIT_IDLE;
 }
 
-/** Render a multi-child wait (`--any` winner, or `--all` results) and exit. */
 function renderMultiWait(
   results: SingleWaitResult[],
   ids: string[],
@@ -1116,21 +889,6 @@ export async function handleSessionArchive(args: string[], deps: RunDeps): Promi
   success(deps.io, `session-id: ${id}\narchived:   true`);
 }
 
-/**
- * `shipit session notify-on-merge <child-id> [--json]` (docs/196) —
- * or `shipit session notify-on-merge --self [--json]` (docs/239).
- *
- * Arms an async watch: when the PR merges (or closes without merging), the
- * orchestrator wakes a session with a queued, self-describing system turn — no
- * blocking wait. Returns immediately ("armed"); the turn ends here and the woken
- * session resumes event-driven, possibly days later.
- *
- * With `--self` the watched PR is THIS session's own, and this session is what
- * gets woken. There is deliberately no follow-up payload: the transcript already
- * holds the plan, and the wake prompt says to continue it. Re-arming after the
- * next PR opens is how a multi-PR chain continues — nothing re-arms on the
- * agent's behalf.
- */
 export async function handleSessionNotifyOnMerge(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: {},
@@ -1181,12 +939,6 @@ export async function handleSessionNotifyOnMerge(args: string[], deps: RunDeps):
   );
 }
 
-/**
- * docs/239 — the `--self` half of `notify-on-merge`. Always REPLACES any
- * previous self-watch, so a re-arm mid-chain is the normal case, not an error.
- * The one refusal is "no open PR for this branch", which the orchestrator
- * phrases (including the "if it already merged, just keep going" hint).
- */
 async function armSelfMergeWatch(json: boolean, deps: RunDeps): Promise<void> {
   const res = await deps.call("POST", "/agent-ops/session/notify-on-merge-self", {}, deps.env);
   if (res.status < 200 || res.status >= 300) {
@@ -1208,28 +960,10 @@ async function armSelfMergeWatch(json: boolean, deps: RunDeps): Promise<void> {
   );
 }
 
-// ---- Upward coordination (docs/233, planning#243) ----
-
-/** Valid `--severity` values, mirrored from the orchestrator's service. */
 const REPORT_SEVERITIES = ["fyi", "warn", "blocker"];
-/** Valid `--to` target. Sibling delivery is deliberately unavailable. */
 const REPORT_TARGETS = ["parent"];
-/** Mirrors `MAX_REPORT_BODY_CHARS`; checked here to save a round-trip. */
 const MAX_REPORT_BODY_CHARS = 10_000;
 
-/**
- * `shipit session rename --title "<new title>" [--json]` (docs/250).
- *
- * Retitles THIS session. Takes no session id — the worker injects the calling
- * container's own id, so an agent can only ever rename itself (requirement 3).
- *
- * The title a session is given at the start comes from its first message, so a
- * session that goes on to do several rounds of work keeps a name describing only
- * the first. Renaming is what keeps the sidebar honest past the first PR.
- *
- * The one refusal is "the user renamed this session by hand", which is final —
- * the orchestrator phrases it, and the right response is to leave the name alone.
- */
 export async function handleSessionRename(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: { "--title": "title" },
@@ -1243,10 +977,6 @@ export async function handleSessionRename(args: string[], deps: RunDeps): Promis
   if (!title) {
     fail(deps.io, 'shipit session rename: --title is required, e.g. shipit session rename --title "Add billing"');
   }
-  // A positional argument here is almost always a session id the agent tried to
-  // pass out of muscle memory from the parent→child subcommands. Say so, rather
-  // than silently renaming the wrong thing... which it can't, but the agent
-  // doesn't know that.
   if (parsed.positional.length > 0) {
     fail(
       deps.io,
@@ -1275,15 +1005,6 @@ export async function handleSessionRename(args: string[], deps: RunDeps): Promis
   );
 }
 
-/**
- * `shipit session whoami [--json]` (docs/233).
- *
- * Resolves the CALLING session — id, title, branch, status — plus its parent,
- * its read-only sibling topology, and any children it spawned. Before this, a
- * spawned session had no way to answer "who am I and
- * who am I working alongside?": `view <own-id>` is descendant-scoped and 404s,
- * and `list` only shows sessions the caller itself spawned.
- */
 export async function handleSessionWhoami(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, { values: {}, booleans: { "--json": "json" } });
   if (parsed.unsupported.length > 0) {
@@ -1325,7 +1046,6 @@ export async function handleSessionWhoami(args: string[], deps: RunDeps): Promis
   success(deps.io, lines.join("\n"));
 }
 
-/** One `id  status  branch  title` peer row, shared by the sibling/child lists. */
 function formatPeer(peer: Record<string, unknown>): string {
   return [
     asString(peer.id),
@@ -1335,19 +1055,6 @@ function formatPeer(peer: Record<string, unknown>): string {
   ].join("\t");
 }
 
-/**
- * `shipit session report -b TEXT | --body-file FILE [--severity S] [--subject T]
- * [--to parent] [--json]` (docs/233).
- *
- * The upward push channel. The report lands in each recipient's transcript as a
- * persisted card AND as a queued system turn, so the recipient AGENT is woken
- * rather than having to go and look. The recipient is derived server-side from
- * this session's parent linkage — there is no `--to <session-id>` and no
- * sibling/cohort broadcast. The parent is the coordination hub.
- *
- * Exits 1 when no recipient's agent could be woken (the card is still posted, so
- * the human record survives); the per-recipient outcome is always printed.
- */
 export async function handleSessionReport(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: {

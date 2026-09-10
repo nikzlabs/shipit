@@ -1,19 +1,3 @@
-/**
- * Voice API routes (docs/144).
- *
- * Surface:
- *   POST   /api/voice/credentials         { provider, apiKey } set a key (server-only)
- *   DELETE /api/voice/credentials         { provider } clear it
- *   GET    /api/voice/credentials/status  { configured: string[] } — never the key
- *   GET    /api/voice/cleanup/status      { provider } — which cleanup path runs
- *   POST   /api/voice/transcribe          multipart audio (+ sttProvider) → { text, rawText, ... }
- *   POST   /api/voice/speak               { text, voice, speed, provider } → audio | 204
- *
- * Keys live only on the server; audio flows browser→orchestrator→provider in
- * both directions so the browser never opens an authenticated provider
- * connection (plan threat model).
- */
-
 import path from "node:path";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
@@ -35,27 +19,12 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
   const cacheDir = path.join(deps.stateDir ?? deps.workspaceDir, ".voice-cache");
   const ttsCache = new TtsCache(cacheDir);
 
-  /**
-   * docs/150-multiple-provider-subscriptions req 19 — transcript cleanup is a real Claude call, so it reads a
-   * real account: the same route a turn would pick. Resolved per request rather
-   * than once at registration because the user can connect, reorder, or
-   * disconnect accounts while the server is up. `undefined` for a reserved
-   * route (API key / env OAuth), which legitimately uses the singleton path.
-   *
-   * The account manager resolves the root itself rather than this composing one
-   * from `deps.credentialsDir`: that field is optional on `ApiDeps`, so an
-   * absent one would silently hand back `undefined` and drop cleanup to the
-   * unscoped read this exists to replace.
-   */
   const cleanupCredentialRoot = (): string | undefined => {
     try {
       const route = deps.providerAccountManager?.selectRouteForTurn("anthropic");
       if (route?.kind !== "account") return undefined;
       return deps.providerAccountManager?.resolveCredentialRoot("claude", route.id);
     } catch {
-      // Never fail a voice request on account resolution. `pickCleanupProvider`
-      // already treats a broken Claude path as "fall through to OpenAI"; an
-      // unguarded throw here would escape that and 500 the whole request.
       return undefined;
     }
   };
@@ -67,8 +36,6 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
     }
     reply.code(500).send({ error: `${genericMsg}: ${getErrorMessage(err)}` });
   }
-
-  // ---- Credentials ----
 
   app.post<{ Body: { provider?: string; apiKey?: string } }>(
     "/api/voice/credentials",
@@ -96,8 +63,6 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
   app.get("/api/voice/cleanup/status", async () => {
     return getCleanupStatus(credentialStore, authManager, fetch, cleanupCredentialRoot());
   });
-
-  // ---- Transcription (STT + cleanup) ----
 
   app.post("/api/voice/transcribe", async (request, reply) => {
     let audio: Buffer | null = null;
@@ -146,8 +111,6 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
     }
   });
 
-  // ---- Speech (TTS) ----
-
   app.post<{ Body: { text?: string; voice?: string; speed?: number; provider?: string } }>(
     "/api/voice/speak",
     async (request, reply) => {
@@ -174,9 +137,6 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
     },
   );
 
-  // ---- Voice-note delivery (docs/163) ----
-
-  // Webhook config: URL + bearer token (server-side only, never echoed back).
   app.post<{ Body: { url?: string; token?: string } }>(
     "/api/voice/webhook",
     async (request, reply) => {
@@ -190,9 +150,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
         reply.code(400).send({ error: "url must be an http(s) URL" });
         return;
       }
-      // The token is write-only, so an empty field while editing an existing
-      // webhook means "keep the stored token". Clearing the whole webhook is
-      // handled explicitly by DELETE /api/voice/webhook.
+      // The browser cannot read the token; a blank field preserves the stored value.
       const storedToken = credentialStore.getVoiceWebhook()?.token ?? "";
       credentialStore.setVoiceWebhook(url, token || storedToken);
       return { ok: true };
@@ -206,18 +164,9 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
 
   app.get("/api/voice/webhook/status", async () => {
     const wh = credentialStore.getVoiceWebhook();
-    // Never return the token; only whether it's configured and the URL host.
     return { configured: !!wh, url: wh?.url ?? null };
   });
 
-  // Built-in voice_note tool write-back. The `shipit` bridge → worker
-  // `/agent-ops/voice/note` relays here with the trusted session id.
-  //
-  // Event-stream observation remains the preferred low-latency delivery path,
-  // but not every agent adapter exposes MCP tool calls in an observable
-  // assistant event. The bridge therefore also routes the note as a reliability
-  // fallback. `routeVoiceNote` deduplicates identical authored payloads within
-  // the turn, so whichever path arrives second is a no-op.
   app.post<{
     Params: { sessionId: string };
     Body: { summary?: string; context?: unknown };

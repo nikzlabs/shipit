@@ -10,7 +10,6 @@ import {
   resolveMemoryTargets,
 } from "./memory-pressure.js";
 
-/** A snapshot as the poller stamps it: raw reading + resolved targets. */
 function snapshot(usedGb: number, hostGb: number, budgetMb: number | null) {
   return {
     usedBytes: usedGb * 1024 ** 3,
@@ -64,8 +63,6 @@ describe("memory-pressure", () => {
     expect(MEMORY_PRESSURE_BANNER_THRESHOLD).toBeLessThan(MEMORY_PRESSURE_EVICT_THRESHOLD);
   });
 
-  // docs/284 — the budget replaced the container count as the thing reclaim is
-  // measured against.
   describe("resolveMemoryTargets", () => {
     it("keeps the host fractions when no budget is set (req 9)", () => {
       const t = resolveMemoryTargets(16 * GB, null);
@@ -74,8 +71,6 @@ describe("memory-pressure", () => {
       expect(t.evictAtBytes).toBe(16 * GB * MEMORY_PRESSURE_EVICT_THRESHOLD);
     });
 
-    // reqs 3 and 5 — the user's number is taken literally. Reclaiming at 85% of
-    // a 16 GB budget would stop previews with 2.4 GB of the allowance unspent.
     it("reclaims AT an explicit budget, warning before it", () => {
       const t = resolveMemoryTargets(64 * GB, 16 * 1024);
       expect(t.budgetBytes).toBe(16 * GB);
@@ -83,8 +78,6 @@ describe("memory-pressure", () => {
       expect(t.warnAtBytes).toBe(16 * GB * BUDGET_BANNER_THRESHOLD);
     });
 
-    // req 12 — otherwise a budget larger than the machine would switch the OOM
-    // safety net off: usage could never reach it, so nothing would be reclaimed.
     it("clamps a budget larger than the host down to the host", () => {
       expect(resolveMemoryTargets(8 * GB, 64 * 1024).budgetBytes).toBe(8 * GB);
     });
@@ -95,11 +88,10 @@ describe("memory-pressure", () => {
   });
 
   it("measures pressure against the budget, not the host (req 12)", () => {
-    // 15 GB used on a 64 GB host is nothing; against a 16 GB budget it warns.
     const withBudget = snapshot(15, 64, 16 * 1024);
     expect(memoryUsedFraction(withBudget)).toBeCloseTo(0.9375, 4);
     expect(isUnderBannerPressure(withBudget)).toBe(true);
-    expect(isUnderEvictionPressure(withBudget)).toBe(false); // not AT the budget yet
+    expect(isUnderEvictionPressure(withBudget)).toBe(false);
 
     const noBudget = snapshot(15, 64, null);
     expect(isUnderBannerPressure(noBudget)).toBe(false);
@@ -122,10 +114,6 @@ describe("memory-pressure", () => {
     });
   });
 
-  // req 13 — the machine is the user's too, so ShipIt takes half of it by
-  // default and leaves the rest alone. The half behaves like a budget the user
-  // typed (reclaim AT it), not like the softer host fraction — otherwise the
-  // "default" would still creep to 85% of everything.
   describe("local deployment default", () => {
     it("defaults to half the machine, applied like an explicit budget", () => {
       const t = resolveMemoryTargets(16 * GB, null, "local");

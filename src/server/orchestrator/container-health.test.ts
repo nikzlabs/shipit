@@ -1,16 +1,3 @@
-/**
- * Unit tests for the Docker-event health monitor — specifically the
- * stale-incarnation guard.
- *
- * Regression coverage for the Rescue create/phantom-exit loop: the
- * container name (`agent-<shortId>`) and `shipit-session-id` label are
- * reused across recreations, so a `die`/`oom` event for a PREVIOUS
- * container (e.g. the one Rescue just stopped) used to be attributed to
- * the current, healthy container — deleting its map entry and emitting a
- * phantom `container_exited`. The guard compares `Actor.ID` against the
- * tracked `sc.id` and drops the event when they differ.
- */
-
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import {
@@ -81,19 +68,6 @@ describe("container-health: stale-incarnation guard", () => {
     );
   }
 
-  /**
-   * A second consumer of the same stream, unrelated to crash handling: the API
-   * trust boundary's IP index (`api-container-guard.ts` →
-   * `getSessionByAnyContainerIp`), which answers from a periodically-refreshed
-   * snapshot and reads an unrecognised source IP as "browser or host" — i.e. as
-   * MORE trusted than a session container. The paths ShipIt drives bracket
-   * themselves; this is the BACKSTOP for the one nobody drives, a Compose
-   * service that Docker's own restart policy brings back on a new address.
-   *
-   * Its narrowness is the design, not an omission — an announcement drops the
-   * freshness stamp, so a signal that fires on unrelated daemon churn would
-   * reinstate the per-request Docker lookup this index exists to avoid.
-   */
   describe("labelled-container start backstop", () => {
     const SESSION_LABEL = "shipit-parent-session";
 
@@ -105,9 +79,6 @@ describe("container-health: stale-incarnation guard", () => {
     }
 
     it("subscribes to start events, which the crash path has no use for", () => {
-      // The daemon-side filter decides whether the handler ever sees a `start`.
-      // Asserted at the subscription because a handler branch for an event
-      // filtered out upstream is dead code that still reads well.
       const filters = getEvents.mock.calls[0]?.[0]?.filters as { event?: string[] } | undefined;
       expect(filters?.event).toContain("start");
     });
@@ -123,19 +94,12 @@ describe("container-health: stale-incarnation guard", () => {
     });
 
     it("ignores die and oom, which cannot create a more-trusted caller", () => {
-      // A death can only REMOVE an index entry, and a stale positive fails
-      // toward denial. Reporting it would spend a Docker query for nothing.
       emit("die", { [SESSION_LABEL]: "sess-1", exitCode: "0" });
       emit("oom", { [SESSION_LABEL]: "sess-1" });
       expect(labelledStart).not.toHaveBeenCalled();
     });
 
     it("reads every record in a chunk that carries several", () => {
-      // Docker streams newline-delimited JSON and a `data` chunk carries
-      // whatever the socket delivered, so a `compose up` that starts a stack
-      // arrives as one batch. Parsing the chunk as a single object threw and
-      // swallowed the WHOLE batch — crash events with it, which is why this
-      // matters beyond the backstop.
       const record = (action: string, attrs: Record<string, string>, id = "c1") =>
         JSON.stringify({ Action: action, Actor: { ID: id, Attributes: attrs } });
       const exited = vi.fn();
@@ -155,8 +119,6 @@ describe("container-health: stale-incarnation guard", () => {
   });
 
   it("drops a die event whose Actor.ID does not match the tracked container", () => {
-    // Replacement container B is registered under the same session ID; a
-    // stale `die` event for the previous container A must NOT touch B.
     containers.set("sess-1", makeContainer("b1", "sess-1"));
     const exited = vi.fn();
     emitter.on("container_exited", exited);
@@ -180,9 +142,6 @@ describe("container-health: stale-incarnation guard", () => {
   });
 
   it("processes a die event with no Actor.ID (guard is best-effort, not a hard gate)", () => {
-    // Older Docker daemons / some event shapes omit Actor.ID. With no ID
-    // to compare we fall through to the existing behavior so we never
-    // silently swallow a real exit.
     containers.set("sess-1", makeContainer("b1", "sess-1"));
     const exited = vi.fn();
     emitter.on("container_exited", exited);
@@ -201,10 +160,6 @@ describe("container-health: stale-incarnation guard", () => {
   });
 
   it("drops a die event while the new container is mid-create (sc.id still empty)", () => {
-    // The new container is registered (line ~290 of container-lifecycle)
-    // but `sc.id` is not yet assigned. A stale `die` for the old container
-    // carries a non-empty Actor.ID, so `containerId !== sc.id` ("" ) holds
-    // and the event is correctly skipped.
     containers.set("sess-1", { ...makeContainer("", "sess-1"), status: "starting" });
     const exited = vi.fn();
     emitter.on("container_exited", exited);
@@ -216,38 +171,16 @@ describe("container-health: stale-incarnation guard", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// planning#224 — egress sidecar reap on the crash path
-// ---------------------------------------------------------------------------
-
-/**
- * The agent container is the netns PARENT of the Tier B/C egress sidecars
- * (docs/172). When it dies on its own, the handler below deletes the session's
- * container-map entry — which LATCHES the leak, because every later
- * `destroyContainer(sessionId)` early-returns on `if (!sc) return`. So the reap
- * has to happen here, at the crash site, or it never happens at all.
- */
 describe("container-health: egress sidecar reap on die/oom (planning#224)", () => {
   let containers: Map<string, SessionContainer>;
   let emitter: EventEmitter<SessionContainerManagerEvents>;
   let eventStream: EventEmitter;
   let removed: string[];
   let deps: HealthDeps;
-  /** The live Docker fake's container store — mutable mid-test (see `kill`). */
   let store: Map<string, FakeC>;
 
   interface FakeC { labels: Record<string, string>; parent?: string; running?: boolean }
 
-  /**
-   * Docker fake carrying `sess-1`'s two sidecars (netns parent `b1`), plus a
-   * compose child and the agent container `b1` itself.
-   *
-   * `agentRunning` models the state the parent is ACTUALLY in when the reap
-   * inspects it — which is not the same thing as what the event said. A Docker
-   * `oom` event fires when the cgroup OOM-killer kills a process; if that process
-   * wasn't PID 1, the container is still running. `extra` seeds additional
-   * containers (used to stage the replacement incarnation).
-   */
   function makeDocker(opts: { agentRunning?: boolean; extra?: Record<string, FakeC> } = {}) {
     store = new Map<string, FakeC>([
       ["b1", { labels: {}, running: opts.agentRunning ?? false }],
@@ -258,16 +191,12 @@ describe("container-health: egress sidecar reap on die/oom (planning#224)", () =
     ]);
     return {
       getEvents: vi.fn(async () => eventStream),
-      // Models two things real `listContainers` does that the reaper depends on:
-      // the `all` option (without it Docker returns RUNNING containers only — and
-      // an orphaned sidecar has usually already exited, so dropping `all: true`
-      // would silently find nothing), and `label=key` vs `label=key=value`.
       listContainers: vi.fn(async (o: { all?: boolean; filters?: { label?: string[] } }) => {
         const want = o.filters?.label?.[0] ?? "";
         const [key, value] = want.includes("=") ? want.split("=", 2) : [want, undefined];
         return [...store.entries()]
           .filter(([, c]) => {
-            if (!o.all && !(c.running ?? false)) return false; // Docker's running-only default
+            if (!o.all && !(c.running ?? false)) return false;
             const actual = c.labels[key!];
             if (actual === undefined) return false;
             return value === undefined || actual === value;
@@ -288,13 +217,6 @@ describe("container-health: egress sidecar reap on die/oom (planning#224)", () =
     } as unknown as HealthDeps["docker"];
   }
 
-  /**
-   * The daemon finishes processing the container's exit: it flips to not-running.
-   *
-   * This is what happens BETWEEN Docker's `oom` and `die` events on a PID-1 OOM —
-   * the whole reason the two are distinguishable, and the reason the reap has to
-   * probe liveness rather than trust the event.
-   */
   function kill(id: string) {
     const c = store.get(id);
     if (c) c.running = false;
@@ -307,12 +229,6 @@ describe("container-health: egress sidecar reap on die/oom (planning#224)", () =
     removed = [];
   });
 
-  /**
-   * Start the monitor with a Docker fake shaped for this test. Each test calls
-   * this exactly once — starting a second monitor on the same `eventStream` would
-   * leave TWO `data` handlers attached, and the stale one (holding the previous
-   * fake) would answer the event too.
-   */
   async function start(dockerOpts: { agentRunning?: boolean; extra?: Record<string, FakeC> } = {}) {
     deps = {
       docker: makeDocker(dockerOpts),
@@ -340,7 +256,6 @@ describe("container-health: egress sidecar reap on die/oom (planning#224)", () =
 
     emit("die", "sess-1", "b1");
 
-    // The reap is fire-and-forget from inside the Docker event handler.
     await vi.waitFor(() => expect(removed).toHaveLength(2));
     expect([...removed].sort()).toEqual(["proxy-1", "res-1"]);
   });
@@ -355,14 +270,7 @@ describe("container-health: egress sidecar reap on die/oom (planning#224)", () =
   });
 
   it("does NOT reap on an OOM the container SURVIVED — the event is not proof of death", async () => {
-    // Docker's `oom` event fires when the cgroup's OOM-killer kills *a process*,
-    // not necessarily the container. If the victim wasn't PID 1 — e.g. the agent
-    // CLI is killed but the session worker survives — the container keeps running
-    // and its network namespace is perfectly alive. Reaping on the event alone
-    // would tear the resolver and proxy out from under a live worker, silently
-    // killing its DNS and HTTPS. The reap confirms the parent is actually down
-    // rather than taking the event's word for it.
-    await start({ agentRunning: true }); // b1 survived the OOM
+    await start({ agentRunning: true });
     containers.set("sess-1", makeContainer("b1", "sess-1"));
 
     emit("oom", "sess-1", "b1");
@@ -372,14 +280,10 @@ describe("container-health: egress sidecar reap on die/oom (planning#224)", () =
   });
 
   it("does NOT reap when an ID-less die event resolves to the CURRENT, running container", async () => {
-    // Older daemons omit `Actor.ID`, so the incarnation guard can't tell
-    // generations apart and `deadContainerId` falls back to the tracked `sc.id` —
-    // which may be the healthy REPLACEMENT. The liveness check is what stops that
-    // from reaping a live session's sidecars.
     await start({ agentRunning: true });
     containers.set("sess-1", makeContainer("b1", "sess-1"));
 
-    emit("die", "sess-1"); // no Actor.ID
+    emit("die", "sess-1");
 
     await new Promise((r) => setTimeout(r, 30));
     expect(removed).toEqual([]);
@@ -396,59 +300,36 @@ describe("container-health: egress sidecar reap on die/oom (planning#224)", () =
   });
 
   it("reaps on the `die` that FOLLOWS an `oom` — by then the map entry is already gone", async () => {
-    // THE canonical OOM crash, and the one planning#224 is named for. A PID-1 OOM emits
-    // TWO events: `oom` first, then `die` a few ms later, once the daemon has
-    // processed the exit.
-    //
-    // At `oom` time the daemon still reports the container Running, so the reap's
-    // liveness gate correctly declines — an `oom` is not proof of death (see the
-    // survived-OOM test above). But that same handler deletes the session's
-    // container-map entry. So if the reap sat below the handler's
-    // `if (!sc) return`, the `die` event — the one that IS proof — would be dropped
-    // before ever reaching it, and the sidecars would leak until the next
-    // orchestrator boot. Hoisting the reap above the early-returns is what closes
-    // the window; the liveness gate is what makes calling it twice safe.
-    await start({ agentRunning: true }); // b1 is still up when the `oom` lands
+    await start({ agentRunning: true });
     containers.set("sess-1", makeContainer("b1", "sess-1"));
 
     emit("oom", "sess-1", "b1");
     await new Promise((r) => setTimeout(r, 20));
-    expect(removed).toEqual([]); // reap declined — correctly, b1 is still running
-    expect(containers.get("sess-1")).toBeDefined(); // and the `oom` left the session alone
+    expect(removed).toEqual([]);
+    expect(containers.get("sess-1")).toBeDefined();
 
-    kill("b1"); // the daemon finishes processing the exit...
-    emit("die", "sess-1", "b1"); // ...and emits `die`, the event that IS proof
+    kill("b1");
+    emit("die", "sess-1", "b1");
 
     await vi.waitFor(() => expect([...removed].sort()).toEqual(["proxy-1", "res-1"]));
     expect(containers.get("sess-1")).toBeUndefined();
   });
 
   it("reaps on an ID-LESS oom→die pair — the map entry is the only id we have", async () => {
-    // Older daemons omit `Actor.ID`, so the ONLY handle on the dead container is
-    // the tracked `sc.id`. That used to make this sequence leak: the `oom` pass
-    // deleted the map entry, so when `die` arrived it had neither an `Actor.ID` nor
-    // an `sc` to fall back to, the reap got an empty parent id, and it declined to
-    // scope — leaving the sidecars for the boot sweep, months away on a
-    // long-running box. Keeping the map entry until `die` is what closes it.
     await start({ agentRunning: true });
     containers.set("sess-1", makeContainer("b1", "sess-1"));
 
-    emit("oom", "sess-1"); // no Actor.ID
+    emit("oom", "sess-1");
     await new Promise((r) => setTimeout(r, 20));
     expect(removed).toEqual([]);
 
     kill("b1");
-    emit("die", "sess-1"); // no Actor.ID either — falls back to sc.id
+    emit("die", "sess-1");
 
     await vi.waitFor(() => expect([...removed].sort()).toEqual(["proxy-1", "res-1"]));
   });
 
   it("leaves a session ALONE when it survived the OOM — no exit, no reap", async () => {
-    // The whole reason `oom` is no longer terminal. PID 1 is `docker-init`, the
-    // session worker is its child and the agent CLI a grandchild, so the likely
-    // OOM victim is the CLI — the container
-    // keeps running. Acting on the event would finalize the live turn as crashed,
-    // dispose the runner, and trip the OOM circuit breaker on a healthy container.
     await start({ agentRunning: true });
     containers.set("sess-1", makeContainer("b1", "sess-1"));
     const exited = vi.fn();
@@ -463,10 +344,6 @@ describe("container-health: egress sidecar reap on die/oom (planning#224)", () =
   });
 
   it("attributes 'Out of memory' by INCARNATION id on an id-carrying oom→die pair", async () => {
-    // The modern-daemon common case: both events carry `Actor.ID`. The record must
-    // be stored AND consumed under that id — round 5 found that keying the store by
-    // session id survived every existing test (they all omitted `Actor.ID`), which
-    // left the cross-incarnation guard below completely untested.
     await start({ agentRunning: true });
     containers.set("sess-1", makeContainer("b1", "sess-1"));
     const exited = vi.fn();
@@ -480,10 +357,6 @@ describe("container-health: egress sidecar reap on die/oom (planning#224)", () =
   });
 
   it("attributes 'Out of memory' when the oom carries an id but the die does not", async () => {
-    // Mixed event shapes: the record sits under `Actor.ID`, the id-less `die`
-    // falls back to the tracked `sc.id` — the same container, so the label must
-    // still land. (A lookup that tried the session id instead would also "work"
-    // here, which is why the cross-incarnation test below exists.)
     await start({ agentRunning: true });
     containers.set("sess-1", makeContainer("b1", "sess-1"));
     const exited = vi.fn();
@@ -491,42 +364,27 @@ describe("container-health: egress sidecar reap on die/oom (planning#224)", () =
 
     emit("oom", "sess-1", "b1");
     kill("b1");
-    emit("die", "sess-1"); // no Actor.ID — resolves via sc.id
+    emit("die", "sess-1");
 
     expect(exited).toHaveBeenCalledWith("sess-1", 137, "Out of memory");
   });
 
   it("does NOT pin a stale incarnation's OOM on the current container's death", async () => {
-    // An `oom` naming a PREVIOUS incarnation (a1) whose `die` never consumed it —
-    // e.g. it was swallowed by the `status === "stopping"` guard. If the record
-    // were keyed (or looked up) by session id, the CURRENT container's unrelated
-    // death within the 60s window would be mislabelled "Out of memory" and counted
-    // by the OOM circuit breaker — enough of those trips session_memory_exhausted
-    // against a healthy session. Incarnation keying makes the record unmatchable
-    // by anything but a1's own death.
     await start({ agentRunning: true });
     containers.set("sess-1", makeContainer("b1", "sess-1"));
     const exited = vi.fn();
     emitter.on("container_exited", exited);
 
-    emit("oom", "sess-1", "a1"); // stale — a previous incarnation's OOM
+    emit("oom", "sess-1", "a1");
     kill("b1");
-    emit("die", "sess-1", "b1"); // the current container dies of something else
+    emit("die", "sess-1", "b1");
 
     expect(exited).toHaveBeenCalledWith("sess-1", 137, undefined);
   });
 
   it("reaps a PREVIOUS incarnation's orphans on a stale die, sparing the current one's", async () => {
-    // A `die` naming a container that is NOT the tracked one — an external
-    // `docker rm -f` of a corpse, or the container Rescue just stopped. The
-    // stale-incarnation guard stops that exit being attributed to the *session*
-    // (which would phantom-kill a healthy container's map entry), but the event
-    // still names a real dead container, and that container's sidecars are real
-    // orphans. Reaping them is the point: this is the only event we will ever get
-    // for them. The CURRENT incarnation's sidecars share a different, running
-    // parent, so they're spared on both counts.
     await start({
-      agentRunning: true, // b1 — the current container — is healthy
+      agentRunning: true,
       extra: {
         "res-0": { labels: { [EGRESS_RESOLVER_LABEL]: "sess-1", "shipit-parent-session": "sess-1" }, parent: "a1" },
         "proxy-0": { labels: { [EGRESS_PROXY_LABEL]: "sess-1", "shipit-parent-session": "sess-1" }, parent: "a1" },
@@ -536,10 +394,9 @@ describe("container-health: egress sidecar reap on die/oom (planning#224)", () =
     const exited = vi.fn();
     emitter.on("container_exited", exited);
 
-    emit("die", "sess-1", "a1"); // a1 = the OLD container, already gone from the daemon
+    emit("die", "sess-1", "a1");
 
     await vi.waitFor(() => expect([...removed].sort()).toEqual(["proxy-0", "res-0"]));
-    // The healthy current incarnation is untouched in every respect.
     expect(removed).not.toContain("res-1");
     expect(removed).not.toContain("proxy-1");
     expect(exited).not.toHaveBeenCalled();
@@ -547,55 +404,24 @@ describe("container-health: egress sidecar reap on die/oom (planning#224)", () =
   });
 
   it("SPARES a replacement incarnation's sidecars that appear while the reap is in flight", async () => {
-    // The reap is fire-and-forget, so the session can be reactivated — bringing up
-    // a NEW agent container and NEW sidecars under the SAME session id — before
-    // our `listContainers` resolves. A reap scoped to the session label alone
-    // would come back holding the replacement's sidecars and force-remove them,
-    // leaving a healthy running agent with no DNS and no HTTPS. Scoping to the
-    // dead container's id (`b1`) is what makes it idempotent.
-    //
-    // Staged here as "the replacement is already up when the reap lists" — the
-    // worst case, and the one a label-only reap fails.
     await start({
       extra: {
-        "b2": { labels: {}, running: true }, // the replacement agent, up and healthy
+        "b2": { labels: {}, running: true },
         "res-2": { labels: { [EGRESS_RESOLVER_LABEL]: "sess-1", "shipit-parent-session": "sess-1" }, parent: "b2" },
         "proxy-2": { labels: { [EGRESS_PROXY_LABEL]: "sess-1", "shipit-parent-session": "sess-1" }, parent: "b2" },
       },
     });
     containers.set("sess-1", makeContainer("b1", "sess-1"));
 
-    emit("die", "sess-1", "b1"); // the OLD container (b1) died
+    emit("die", "sess-1", "b1");
 
     await vi.waitFor(() => expect(removed).toHaveLength(2));
-    expect([...removed].sort()).toEqual(["proxy-1", "res-1"]); // b1's sidecars only
+    expect([...removed].sort()).toEqual(["proxy-1", "res-1"]);
     expect(removed).not.toContain("res-2");
     expect(removed).not.toContain("proxy-2");
   });
 });
 
-// ---------------------------------------------------------------------------
-// Path 2 — telling a project service apart from ShipIt's own containers
-// ---------------------------------------------------------------------------
-
-/**
- * `shipit-parent-session` is stamped on every container ShipIt parents to a
- * session, not only on the project's Compose services: the egress sidecars carry
- * it too (they must, so destroy-time cleanup reaps them). Path 2 keyed
- * `service_exited` on that label alone, so a sidecar being replaced — which
- * containment does whenever a service starts or its policy changes, force-removing
- * the old one at exit 137 — was reported to the user as a compose service crashing.
- *
- * The field report this guards: a HEALTHY warm session, four services with
- * `RestartCount=0` and no exit ever recorded, produced 19 `compose: service
- * exited` lines during a normal two-minute startup. The dev server looked like it
- * was crash-looping and it cost a real investigation.
- *
- * The label that means "one of the project's services" is `shipit-service-name`,
- * which `compose-generator.ts` stamps on every service it generates. Path 2 now
- * tests for it positively, so a NEW kind of ShipIt-parented container is silent
- * by default rather than becoming the next false alarm nobody excluded.
- */
 describe("container-health: compose service vs. ShipIt's own session children", () => {
   const PARENT = "shipit-parent-session";
   type ServiceExited = (...args: SessionContainerManagerEvents["service_exited"]) => void;
@@ -641,9 +467,6 @@ describe("container-health: compose service vs. ShipIt's own session children", 
   });
 
   it("does NOT report a compose-service egress sidecar as a service exit", () => {
-    // The exact shape from the field report: parented to the session, labelled a
-    // sidecar, and — the part that made the line anonymous — carrying no service
-    // name of its own.
     die({ [PARENT]: "sess-1", "shipit-egress-service-sidecar": "true", "shipit-egress-parent": "svc-1" });
 
     expect(serviceExited).not.toHaveBeenCalled();
@@ -653,11 +476,6 @@ describe("container-health: compose service vs. ShipIt's own session children", 
   });
 
   it("reports a service the SESSION brought up through the Docker proxy", () => {
-    // A Docker-enabled session can run `docker compose up` in its own terminal.
-    // `docker-proxy-sanitize.ts` stamps the parent label on what that creates but
-    // adds no ShipIt service name, and the generated override never reached it —
-    // so a `shipit-service-name`-only test would have taken this container's exit
-    // line away, which it had before. Compose's own label is the identification.
     die({ [PARENT]: "sess-1", "com.docker.compose.service": "worker" });
 
     expect(serviceExited).toHaveBeenCalledWith("sess-1", {
@@ -667,14 +485,6 @@ describe("container-health: compose service vs. ShipIt's own session children", 
   });
 
   it("keeps a sidecar out of the service path even if it carries a compose label", () => {
-    // The incident report claimed an inspected sidecar carried
-    // `com.docker.compose.service`. No code path here writes one — ShipIt sets no
-    // `com.docker.compose.*` label anywhere and creates every sidecar through the
-    // Docker API with an explicit label map — so the claim is unsupported and
-    // could not be checked against a live daemon. The egress precondition is
-    // therefore a hard gate rather than an implication of the name lookup, and
-    // this is the test that says so: were the claim true after all, the fix still
-    // holds.
     die({
       [PARENT]: "sess-1",
       "shipit-egress-service-sidecar": "true",
@@ -686,9 +496,6 @@ describe("container-health: compose service vs. ShipIt's own session children", 
   });
 
   it("does NOT report the agent's own Tier B/C sidecars as service exits", () => {
-    // These carry the parent label from `container-lifecycle.ts` /
-    // `egress-reload.ts`, not from compose containment — a sidecar-label-only
-    // denylist would have left this half of the churn still reported.
     die({ [PARENT]: "sess-1", [EGRESS_RESOLVER_LABEL]: "sess-1" });
     die({ [PARENT]: "sess-1", [EGRESS_PROXY_LABEL]: "sess-1" });
 
@@ -698,10 +505,6 @@ describe("container-health: compose service vs. ShipIt's own session children", 
   });
 
   it("does NOT report a session child it cannot name, and says it cannot name it", () => {
-    // The Tier A firewall installer: a one-shot that exits 0 on every session
-    // start, parented to the session and carrying no egress label of its own.
-    // Silent to the user either way; `egressSidecar: false` is the honest answer
-    // rather than a guess.
     die({ [PARENT]: "sess-1", exitCode: "0" });
 
     expect(serviceExited).not.toHaveBeenCalled();
@@ -711,9 +514,6 @@ describe("container-health: compose service vs. ShipIt's own session children", 
   });
 
   it("does NOT route a sidecar OOM into the service path", () => {
-    // `service_exited` with `oom: true` tells the user to raise memory limits in
-    // docker-compose.yml. A sidecar has no entry there to raise, so reaching that
-    // advice at all is the bug — not the wording of it.
     die({ [PARENT]: "sess-1", "shipit-egress-service-sidecar": "true" }, "oom");
 
     expect(serviceExited).not.toHaveBeenCalled();

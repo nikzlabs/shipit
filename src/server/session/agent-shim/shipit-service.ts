@@ -1,39 +1,7 @@
-/**
- * `shipit service` handlers — Compose service control for the agent (docs/238).
- *
- * A project's `docker-compose.yml` routinely declares services the agent needs
- * but that don't start on their own: a Postgres it has to migrate, a Redis it
- * has to flush, an Android emulator it has to `adb` into. Those are
- * `x-shipit-preview: manual` (the default for any service without `ports`), and
- * the docs used to describe starting them as "the user clicks Start in the UI" —
- * an inversion of ShipIt's own principle that chat is the input surface and the
- * AGENT is the actor. This module makes the verb the agent's.
- *
- * The underlying bridge (worker `/services/*` → SSE → orchestrator
- * `ServiceManager`) predates this and is unchanged; what was missing was a
- * discoverable, correct front end. `curl http://localhost:9100/services/start`
- * still works — it's simply no longer the documented path.
- *
- * Two mechanics are specific to this surface and load-bearing:
- *
- *   1. `start`/`restart` go over the UNBOUNDED transport (`call(..., 0)`), the
- *      same one `shipit agent run` uses. They cover a `docker compose up -d
- *      --build`, so a cold image pull runs for minutes; undici's default 300s
- *      headersTimeout would abort the request with the opaque "fetch failed"
- *      while the start was still in flight. The worker's own per-action deadline
- *      (service-request-timeouts.ts) is the real ceiling.
- *   2. A timeout is NOT a failure. The worker giving up on the callback doesn't
- *      cancel the orchestrator's `docker compose up`, so the copy says "still
- *      running" and names the recovery command instead of implying the service
- *      is dead.
- *
- * The `shipit service` dispatch lives in `shipit.ts`.
- */
 
 import { asString, fail, parseFlags, success } from "./shim-common.js";
 import { REJECTED_HELP, formatError, type RunDeps } from "./shipit.js";
 
-/** Shape of a service row as returned by the bridge's `list`/mutation actions. */
 interface ServiceRow {
   name: string;
   status?: string;
@@ -44,26 +12,11 @@ interface ServiceRow {
   alreadyRunning?: boolean;
 }
 
-/**
- * planning#382 — why the project's compose file contributed no services.
- *
- * The orchestrator's `ComposeFailure`, read off the wire. Kept as its own local
- * shape (like {@link ServiceRow}) because the shim is compiled into the session
- * image and must not import orchestrator modules.
- */
 interface ComposeFailureRow {
   kind: "refused" | "malformed";
   message: string;
 }
 
-/**
- * nikzlabs/shipit#2429 — why this session's dependencies may not match its checkout.
- *
- * Its own local shape for the same reason {@link ComposeFailureRow} has one: the
- * shim is compiled into the session image and must not import orchestrator
- * modules. `message` is rendered verbatim — the orchestrator owns the wording,
- * because it is the side that knows which rewrite moved the tree.
- */
 interface DependencyGapRow {
   reason: string;
   message: string;
@@ -82,8 +35,6 @@ function toFailure(value: unknown): ComposeFailureRow | undefined {
   const obj = value as Record<string, unknown>;
   const message = asString(obj.message);
   if (!message) return undefined;
-  // An unrecognised kind reads as `malformed`, the weaker claim: only a
-  // deliberate refusal can promise the message names a fix.
   return { kind: obj.kind === "refused" ? "refused" : "malformed", message };
 }
 
@@ -100,20 +51,6 @@ function toRow(value: unknown): ServiceRow {
   };
 }
 
-/**
- * planning#382 — the project's compose file, said in the agent's words.
- *
- * `refused` gets the imperative, because ShipIt understood the file and
- * declined it: the message already names the rule and the one line that fixes
- * it, so the only thing to add is where to make the edit. `malformed` gets no
- * fix instruction, because there is none to give — ShipIt could not understand
- * the file at all, and the message is where the parse gave up.
- *
- * Neither names `docker-compose.yml`. The path is whatever `shipit.yaml`
- * declares (`deploy/compose.yml` is a real setup), and sending the agent to
- * edit a file the project does not have is the same class of wrong answer this
- * whole change is removing. Review finding.
- */
 function renderFailure(failure: ComposeFailureRow): string {
   if (failure.kind === "refused") {
     return (
@@ -128,33 +65,11 @@ function renderFailure(failure: ComposeFailureRow): string {
   );
 }
 
-/**
- * Render the service list as an aligned table, or — when it is empty for a
- * reason — that reason.
- *
- * Deliberately one call, everything: the agent needs to know in a single read
- * what exists, what's up, and where to point `curl`/`browser_navigate` — so
- * `URL` (the agent-reachable containerIp:port, not the user's preview origin)
- * is a column rather than something to go derive. Per-service errors are
- * appended as their own lines instead of being dropped, since "why is this
- * service in `error`" is the whole reason the agent is looking.
- *
- * `failure` is the same argument one level up. "No services defined. Add them
- * to docker-compose.yml" is correct for a project that declares no stack and
- * actively WRONG for one whose stack was refused: it sends the agent to write a
- * file that already exists, instead of to the line it has to change. docs/263's
- * containment rules refuse a stock compose file, so that wrong answer was the
- * first one a normal project got.
- */
 function renderTable(
   rows: ServiceRow[],
   failure?: ComposeFailureRow,
   dependencies?: DependencyGapRow,
 ): string {
-  // nikzlabs/shipit#2429 — the dependency note is appended to EVERY rendering,
-  // including the empty ones. It is the answer to a question the table cannot
-  // answer at all: a row that reads `running` is exactly the case where the
-  // service is up and every request it serves fails on an unresolvable import.
   const withGap = (text: string) =>
     dependencies ? `${text}\n\nDependencies: ${dependencies.message}` : text;
 
@@ -180,31 +95,23 @@ function renderTable(
   for (const r of rows) {
     if (r.error) out.push(`\n${r.name}: ${r.error}`);
   }
-  // A non-empty list AND a failure is reachable: the project file is re-parsed
-  // before every `docker compose up`, so it can start being refused while the
-  // map still holds the services an earlier parse produced — and a session that
-  // surfaces plugin services has rows the project file never contributed. The
-  // list is what was asked for, so it stays first and the reason follows it.
+  // Old or plugin service rows can remain when the current project file is refused.
   if (failure) out.push(`\n${renderFailure(failure)}`);
   return withGap(out.join("\n"));
 }
 
-/** One-line summary for a mutation result. */
 function renderResult(verb: string, row: ServiceRow): string {
   if (row.alreadyRunning) {
     const where = row.url ? ` at ${row.url}` : "";
     return `${row.name} is already running${where} — nothing to do.`;
   }
   const status = row.status ?? "unknown";
-  // "db: stopped (stopped)" reads as a stutter; name the verb only when it adds
-  // information (a `start` that landed on `running`, a `restart` that didn't).
   const parts = [status === verb ? `${row.name}: ${status}` : `${row.name}: ${status} (${verb})`];
   if (row.url) parts.push(`url: ${row.url}`);
   if (row.error) parts.push(`error: ${row.error}`);
   return parts.join("\n");
 }
 
-/** Parse `--timeout SECONDS` into milliseconds. */
 function parseTimeout(raw: string | undefined, io: RunDeps["io"], cmd: string): number | undefined {
   if (raw === undefined) return undefined;
   const seconds = Number.parseInt(raw, 10);
@@ -214,7 +121,6 @@ function parseTimeout(raw: string | undefined, io: RunDeps["io"], cmd: string): 
   return seconds * 1000;
 }
 
-/** Resolve the single positional service name, or fail with usage. */
 function requireName(positional: string[], io: RunDeps["io"], cmd: string): string {
   const name = positional[0];
   if (!name) {
@@ -229,20 +135,11 @@ function rejectUnsupported(parsed: { unsupported: string[] }, io: RunDeps["io"],
   }
 }
 
-/**
- * Turn a bridge error into an actionable message.
- *
- * The two failures the agent actually hits both have a specific next step, and
- * saying so is the difference between recovering and retrying blindly.
- */
 function serviceError(
   res: { status: number; body: Record<string, unknown> },
   fallback: string,
 ): string {
-  // A 404 here is Fastify's "no such route", not "no such service" — an unknown
-  // service comes back as a 500 carrying `Unknown service: x` from the
-  // orchestrator. So it means this container's worker predates the endpoint,
-  // which otherwise surfaces as a bare, unactionable "Not Found".
+  // Unknown services return 500; 404 means the worker lacks the route.
   if (res.status === 404) {
     return (
       `${fallback}: this session's worker doesn't support that operation (it predates it).\n\n` +
@@ -261,9 +158,6 @@ function serviceError(
   return message;
 }
 
-// ---------------------------------------------------------------------------
-// list
-// ---------------------------------------------------------------------------
 
 export async function handleServiceList(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, { booleans: { "--json": "json" } });
@@ -274,9 +168,6 @@ export async function handleServiceList(args: string[], deps: RunDeps): Promise<
     fail(deps.io, serviceError(res, "Failed to list services"));
   }
   const rows = Array.isArray(res.body.services) ? res.body.services.map(toRow) : [];
-  // planning#382 — carried on BOTH renderings. `--json` is the machine-readable
-  // one, so omitting the reason there would leave a scripted caller with the
-  // same bare `[]` the human rendering used to give.
   const failure = toFailure(res.body.failure);
   const dependencies = toDependencyGap(res.body.dependencies);
   success(
@@ -291,9 +182,6 @@ export async function handleServiceList(args: string[], deps: RunDeps): Promise<
   );
 }
 
-// ---------------------------------------------------------------------------
-// start / restart — the long, unbounded ones
-// ---------------------------------------------------------------------------
 
 async function runLongMutation(
   action: "start" | "restart",
@@ -310,9 +198,7 @@ async function runLongMutation(
   const name = requireName(parsed.positional, deps.io, cmd);
   const timeoutMs = parseTimeout(parsed.values.timeout, deps.io, cmd);
 
-  // timeoutMs: 0 on the transport = explicitly unbounded (Node http, not undici
-  // fetch). See the module docstring — a cold `up --build` outlives fetch's
-  // non-disableable 300s headers timeout.
+  // Cold builds can exceed fetch's 300s timeout; the worker owns the deadline.
   const res = await deps.call(
     "POST",
     `/services/${action}`,
@@ -328,9 +214,6 @@ async function runLongMutation(
   if (parsed.booleans.has("json")) {
     success(deps.io, JSON.stringify(row, null, 2));
   }
-  // A service left in `error` is a failed start, and must exit non-zero — the
-  // pre-238 bridge reported a hardcoded "running" here and the agent proceeded
-  // against a dead container.
   if (row.status === "error") {
     fail(
       deps.io,
@@ -349,9 +232,6 @@ export function handleServiceRestart(args: string[], deps: RunDeps): Promise<voi
   return runLongMutation("restart", args, deps);
 }
 
-// ---------------------------------------------------------------------------
-// stop
-// ---------------------------------------------------------------------------
 
 export async function handleServiceStop(args: string[], deps: RunDeps): Promise<void> {
   const cmd = "shipit service stop";
@@ -370,9 +250,6 @@ export async function handleServiceStop(args: string[], deps: RunDeps): Promise<
   );
 }
 
-// ---------------------------------------------------------------------------
-// logs
-// ---------------------------------------------------------------------------
 
 export async function handleServiceLogs(args: string[], deps: RunDeps): Promise<void> {
   const cmd = "shipit service logs";
@@ -400,7 +277,5 @@ export async function handleServiceLogs(args: string[], deps: RunDeps): Promise<
   if (parsed.booleans.has("json")) {
     success(deps.io, JSON.stringify({ name, logs }, null, 2));
   }
-  // An empty log is a real answer, not an error — a `stopped` service that never
-  // started has nothing to say, and a bare blank line would read as a bug.
   success(deps.io, logs.trim().length > 0 ? logs : `(no logs for ${name})`);
 }

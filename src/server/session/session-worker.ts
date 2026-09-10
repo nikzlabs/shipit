@@ -1,25 +1,3 @@
-/**
- * Session Worker — lightweight Fastify server that runs inside each container
- * (or as a subprocess in non-Docker mode for testing).
- *
- * Provides agent, terminal, and file watcher endpoints. Preview/services
- * are managed by Docker Compose via ServiceManager in the orchestrator.
- *
- * Streams events back to the orchestrator via SSE.
- * The orchestrator talks to this server over HTTP on port 9100 (or a
- * configured port).
- *
- * The endpoint groups (and their state) live in per-concern controllers under
- * `src/server/session/`: {@link AgentController} (agent + sub-agent),
- * {@link TerminalController} (PTY), {@link FileWatcherController},
- * {@link InstallController} (install + MCP install), and
- * {@link McpConfigController} (MCP bridge/config resolution). This class is the
- * app builder: it constructs the SSE broadcaster, permission broker, and present
- * registry, instantiates the controllers, and registers their routes alongside
- * the worker-level endpoints (health, services, secrets, SSE, ask, permission,
- * present, agent-ops).
- */
-
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
 import { EventEmitter } from "node:events";
@@ -72,90 +50,43 @@ import { ensurePluginBinOnPath } from "./plugin-cli.js";
 export type { WorkerSSEEvent } from "./sse-broadcaster.js";
 export type { WorkerAgentFactory } from "./agent-controller.js";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 export interface SessionWorkerDeps {
-  /** Factory for creating agent processes. */
   agentFactory: WorkerAgentFactory;
-  /** Port to listen on. Defaults to 9100. */
   port?: number;
-  /** Host to bind to. Defaults to "0.0.0.0". */
   host?: string;
-  /** Workspace directory inside the container. Defaults to "/workspace". */
   workspaceDir?: string;
-  /**
-   * docs/246 — ShipIt's per-session state dir inside the container, where the
-   * install marker is written. Defaults to the `/session-state` mount; tests
-   * (which run the worker in-process, with no mount) pass a temp dir.
-   */
   stateDir?: string;
-  /** Factory for creating FileWatcher (injectable for testing). */
   createFileWatcher?: () => FileWatcher;
-  /** Factory for creating TerminalProcess (injectable for testing). */
   createTerminal?: () => TerminalProcess;
-  /** Factory for the worker→orchestrator client. Injectable so tests can stub the orchestrator. */
   createOrchestratorClient?: () => OrchestratorClient;
-  /**
-   * planning#313 — the per-session token the orchestrator presents on its calls.
-   * The container entry point resolves it from `SHIPIT_WORKER_TOKEN` and passes
-   * it here (planning#421 — it refuses to start without one, and the guard reads no
-   * environment of its own). Omitted only by in-process test workers, which are
-   * then reachable from loopback alone.
-   */
+  /** Required in containers; omission restricts test workers to loopback callers. */
   workerToken?: string;
 }
 
-// ---------------------------------------------------------------------------
-// SessionWorker
-// ---------------------------------------------------------------------------
-
-/**
- * The session worker manages a single agent process, terminal, and file watcher.
- * Exposes them over HTTP. SSE clients connect to GET /events and receive
- * real-time events.
- */
 export class SessionWorker extends EventEmitter {
   private app: FastifyInstance;
   private readonly sse: SseBroadcaster;
   private port: number;
   private host: string;
   private workspaceDir: string;
-  /** docs/262 — in-flight plugin prepare, and at most one queued follow-up. */
   private _pluginPrepare: Promise<PluginPrepareResult> | null = null;
   private _pluginPrepareQueued: Promise<PluginPrepareResult> | null = null;
   private stateDir: string;
   private _createOrchestratorClient?: () => OrchestratorClient;
   private readonly _workerToken: string | undefined;
 
-  // Per-concern controllers — each owns its endpoint group and the state behind
-  // it. The worker wires them with a shared broadcast closure + the cross-cutting
-  // singletons (permission broker, MCP config).
   private readonly mcpConfig: McpConfigController;
   private readonly agentController: AgentController;
   private readonly terminalController: TerminalController;
   private readonly fileWatcherController: FileWatcherController;
   private readonly installController: InstallController;
 
-  // Service request/callback state — outgoing requests to the orchestrator
-  // over SSE wait here for the orchestrator's /services/_callback POST.
   private readonly serviceRequests = new ServiceRequestQueue();
 
-  // Phase 3 (087): names of secrets currently injected into process.env by
-  // the orchestrator. Tracked so we can `delete process.env[name]` for keys
-  // that are no longer marked `agent: true` after a compose-file edit.
   private _injectedSecretNames = new Set<string>();
 
-  // docs/093 — present tool registry. Holds only metadata (the on-disk path,
-  // MIME, title) per artifact the agent emitted via `present`. The bytes are
-  // read from disk lazily on each serve, never retained (see PresentRegistry).
   private readonly presentRegistry = new PresentRegistry();
 
-  // planning#114 / docs/193 — agent-agnostic approval broker. Holds pending
-  // sensitive-action requests (Claude via the `--permission-prompt-tool`
-  // bridge; Codex via its app-server approval channel), broadcasts the
-  // canonical request/resolved events, and tracks the per-session remember-set.
   private readonly permissionBroker: PermissionBroker;
 
   constructor(deps: SessionWorkerDeps) {
@@ -169,12 +100,7 @@ export class SessionWorker extends EventEmitter {
     this._createOrchestratorClient = deps.createOrchestratorClient;
     this._workerToken = deps.workerToken;
 
-    // docs/262 req 17 — the companion-CLI wrapper directory goes on PATH here,
-    // not only when a prepare round writes into it. Everything this worker
-    // spawns inherits `process.env.PATH` at spawn time, and nothing orders the
-    // first prepare before the first agent process; asserting it once at
-    // construction makes the ordering irrelevant. Appending an empty (or
-    // absent) directory costs nothing.
+    // Set PATH before any child spawns; plugin preparation may finish later.
     ensurePluginBinOnPath();
 
     const broadcast = (event: WorkerSSEEvent): void => this.sse.broadcast(event);
@@ -182,9 +108,6 @@ export class SessionWorker extends EventEmitter {
     this.sse = new SseBroadcaster({
       onBackpressureChange: () => this.terminalController.applyBackpressure(),
     });
-    // docs/193 — the broker broadcasts its canonical request/resolved events on
-    // the same `agent_event` SSE frame the ask bridge uses, so they reach the
-    // orchestrator's agent-listeners and render/persist the permission card.
     this.permissionBroker = new PermissionBroker({
       broadcast: (event) => broadcast({ type: "agent_event", data: event }),
     });
@@ -198,8 +121,6 @@ export class SessionWorker extends EventEmitter {
       mcpConfig: this.mcpConfig,
       latestSseSeq: () => this.sse.latestSeq,
       oldestSseSeq: () => this.sse.oldestSeq,
-      // docs/242 — read lazily: both controllers are constructed below, and the
-      // getter only runs when `/agent/status` is served.
       otherWorkerLiveness: () => ({
         terminalActive: this.terminalController.hasActiveTerminal(),
         installRunning: this.installController.installRunning,
@@ -229,26 +150,18 @@ export class SessionWorker extends EventEmitter {
   private buildApp(): FastifyInstance {
     const app = Fastify({ logger: false });
 
-    // planning#313 — registered FIRST so its `onRequest` hook runs ahead of every
-    // handler below. The worker listens on 0.0.0.0 (the orchestrator dials it
-    // by bridge IP), which also puts it in reach of every other session's
-    // container; this is what keeps those callers out.
+    // Register auth before routes: other session containers can reach the worker's port.
     registerWorkerAuthGuard(app, { token: this._workerToken });
 
     app.get("/health", async () => ({ status: "ok" }));
 
-    // docs/248 — how the repo's Node pin was resolved. Read-only and never
-    // awaits provisioning, so the diagnostics panel can render "pending" while
-    // a first-on-this-host download is still running.
     app.get("/node-runtime", async () => getNodeRuntimeStatus());
 
-    // Controller-owned endpoint groups.
     this.agentController.registerRoutes(app);
     this.terminalController.registerRoutes(app);
     this.fileWatcherController.registerRoutes(app);
     this.installController.registerRoutes(app);
 
-    // Worker-level endpoints (state lives on the worker itself).
     this.registerPluginEndpoint(app);
     this.registerServiceEndpoints(app);
     this.registerSecretsEndpoint(app);
@@ -263,17 +176,11 @@ export class SessionWorker extends EventEmitter {
     return app;
   }
 
-  // --- Service control endpoints (called by agent) ---
-
   private registerServiceEndpoints(app: FastifyInstance): void {
     app.get("/services/list", async () => {
       return this.sendServiceRequest("list");
     });
 
-    // docs/238 — `logs` joins the bridge so the whole service verb set lives
-    // behind one interface. Previously logs were only on the orchestrator route
-    // (GET /api/sessions/:id/services/:name/logs), a different host and port
-    // from every other service call; that route still works and is unchanged.
     app.get<{ Querystring: { name?: string; lines?: string } }>("/services/logs", async (request, reply) => {
       const { name, lines } = request.query ?? {};
       if (typeof name !== "string" || !name) {
@@ -309,8 +216,6 @@ export class SessionWorker extends EventEmitter {
       return this.sendServiceRequest("restart", name, { timeoutMs });
     });
 
-    // --- Service callback endpoint (called by orchestrator with results) ---
-
     app.post<{ Body: { requestId: string; result?: unknown; error?: string } }>("/services/_callback", async (request, reply) => {
       const { requestId, result, error } = request.body ?? {};
       if (typeof requestId !== "string") {
@@ -326,45 +231,12 @@ export class SessionWorker extends EventEmitter {
     });
   }
 
-  // --- Secrets endpoint (087 Phase 3) ---
-  //
-  // Push the full set of `agent: true` secret values to this worker.
-  // The orchestrator calls this:
-  //   1. Once after the compose stack starts and `agent: true` entries
-  //      are resolved (initial bootstrap), and
-  //   2. Whenever the user saves new values via PUT /api/secrets, or the
-  //      compose file changes the set of `agent: true` declarations.
-  //
-  // We replace the full set on every call (not patch) so a name that's
-  // dropped from `x-shipit-secrets` (or has `agent: true` removed) gets
-  // its env var unset, instead of lingering.
-  //
-  // Subsequent agent processes spawned via /agent/start inherit the
-  // updated process.env (the worker passes its own env into the child
-  // via the agent factory). An already-running agent does NOT see the
-  // change — secret updates take effect on the next agent turn.
-  /**
-   * docs/262 — make the session's live plugin checkouts reachable: link them
-   * under `/plugins`, and drop links the declaration no longer names. Runs NO
-   * plugin-authored code — install happens in its own container. The orchestrator calls
-   * this when an activation round settles and after a refresh; it carries no
-   * payload because everything needed is already on disk in this container
-   * (the declaration in `/workspace/shipit.yaml`, each manifest in its own
-   * checkout).
-   *
-   * Serialized, and deliberately NOT by joining the in-flight promise: a run
-   * reads the declaration and the live generations once, at its start, so a
-   * caller arriving later may be asking about state that run never saw. Joining
-   * would answer them with a stale result and skip the work — the same mistake
-   * the orchestrator's per-repo queue exists to avoid. So a request during a
-   * run queues exactly one follow-up, and every further request coalesces into
-   * that one.
-   */
   private registerPluginEndpoint(app: FastifyInstance): void {
     app.post("/plugins/prepare", async () => await this.enqueuePluginPrepare());
   }
 
   private enqueuePluginPrepare(): Promise<PluginPrepareResult> {
+    // A caller during preparation may have newer state. Queue one fresh pass instead of joining.
     if (!this._pluginPrepare) {
       this._pluginPrepare = Promise.resolve(preparePlugins({ workspaceDir: this.workspaceDir })).finally(() => {
         this._pluginPrepare = null;
@@ -372,12 +244,8 @@ export class SessionWorker extends EventEmitter {
       return this._pluginPrepare;
     }
     this._pluginPrepareQueued ??= (async () => {
-      // The in-flight run's OUTCOME is irrelevant here — this follow-up exists
-      // because that run may have read state older than this caller's, so it
-      // must start either way.
       await this._pluginPrepare?.catch(() => undefined);
-      // Cleared before starting the follow-up so requests arriving from here on
-      // queue behind the NEW run rather than this finished slot.
+      // Clear before rerunning so later requests queue behind the new pass.
       this._pluginPrepareQueued = null;
       return await this.enqueuePluginPrepare();
     })();
@@ -385,13 +253,13 @@ export class SessionWorker extends EventEmitter {
   }
 
   private registerSecretsEndpoint(app: FastifyInstance): void {
+    // Replace the complete set. Changes apply only to subsequently spawned processes.
     app.put<{ Body: { secrets: Record<string, string> } }>("/secrets", async (request, reply) => {
       const { secrets } = request.body ?? {};
       if (!secrets || typeof secrets !== "object" || Array.isArray(secrets)) {
         return reply.code(400).send({ error: "secrets must be an object" });
       }
 
-      // Validate shape — keys are env var names, values are strings.
       for (const [k, v] of Object.entries(secrets)) {
         if (typeof v !== "string") {
           return reply.code(400).send({
@@ -405,12 +273,6 @@ export class SessionWorker extends EventEmitter {
         }
       }
 
-      // Drop names that were previously injected but are no longer present.
-      // This catches both "user removed the value" and "compose file no
-      // longer marks this name as agent: true". The dynamic-key delete is
-      // intentional — the worker has to mutate process.env by name to
-      // surface secrets to spawned children. The set has already been
-      // validated against the env-var-name regex above so injection is bounded.
       for (const name of this._injectedSecretNames) {
         if (!(name in secrets)) {
           // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- intentional process.env mutation
@@ -418,7 +280,6 @@ export class SessionWorker extends EventEmitter {
         }
       }
 
-      // Set / overwrite the new values.
       for (const [name, value] of Object.entries(secrets)) {
         process.env[name] = value;
       }
@@ -428,24 +289,7 @@ export class SessionWorker extends EventEmitter {
     });
   }
 
-  // --- AskUserQuestion bridge endpoint (docs/147) ---
-
-  /**
-   * `POST /agent-ops/ask/submit` — receives a structured question from the
-   * `shipit` bridge's ask tool (a child of the Codex CLI) and injects it into
-   * the agent event stream as an `AskUserQuestion` tool_use.
-   *
-   * Why inject here instead of letting the adapter parse it off Codex's event
-   * stream? The Codex app-server surfaces an `mcpToolCall` item only on
-   * `item/completed`, after the tool returns — but the ask bridge blocks on a
-   * well-formed question and never returns, so the adapter would never see it
-   * (the call just sat until Codex's ~120s MCP timeout). Broadcasting the same
-   * `agent_event` the adapter emits for real tool calls drives the
-   * orchestrator's existing AskUserQuestion interrupt/answer/resume flow
-   * (agent-listeners.ts, keyed on the tool name) unchanged — the orchestrator
-   * renders the card and interrupts the turn immediately. The interrupt kills
-   * the Codex process (and with it the bridge), so the call never times out.
-   */
+  // Emit here: Codex reports MCP calls only after completion, but ask waits for an interrupt.
   private registerAskEndpoint(app: FastifyInstance): void {
     app.post<{ Body: { questions?: unknown } }>(
       "/agent-ops/ask/submit",
@@ -474,33 +318,6 @@ export class SessionWorker extends EventEmitter {
     );
   }
 
-  /**
-   * docs/193 — the permission round-trip, as a long poll (Thread B / planning#114).
-   *
-   * The Claude `--permission-prompt-tool` bridge drives it in two steps so a
-   * long wait rides over a transient worker blip instead of dying on one
-   * indefinitely-held HTTP fetch (which surfaced as "fetch failed" → a
-   * fail-closed deny → a model retry that STACKED a fresh card):
-   *
-   * - `POST /agent-ops/permission/request` opens the request and returns
-   *   IMMEDIATELY — either `{ behavior }` for a pre-approved action (handled
-   *   interrupt tool / remembered path) or `{ requestId }` for the bridge to
-   *   poll. Idempotent on `toolUseId`, so a retried open re-attaches to the one
-   *   card instead of opening a second.
-   * - `POST /agent-ops/permission/await` holds for a BOUNDED window and returns
-   *   `{ behavior }` once answered or `{ pending: true }` to poll again. Short
-   *   holds mean a slow user never trips a client timeout and a brief
-   *   unreachability is a quick retry, not a hard failure.
-   *
-   * (Codex doesn't hit these routes — its adapter calls `broker.request`
-   * directly via the injected requester, awaiting the decision on its own
-   * blocking app-server RPC.)
-   *
-   * `/agent/permission/resolve` is the orchestrator→worker push: the user's
-   * approve/deny answer, delivered via `ProxyAgentProcess.resolvePermission`.
-   * It resolves the broker entry, which unblocks BOTH the bridge's next poll
-   * (Claude) and the awaited `broker.request` promise (Codex) uniformly.
-   */
   private registerPermissionEndpoints(app: FastifyInstance): void {
     app.post<{ Body: { toolName?: string; input?: Record<string, unknown>; toolUseId?: string } }>(
       "/agent-ops/permission/request",
@@ -510,7 +327,6 @@ export class SessionWorker extends EventEmitter {
           return reply.code(400).send({ error: "toolName is required" });
         }
         const agentId = this.agentController.currentAgentId;
-        // Non-blocking: register (or re-attach to) the request and return.
         const opened = this.permissionBroker.openRequest({
           toolName: body.toolName,
           input: body.input,
@@ -534,7 +350,6 @@ export class SessionWorker extends EventEmitter {
         if (typeof body.requestId !== "string" || !body.requestId) {
           return reply.code(400).send({ error: "requestId is required" });
         }
-        // Clamp the client-supplied hold to a sane bound (and ignore garbage).
         const timeoutMs = typeof body.timeoutMs === "number" && body.timeoutMs > 0
           ? Math.min(body.timeoutMs, 60_000)
           : undefined;
@@ -560,30 +375,11 @@ export class SessionWorker extends EventEmitter {
           ...(typeof body.message === "string" ? { message: body.message } : {}),
         };
         const found = this.permissionBroker.resolve(body.requestId, decision);
-        // `found:false` → a stale card (e.g. the worker restarted since the
-        // prompt, so the held request is gone). The card simply stays pending —
-        // there's no live call left to unblock and ShipIt adds no terminal state.
         return { resolved: found };
       },
     );
   }
 
-  // --- Present tool endpoints (docs/093) ---
-
-  /**
-   * Wire the `present` tool's HTTP surfaces:
-   *
-   *  - `POST /agent-ops/present/submit` — receives the artifact PATH from the
-   *    `shipit` bridge's present tool (a child of the agent CLI). Validates the
-   *    file is readable, records its metadata in the registry, broadcasts
-   *    `present_content` (metadata only) over SSE, and returns the `presentId` +
-   *    a worker-local screenshot URL to the bridge. It does NOT read the bytes.
-   *  - the artifact-serving routes (`registerPresentFilesRoutes`) read bytes
-   *    from disk on demand — see there.
-   *
-   * The submit route lives under `/agent-ops/*` to stay alongside the other
-   * shim brokers (review, gh, shipit).
-   */
   private registerPresentEndpoints(app: FastifyInstance): void {
     app.post<{
       Body: {
@@ -597,21 +393,14 @@ export class SessionWorker extends EventEmitter {
       if (typeof file !== "string" || file.length === 0) {
         return reply.code(400).send({ error: "file is required and must be a path string" });
       }
-      // The agent writes a file (anywhere — /tmp for throwaway, the workspace
-      // for tracked) and presents it by path (docs/188). Relative paths resolve
-      // against the workspace (the agent's cwd); absolute paths are read as-is.
       const resolvedPath = path.isAbsolute(file)
         ? file
         : path.resolve(this.workspaceDir, file);
-      // MIME is inferred from the extension unless the caller overrides it.
       const overrideMime =
         typeof mimeType === "string" && mimeType.length > 0 ? mimeType : undefined;
       const resolvedMime =
         overrideMime ?? (inferPresentMimeType(resolvedPath) || "text/plain");
 
-      // Validate the file is readable now (clear error to the agent), but DON'T
-      // read its bytes — the registry holds only the path. The bytes are read
-      // from disk lazily whenever the artifact is served.
       try {
         await fsp.access(resolvedPath, fs.constants.R_OK);
       } catch (err) {
@@ -624,22 +413,14 @@ export class SessionWorker extends EventEmitter {
         typeof title === "string" && title.length > 0 ? title : undefined;
       const sessionId = process.env.SESSION_ID ?? "";
 
-      // Identity is the file path: the same file re-presented (the screenshot
-      // iteration loop) derives the same id and updates its carousel entry in
-      // place; a different file appends a new one. No explicit replace flag.
       const presentId = derivePresentId(sessionId, resolvedPath);
       const createdAt = new Date().toISOString();
       const meta = this.presentRegistry.put(presentId, {
         resolvedPath,
-        // The presented path (verbatim — relative or absolute), shown in the
-        // Present tab header. `file` is validated non-empty above.
         filePath: file,
         mimeType: resolvedMime,
         createdAt,
         ...(resolvedTitle !== undefined ? { title: resolvedTitle } : {}),
-        // docs/280 — also render this artifact as a card in the chat transcript.
-        // Sticky in the registry, so the screenshot loop's plain re-present
-        // cannot turn it back off.
         ...(inline === true ? { inline: true } : {}),
       });
 
@@ -652,48 +433,24 @@ export class SessionWorker extends EventEmitter {
           ...(meta.title !== undefined ? { title: meta.title } : {}),
           filePath: meta.filePath,
           createdAt: meta.createdAt,
-          // docs/280 — the orchestrator emits the transcript card off this flag.
           ...(meta.inline ? { inline: true } : {}),
-          // docs/093 — the container-internal absolute path, carried on the SSE
-          // event (not the client-facing WS message) so the orchestrator can
-          // persist it and re-register this artifact with a freshly-started
-          // worker after a container restart.
+          // The orchestrator saves this path to restore the registry after worker recreation.
           resolvedPath: meta.resolvedPath,
         },
       });
 
-      // The agent's in-container browser can navigate to this worker-local URL
-      // to screenshot the rendered artifact and iterate (docs/170). Handing
-      // back the concrete URL means the agent never has to guess the worker
-      // port — it just navigates and screenshots.
       const viewUrl = `http://127.0.0.1:${this.port}/present-files/${presentId}`;
       return { presentId, status: "presented", viewUrl };
     });
 
-    // docs/170, docs/093 — serve artifacts (rendered for the agent's Playwright
-    // browser at 127.0.0.1:${WORKER_PORT}; raw for the user's Present tab via the
-    // orchestrator's authenticated session API). Both read the file from disk on
-    // demand via the registry — the worker retains no artifact bytes. Worker-local
-    // by design: neither route goes through the public preview proxy, keeping
-    // ephemeral artifacts off any routable URL. Lives in present-view.ts so the
-    // 404/serving behavior stays unit-testable.
     registerPresentFilesRoutes(app, this.presentRegistry);
   }
 
-  // --- Service request bridge ---
-
-  /**
-   * Send a service control request to the orchestrator via SSE and wait
-   * for the callback response. The orchestrator handles the request via
-   * ServiceManager and POSTs the result back to /services/_callback.
-   */
   private sendServiceRequest(
     action: string,
     name?: string,
     opts: { timeoutMs?: number; lines?: number } = {},
   ): Promise<unknown> {
-    // docs/238 — the deadline is chosen per action. A caller may lower it
-    // (`shipit service start --timeout`) but never raise it past the ceiling.
     const timeoutMs = serviceRequestTimeoutMs(action, opts.timeoutMs);
     const { requestId, promise } = this.serviceRequests.enqueue(action, {
       timeoutMs,
@@ -705,8 +462,6 @@ export class SessionWorker extends EventEmitter {
     });
     return promise;
   }
-
-  // --- SSE event stream ---
 
   private registerSSEEndpoint(app: FastifyInstance): void {
     app.get("/events", (request, reply) => {
@@ -722,26 +477,12 @@ export class SessionWorker extends EventEmitter {
 
       const client: SseClient = this.sse.attach({ raw: reply.raw });
 
-      // Replay buffered events that the consumer hasn't seen yet. `?since=N`
-      // means "I've already seen up to seq N" — replay everything newer.
-      // Omitted / 0 / non-numeric means "send me everything you have"
-      // (first-ever connect, no prior seq). This is the load-bearing piece
-      // for spawned-child sessions: the orchestrator POSTs /agent/start
-      // before its SSE consumer is connected, and the CLI may emit
-      // agent_init / agent_assistant / agent_result / agent_done before
-      // SSE catches up. Without this replay, those events vanish and the
-      // orchestrator's `running` flag never clears.
+      // Child agents can finish before SSE connects; replay their buffered events.
       const sinceParam = (request.query as { since?: string } | undefined)?.since;
       const sinceSeq = sinceParam !== undefined ? Number.parseInt(sinceParam, 10) : 0;
       this.sse.replaySince(client, Number.isFinite(sinceSeq) && sinceSeq > 0 ? sinceSeq : 0);
 
-      // Replay current state for things the ring buffer can't reconstruct.
-      // `terminal_data` is unbuffered (high volume) — send an empty
-      // terminal_data marker so the orchestrator's terminal-reconnect path
-      // resets the xterm rendering. `install_*` events are buffered but
-      // we re-send the latest result as a belt-and-braces idempotent
-      // signal in case the buffer was evicted across a very long
-      // install (the orchestrator's resolver is idempotent).
+      // Reset the unbuffered terminal and restore install outcomes evicted from the buffer.
       if (this.terminalController.hasActiveTerminal()) {
         this.sse.sendTo(client, { type: "terminal_data", data: { data: "" } });
       }
@@ -776,18 +517,15 @@ export class SessionWorker extends EventEmitter {
     });
   }
 
-  /** Send an SSE event to all connected clients. */
   private broadcastSSE(event: WorkerSSEEvent): void {
     this.sse.broadcast(event);
   }
 
-  /** Start the worker server. Returns the address it's listening on. */
   async start(): Promise<string> {
     const address = await this.app.listen({ port: this.port, host: this.host });
     return address;
   }
 
-  /** Stop the worker server and clean up. */
   async stop(): Promise<void> {
     this.installController.stop();
     this.agentController.stop();
@@ -801,26 +539,10 @@ export class SessionWorker extends EventEmitter {
     await this.app.close();
   }
 
-  /** Get the underlying Fastify instance (for testing). */
   getApp(): FastifyInstance { return this.app; }
 }
 
-// ---------------------------------------------------------------------------
-// Standalone entry point (when run as a container process)
-// ---------------------------------------------------------------------------
-
-/**
- * Build the worker's agent process for a given agentId. Dispatches on the
- * agentId the orchestrator sends with /agent/start — hardcoding ClaudeAdapter
- * here made container-mode sessions ALWAYS run Claude regardless of the
- * selected agent, so a Codex session (model e.g. gpt-5.5) spawned
- * `claude --model gpt-5.5`, which the Claude CLI rejects as "There's an issue
- * with the selected model". Exported for the regression test.
- */
-// docs/155 hair 11: legitimate construction switch — adapter instantiation
-// has to dispatch on the discriminator somewhere; concentrating it in one
-// factory (with a regression test in session-worker-agent-factory.test.ts)
-// is the correct design.
+// Adapter construction is the allowed agent-discriminator switch.
 export const createWorkerAgent: WorkerAgentFactory = (agentId: AgentId) =>
   // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 11: see comment above
   agentId === "codex"
@@ -833,16 +555,10 @@ export const createWorkerAgent: WorkerAgentFactory = (agentId: AgentId) =>
         ? new GrokAdapter()
         : new ClaudeAdapter(new ClaudeProcess());
 
-// Only auto-start when run directly (not when imported for testing)
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   const workspaceDir = process.env.WORKSPACE_DIR || CONTAINER_WORKSPACE_DIR;
 
-  // planning#421 — resolved HERE, before anything is built, because this block is
-  // the one place that knows this process is a real session-worker container:
-  // an in-process test worker never runs it and so is never subject to the
-  // requirement. A container with no token cannot authenticate its orchestrator,
-  // so it exits instead of serving (the exit is the whole fix; the guard's
-  // remote-caller denial is the second layer).
+  // Container workers must have a token before opening their listener.
   let workerToken: string;
   try {
     workerToken = requireWorkerToken(process.env);
@@ -858,12 +574,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
     workerToken,
   });
 
-  // docs/248 — honor the repo's `.nvmrc` / `engines.node`. Started here rather
-  // than in the constructor so in-process tests never touch the network, and
-  // deliberately NOT awaited: the orchestrator gives the worker 30s to report
-  // healthy, and a slow nodejs.org must not turn a version pin into a failed
-  // container. The paths that must not run on the wrong Node await
-  // `whenNodeRuntimeReady()` themselves.
+  // Provision outside the constructor to keep tests offline; spawn paths await readiness.
   const nodeStateDir = process.env.SHIPIT_SESSION_STATE_DIR ?? CONTAINER_SESSION_STATE_DIR;
   startNodeRuntimeProvisioning({
     workspaceDir,
@@ -874,7 +585,6 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   const address = await worker.start();
   console.log(`[session-worker] Listening on ${address}`);
 
-  // Graceful shutdown
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
     process.on(signal, async () => {
       console.log(`[session-worker] Received ${signal}, shutting down`);

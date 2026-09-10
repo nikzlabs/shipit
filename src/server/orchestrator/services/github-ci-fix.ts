@@ -1,10 +1,3 @@
-/**
- * CI-fix logic — fetch failure logs, strip noise, extract errors, build prompts,
- * and trigger auto-fix via Claude.
- *
- * Extracted from github.ts for single-responsibility.
- */
-
 import fs from "node:fs";
 import {
   sessionStateDirForWorkspace,
@@ -26,14 +19,6 @@ import { ServiceError } from "./types.js";
 import { chownToSessionWorker, chownTreeToSessionWorker } from "../session-worker-uid.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 
-// ---- CI fix operations ----
-
-/**
- * Fetch CI failure logs for each failed check run.
- * Full logs are written to `ci-logs/` in the session's state dir (mounted at
- * `/session-state` in the container); the returned CIFailureLog contains only
- * the last 30 lines as a snippet.
- */
 export async function fetchCIFailureLogs(
   githubAuth: GitHubAuthManager,
   owner: string,
@@ -41,65 +26,36 @@ export async function fetchCIFailureLogs(
   failedChecks: { databaseId: number; name: string; conclusion: string; title: string }[],
   sessionDir?: string,
 ): Promise<CIFailureLog[]> {
-  // docs/246 — logs go to the session's state dir, mounted at `/session-state`
-  // in the container. They used to land in `<clone>/.shipit/ci-logs/`, inside
-  // the user's repository, which forced the old `ensureShipitGitignored()`
-  // workaround: appending `.shipit` to the user's TRACKED `.gitignore` so
-  // ShipIt's own logs wouldn't be committed. That mutation is gone with the
-  // files it existed for.
-  // `sessionDir` is optional (callers without a session write no logs at all,
-  // only the inline excerpt), so `logDir` stays nullable — but when a clone IS
-  // given, its state dir always resolves.
+  // Keep logs outside the repository, on the worker's state mount.
   const logDir = sessionDir
     ? path.join(sessionSharedStateDir(sessionStateDirForWorkspace(sessionDir)), CI_LOGS_SUBDIR)
     : null;
   if (logDir) {
     fs.mkdirSync(logDir, { recursive: true });
-    // docs/150 §7 — written by the root orchestrator, read by the agent's
-    // `shipit` user through the mount. No-op unless the flag is set.
     chownTreeToSessionWorker(logDir);
   }
 
   const logs: CIFailureLog[] = [];
 
   for (const check of failedChecks) {
-    // Fetch both annotations and raw logs in parallel.
     const [annotations, fullLog] = await Promise.all([
       githubAuth.getCheckRunAnnotations(owner, repo, check.databaseId),
       githubAuth.getJobLogs(owner, repo, check.databaseId),
     ]);
 
-    // Filter out unhelpful annotations that just say "process completed"
     const usefulAnnotations = annotations.filter(
       (a) => !(/^Process completed with exit code \d+\.?$/i.exec(a.message)),
     );
 
-    // Strip GitHub Actions noise, extract errors, write to disk
     const cleanLog = stripCILogBloat(fullLog);
     let logFilePath: string | undefined;
     if (logDir && cleanLog) {
-      // Name the log file after the check run's GitHub database ID — its stable,
-      // per-run identity — NOT the wall-clock time we happened to fetch it. The
-      // databaseId is unique per (commit, re-run attempt, job): a genuinely fresh
-      // CI run (a new push, an empty retrigger commit, a manual re-run) always
-      // gets a new ID and therefore a new file, while re-fetching the SAME failed
-      // run lands at the SAME path (overwriting identical content).
-      //
-      // This is what lets the agent tell a stale re-send from a real new failure.
-      // The poller can re-fire CI-fix in the window after a retrigger commit but
-      // before GitHub has produced a verdict for the new head — fetching the
-      // previous run's logs again. A fetch-timestamp filename made each of those
-      // identical re-sends look like a distinct failure (a new path every time);
-      // keying on the run ID makes the repeat visibly the same file in chat
-      // history, so the agent won't re-debug an already-resolved/flaky run.
+      // Re-fetching the same run must reuse its path, so it does not look like a new failure.
       const safeName = check.name.replace(/[^a-zA-Z0-9_-]/g, "_");
       const fileName = `${safeName}-${check.databaseId}.log`;
       const absPath = path.join(logDir, fileName);
       fs.writeFileSync(absPath, cleanLog, "utf-8");
-      chownToSessionWorker(absPath); // docs/150 §7 — agent reads as `shipit`
-      // docs/246 — an ABSOLUTE container path. The agent used to get a
-      // workspace-relative path because the logs lived in its clone; they now
-      // live on the `/session-state` mount, which is outside `/workspace`.
+      chownToSessionWorker(absPath);
       logFilePath = `${CONTAINER_SESSION_STATE_DIR}/${CI_LOGS_SUBDIR}/${fileName}`;
     }
     const errorLines = extractErrorLines(cleanLog);
@@ -120,41 +76,34 @@ export async function fetchCIFailureLogs(
   return logs;
 }
 
-/** Strip timestamp prefix from a GitHub Actions log line. */
 function stripTimestamp(line: string): string {
   return line.replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s*/, "");
 }
 
-/** Noise patterns to remove from CI logs entirely. */
 const NOISE_PATTERNS: RegExp[] = [
-  /^##\[(group|endgroup)\]/,                        // GHA grouping markers
-  /^##\[error\]Process completed with exit code/i,  // generic exit code error
-  /^npm warn deprecated\b/,                         // npm deprecation warnings
-  /^npm warn\b.*ERESOLVE/,                          // npm peer dep warnings
-  /^\[command\]/,                                    // GHA [command] lines
-  /^Post job cleanup\b/i,                           // post-job header
-  /^Cleaning up orphan processes$/,                 // post-job trailer
-  /^Temporarily overriding HOME=/,                  // GHA git HOME override
-  /^Adding repository directory to the temporary/,  // GHA safe.directory
-  /^Commit: [0-9a-f]{40}\b/,                        // GHA runner commit hash
-  /^Build Date:/,                                    // GHA runner build date
-  /^Worker ID:/,                                     // GHA runner worker ID
-  /^Runner Image:/,                                  // GHA runner image info
-  /^Runner Image Provision/,                         // GHA runner provisioner
-  /^GITHUB_TOKEN Permissions/i,                      // GHA token permissions header
-  /^Current runner version:/,                        // GHA runner version
-  /^Prepare workflow directory$/,                    // GHA setup step
-  /^Getting action download info$/,                 // GHA action download
+  /^##\[(group|endgroup)\]/,
+  /^##\[error\]Process completed with exit code/i,
+  /^npm warn deprecated\b/,
+  /^npm warn\b.*ERESOLVE/,
+  /^\[command\]/,
+  /^Post job cleanup\b/i,
+  /^Cleaning up orphan processes$/,
+  /^Temporarily overriding HOME=/,
+  /^Adding repository directory to the temporary/,
+  /^Commit: [0-9a-f]{40}\b/,
+  /^Build Date:/,
+  /^Worker ID:/,
+  /^Runner Image:/,
+  /^Runner Image Provision/,
+  /^GITHUB_TOKEN Permissions/i,
+  /^Current runner version:/,
+  /^Prepare workflow directory$/,
+  /^Getting action download info$/,
 ];
 
-/**
- * Strip GitHub Actions noise from log output: post-job cleanup, deprecation
- * warnings, grouping markers, and other lines with no diagnostic value.
- */
 export function stripCILogBloat(log: string): string {
   const lines = log.split("\n");
 
-  // Trim everything after the last "Post job cleanup." line
   let end = lines.length;
   for (let i = lines.length - 1; i >= 0; i--) {
     if (/^Post job cleanup\b/i.test(stripTimestamp(lines[i]))) {
@@ -163,7 +112,6 @@ export function stripCILogBloat(log: string): string {
     }
   }
 
-  // Filter remaining lines through noise patterns
   const cleaned = lines.slice(0, end).filter((line) => {
     const bare = stripTimestamp(line);
     return !NOISE_PATTERNS.some((p) => p.test(bare));
@@ -172,26 +120,21 @@ export function stripCILogBloat(log: string): string {
   return cleaned.join("\n").trimEnd();
 }
 
-/** Error-like patterns that indicate actual failure output. */
 const ERROR_PATTERNS: RegExp[] = [
-  /\berror\b[\s:[]/i,                     // "error:", "error [", "Error:"
-  /\bfailed\b/i,                           // "failed", "FAILED"
-  /\bfailure\b/i,                          // "failure"
-  /\b(?:FAIL|BROKEN)\b/,                   // test runners: "FAIL", "BROKEN"
-  /^\s*✖|^\s*✗|^\s*×|^\s*❌/,              // unicode error markers
-  /^\s*\d+ (?:error|failure|failed)/i,     // "1 error", "3 failures"
-  /:\d+:\d+/,                              // file:line:col (compiler/linter output)
-  /^E\s{3}/,                               // pytest "E   " assertion lines
-  /^\s*at\s+.*\(\S+:\d+:\d+\)/,           // JS stack traces
-  /^\s*File ".*", line \d+/,              // Python tracebacks
-  /panicked at/,                           // Rust panics
-  /^STDERR:/i,                             // explicit stderr markers
+  /\berror\b[\s:[]/i,
+  /\bfailed\b/i,
+  /\bfailure\b/i,
+  /\b(?:FAIL|BROKEN)\b/,
+  /^\s*✖|^\s*✗|^\s*×|^\s*❌/,
+  /^\s*\d+ (?:error|failure|failed)/i,
+  /:\d+:\d+/,
+  /^E\s{3}/,
+  /^\s*at\s+.*\(\S+:\d+:\d+\)/,
+  /^\s*File ".*", line \d+/,
+  /panicked at/,
+  /^STDERR:/i,
 ];
 
-/**
- * Extract lines that look like actual errors from a cleaned CI log.
- * Returns a deduplicated, ordered subset of the most actionable lines.
- */
 export function extractErrorLines(cleanLog: string, maxLines = 30): string[] {
   const lines = cleanLog.split("\n");
   const errors: string[] = [];
@@ -199,7 +142,6 @@ export function extractErrorLines(cleanLog: string, maxLines = 30): string[] {
   for (let i = 0; i < lines.length; i++) {
     const bare = stripTimestamp(lines[i]);
     if (ERROR_PATTERNS.some((p) => p.test(bare))) {
-      // Include 1 line of context before and after the error line
       const start = Math.max(0, i - 1);
       const end = Math.min(lines.length, i + 2);
       for (let j = start; j < end; j++) {
@@ -212,7 +154,6 @@ export function extractErrorLines(cleanLog: string, maxLines = 30): string[] {
   return errors.slice(0, maxLines);
 }
 
-/** Build a fix prompt from CI failure logs. */
 export function buildCIFixPrompt(logs: CIFailureLog[]): string {
   const sections = logs.map((log) => {
     const parts: string[] = [`## ${log.checkName}`];
@@ -249,10 +190,6 @@ export function buildCIFixPrompt(logs: CIFailureLog[]): string {
   ].join("\n");
 }
 
-/**
- * Trigger a CI fix — fetch logs, build prompt, send to Claude.
- * Returns whether the message was sent immediately or queued.
- */
 export async function triggerCIFix(
   githubAuth: GitHubAuthManager,
   prStatusPoller: PrStatusPoller,
@@ -274,31 +211,18 @@ export async function triggerCIFix(
   const failedChecks = extractFailedCheckRuns(prNode);
   if (failedChecks.length === 0) throw new ServiceError(400, "No failed checks to fix");
 
-  // Get repo info from the PR URL
   const urlMatch = /github\.com\/([^/]+)\/([^/]+)/.exec(prStatus.prUrl);
   if (!urlMatch) throw new ServiceError(400, "Cannot parse repository from PR URL");
   const [, owner, repo] = urlMatch;
 
-  // Send to Claude via the runner
   const runner = runnerRegistry.get(sessionId);
   if (!runner) throw new ServiceError(404, "No active session runner");
 
-  // Fetch CI failure logs — write full logs to .shipit/ci-logs/ in the session dir
   const logs = await fetchCIFailureLogs(githubAuth, owner, repo, failedChecks, runner.sessionDir);
   const prompt = buildCIFixPrompt(logs);
 
-  // A manual "Fix CI" is just a user-initiated agent turn — it deliberately
-  // does NOT touch the auto-fix state machine. The user explicitly asked for the
-  // fix and watches the agent work in chat, so a separate "fixing" line on the
-  // PR card adds no value; worse, the old `markAutoFixRunning` call left a
-  // sticky `running` status that lingered after the turn ended (hiding the
-  // button and stranding the poller keep-alive). The auto-fix `running` line is
-  // now reserved for the automatic loop. (docs/169 follow-up)
-
-  // docs/149 — bring the session's env up to date (OAuth token sync,
-  // MCP refresh, secrets push) before the system turn fires. Without
-  // this, the CI-fix turn used to inherit none of the WS path's env
-  // discipline, so a rotated OAuth token here also produces a 401.
+  // A manual fix must not enter the automatic-fix state machine.
+  // Refresh credentials before dispatch, as the WS path does.
   if (credentialsDir && credentialStore) {
     await prepareSessionAgentEnvironment(runner, {
       sessionId,
@@ -312,10 +236,6 @@ export async function triggerCIFix(
     });
   }
 
-  // dispatch handles both cases: enqueues when busy, emits system_turn
-  // event for WS handler pickup when idle. Label the chat-activity bubble
-  // "Fixing CI…" (the auto-loop path uses "Auto-fixing CI..." in app-lifecycle's
-  // fetchAndFixCb).
   const queued = runner.running;
   runner.dispatch(prepareDispatch({
     text: prompt,
@@ -331,12 +251,9 @@ export async function triggerCIFix(
     onTurnComplete: undefined,
     deliveryId: undefined,
     dictated: undefined,
-    // No composer involved — a server-originated dispatch has no tick boxes.
     resetMergedBranch: undefined,
     compactContext: undefined,
     silent: undefined,
   }));
-  // attemptNumber is vestigial (the client ignores it); a manual fix is always a
-  // single one-shot, so report 1.
   return { status: queued ? "queued" : "sent", attemptNumber: 1 };
 }

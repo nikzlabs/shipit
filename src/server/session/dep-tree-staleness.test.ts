@@ -1,14 +1,3 @@
-/**
- * nikzlabs#2496 — the STALE half of the post-install dep-dir gate.
- *
- * Two halves are tested here and they pull in opposite directions, which is the
- * whole point: a stale tree must be caught, and a *legitimately partial* one
- * must not be. The second half is the regression guard for the warning in the
- * `dep-dirs` contract — `dep-dirs` may name a directory a given install does not
- * fully produce, and a check that started failing those would be worse than the
- * hole it closes.
- */
-
 import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -40,7 +29,6 @@ describe("npmLockfileMismatches — the tree must hold what the lockfile asks fo
   });
 
   it("reports a package the lockfile requires at a version the tree does not hold", () => {
-    // The field shape: the lockfile moved with the commit, the tree did not.
     const required = lock({ "node_modules/vite": { version: "5.4.0" } });
     const installed = lock({ "node_modules/vite": { version: "4.0.0" } });
 
@@ -59,8 +47,6 @@ describe("npmLockfileMismatches — the tree must hold what the lockfile asks fo
   });
 
   it("never reports a tree that holds MORE than the lockfile asks for", () => {
-    // One-directional by design: extra packages are what every partial cleanup
-    // looks like, and they are not a failed install.
     const required = lock({ "node_modules/a": { version: "1.0.0" } });
     const installed = lock({ "node_modules/a": { version: "1.0.0" }, "node_modules/leftover": { version: "9.9.9" } });
 
@@ -83,10 +69,6 @@ describe("npmLockfileMismatches — the tree must hold what the lockfile asks fo
   });
 
   it("does NOT require dev dependencies when the tree recorded none (--omit=dev)", () => {
-    // Verified against npm 10: `npm install --omit=dev` writes a hidden lockfile
-    // with no `dev` entries at all. Requiring the lockfile's dev packages there
-    // would fail every production-mode install. Calibrating on what the tree
-    // itself recorded needs no parsing of the user's command line.
     const required = lock({
       "node_modules/a": { version: "1.0.0" },
       "node_modules/vitest": { version: "2.0.0", dev: true },
@@ -97,9 +79,7 @@ describe("npmLockfileMismatches — the tree must hold what the lockfile asks fo
   });
 
   it("never requires optional, peer, bundled or platform-restricted entries", () => {
-    // A `link: true` entry is deliberately NOT in this fixture: a missing one is
-    // the filtered-workspace-install tell, which is a stronger rule than "not
-    // required" and has its own test below.
+    // A missing link would skip comparison and hide failures in these exclusions.
     const required = lock({
       "node_modules/opt": { version: "1.0.0", optional: true },
       "node_modules/devopt": { version: "1.0.0", devOptional: true },
@@ -130,11 +110,6 @@ describe("npmLockfileMismatches — the tree must hold what the lockfile asks fo
   });
 
   it("is not comparable when a workspace link the lockfile declares is missing from the tree", () => {
-    // `npm install --workspace=packages/web` reifies only that workspace while
-    // the ROOT lockfile keeps describing every one of them — verified against
-    // npm 10, where the sibling's packages AND its `node_modules/api` link are
-    // both simply absent. Without this the whole sibling workspace reads as a
-    // stale tree, which is the sharpest false positive of the set.
     const required = JSON.stringify({
       lockfileVersion: 3,
       packages: {
@@ -160,8 +135,6 @@ describe("npmLockfileMismatches — the tree must hold what the lockfile asks fo
   });
 
   it("still compares a workspace repo whose install covered every workspace", () => {
-    // The guard keys on a MISSING link, so an unfiltered workspace install is
-    // checked exactly like any other — otherwise every monorepo would opt out.
     const required = JSON.stringify({
       lockfileVersion: 3,
       packages: {
@@ -232,24 +205,16 @@ describe("staleDepDirs — which declared dirs get checked at all", () => {
   });
 
   it("checks nothing when an install command opts out of the lockfile", () => {
-    // `--no-package-lock` lets npm resolve from `package.json` and leaves the
-    // on-disk lockfile behind, so the two files describe different intents and
-    // a disagreement between them says nothing about whether the install ran.
     const root = makeWorkspace("  dep-dirs:\n    - node_modules\n");
     writeTree(root, "node_modules", { "node_modules/vite": { version: "5.4.0" } }, { "node_modules/vite": { version: "4.0.0" } });
 
     expect(staleDepDirs(root, ["npm install --no-package-lock"])).toEqual([]);
     expect(staleDepDirs(root, ["npm install --package-lock-only"])).toEqual([]);
     expect(staleDepDirs(root, ["npm ci", "npm install --package-lock=false"])).toEqual([]);
-    // …and an ordinary install is unaffected by the opt-out.
     expect(bypassesLockfile(["npm ci", "npx prisma generate"])).toBe(false);
   });
 
   it("leaves a dir with no hidden lockfile alone — it is not an npm-reified tree", () => {
-    // The load-bearing narrowing. A monorepo's `packages/web/node_modules` is
-    // near-empty because everything hoisted to the root, and a `dist/` declared
-    // per the doc's build-output advice holds no npm record either. Neither has
-    // a `.package-lock.json`, so neither is compared against anything.
     const root = makeWorkspace("  dep-dirs:\n    - node_modules\n    - dist\n");
     writeTree(root, "node_modules", { "node_modules/a": { version: "1.0.0" } }, { "node_modules/a": { version: "1.0.0" } });
     fs.mkdirSync(path.join(root, "dist"), { recursive: true });
@@ -279,7 +244,6 @@ describe("staleDepDirs — which declared dirs get checked at all", () => {
   it("returns nothing when the workspace has no shipit.yaml at all", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "dep-stale-"));
     roots.push(root);
-    // Default dep-dirs is [node_modules], and there is no tree to compare.
     expect(staleDepDirs(root, ["npm ci"])).toEqual([]);
   });
 });

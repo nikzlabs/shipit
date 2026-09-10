@@ -1,20 +1,3 @@
-/**
- * docs/272-user-selectable-roles — **a role the user starts, end to end.**
- *
- * The unit tests own the rules (`services/session-role.test.ts`). What only an
- * integration test can show is that the three things a role has to do actually
- * happen to a live session through the WS the composer speaks:
- *
- *  - selecting one **seeds the session** — harness, model selection, level —
- *    and records the name the composer shows (reqs 1, 5);
- *  - moving any one of those three **leaves the role** (req 15), which is the
- *    only way a role is left and the thing that keeps the name honest (req 13);
- *  - the seed on the connect URL **starts the next new session on it** (req 12),
- *    overriding the harness/model/reasoning seeds that ride beside it.
- *
- * Plus the two refusals that must leave the session untouched: the reviewer
- * (req 10) and a session that has already taken its first turn (req 4).
- */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -38,7 +21,6 @@ import { DatabaseManager } from "../../shared/database.js";
 
 type AnyMsg = any;
 
-/** Reachable on the Claude Code harness with the gateway key configured below. */
 const ROLE_MODEL = "anthropic/claude-opus-5";
 
 describe("Integration: user-selectable roles (docs/272)", () => {
@@ -51,9 +33,7 @@ describe("Integration: user-selectable roles (docs/272)", () => {
   const savedEnv: Record<string, string | undefined> = {};
 
   beforeEach(async () => {
-    // Both gateway keys: the model-switch case below moves the session to the
-    // OTHER service, and a switch the server would refuse anyway proves nothing
-    // about leaving a role — a refusal correctly leaves it exactly where it was.
+    // Both services must be eligible for the model-switch test.
     for (const name of ["OPENROUTER_API_KEY", "VERCEL_AI_GATEWAY_API_KEY"]) {
       savedEnv[name] = process.env[name];
       process.env[name] = `test-${name}`;
@@ -63,9 +43,7 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-roles-"));
     credentialStore = createTestCredentialStore(tmpDir);
-    // Pin the declared harnesses rather than probing `$PATH`, for the reason
-    // `model-service-switch.test.ts` states: whether a CI runner has the CLIs
-    // installed is not something a test about role selection should depend on.
+    // Make harness availability independent of the host's installed CLIs.
     savedEnv.SHIPIT_AGENTS_INSTALL_REPORT = process.env.SHIPIT_AGENTS_INSTALL_REPORT;
     const reportPath = path.join(tmpDir, "installed.json");
     fs.writeFileSync(reportPath, JSON.stringify({ harnesses: ["claude", "codex"] }));
@@ -117,11 +95,6 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     }
   });
 
-  /**
-   * An ops session through the route the sidebar uses (docs/128) — a session the
-   * server creates and the browser then navigates onto, which is the shape the
-   * seeded-role display gap was reported on.
-   */
   async function createOpsSession(): Promise<{ id: string; kind?: string }> {
     const res = await app.inject({
       method: "POST",
@@ -148,7 +121,7 @@ describe("Integration: user-selectable roles (docs/272)", () => {
 
   it("seeds the session from the role and names it back (reqs 1, 5)", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "set_role", roleName: "deep dive" });
     const echo = await drainUntil(client, (m) => m.type === "model_selection_changed");
@@ -158,15 +131,12 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     expect(echo.selection).toMatchObject({ serviceId: "openrouter", billingMode: "key" });
     expect(echo.reasoningEffort).toBe("high");
 
-    // …and the row, which is what a reload and a session switch read.
     const row = sessionManager.get(client.sessionId!);
     expect(row?.roleName).toBe("deep dive");
     expect(row?.agentId).toBe("claude");
     expect(row?.model).toBe(ROLE_MODEL);
     expect(row?.serviceId).toBe("openrouter");
     expect(row?.reasoningEffort).toBe("high");
-    // The PROVENANCE is not written yet: it records what the session STARTED
-    // as, and this session has not started (req 6, req 4).
     expect(row?.originRoleName).toBeUndefined();
 
     client.close();
@@ -179,14 +149,10 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     client.send({ type: "set_role", roleName: "deep dive" });
     await drainUntil(client, (m) => m.type === "model_selection_changed");
 
-    // Re-picking the level the role already set changes nothing, so it is not a
-    // change: "Adjust parameters…" opens these very controls holding the role's
-    // own values, and re-selecting one must not un-name the role.
     client.send({ type: "set_reasoning", effort: "high" });
     await drainUntil(client, (m) => m.type === "model_selection_changed");
     expect(sessionManager.get(client.sessionId!)?.roleName).toBe("deep dive");
 
-    // Actually moving it is the whole of leaving the role.
     client.send({ type: "set_reasoning", effort: "low" });
     const after = await drainUntil(
       client,
@@ -195,7 +161,6 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     expect(after.roleName).toBeNull();
     const row = sessionManager.get(client.sessionId!);
     expect(row?.roleName).toBeUndefined();
-    // Nothing was put back: the session goes on running what the user chose.
     expect(row?.reasoningEffort).toBe("low");
     expect(row?.model).toBe(ROLE_MODEL);
 
@@ -233,14 +198,8 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     );
     expect(echo).not.toBeNull();
 
-    // The name is gone — and with it the standing instructions the first turn
-    // would have carried, which is the whole point of the act: no parameter
-    // carries them, so no parameter change can express this.
     const row = sessionManager.get(client.sessionId!);
     expect(row?.roleName).toBeUndefined();
-    // …and NOTHING else moved. The role's values are the last thing the user
-    // chose, so putting ShipIt's defaults back would undo a choice they did not
-    // ask to undo.
     expect(row?.agentId).toBe("claude");
     expect(row?.model).toBe(ROLE_MODEL);
     expect(row?.serviceId).toBe("openrouter");
@@ -255,9 +214,6 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     await client.receive();
     client.send({ type: "set_role", roleName: "deep dive" });
     await drainUntil(client, (m) => m.type === "model_selection_changed");
-    // Clearing is a choice of role, so it locks when the choice does: by now the
-    // standing instructions have been delivered, and un-naming them afterwards
-    // states nothing the transcript does not already show.
     sessionManager.setAgentPinned(client.sessionId!);
 
     client.send({ type: "set_role", roleName: null });
@@ -295,8 +251,6 @@ describe("Integration: user-selectable roles (docs/272)", () => {
   it("refuses a role once the session has taken its first turn (req 4)", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
-    // `agentPinned` IS "the first turn has started" — the same fact that makes
-    // the harness irreversible.
     sessionManager.setAgentPinned(client.sessionId!);
 
     client.send({ type: "set_role", roleName: "deep dive" });
@@ -308,8 +262,6 @@ describe("Integration: user-selectable roles (docs/272)", () => {
   });
 
   it("starts the next new session on the remembered role, over the other seeds (req 12)", async () => {
-    // The browser sends all four; the role is applied LAST and overrides the
-    // three it replaced — they describe controls the user handed over to it.
     const client = await TestClient.connect(port, undefined, {
       agent: "codex",
       model: "gpt-5-codex",
@@ -328,13 +280,6 @@ describe("Integration: user-selectable roles (docs/272)", () => {
   });
 
   it("tells the connecting viewer about the role it just seeded (reqs 12, 13)", async () => {
-    // Applying the seed is only half of req 12. The composer reads a LIVE
-    // session's role from the session row the browser already holds, and that
-    // copy was fetched before this connect wrote to it. On `/{repo}/new` the gap
-    // never showed — a warm session has no row, so the composer displays the
-    // seed there — but a surface that lands the user straight on a fresh session
-    // it can already see (an ops session, a sandbox) read the stale copy and
-    // showed no role at all while the session ran on one.
     const client = await TestClient.connect(port, undefined, {
       agent: "codex",
       model: "gpt-5-codex",
@@ -344,16 +289,10 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     const answer: AnyMsg = await drainUntil(client, (m) => m.type === "model_selection_changed");
     expect(answer).toBeTruthy();
     expect(answer.sessionId).toBe(client.sessionId);
-    // All four, because the role wrote all four together: a viewer told only
-    // about the name would show a role beside parameters it did not set.
     expect(answer.roleName).toBe("deep dive");
     expect(answer.agentId).toBe("claude");
     expect(answer.modelId).toBe(ROLE_MODEL);
     expect(answer.reasoningEffort).toBe("high");
-    // The service and billing mode ride in `selection`, and the model picker's
-    // checkmark lands on THAT pair rather than on the bare id (docs/252) — a
-    // frame carrying the right model under the wrong service still shows the
-    // user a group the role did not pick.
     expect(answer.selection?.serviceId).toBe("openrouter");
     expect(answer.selection?.billingMode).toBe("key");
 
@@ -361,12 +300,6 @@ describe("Integration: user-selectable roles (docs/272)", () => {
   });
 
   it("tells the viewer about the role it seeded onto an OPS session (docs/128)", async () => {
-    // The reported case, through the route it was reported on. An ops session is
-    // created server-side and the browser navigates straight onto it, so unlike
-    // `/{repo}/new` the composer has a row for it — the stale one it fetched at
-    // creation. Kept separate from the test above because the connect handler is
-    // deliberately kind-agnostic: this is what would catch an ops-specific path
-    // growing a rule of its own.
     const created = await createOpsSession();
     expect(created.kind).toBe("ops");
 
@@ -375,25 +308,18 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     expect(answer).toBeTruthy();
     expect(answer.roleName).toBe("deep dive");
     expect(sessionManager.get(created.id)?.roleName).toBe("deep dive");
-    // Still an ops session: a role sets the harness, model and level, and
-    // nothing else about what the session IS.
     expect(sessionManager.get(created.id)?.kind).toBe("ops");
 
     client.close();
   });
 
   it("says nothing about the selection on a connect that seeds no role", async () => {
-    // The pair to the test above: the answer is feedback on something this
-    // connect DID, so an ordinary reconnect — the common case, on backoff after
-    // every network blip — must not carry a frame with it.
     const first = await TestClient.connect(port, undefined, { role: "deep dive" });
     await drainUntil(first, (m) => m.type === "model_selection_changed");
     const sessionId = first.sessionId!;
     first.close();
 
     const again = await TestClient.connect(port, sessionId, { role: "deep dive" });
-    // Nothing to wait FOR, so this drains whatever the reconnect does send until
-    // the socket goes quiet, and asserts on what was not among it.
     const seen: AnyMsg[] = [];
     for (let i = 0; i < 12; i++) {
       try {
@@ -407,12 +333,6 @@ describe("Integration: user-selectable roles (docs/272)", () => {
   });
 
   it("keeps a cleared role cleared across a reconnect that still seeds it (reqs 12, 18)", async () => {
-    // The browser's seed lives inside a per-session memoized WebSocket URL, so a
-    // socket that reconnects after the clear still carries the role's name. The
-    // role is perfectly runnable — nothing downstream would refuse it — so
-    // without the row remembering that the user chose NONE, the clear would
-    // silently undo itself between here and the first message, standing
-    // instructions and all.
     const first = await TestClient.connect(port, undefined, { role: "deep dive" });
     await first.receive();
     const sessionId = first.sessionId!;
@@ -424,7 +344,6 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     const again = await TestClient.connect(port, sessionId, { role: "deep dive" });
     await again.receive();
     expect(sessionManager.get(sessionId)?.roleName).toBeUndefined();
-    // …and picking the role again still works: "none" is a choice, not a ban.
     again.send({ type: "set_role", roleName: "deep dive" });
     await drainUntil(again, (m) => m.type === "model_selection_changed" && m.roleName === "deep dive");
     expect(sessionManager.get(sessionId)?.roleName).toBe("deep dive");
@@ -432,13 +351,6 @@ describe("Integration: user-selectable roles (docs/272)", () => {
   });
 
   it("keeps the role's harness across a RECONNECT rather than re-deriving it (reqs 8, 13)", async () => {
-    // The connect handler derives "which harness owns this model" and persists
-    // it, which docs/252 made ambiguous: a model both harnesses list resolves to
-    // whichever the registry names first. Left alone, a reconnect would move a
-    // role-seeded session onto that harness and keep showing the role's name —
-    // the session running something other than what the role says, with nothing
-    // on screen to tell. A role in force means the row was written from ONE
-    // tuple, so there is nothing to reconcile.
     const first = await TestClient.connect(port);
     await first.receive();
     first.send({ type: "set_role", roleName: "deep dive" });
@@ -446,7 +358,6 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     first.close();
     const sessionId = first.sessionId!;
 
-    // Reconnect with a stale harness seed, exactly as a browser would.
     const again = await TestClient.connect(port, sessionId, { agent: "codex" });
     await again.receive();
     const row = sessionManager.get(sessionId);
@@ -462,8 +373,6 @@ describe("Integration: user-selectable roles (docs/272)", () => {
       role: "a role that was deleted",
     });
     await client.receive();
-    // Silently skipped: this is a page load, not an action. The user is told by
-    // the composer showing the ordinary controls instead of a name that lies.
     expect(sessionManager.get(client.sessionId!)?.roleName).toBeUndefined();
     client.close();
   });

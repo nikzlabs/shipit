@@ -1,11 +1,3 @@
-/**
- * docs/262 reqs 17, 20 — the wrapper directory, as the agent sees it.
- *
- * The properties that matter are: a wrapper runs ShipIt's shim and nothing
- * plugin-authored, a refused name never gets one, a name the declaration drops
- * stops being on PATH in the same round, and nothing this module did not write
- * is ever touched.
- */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
@@ -36,7 +28,6 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-/** Publish a plugin repository's manifest into the store, as a live generation. */
 function publishRepo(name: string, manifest: string): void {
   const active = path.join(storeDir, name, "generations", "abc");
   fs.mkdirSync(active, { recursive: true });
@@ -44,7 +35,6 @@ function publishRepo(name: string, manifest: string): void {
   fs.symlinkSync(active, path.join(storeDir, name, "active"));
 }
 
-/** Parse a consumer declaration the way `resolveShipitConfig` would. */
 function declare(yaml: string) {
   const doc = parseYaml(yaml) as Record<string, unknown>;
   const warnings: string[] = [];
@@ -58,10 +48,6 @@ function run(yaml: string, overrides: Partial<Parameters<typeof preparePluginCom
   const { plugins, selfExports } = declare(yaml);
   return preparePluginCommands({
     workspaceDir, plugins, selfExports, binDir, shimPath,
-    // Stands in for `preparePlugins`'s verified resolution: these cases are
-    // about planning and wrapper writing, so the checkout is simply whatever
-    // `publishRepo` left live. Identity refusal is covered where the check
-    // lives, in `plugin-runtime.test.ts`.
     checkoutFor: (repo) => {
       try {
         return fs.realpathSync(path.join(storeDir, repo.name, "active"));
@@ -69,7 +55,6 @@ function run(yaml: string, overrides: Partial<Parameters<typeof preparePluginCom
         return null;
       }
     },
-    // A PATH with nothing on it, so only what a test declares can collide.
     pathEnv: "",
     ...overrides,
   });
@@ -96,8 +81,6 @@ describe("preparePluginCommands", () => {
 
     const wrapper = fs.readFileSync(path.join(binDir, "reqs"), "utf-8");
     expect(wrapper).toContain(WRAPPER_MARKER);
-    // The whole boundary in one assertion: the agent container runs the shim,
-    // and the plugin's own entrypoint is never named here.
     expect(wrapper).toContain(`exec ${shimPath} plugin exec --alias 'reqs' --command 'reqs' -- "$@"`);
     expect(wrapper).not.toContain("cli/index.mjs");
     expect(fs.statSync(path.join(binDir, "reqs")).mode & 0o777).toBe(0o755);
@@ -137,9 +120,6 @@ exports:
     expect(fs.existsSync(path.join(binDir, "reqs"))).toBe(false);
   });
 
-  // A contested name must not be served by a wrapper from an earlier round —
-  // "reports the collision before running the ambiguous one" (req 20) is not
-  // satisfied by a stale file on disk.
   it("removes a wrapper whose name has since become a collision", () => {
     publishRepo("tools", "exports:\n  plugins:\n    requirements:\n      cli:\n        reqs: cli\n");
     publishRepo("other", "exports:\n  plugins:\n    rival:\n      cli:\n        reqs: cli\n");
@@ -174,15 +154,12 @@ plugins:
 
     const result = run(TRACKED, { pathEnv: other });
     expect(result.commands).toEqual([]);
-    // Attributed to the declared repository — this list is the ONLY route the
-    // PATH-shadow refusal has to the plugin card (`readPrepareFailures`).
     expect(result.refused).toEqual([
       { repo: "tools", reason: expect.stringContaining("would shadow") as unknown as string },
     ]);
     expect(fs.existsSync(path.join(binDir, "reqs"))).toBe(false);
   });
 
-  // Without this the SECOND round refuses everything the first one wrote.
   it("does not count its own previous wrapper as a collision", () => {
     publishRepo("tools", "exports:\n  plugins:\n    requirements:\n      cli:\n        reqs: cli\n");
     run(TRACKED, { pathEnv: binDir });
@@ -201,7 +178,6 @@ plugins:
     expect(result.failed[0].reason).toContain("was not created by ShipIt");
     expect(fs.readFileSync(path.join(binDir, "reqs"), "utf-8")).toContain("echo mine");
 
-    // And the sweep leaves it alone too, even once nothing wants that name.
     const dropped = run("plugins:\n  repos: []\n  use: []\n");
     expect(dropped.removed).toEqual([]);
     expect(fs.existsSync(path.join(binDir, "reqs"))).toBe(true);
@@ -216,17 +192,10 @@ plugins:
     expect(fs.existsSync(path.join(binDir, "reqs"))).toBe(false);
   });
 
-  // The commands half resolves `active` ONCE and reads the manifest out of the
-  // concrete directory, so a round cannot describe two generations. Observable
-  // consequence: the generation the link pointed at when it was resolved is the
-  // one that decides, and a link pointing nowhere surfaces nothing.
   it("reads the manifest out of the generation the link resolved to", () => {
     publishRepo("tools", "exports:\n  plugins:\n    requirements:\n      cli:\n        reqs: cli\n");
     expect(run(TRACKED).commands).toEqual(["reqs"]);
 
-    // Re-point `active` at a generation exporting a different command, the way
-    // an activation round would, and the next round follows it — pinning is per
-    // pass, not a cache.
     const next = path.join(storeDir, "tools", "generations", "def");
     fs.mkdirSync(next, { recursive: true });
     fs.writeFileSync(
@@ -266,7 +235,6 @@ plugins:
       process.env.PATH = "/usr/bin";
       run(TRACKED);
       expect(process.env.PATH).toBe(`/usr/bin${path.delimiter}${binDir}`);
-      // And re-asserting it does not append a second copy.
       run(TRACKED);
       expect(process.env.PATH).toBe(`/usr/bin${path.delimiter}${binDir}`);
     } finally {

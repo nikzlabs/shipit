@@ -61,10 +61,6 @@ describe("session-worker-uid (docs/150 §7)", () => {
     });
   });
 
-  // docs/263 — the netns firewall exempts the resolver (911) and SNI proxy (912)
-  // uids from the controls that name them (`init-firewall.sh` owner-match), so a
-  // workload holding one escapes containment. Before this guard `sessionWorkerUid()`
-  // accepted any non-negative value, so each of these returned the reserved uid.
   describe("reserved egress uids (docs/263)", () => {
     it("names exactly the resolver and proxy uids", () => {
       expect([...RESERVED_EGRESS_UIDS].sort((a, b) => a - b)).toEqual([911, 912]);
@@ -96,9 +92,6 @@ describe("session-worker-uid (docs/150 §7)", () => {
     });
 
     it("passes the refusal on to every consumer of the parse", () => {
-      // The chown helpers resolve the uid through `sessionWorkerUid()`, so a
-      // reserved value cannot be silently degraded to the legacy root no-op —
-      // which would leave the worker entrypoint gosu'ing to it regardless.
       process.env.SHIPIT_SESSION_WORKER_UID = "912";
       const file = path.join(tmpDir, "f");
       fs.writeFileSync(file, "x");
@@ -129,11 +122,9 @@ describe("session-worker-uid (docs/150 §7)", () => {
       expect(() => chownTreeToSessionWorker(path.join(tmpDir, "nope"))).not.toThrow();
     });
 
-    // Chowning to a *different* uid needs CAP_CHOWN; chowning to our OWN uid
-    // always succeeds, so we exercise the real walk without requiring root.
     it("recursively chowns a subtree to the configured uid", () => {
       const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
+      if (myUid === undefined) return;
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
       const sub = path.join(tmpDir, "a", "b");
       fs.mkdirSync(sub, { recursive: true });
@@ -145,7 +136,7 @@ describe("session-worker-uid (docs/150 §7)", () => {
 
     it("chownWorkspaceGitToSessionWorker chowns <workspaceDir>/.git only", () => {
       const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
+      if (myUid === undefined) return;
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
       const gitDir = path.join(tmpDir, ".git");
       fs.mkdirSync(path.join(gitDir, "logs"), { recursive: true });
@@ -159,17 +150,15 @@ describe("session-worker-uid (docs/150 §7)", () => {
 
     it("chownWorkspaceGitToSessionWorker skips immutable object data files but chowns object dirs", () => {
       const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
+      if (myUid === undefined) return;
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
       const gitDir = path.join(tmpDir, ".git");
-      // Object store: a fanout dir with a loose object, and pack/ with a pack.
       const looseObj = path.join(gitDir, "objects", "ab", "cdef0123");
       const packFile = path.join(gitDir, "objects", "pack", "pack-x.pack");
       fs.mkdirSync(path.dirname(looseObj), { recursive: true });
       fs.mkdirSync(path.dirname(packFile), { recursive: true });
       fs.writeFileSync(looseObj, "obj");
       fs.writeFileSync(packFile, "pack");
-      // Metadata that DOES get rewritten/appended → must be chowned.
       fs.mkdirSync(path.join(gitDir, "logs"), { recursive: true });
       fs.writeFileSync(path.join(gitDir, "logs", "HEAD"), "");
       fs.writeFileSync(path.join(gitDir, "index"), "");
@@ -178,14 +167,11 @@ describe("session-worker-uid (docs/150 §7)", () => {
       try {
         chownWorkspaceGitToSessionWorker(tmpDir);
         const chowned = new Set(spy.mock.calls.map((c) => c[0] as string));
-        // Immutable data files: never touched (this is the O(fanout) win).
         expect(chowned.has(looseObj)).toBe(false);
         expect(chowned.has(packFile)).toBe(false);
-        // Object directories: chowned so the worker can add new objects.
         expect(chowned.has(path.join(gitDir, "objects"))).toBe(true);
         expect(chowned.has(path.join(gitDir, "objects", "ab"))).toBe(true);
         expect(chowned.has(path.join(gitDir, "objects", "pack"))).toBe(true);
-        // Rewritten/appended metadata: chowned.
         expect(chowned.has(path.join(gitDir, "index"))).toBe(true);
         expect(chowned.has(path.join(gitDir, "logs", "HEAD"))).toBe(true);
       } finally {
@@ -195,31 +181,23 @@ describe("session-worker-uid (docs/150 §7)", () => {
 
     it("chownWorkspaceGitToSessionWorker skips LFS object files but chowns their fanout dirs", () => {
       const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
+      if (myUid === undefined) return;
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
       const gitDir = path.join(tmpDir, ".git");
-      // docs/232: LFS uses a TWO-level fanout, `<ab>/<cd>/<oid>`.
       const lfsObjects = path.join(gitDir, "lfs", "objects");
       const lfsObj = path.join(lfsObjects, "ab", "cd", "abcdef0123");
       fs.mkdirSync(path.dirname(lfsObj), { recursive: true });
       fs.writeFileSync(lfsObj, "asset-bytes");
-      // Non-object LFS metadata still gets chowned (it's rewritten in place).
       fs.writeFileSync(path.join(gitDir, "lfs", "cache-meta"), "");
 
       const spy = vi.spyOn(fs, "lchownSync");
       try {
         chownWorkspaceGitToSessionWorker(tmpDir);
         const chowned = new Set(spy.mock.calls.map((c) => c[0] as string));
-        // The object file is a hardlink into the shared cache store — chowning it
-        // would hand that store to the session uid, since an inode has one owner
-        // across every link.
         expect(chowned.has(lfsObj)).toBe(false);
-        // Every fanout dir IS chowned, at BOTH levels: a root-owned `ab/` would
-        // stop the worker creating a new `cd/` when it commits a new asset.
         expect(chowned.has(lfsObjects)).toBe(true);
         expect(chowned.has(path.join(lfsObjects, "ab"))).toBe(true);
         expect(chowned.has(path.join(lfsObjects, "ab", "cd"))).toBe(true);
-        // Ordinary `.git/lfs` metadata is unaffected by the object-store branch.
         expect(chowned.has(path.join(gitDir, "lfs", "cache-meta"))).toBe(true);
       } finally {
         spy.mockRestore();
@@ -228,10 +206,8 @@ describe("session-worker-uid (docs/150 §7)", () => {
 
     it("chownWorkspaceGitToSessionWorker leaves a hardlinked LFS object owned as-is", () => {
       const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
+      if (myUid === undefined) return;
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
-      // The end-to-end property docs/232 depends on: a cache object hardlinked
-      // into a clone must not have its ownership rewritten by the handback.
       const cacheObj = path.join(tmpDir, "cache", "lfs", "objects", "ab", "cd", "oid1");
       fs.mkdirSync(path.dirname(cacheObj), { recursive: true });
       fs.writeFileSync(cacheObj, "shared");
@@ -249,12 +225,6 @@ describe("session-worker-uid (docs/150 §7)", () => {
       }
     });
 
-    // docs/266 — NOT "a no-op when the flag is unset" any more, which is what
-    // this test used to claim. The flag alone no longer gates this helper: a
-    // ROOT process over a non-root-owned tree acts with the flag unset, because
-    // orchestrator git drops there and needs `.git` writable
-    // (`resolveGitDirOwner`). What survives is the narrower property below, and
-    // it holds here only because the suite runs unprivileged.
     it("chownWorkspaceGitToSessionWorker is a no-op when not root and the flag is unset", () => {
       delete process.env.SHIPIT_SESSION_WORKER_UID;
       const gitDir = path.join(tmpDir, ".git");
@@ -266,22 +236,17 @@ describe("session-worker-uid (docs/150 §7)", () => {
       expect(fs.lstatSync(idx).uid).toBe(before);
     });
 
-    // planning#146: the worktree handoff chowns the files the agent edits, skipping
-    // `.git` (handled by the object-aware helper) and the declared dep dirs.
     it("chownWorktreeToSessionWorker chowns the worktree but skips .git and dep dirs", () => {
       const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
+      if (myUid === undefined) return;
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
-      // Worktree source: a top-level file + a nested file the rebase would touch.
       const topFile = path.join(tmpDir, "package.json");
       const nestedFile = path.join(tmpDir, "src", "App.tsx");
       fs.mkdirSync(path.dirname(nestedFile), { recursive: true });
       fs.writeFileSync(topFile, "{}");
       fs.writeFileSync(nestedFile, "x");
-      // `.git` metadata — must be skipped by the worktree walk.
       fs.mkdirSync(path.join(tmpDir, ".git"), { recursive: true });
       fs.writeFileSync(path.join(tmpDir, ".git", "index"), "");
-      // Dep dirs (top-level + nested) — must be skipped (bounded walk).
       const depFile = path.join(tmpDir, "node_modules", "left-pad", "index.js");
       const nestedDepFile = path.join(tmpDir, "client", "node_modules", "x", "i.js");
       fs.mkdirSync(path.dirname(depFile), { recursive: true });
@@ -293,19 +258,15 @@ describe("session-worker-uid (docs/150 §7)", () => {
       try {
         chownWorktreeToSessionWorker(tmpDir, ["node_modules", "client/node_modules"]);
         const chowned = new Set(spy.mock.calls.map((c) => c[0] as string));
-        // Worktree root + source files: chowned (so the agent can edit + create).
         expect(chowned.has(tmpDir)).toBe(true);
         expect(chowned.has(topFile)).toBe(true);
         expect(chowned.has(nestedFile)).toBe(true);
-        // `.git`: never touched here (the .git helper owns it, object-aware).
         expect(chowned.has(path.join(tmpDir, ".git"))).toBe(false);
         expect(chowned.has(path.join(tmpDir, ".git", "index"))).toBe(false);
-        // Dep dirs: skipped wholesale — neither the dir nor its contents walked.
         expect(chowned.has(path.join(tmpDir, "node_modules"))).toBe(false);
         expect(chowned.has(depFile)).toBe(false);
         expect(chowned.has(path.join(tmpDir, "client", "node_modules"))).toBe(false);
         expect(chowned.has(nestedDepFile)).toBe(false);
-        // The dir leading to a nested dep dir is still chowned (it's source).
         expect(chowned.has(path.join(tmpDir, "client"))).toBe(true);
       } finally {
         spy.mockRestore();
@@ -321,29 +282,17 @@ describe("session-worker-uid (docs/150 §7)", () => {
       expect(fs.lstatSync(f).uid).toBe(before);
     });
 
-    // planning#147: the session-setup paths (warm-pool create, claim refresh/branch)
-    // used to hand back ONLY `.git`, leaving the cloned/reset worktree uneditable
-    // by the non-root agent. The composite helper hands back BOTH `.git`
-    // (object-aware) AND the worktree (minus dep dirs).
-    //
-    // planning#412 — of the two ops named, only the CLONE lands `root:root`
-    // (`cloneFromCache`'s bare `safeSimpleGit()` names no tree to stat). The
-    // `reset --hard` runs in an existing session tree and so drops to that
-    // session's identity since docs/266-orchestrator-git-trust-boundary E1.
     it("handWorkspaceBackToWorker chowns BOTH the worktree and .git, skipping dep dirs", () => {
       const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
+      if (myUid === undefined) return;
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
-      // Worktree the `clone`/`reset --hard` re-materialized.
       const topFile = path.join(tmpDir, "package.json");
       const nestedFile = path.join(tmpDir, "src", "App.tsx");
       fs.mkdirSync(path.dirname(nestedFile), { recursive: true });
       fs.writeFileSync(topFile, "{}");
       fs.writeFileSync(nestedFile, "x");
-      // `.git` metadata the orchestrator-side git ops rewrote.
       fs.mkdirSync(path.join(tmpDir, ".git"), { recursive: true });
       fs.writeFileSync(path.join(tmpDir, ".git", "index"), "");
-      // No shipit.yaml → falls back to DEFAULT_DEP_DIRS (["node_modules"]).
       const depFile = path.join(tmpDir, "node_modules", "left-pad", "index.js");
       fs.mkdirSync(path.dirname(depFile), { recursive: true });
       fs.writeFileSync(depFile, "");
@@ -352,12 +301,9 @@ describe("session-worker-uid (docs/150 §7)", () => {
       try {
         handWorkspaceBackToWorker(tmpDir);
         const chowned = new Set(spy.mock.calls.map((c) => c[0] as string));
-        // Worktree handed back (the half that was missing) — this is the fix.
         expect(chowned.has(topFile)).toBe(true);
         expect(chowned.has(nestedFile)).toBe(true);
-        // `.git` metadata handed back too (object-aware helper).
         expect(chowned.has(path.join(tmpDir, ".git", "index"))).toBe(true);
-        // Dep dir skipped wholesale — bounded walk.
         expect(chowned.has(path.join(tmpDir, "node_modules"))).toBe(false);
         expect(chowned.has(depFile)).toBe(false);
       } finally {
@@ -365,23 +311,15 @@ describe("session-worker-uid (docs/150 §7)", () => {
       }
     });
 
-    // docs/271 / github#2374 — the walk above chowned the checkout and never
-    // touched its mode, so a root-materialized tree stayed 0644/0755. A Compose
-    // service cannot be the owner (its uid is either ShipIt's fill-in or one the
-    // project declared, and the session range is refused to projects), so the
-    // group is the only channel it has — and without the write bit that channel
-    // carried nothing. Three Vite dev servers died at once on a config-bundle
-    // temp file they could not create next to their own config.
     it("handWorkspaceBackToWorker leaves the worktree group-writable for compose services", () => {
       const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
+      if (myUid === undefined) return;
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
       const topFile = path.join(tmpDir, "vite.config.ts");
       const nestedFile = path.join(tmpDir, "src", "App.tsx");
       fs.mkdirSync(path.dirname(nestedFile), { recursive: true });
       fs.writeFileSync(topFile, "{}");
       fs.writeFileSync(nestedFile, "x");
-      // The modes a root orchestrator's clone/checkout leaves under umask 022.
       fs.chmodSync(tmpDir, 0o755);
       fs.chmodSync(topFile, 0o644);
       fs.chmodSync(path.dirname(nestedFile), 0o755);
@@ -390,18 +328,15 @@ describe("session-worker-uid (docs/150 §7)", () => {
       handWorkspaceBackToWorker(tmpDir);
 
       const mode = (p: string) => fs.lstatSync(p).mode & 0o7777;
-      // Files: group write, and nothing became executable.
       expect(mode(topFile)).toBe(0o664);
       expect(mode(nestedFile)).toBe(0o664);
-      // Directories: group write + traverse, and setgid so an entry the service
-      // creates inherits the shared group rather than the service's own.
       expect(mode(tmpDir)).toBe(0o2775);
       expect(mode(path.dirname(nestedFile))).toBe(0o2775);
     });
 
     it("group-write does not make a non-executable file executable", () => {
       const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
+      if (myUid === undefined) return;
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
       const script = path.join(tmpDir, "build.sh");
       const plain = path.join(tmpDir, "README.md");
@@ -413,15 +348,13 @@ describe("session-worker-uid (docs/150 §7)", () => {
       handWorkspaceBackToWorker(tmpDir);
 
       const mode = (p: string) => fs.lstatSync(p).mode & 0o7777;
-      // `X`, not `x`: an already-executable file keeps group execute…
       expect(mode(script)).toBe(0o775);
-      // …and one that was executable for nobody gains only read+write.
       expect(mode(plain)).toBe(0o660);
     });
 
     it("handWorkspaceBackToWorker honors agent.dep-dirs from shipit.yaml", () => {
       const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
+      if (myUid === undefined) return;
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
       fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent:\n  dep-dirs:\n    - vendor\n");
       const vendorFile = path.join(tmpDir, "vendor", "pkg", "x.js");
@@ -435,7 +368,6 @@ describe("session-worker-uid (docs/150 §7)", () => {
         handWorkspaceBackToWorker(tmpDir);
         const chowned = new Set(spy.mock.calls.map((c) => c[0] as string));
         expect(chowned.has(srcFile)).toBe(true);
-        // The declared dep dir is skipped instead of the default node_modules.
         expect(chowned.has(path.join(tmpDir, "vendor"))).toBe(false);
         expect(chowned.has(vendorFile)).toBe(false);
       } finally {
@@ -467,7 +399,6 @@ describe("session-worker-uid (docs/150 §7)", () => {
       fs.writeFileSync(outsideFile, "x");
       try {
         fs.symlinkSync(outside, path.join(tmpDir, "link"));
-        // Walk must not traverse into `outside` via the symlink.
         expect(() => chownTreeToSessionWorker(tmpDir)).not.toThrow();
       } finally {
         fs.rmSync(outside, { recursive: true, force: true });
@@ -475,10 +406,7 @@ describe("session-worker-uid (docs/150 §7)", () => {
     });
   });
 
-  // #1666 — bounded dep-dir cache reconciliation. Repairs root-owned tool caches
-  // (e.g. `node_modules/.vite`) the worktree handback's dep-dir exclusion skips.
   describe("reconcileDepDirCacheOwnership", () => {
-    // Build a node_modules with an installed package and a `.vite` cache subtree.
     function seedNodeModules(base: string = tmpDir): { nm: string; pkgFile: string; viteFile: string } {
       const nm = path.join(base, "node_modules");
       const pkgFile = path.join(nm, "left-pad", "index.js");
@@ -513,36 +441,27 @@ describe("session-worker-uid (docs/150 §7)", () => {
       }
     });
 
-    // docs/272 — the dep dir is the one place docs/271's group-write did not
-    // reach, because the worktree walk excludes it by design. That made
-    // `node_modules` the only directory a foreign-uid Compose service could not
-    // write, which is exactly where every dev server puts its cache:
-    //   EACCES: permission denied, mkdir '/app/node_modules/.vite/deps_temp_…'
     it("makes the dep dir root group-writable, so a service can create a cache in it", () => {
       const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
+      if (myUid === undefined) return;
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
       const { nm } = seedNodeModules();
-      fs.chmodSync(nm, 0o755); // what a umask-022 writer leaves behind
+      fs.chmodSync(nm, 0o755);
 
       reconcileDepDirCacheOwnership(nm);
 
       expect(fs.lstatSync(nm).mode & 0o7777).toBe(0o2775);
     });
 
-    // The leak path: a cache tree some OTHER uid wrote. It was already chowned
-    // back; without the mode it stayed unwritable to the next foreign uid, so the
-    // repair fixed ownership and left the EACCES in place.
     it("group-writes a leaked cache tree it takes ownership of", () => {
       const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
+      if (myUid === undefined) return;
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
       const { nm, viteFile } = seedNodeModules();
       const viteDir = path.join(nm, ".vite");
       fs.chmodSync(viteDir, 0o755);
       fs.chmodSync(viteFile, 0o644);
-      // Make the child look leaked without needing root: the reconcile compares
-      // against the resolved identity, so move that instead of the file's owner.
+      // Change the expected owner to exercise repair without CAP_CHOWN.
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid + 1);
 
       reconcileDepDirCacheOwnership(nm);
@@ -552,12 +471,9 @@ describe("session-worker-uid (docs/150 §7)", () => {
       expect(mode(viteFile)).toBe(0o664);
     });
 
-    // Review finding A: `addGroupWrite` skips a symlink, but `readdirSync`
-    // follows one — so a symlinked dep dir would have had the children of its
-    // TARGET chowned, and now chmodded, wherever that target lives.
     it("refuses to walk a symlinked dep dir at all", () => {
       const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
+      if (myUid === undefined) return;
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
       const outside = path.join(tmpDir, "outside");
       const victim = path.join(outside, "pkg", "index.js");
@@ -570,26 +486,15 @@ describe("session-worker-uid (docs/150 §7)", () => {
 
       reconcileDepDirCacheOwnership(link);
 
-      // Untouched — neither the mode pass nor the chown reached through the link.
       expect(fs.lstatSync(path.dirname(victim)).mode & 0o7777).toBe(0o755);
       expect(fs.lstatSync(victim).mode & 0o7777).toBe(0o644);
     });
 
-    // Common case: everything already worker-owned → a shallow scan that chowns
-    // nothing (the steady-state cost is just the direct-child lstats).
-    //
-    // The reconcile compares the whole (uid, gid) PAIR, and under docs/270 the
-    // gid is the shared worker group rather than the session's uid. So "already
-    // worker-owned" is stated through the record docs/270 actually reads it
-    // from — the owner of the session directory — instead of being inherited
-    // from the runner. Deriving it from SHIPIT_SESSION_WORKER_UID alone yields
-    // `{uid, gid: uid}`, which matches files the test process created only where
-    // getuid() == getgid(); in a ShipIt session container (uid 2000006, gid
-    // 1000) every seeded child then reads as a leaked tree and gets chowned.
+    // Resolve ownership from the directory: this test process's UID and GID can differ.
     it("skips children already owned by the worker uid (zero chowns)", () => {
       const myUid = process.getuid?.();
       const myGid = process.getgid?.();
-      if (myUid === undefined || myGid === undefined) return; // not POSIX — skip
+      if (myUid === undefined || myGid === undefined) return;
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
       const sessionsRoot = path.join(tmpDir, "sessions");
       const sessionDir = path.join(sessionsRoot, "sess-1");
@@ -598,8 +503,6 @@ describe("session-worker-uid (docs/150 §7)", () => {
       const { nm } = seedNodeModules(sessionDir);
       const spy = vi.spyOn(fs, "lchownSync");
       try {
-        // The premise, asserted rather than assumed: the resolved identity is
-        // the pair these files were actually created with.
         expect(identityForTarget(nm)).toEqual({ uid: myUid, gid: myGid });
         reconcileDepDirCacheOwnership(nm);
         expect(spy).not.toHaveBeenCalled();
@@ -609,28 +512,20 @@ describe("session-worker-uid (docs/150 §7)", () => {
       }
     });
 
-    // Leak case: a direct child not owned by the worker is chowned wholesale,
-    // recursing into its subtree (so `.vite/deps/chunk.js` is repaired too).
     it("recursively chowns a direct child not owned by the worker uid", () => {
       const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
-      // A uid we don't own → every real file lstats as "not worker-owned", so the
-      // reconcile treats each direct child as a leaked tree and walks it. The
-      // chown itself EPERMs (we lack CAP_CHOWN) and is swallowed; the spy records
-      // the attempted paths, proving the bounded recursion.
+      if (myUid === undefined) return;
+      // Observe attempted chowns; changing ownership needs CAP_CHOWN.
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid + 1);
       const { nm, pkgFile, viteFile } = seedNodeModules();
       const spy = vi.spyOn(fs, "lchownSync");
       try {
         reconcileDepDirCacheOwnership(nm);
         const chowned = new Set(spy.mock.calls.map((c) => c[0] as string));
-        // Direct children of node_modules are reconciled...
         expect(chowned.has(path.join(nm, ".vite"))).toBe(true);
         expect(chowned.has(path.join(nm, "left-pad"))).toBe(true);
-        // ...recursively, so nested cache files are repaired too.
         expect(chowned.has(viteFile)).toBe(true);
         expect(chowned.has(pkgFile)).toBe(true);
-        // node_modules itself is NOT chowned — only its children (bounded scan).
         expect(chowned.has(nm)).toBe(false);
       } finally {
         spy.mockRestore();
@@ -638,42 +533,19 @@ describe("session-worker-uid (docs/150 §7)", () => {
     });
   });
 
-  /**
-   * docs/266 — `.git` must belong to the uid that will run git in it.
-   *
-   * The production failure this closes:
-   * `fatal: could not open '.git/COMMIT_EDITMSG': Permission denied` on the
-   * post-turn commit, because the handback answered "who does the container run
-   * as" (`SHIPIT_SESSION_WORKER_UID`) while `safeSimpleGit` answered "who owns
-   * this tree" (`resolveGitTreeUid`). Two questions, one directory.
-   *
-   * Tested through the same injection seam `git-tree-uid.test.ts` uses, because
-   * the interesting states need root and a foreign-owned tree — neither of which
-   * a session container can produce.
-   */
   describe("resolveGitDirOwner() — one predicate for both halves", () => {
-    /** "We are root, and the tree belongs to `owner`." */
     const asRoot = (owner: { uid: number; gid: number } | null): GitTreeUidDeps => ({
       getuid: () => 0,
       statOwner: () => owner,
     });
 
     it("follows the DROP, not the variable, when the variable is unset", () => {
-      // Disagreement case 1: a root orchestrator over a non-root-owned tree (a
-      // host-bind dev setup). `resolveGitTreeUid` never reads the variable, so
-      // git dropped while the old handback returned early — leaving any
-      // root-owned file inside `.git` unwritable forever, with nothing else in
-      // the system to repair it.
       delete process.env.SHIPIT_SESSION_WORKER_UID;
       expect(resolveGitDirOwner(tmpDir, asRoot({ uid: 1000, gid: 1000 })))
         .toEqual({ uid: 1000, gid: 1000 });
     });
 
     it("follows the DROP when the configured uid disagrees with the tree's owner", () => {
-      // Disagreement case 2: a worker-uid migration. An adopted container keeps
-      // its old uid, so the tree's owner is not the configured one. The old
-      // handback chowned `.git` AWAY from the uid git runs as, on every turn, so
-      // the failure could never converge — this is the assertion that pins it.
       process.env.SHIPIT_SESSION_WORKER_UID = "1500";
       expect(resolveGitDirOwner(tmpDir, asRoot({ uid: 1000, gid: 1000 })))
         .toEqual({ uid: 1000, gid: 1000 });
@@ -686,18 +558,12 @@ describe("session-worker-uid (docs/150 §7)", () => {
     });
 
     it("falls back to the configured uid for a ROOT-OWNED tree — the fresh-clone case", () => {
-      // The property that makes this change safe on the session-setup path
-      // rather than merely acceptable. `handWorkspaceBackToWorker` runs `.git`
-      // FIRST, while a just-cloned workspace is still root-owned; the drop
-      // declines there, so the fallback hands `.git` to the configured uid
-      // exactly as before and the worktree chown that follows matches it.
       process.env.SHIPIT_SESSION_WORKER_UID = "1000";
       expect(resolveGitDirOwner(tmpDir, asRoot({ uid: 0, gid: 0 })))
         .toEqual({ uid: 1000, gid: 1000 });
     });
 
     it("falls back to the configured uid when the process is not root", () => {
-      // The session worker, local mode, and every test. Unchanged from before.
       process.env.SHIPIT_SESSION_WORKER_UID = "1000";
       const notRoot: GitTreeUidDeps = {
         getuid: () => 1000,
@@ -716,11 +582,6 @@ describe("session-worker-uid (docs/150 §7)", () => {
     });
 
     it("WIRING: chownWorkspaceGitToSessionWorker chowns to the tree's owner", () => {
-      // The predicate tests above would all pass against a
-      // `chownWorkspaceGitToSessionWorker` that still called `sessionWorkerUid()`
-      // — a correct decision nothing consults is exactly the shape of defect
-      // this whole fix is about. So assert the chown ITSELF lands on the tree's
-      // owner while the configured uid says something else.
       process.env.SHIPIT_SESSION_WORKER_UID = "1500";
       const gitDir = path.join(tmpDir, ".git");
       fs.mkdirSync(gitDir);
@@ -735,8 +596,6 @@ describe("session-worker-uid (docs/150 §7)", () => {
         const editMsg = spy.mock.calls.find(
           (c) => c[0] === path.join(gitDir, "COMMIT_EDITMSG"),
         );
-        // The file the production failure named, chowned to the tree's owner
-        // (1000:100) and NOT to the configured 1500.
         expect(editMsg).toBeDefined();
         expect(editMsg?.slice(1)).toEqual([1000, 100]);
       } finally {
@@ -745,12 +604,6 @@ describe("session-worker-uid (docs/150 §7)", () => {
     });
 
     it("WIRING: the gid reaches the object-store and LFS branches too", () => {
-      // `chownGitMetadataRecursive` has three exits — the ordinary node, the
-      // shallow `.git/objects` walk, and `chownDirsOnlyRecursive` for
-      // `.git/lfs/objects` — and each passes the gid on separately. Asserting it
-      // on one metadata file (above) would leave a `uid`-for-`gid` typo on either
-      // of the other two green. Threading the real gid is the new behaviour here,
-      // so it is checked where it can actually be dropped.
       process.env.SHIPIT_SESSION_WORKER_UID = "1500";
       const gitDir = path.join(tmpDir, ".git");
       fs.mkdirSync(path.join(gitDir, "objects", "ab"), { recursive: true });
@@ -763,9 +616,7 @@ describe("session-worker-uid (docs/150 §7)", () => {
           statOwner: () => ({ uid: 1000, gid: 100 }),
         });
         const at = (p: string) => spy.mock.calls.find((c) => c[0] === p)?.slice(1);
-        // The `.git/objects` fanout dir — the shallow-walk branch.
         expect(at(path.join(gitDir, "objects", "ab"))).toEqual([1000, 100]);
-        // The LFS two-level fanout — the dirs-only branch.
         expect(at(path.join(gitDir, "lfs", "objects", "ab", "cd"))).toEqual([1000, 100]);
       } finally {
         spy.mockRestore();
@@ -775,14 +626,7 @@ describe("session-worker-uid (docs/150 §7)", () => {
 });
 
 
-/**
- * docs/270 — per-session identities.
- *
- * A real uid drop cannot be exercised here (no root, `unshare -r` refused), so
- * these assert what the code SETS and what it RESOLVES, never that another uid
- * was denied. The self-owned cases below are chosen so they run identically
- * privileged or not: chowning to your own uid/gid always succeeds.
- */
+// These check ownership and mode, not access denial from another UID.
 describe("per-session identities (docs/270)", () => {
   const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
   let root: string;
@@ -802,9 +646,6 @@ describe("per-session identities (docs/270)", () => {
 
   describe("sealSessionDir", () => {
     it("sets 0700, which is the whole cross-session boundary", () => {
-      // Nothing inside a session needs a restrictive mode of its own: 0700 here
-      // denies traversal to every other uid, so no writer downstream has to
-      // remember one (req 1).
       const dir = path.join(root, "s1");
       fs.mkdirSync(dir, { mode: 0o755 });
 
@@ -821,7 +662,6 @@ describe("per-session identities (docs/270)", () => {
 
   describe("sealLegacySessionDirs", () => {
     it("does nothing at all when the non-root runtime is off", () => {
-      // Local mode and dogfood. A seal here would chown a developer's checkout.
       delete process.env.SHIPIT_SESSION_WORKER_UID;
       fs.mkdirSync(path.join(root, "s1"), { mode: 0o755 });
 
@@ -830,13 +670,10 @@ describe("per-session identities (docs/270)", () => {
     });
 
     it("skips a session directory that already carries a record", () => {
-      // Re-sealing would be a no-op, and skipping is what keeps the boot pass
-      // O(sessions) stats in the steady state. A dir owned by this test's uid
-      // stands in for one an earlier boot sealed, or one with an allocated uid.
       process.env.SHIPIT_SESSION_WORKER_UID = String(selfUid);
       const dir = path.join(root, "s1");
       fs.mkdirSync(dir, { mode: 0o755 });
-      if (selfUid === 0) return; // running as root: every dir IS root-owned
+      if (selfUid === 0) return;
       expect(sealLegacySessionDirs(root)).toBe(0);
       expect(fs.statSync(dir).mode & 0o777).toBe(0o755);
     });
@@ -855,10 +692,6 @@ describe("per-session identities (docs/270)", () => {
 
   describe("shareTreeWithAllSessions", () => {
     it("adds group read/write to files and group access plus setgid to dirs", () => {
-      // The overlay base is the case that makes the MODE load-bearing rather
-      // than cosmetic: overlayfs copy-up preserves the lower file's owner AND
-      // mode, so a base file at 0644 copies up group-readable and still not
-      // editable by the session that copied it.
       process.env.SHIPIT_SESSION_WORKER_UID = String(selfGid);
       const dir = path.join(root, "base");
       fs.mkdirSync(dir, { mode: 0o755 });
@@ -891,15 +724,12 @@ describe("per-session identities (docs/270)", () => {
 
       shareTreeWithAllSessions(dir);
 
-      // The target keeps its mode — only the link itself was regrouped.
       expect(fs.statSync(outside).mode & 0o777).toBe(0o600);
     });
   });
 
   describe("sessionWorkerGid / identityForTarget", () => {
     it("falls back to the global value for a path that belongs to no session", () => {
-      // The dep cache, the bare cache. Every pre-docs/270 caller keeps working
-      // without a signature change because of exactly this.
       process.env.SHIPIT_SESSION_WORKER_UID = "1000";
       configureSessionIdentityRoots({ sessionsRoot: root });
       expect(identityForTarget("/somewhere/else")).toEqual({ uid: 1000, gid: 1000 });
@@ -911,7 +741,7 @@ describe("per-session identities (docs/270)", () => {
       configureSessionIdentityRoots({ sessionsRoot: root });
       const dir = path.join(root, "s1");
       fs.mkdirSync(path.join(dir, "workspace"), { recursive: true });
-      if (selfUid === 0) return; // a root-owned dir reads as "no record"
+      if (selfUid === 0) return;
       expect(identityForTarget(path.join(dir, "workspace")))
         .toEqual({ uid: selfUid, gid: selfGid });
     });
@@ -924,16 +754,6 @@ describe("per-session identities (docs/270)", () => {
   });
 });
 
-/**
- * docs/271 §3 (planning#420) — the handoff's mode passes fix the nodes that
- * exist; the default-ACL pass is what reaches the ones a foreign-uid Compose
- * service creates afterwards.
- *
- * The exec is driven through a `setfacl` shim on `PATH` rather than a module
- * mock, so what these assert is the production call path — including the batch
- * loop and the argv — and not a stand-in for it. One test on top of that uses
- * the REAL `setfacl` to pin the kernel semantics the whole design rests on.
- */
 const HAS_SETFACL = (() => {
   try {
     execFileSync("setfacl", ["--version"], { stdio: "ignore" });
@@ -964,7 +784,6 @@ describe("default group ACLs on the worktree (docs/271 §3)", () => {
     fs.rmSync(binDir, { recursive: true, force: true });
   });
 
-  /** Shadow `setfacl` with a recorder that marks each invocation. */
   function stubSetfacl(): void {
     fs.writeFileSync(
       path.join(binDir, "setfacl"),
@@ -974,7 +793,6 @@ describe("default group ACLs on the worktree (docs/271 §3)", () => {
     process.env.PATH = `${binDir}:${prevPath ?? ""}`;
   }
 
-  /** Each recorded invocation, as its argv. */
   function invocations(): string[][] {
     if (!fs.existsSync(log)) return [];
     return fs.readFileSync(log, "utf8")
@@ -984,16 +802,13 @@ describe("default group ACLs on the worktree (docs/271 §3)", () => {
 
   it("gives every worktree directory a default group ACL, and nothing else one", () => {
     const myUid = process.getuid?.();
-    if (myUid === undefined) return; // not POSIX — skip
+    if (myUid === undefined) return;
     process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
     stubSetfacl();
 
     fs.mkdirSync(path.join(tmpDir, "src"), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, "src", "App.tsx"), "x");
     fs.writeFileSync(path.join(tmpDir, "package.json"), "{}");
-    // `.git` belongs to the object-aware helper, and the dep dirs are pruned to
-    // keep the walk bounded by the source tree — both must stay out of this pass
-    // for the same reasons they stay out of the chown and the chmod.
     fs.mkdirSync(path.join(tmpDir, ".git", "objects", "4d"), { recursive: true });
     fs.mkdirSync(path.join(tmpDir, "node_modules", "left-pad"), { recursive: true });
     fs.mkdirSync(path.join(tmpDir, "client", "node_modules", "x"), { recursive: true });
@@ -1003,25 +818,19 @@ describe("default group ACLs on the worktree (docs/271 §3)", () => {
     const calls = invocations();
     expect(calls).toHaveLength(1);
     const [flags, paths] = [calls[0].slice(0, 4), calls[0].slice(4)];
-    // A DEFAULT ACL (`-d`), group `rwx`, and `--` so a path can never be read as
-    // a flag. The default entry is what the kernel applies at creation time in
-    // place of the creator's umask — an access ACL here would fix only the
-    // directories that already exist, which the chmod pass already does.
     expect(flags).toEqual(["-d", "-m", "g::rwx", "--"]);
     expect([...paths].sort()).toEqual([
       tmpDir,
       path.join(tmpDir, "client"),
       path.join(tmpDir, "src"),
     ].sort());
-    // Files get none: a default ACL exists only on a directory, and the mode
-    // pass already carries the group write bit for the files that exist.
     expect(paths).not.toContain(path.join(tmpDir, "package.json"));
     expect(paths).not.toContain(path.join(tmpDir, "src", "App.tsx"));
   });
 
   it("batches rather than spawning once per directory", () => {
     const myUid = process.getuid?.();
-    if (myUid === undefined) return; // not POSIX — skip
+    if (myUid === undefined) return;
     process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
     stubSetfacl();
 
@@ -1035,9 +844,6 @@ describe("default group ACLs on the worktree (docs/271 §3)", () => {
     chownWorktreeToSessionWorker(tmpDir, []);
 
     const calls = invocations();
-    // 301 directories at 256 per exec. Asserted as a count rather than "> 1":
-    // a batch size that silently became 1 would still be "more than one call"
-    // and would spawn a process per directory on every rebase of every session.
     expect(calls).toHaveLength(2);
     const seen = calls.flatMap((c) => c.slice(4));
     expect(seen).toHaveLength(301);
@@ -1046,12 +852,8 @@ describe("default group ACLs on the worktree (docs/271 §3)", () => {
 
   it("still hands the tree over when setfacl is missing", () => {
     const myUid = process.getuid?.();
-    if (myUid === undefined) return; // not POSIX — skip
+    if (myUid === undefined) return;
     process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
-    // An empty PATH: `setfacl` cannot be resolved, so the exec throws ENOENT.
-    // A handback that propagated that would take a turn's work with it
-    // (CLAUDE.md invariant 2), and the tree must still come out group-writable —
-    // i.e. exactly the pre-§3 behaviour, which is a degradation and not a break.
     process.env.PATH = binDir;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -1075,18 +877,11 @@ describe("default group ACLs on the worktree (docs/271 §3)", () => {
         Array.from({ length: 600 }, (_, i) => `/w/d${i}`),
         (dirs) => {
           calls.push([...dirs]);
-          // Only the first batch fails — a service unlinking its own cache
-          // directory between the walk collecting it and `setfacl` opening it.
           if (calls.length === 1) throw new Error("No such file or directory");
         },
       );
-      // The later batches must still run. Aborting here was the defect: on a
-      // large repo it would leave hundreds of directories without defaults,
-      // which is the undeletable-cache failure this pass exists to prevent.
       expect(calls).toHaveLength(3);
       expect(calls.flat()).toHaveLength(600);
-      // One line for the walk, naming how much was lost rather than just that
-      // something was.
       expect(warn).toHaveBeenCalledOnce();
       expect(String(warn.mock.calls[0]?.[0])).toContain("256 of 600");
     } finally {
@@ -1105,8 +900,6 @@ describe("default group ACLs on the worktree (docs/271 §3)", () => {
           throw Object.assign(new Error("spawnSync setfacl ENOENT"), { code: "ENOENT" });
         },
       );
-      // A missing binary is the one failure a later batch cannot resolve, so
-      // spawning 3 processes to watch each fail identically buys nothing.
       expect(calls).toHaveLength(1);
       expect(warn).toHaveBeenCalledOnce();
     } finally {
@@ -1114,19 +907,9 @@ describe("default group ACLs on the worktree (docs/271 §3)", () => {
     }
   });
 
-  // The kernel semantics the entire fix rests on, against the REAL tool: a
-  // default ACL is applied at creation time INSTEAD of the umask, so a writer
-  // ShipIt does not own — a Compose service that kept its declared `user:` and
-  // its own umask 022 — still creates group-writable nodes.
-  //
-  // `skipIf`, not an early `return`: on a host with no `acl` this has nothing to
-  // measure, and reporting that as a PASS would let a wrong `setfacl` invocation
-  // sit green everywhere. The images install the package (docs/Dockerfile.*), so
-  // this runs where it matters; the argv and the pruning are pinned separately
-  // by the shim tests above, which always run.
   it.skipIf(!HAS_SETFACL)("makes a umask-022 writer create group-writable nodes", () => {
     const myUid = process.getuid?.();
-    if (myUid === undefined) return; // not POSIX — skip
+    if (myUid === undefined) return;
     process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
 
     fs.mkdirSync(path.join(tmpDir, "assets"));
@@ -1134,16 +917,12 @@ describe("default group ACLs on the worktree (docs/271 §3)", () => {
 
     const before = process.umask(0o022);
     try {
-      // What a service's own `mkdir`/`open` would produce inside the tree.
       fs.mkdirSync(path.join(tmpDir, "assets", ".cache"));
       fs.writeFileSync(path.join(tmpDir, "assets", ".cache", "x.webp"), "");
     } finally {
       process.umask(before);
     }
 
-    // Group write on the DIRECTORY is the sharper half: without it the agent can
-    // traverse the directory and neither add to nor delete from it, which is how
-    // `git checkout` failed to unlink a stale cache file and aborted the rebase.
     expect(fs.statSync(path.join(tmpDir, "assets", ".cache")).mode & 0o070).toBe(0o070);
     expect(fs.statSync(path.join(tmpDir, "assets", ".cache", "x.webp")).mode & 0o060).toBe(0o060);
   });

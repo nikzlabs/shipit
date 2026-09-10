@@ -6,15 +6,6 @@ import type { SessionInfo } from "../shared/types.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { WsServerMessage } from "../shared/types/ws-server-messages.js";
 
-/**
- * planning#341 — the composer's "start from the latest base" control was painted from
- * a signal computed at three moments and never again, so anything that dirtied
- * the working tree in between left the UI promising an operation the pre-turn
- * gate would refuse with `dirty-tree`. These pin the file-watcher recompute that
- * closes it — and the three gates that keep a chatty watcher from shelling out
- * to git on every session.
- */
-
 const MERGED_SHA = "a1f3c9d0000000000000000000000000000000aa";
 const DEBOUNCE = 750;
 
@@ -59,14 +50,11 @@ function makeGit(over: Partial<Record<keyof GitManager, unknown>> = {}): GitMana
     isRebaseInProgress: vi.fn().mockResolvedValue(false),
     isMergeOrSequencerInProgress: vi.fn().mockResolvedValue(false),
     getHeadHash: vi.fn().mockResolvedValue(MERGED_SHA),
-    // The gate's provable-safety clause — false for a branch that still holds
-    // its merged commits, so the anchor clause is what answers.
     isAncestor: vi.fn().mockResolvedValue(false),
     ...over,
   } as unknown as GitManager;
 }
 
-/** The slice of a runner the watcher touches, over a bare EventEmitter. */
 class FakeRunner extends EventEmitter implements ResetEligibleWatchRunner {
   sessionId = "s1";
   sessionDir = "/ws";
@@ -80,7 +68,6 @@ class FakeRunner extends EventEmitter implements ResetEligibleWatchRunner {
   }
 }
 
-/** A `GitManager` whose `isClean` resolves only when the test says so. */
 function gatedGit(): { git: GitManager; release: () => void } {
   let release = (): void => {};
   const gate = new Promise<void>((r) => { release = r; });
@@ -107,7 +94,6 @@ function wire(over: {
   return { runner, createGitManager };
 }
 
-/** Fire the debounce and let the async recompute settle. */
 async function settle(ms = DEBOUNCE + 10): Promise<void> {
   await vi.advanceTimersByTimeAsync(ms);
 }
@@ -167,20 +153,12 @@ describe("wireResetEligibleOnFileChange", () => {
     expect(runner.emitted).toEqual([]);
   });
 
-  /**
-   * Cross-agent review (Codex) killed a watcher-private dedupe here. The
-   * unconditional emitters (activation, post-turn) do not update it, so after
-   * "watcher says false → post-turn says true → tree goes dirty again" the
-   * watcher would suppress the correcting `false` and leave the client on a
-   * stale `true` — the exact false promise this module exists to remove.
-   */
   it("re-pushes an unchanged value, because an unconditional emitter may have overwritten the client", async () => {
     const isClean = vi.fn().mockResolvedValue(false);
     const { runner } = wire({ git: makeGit({ isClean }) });
 
     runner.changed();
     await settle();
-    // Stand in for the post-turn emitter overwriting the client with `true`.
     runner.changed();
     await settle();
     runner.changed();
@@ -192,15 +170,10 @@ describe("wireResetEligibleOnFileChange", () => {
 
   it("fires at the max-wait ceiling instead of starving under a continuous writer", async () => {
     const { runner, createGitManager } = wire();
-    // The worker's own watcher debounces at 300 ms, so a dev server or test
-    // watcher produces `files_changed` on a cadence that never leaves a quiet
-    // 750 ms window. A pure trailing debounce would postpone forever.
     for (let i = 0; i < 30; i++) {
       runner.changed([`src/f${i}.ts`]);
       await vi.advanceTimersByTimeAsync(500);
     }
-    // 15 s of unbroken writes against a 5 s ceiling — the recompute must have
-    // run repeatedly, not once and not never.
     expect(runner.emitted.length).toBeGreaterThanOrEqual(2);
     expect(createGitManager).toHaveBeenCalledTimes(runner.emitted.length);
   });
@@ -210,14 +183,12 @@ describe("wireResetEligibleOnFileChange", () => {
     const { runner, createGitManager } = wire({ git });
 
     runner.changed();
-    await settle(); // enters the recompute and parks on `isClean`
+    await settle();
     expect(createGitManager).toHaveBeenCalledTimes(1);
 
-    // A change lands while git is still being read — the first result was
-    // computed from a tree that predates it.
     runner.changed();
     await settle();
-    expect(createGitManager).toHaveBeenCalledTimes(1); // still parked
+    expect(createGitManager).toHaveBeenCalledTimes(1);
 
     release();
     await settle();
@@ -239,14 +210,14 @@ describe("wireResetEligibleOnFileChange", () => {
     const { runner, createGitManager } = wire({ git });
 
     runner.changed();
-    await settle(); // parked inside the recompute
-    runner.changed(); // queued behind it
+    await settle();
+    runner.changed();
     runner.emit("disposed");
     release();
     await settle();
 
     expect(runner.emitted).toEqual([]);
-    expect(createGitManager).toHaveBeenCalledTimes(1); // the queued re-run never happened
+    expect(createGitManager).toHaveBeenCalledTimes(1);
   });
 
   it("restores the one max-listener slot its permanent listener consumes", () => {
@@ -256,9 +227,6 @@ describe("wireResetEligibleOnFileChange", () => {
       { getSession: () => makeSession(), getPrStatus: () => makePrStatus(), createGitManager: () => makeGit() },
       runner,
     );
-    // Each attached viewer already registers up to two `message` listeners, so a
-    // permanent third-party listener must not bring the warning threshold
-    // forward by a whole viewer.
     expect(runner.getMaxListeners()).toBe(EventEmitter.defaultMaxListeners + 1);
   });
 
@@ -268,8 +236,6 @@ describe("wireResetEligibleOnFileChange", () => {
     const { runner } = wire({ git });
     runner.changed();
     await settle();
-    // `computeResetEligibility` swallows to false, so the honest signal is "not
-    // eligible" rather than a crashed timer.
     expect(runner.emitted).toEqual([{ type: "reset_eligible", sessionId: "s1", eligible: false }]);
     expect(err).not.toHaveBeenCalled();
     err.mockRestore();

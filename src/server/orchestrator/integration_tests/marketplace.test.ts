@@ -1,12 +1,3 @@
-/**
- * Integration tests for the marketplace HTTP routes (docs/149).
- *
- * Goes end-to-end through `buildApp`, but pre-populates the
- * `marketplace-cache/` directory with a fake catalog clone so the test
- * doesn't reach GitHub. The pre-clone task inside `buildApp` is gated on
- * `!isTestMode` so it never runs here.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -25,8 +16,8 @@ import {
   createTestDatabaseManager,
 } from "./test-helpers.js";
 
-const CATALOG_ID = "claude-plugins-official"; // seeded by buildApp
-const CODEX_CATALOG_ID = "openai-curated"; // seeded by buildApp
+const CATALOG_ID = "claude-plugins-official";
+const CODEX_CATALOG_ID = "openai-curated";
 
 function writeFakeCatalog(stateDir: string): void {
   const cacheDir = path.join(stateDir, "marketplace-cache", CATALOG_ID);
@@ -85,8 +76,6 @@ describe("Integration: marketplace HTTP routes (docs/149)", () => {
 
     await app.listen({ port: 0, host: "127.0.0.1" });
 
-    // Create a session via the test-only endpoint so the install flow has a
-    // real workspaceDir + initialized git repo to target.
     const sess = await app.inject({
       method: "POST",
       url: "/api/_test/sessions",
@@ -139,11 +128,6 @@ describe("Integration: marketplace HTTP routes (docs/149)", () => {
     expect(data.plugins[0].skills.map((s) => s.name)).toEqual(["hello"]);
   });
 
-  // The session-scoped install route is retained as the seam for a future
-  // "install into this workspace" option. The primary path is the app-wide
-  // repo-targeted `POST /api/plugins/install` (covered in
-  // services/install-session.test.ts). There is no uninstall route — removal is
-  // an agent task (docs/149).
   it("session-scoped install writes the flat-dir layout and rejects a duplicate", async () => {
     const install = await app.inject({
       method: "POST",
@@ -155,7 +139,6 @@ describe("Integration: marketplace HTTP routes (docs/149)", () => {
     expect(installJson.invocationTokens).toEqual(["/demo-plugin:hello"]);
     expect(installJson.commitHash).toBeTruthy();
 
-    // Disk has the flat-dir layout
     const installedFile = path.join(
       workspaceDir,
       ".claude",
@@ -167,7 +150,6 @@ describe("Integration: marketplace HTTP routes (docs/149)", () => {
     const body = fs.readFileSync(installedFile, "utf-8");
     expect(body).toMatch(/^name: demo-plugin:hello$/m);
 
-    // Second install on the same target is a 409 (already installed)
     const dup = await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/plugins/install`,

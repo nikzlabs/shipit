@@ -49,13 +49,13 @@ dropped unless the session was created as an ops session.
   the source code that runs *this host* — the exact deployed commit, served by
   the orchestrator (not a generic clone, not the repo's default branch):
   ```bash
-  shipit source status                                   # which commit, exact or approximate
-  shipit source tree src/server/orchestrator              # list a directory
-  shipit source search "ContainerSessionRunner"           # git grep at that commit
+  shipit source status
+  shipit source tree src/server/orchestrator
+  shipit source search "ContainerSessionRunner"
   shipit source cat src/server/orchestrator/session-container.ts
-  shipit source log src/server/orchestrator/container-lifecycle.ts  # recent commits touching a path
-  shipit source blame src/server/orchestrator/container-lifecycle.ts # who last changed each line
-  shipit source show <commit> [path]                      # a commit's metadata + diff
+  shipit source log src/server/orchestrator/container-lifecycle.ts
+  shipit source blame src/server/orchestrator/container-lifecycle.ts
+  shipit source show <commit> [path]
   ```
   This is strictly read-only. Credentials, `.env` files, and `.git` internals
   are redacted (including inside `show` diffs). `shipit source status` tells you
@@ -67,11 +67,11 @@ dropped unless the session was created as an ops session.
   every branch, PR, and container on this host. Ask it instead of correlating
   journal timestamps against container names:
   ```bash
-  shipit session find --branch shipit/kmwodw            # branch → the session
-  shipit session find --pr 1744                          # PR number → the session
-  shipit session find --container agent-83292266-744     # container → the session
-  shipit session find --id 83292266                      # a truncated id from a log line
-  shipit session list --all                              # the whole host inventory
+  shipit session find --branch shipit/kmwodw
+  shipit session find --pr 1744
+  shipit session find --container agent-83292266-744
+  shipit session find --id 83292266
+  shipit session list --all
   ```
   `--container` takes a name exactly as `docker ps` or the journal prints it —
   the session container (`agent-<id-slice>`) or one of its Compose siblings
@@ -117,8 +117,8 @@ dropped unless the session was created as an ops session.
   notices all live there. From the host, a failure in that class looks like
   nothing happened:
   ```bash
-  shipit session logs 7bc72326                       # full id or the prefix from a log line
-  shipit session logs 7bc72326 --since 2h            # ISO-8601, or a relative age: 90s/30m/2h/3d
+  shipit session logs 7bc72326
+  shipit session logs 7bc72326 --since 2h
   shipit session logs 7bc72326 --since 2026-08-14T20:00:00Z --until 2026-08-15T02:00:00Z
   shipit session logs 7bc72326 --lines 500 --json
   ```
@@ -170,7 +170,7 @@ dropped unless the session was created as an ops session.
   shipit session create --shipit-source --prompt-file - --title "Fix container recreate loop" <<'EOF'
   <diagnosis + suspected files + constraints>
   EOF
-  shipit session wait <child-id>      # follow it; view / message it like any spawned session
+  shipit session wait <child-id>
   ```
   `--shipit-source` **requires `--title`** — the diagnosis lives in the incident
   packet, so it can't name the session; pass a short, human-readable title

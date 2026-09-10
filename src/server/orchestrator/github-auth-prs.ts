@@ -1,15 +1,6 @@
-/**
- * GitHub pull request operations — extracted from GitHubAuthManager.
- * Functions in this module handle PR creation, lookup, merge, and auto-merge.
- */
-
 import { getErrorMessage } from "../shared/utils.js";
 import { fetchGitHub, fetchGitHubGraphQL, parseGitHubError } from "./github-api.js";
 
-/**
- * Create a pull request on GitHub.
- * Returns the PR URL on success, or an error message.
- */
 export async function createPullRequest(
   token: string,
   options: {
@@ -57,10 +48,6 @@ export async function createPullRequest(
   }
 }
 
-/**
- * Check if an open PR exists for the given head branch.
- * Returns PR metadata if found, null otherwise.
- */
 export async function findPullRequest(
   token: string,
   owner: string,
@@ -86,10 +73,6 @@ export async function findPullRequest(
   };
 }
 
-/**
- * Check if a PR exists for the given head branch in any state (open, closed, merged).
- * Used as a one-time catch-up probe after server restart to detect already-merged PRs.
- */
 export async function findPullRequestAnyState(
   token: string,
   owner: string,
@@ -115,7 +98,7 @@ export async function findPullRequestAnyState(
 
   const pr = prs[0];
 
-  // The list endpoint may not include additions/deletions — fetch the individual PR for accurate stats.
+  // The list endpoint can omit change counts.
   let additions = pr.additions ?? 0;
   let deletions = pr.deletions ?? 0;
   if (!additions && !deletions) {
@@ -143,29 +126,19 @@ export async function findPullRequestAnyState(
     state: pr.state,
     merged_at: pr.merged_at,
     merge_commit_sha: pr.merge_commit_sha ?? null,
-    // docs/218 — the branch tip the PR shipped from. Recorded as the session's
-    // `mergedHeadSha` safety anchor so a later auto-reset on continue only fires
-    // when the local branch still sits exactly at this commit (no post-merge
-    // work to clobber). The list endpoint includes `head.sha`; fail closed to
-    // null if a malformed/partial response omits it.
     head_sha: pr.head?.sha ?? null,
     additions,
     deletions,
   };
 }
 
-/** The normalized pull-request facts a terminal promotion needs. */
 export interface TerminalPrFacts {
   url: string; number: number; base: string; title: string; body: string;
   state: "open" | "closed"; merged_at: string | null; merge_commit_sha: string | null;
   head_sha: string | null; head_ref: string; additions: number; deletions: number;
 }
 
-/**
- * docs/287 req 11 — {@link findPullRequestAnyState}'s facts, addressed by
- * NUMBER. Settlement cannot use the branch lookup: that takes the most recently
- * updated pull request on a branch, so a re-arm answers about a different one.
- */
+// Settlement uses the PR number: a reused branch can point to a different PR.
 export async function findPullRequestByNumber(
   token: string,
   owner: string,
@@ -199,37 +172,13 @@ export async function findPullRequestByNumber(
   };
 }
 
-/**
- * Merge a pull request.
- *
- * `commitTitle` and `commitMessage` override the squash/merge commit's subject
- * and body. When omitted, GitHub falls back to the repo's "Default commit
- * message" setting (Settings → General → Pull Requests), which on older repos
- * defaults to "Default to commit messages" — i.e., concatenates every original
- * commit. Callers should pass the PR title (and ideally body) so behavior is
- * independent of per-repo settings.
- *
- * docs/287 req 16 — `expectedSha` is GitHub's optimistic-concurrency check: it
- * merges only while the head is still that commit. A caller that decided by
- * looking at a commit must pass it, or everything since merges unchecked.
- */
 export type MergeAttempt =
-  /** A parsed response saying the merge landed. */
   | { outcome: "merged"; message: string; mergeCommitSha: string | null }
-  /** GitHub answered no — conflict, protection, a moved head. It did not merge. */
   | { outcome: "refused"; message: string }
-  /** No answer we can trust — transport error, 5xx, unparseable body. It MAY
-   * have merged. */
+  /** May have merged; retain the claim for reconciliation. */
   | { outcome: "indeterminate"; message: string };
 
-/**
- * docs/287 req 9 — the merge attempt, with the three outcomes it actually has.
- * The distinction decides whether the durable claim is deleted or left for
- * reconciliation, so collapsing "refused" and "never heard back" discards the
- * record of a merge that may have happened. It errs toward `indeterminate`: a
- * 4xx is GitHub answering about THIS merge; a 5xx, a rejected fetch and an
- * unparseable 2xx are not answers at all.
- */
+// Pass expectedSha when approval applies to a specific commit.
 export async function mergePullRequestAttempt(
   token: string,
   owner: string,
@@ -257,8 +206,6 @@ export async function mergePullRequestAttempt(
       },
     );
   } catch (err) {
-    // The request may have reached GitHub and been executed. Saying "failed"
-    // here is how a performed merge loses its record.
     return {
       outcome: "indeterminate",
       message:
@@ -269,7 +216,6 @@ export async function mergePullRequestAttempt(
 
   if (!res.ok) {
     const message = await parseGitHubError(res);
-    // 5xx and 429 are not an answer about this merge.
     if (res.status >= 500 || res.status === 429) {
       return {
         outcome: "indeterminate",
@@ -279,8 +225,6 @@ export async function mergePullRequestAttempt(
     if (res.status === 405) {
       return { outcome: "refused", message: message || "PR is not mergeable" };
     }
-    // 409 with an `expectedSha` is "the head moved between the check and this
-    // call". Named, because GitHub's own wording does not say what to do next.
     if (res.status === 409 && expectedSha) {
       return {
         outcome: "refused",
@@ -296,21 +240,15 @@ export async function mergePullRequestAttempt(
     merged?: unknown; sha?: string; message?: unknown;
   } | null;
   if (!parsed) {
-    // A 2xx we cannot read. Almost certainly merged — and "almost" is exactly
-    // why this is not reported as one.
     return {
       outcome: "indeterminate",
       message: `GitHub accepted the merge of PR #${pullNumber} but returned a body ShipIt could not read.`,
     };
   }
-  // `merged === true` and nothing else. GitHub documents a 200 only for a
-  // performed merge with a boolean `merged`; reading any other body as a merge
-  // is how one that never happened gets recorded.
   if (parsed.merged === true) {
     return { outcome: "merged", message: "Pull request merged", mergeCommitSha: parsed.sha ?? null };
   }
   if (parsed.merged === false) {
-    // req 7 — GitHub's own reason, word for word, when it sent one.
     const reason = typeof parsed.message === "string" && parsed.message.trim() ? parsed.message.trim() : null;
     return {
       outcome: "refused",
@@ -325,13 +263,6 @@ export async function mergePullRequestAttempt(
   };
 }
 
-/**
- * Merge a pull request, for callers that only need "did it work".
- *
- * Both non-success outcomes collapse to `success: false`: a caller with no
- * durable claim does nothing differently with an indeterminate result. The agent
- * merge, which does, uses {@link mergePullRequestAttempt}.
- */
 export async function mergePullRequest(
   token: string,
   owner: string,
@@ -348,16 +279,6 @@ export async function mergePullRequest(
   return { success: attempt.outcome === "merged", message: attempt.message };
 }
 
-/**
- * Enable auto-merge on a pull request.
- * Uses the GraphQL API since REST doesn't support auto-merge.
- *
- * Always passes the PR's title and body as `commitHeadline`/`commitBody` so
- * that when GitHub eventually performs the squash, the resulting commit
- * matches the PR — independent of the repo's "Default commit message" setting.
- * The title and body are read from the same PR fetch we already need for the
- * node_id, so this adds no extra network round-trip.
- */
 export async function enableAutoMerge(
   token: string,
   owner: string,
@@ -365,7 +286,6 @@ export async function enableAutoMerge(
   pullNumber: number,
   method: "MERGE" | "SQUASH" | "REBASE" = "MERGE",
 ): Promise<{ success: boolean; message: string }> {
-  // First, get the PR's node ID + title + body (needed for GraphQL)
   const prRes = await fetchGitHub(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
     token,
@@ -381,10 +301,7 @@ export async function enableAutoMerge(
   const commitHeadline = prData.title;
   const commitBody = prData.body ?? "";
 
-  // Enable auto-merge via GraphQL. Pass commitHeadline/commitBody so the
-  // eventual squash commit uses the PR title/body rather than the repo's
-  // "Default commit message" setting (which on older repos concatenates
-  // every original commit message).
+  // Override repo defaults so the merge commit uses the PR title and body.
   const graphqlRes = await fetchGitHubGraphQL(
     token,
     `mutation EnableAutoMerge(
@@ -411,19 +328,10 @@ export async function enableAutoMerge(
   if (graphqlData.errors) {
     const errMsg = graphqlData.errors[0]?.message ?? "Unknown error";
     const lower = errMsg.toLowerCase();
-    // Map GitHub's GraphQL errors to actionable guidance. These strings are
-    // surfaced verbatim in the managed-merge tooltip (docs/077), so a cryptic
-    // raw error like "Pull request is in clean status" is rewritten to name the
-    // precondition the user actually needs to fix.
     if (lower.includes("auto-merge") || lower.includes("not allowed")) {
-      // Repo-level "Allow auto-merge" checkbox is off (Settings → General →
-      // Pull Requests). This is the most common cause even when branch
-      // protection / rulesets are already configured.
       return { success: false, message: "“Allow auto-merge” is turned off for this repository. Enable it in Settings → General → Pull Requests." };
     }
     if (lower.includes("clean status") || lower.includes("not in")) {
-      // Nothing is gating the PR (no required status check / approval), so
-      // GitHub considers it immediately mergeable and refuses auto-merge.
       return { success: false, message: "No branch protection rule requires a status check or review on the base branch, so there's nothing for auto-merge to wait on. Add a required check to the rule (or ruleset)." };
     }
     return { success: false, message: errMsg };
@@ -432,10 +340,6 @@ export async function enableAutoMerge(
   return { success: true, message: "Auto-merge enabled — PR will merge when checks pass" };
 }
 
-/**
- * Update an existing pull request (title and/or body).
- * Pass `state: "open" | "closed"` to reopen/close.
- */
 export async function updatePullRequest(
   token: string,
   owner: string,
@@ -473,10 +377,6 @@ export async function updatePullRequest(
   }
 }
 
-/**
- * Add an issue-style comment to a pull request. Uses the issues API endpoint
- * since PRs are issues on GitHub. Returns the comment URL on success.
- */
 export async function addPullRequestComment(
   token: string,
   owner: string,
@@ -506,16 +406,6 @@ export async function addPullRequestComment(
   }
 }
 
-/**
- * Add one or more labels to a pull request. PRs are issues on GitHub, so this
- * uses the issues `labels` endpoint. The operation is **additive** — GitHub
- * merges these with any existing labels rather than replacing them.
- *
- * Best-effort by contract: callers treat a failure (a label name that doesn't
- * exist on the repo → 422, a token without Issues:write → 403, etc.) as a
- * non-fatal warning, never an error that blocks opening/editing the PR. We
- * never throw — failures come back as `{ success: false, message }`.
- */
 export async function addLabelsToPullRequest(
   token: string,
   owner: string,
@@ -543,17 +433,6 @@ export async function addLabelsToPullRequest(
   }
 }
 
-/**
- * Remove a single label from a pull request. PRs are issues on GitHub, so this
- * uses the issues `labels/{name}` endpoint (`DELETE`).
- *
- * Best-effort by contract, mirroring {@link addLabelsToPullRequest}: a label
- * that isn't on the PR (or doesn't exist on the repo) comes back from GitHub as
- * a 404, which for *removal* is already the desired end state — so we treat it
- * as success (idempotent). Other failures (e.g. a token without Issues:write →
- * 403) return `{ success: false, message }` so the caller can degrade to a
- * non-fatal warning rather than blocking the edit. We never throw.
- */
 export async function removeLabelFromPullRequest(
   token: string,
   owner: string,
@@ -567,8 +446,6 @@ export async function removeLabelFromPullRequest(
       token,
       { method: "DELETE" },
     );
-    // 404 → the label isn't applied to this PR (or doesn't exist). Removal is
-    // idempotent, so the desired state is already met: report success.
     if (res.status === 404) return { success: true };
     if (!res.ok) {
       return { success: false, message: await parseGitHubError(res) };
@@ -579,17 +456,12 @@ export async function removeLabelFromPullRequest(
   }
 }
 
-/**
- * Mark a draft pull request as ready for review.
- * Uses the GraphQL API since REST does not expose this transition.
- */
 export async function markPullRequestReady(
   token: string,
   owner: string,
   repo: string,
   pullNumber: number,
 ): Promise<{ success: boolean; message: string }> {
-  // Get the PR's node ID
   const prRes = await fetchGitHub(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
     token,
@@ -616,13 +488,10 @@ export async function markPullRequestReady(
   return { success: true, message: "Pull request marked ready for review" };
 }
 
-/** The pull-request states `listPullRequests` accepts (real `gh`'s set). */
 export type PrListState = "open" | "closed" | "merged" | "all";
 
-/** Same set as a value, for validating a query parameter. */
 export const PR_LIST_STATES: readonly PrListState[] = ["open", "closed", "merged", "all"];
 
-/** A single row of `listPullRequests`. `mergedAt` is null unless the PR merged. */
 export interface ListedPullRequest {
   url: string;
   number: number;
@@ -634,43 +503,20 @@ export interface ListedPullRequest {
   mergedAt: string | null;
 }
 
-/**
- * The outcome of a list read: the rows, or why they could not be read.
- *
- * A bare array cannot express the difference. `if (!res.ok) return []` made a
- * 403 on a private repository, a rate-limit response and a GitHub 5xx all
- * render as `gh pr list`'s "No pull requests found." — an unreadable repository
- * and an empty one were the same answer. That is the failure-looks-like-absence
- * confusion `viewPullRequestResult` removes one read over, and it is why
- * `ok: true` with an empty `prs` is now the ONLY way to say "none".
- */
 export type ListPullRequestsResult =
   | { ok: true; prs: ListedPullRequest[] }
   | { ok: false; error: string };
 
-/** How many rows `listPullRequests` returns by default, matching real `gh`. */
 const PR_LIST_PAGE = 30;
 
-/** Upper bound on `-L/--limit`, the largest page either API will serve. */
 const PR_LIST_MAX = 100;
 
-/** Clamp a caller-supplied limit; absent means the default page. */
 function pageSize(limit: number | undefined): number {
   if (limit === undefined) return PR_LIST_PAGE;
   return Math.min(Math.max(Math.trunc(limit), 1), PR_LIST_MAX);
 }
 
-/**
- * `merged` asked over GraphQL, which has the state natively.
- *
- * REST does not: there, a merged PR is a closed one carrying a `merged_at`, so
- * REST could only answer by fetching closed PRs and filtering — and a filter
- * over one page is not a bound. A repository whose most recently updated closed
- * PRs happen to be unmerged would answer "no merged pull requests", reproducing
- * through a second mechanism exactly the wrong-but-plausible answer this state
- * exists to remove. GraphQL does the selection server-side, so 30 merged rows
- * are 30 merged rows however old they are.
- */
+// Filter merged PRs server-side; filtering one REST page can miss them all.
 const MERGED_PRS_QUERY = `query($owner: String!, $repo: String!, $first: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequests(states: MERGED, first: $first, orderBy: { field: UPDATED_AT, direction: DESC }) {
@@ -679,24 +525,6 @@ const MERGED_PRS_QUERY = `query($owner: String!, $repo: String!, $first: Int!) {
   }
 }`;
 
-/**
- * List a repository's pull requests in the given state.
- * Returns a small array of PR metadata sorted by most recently updated.
- *
- * The three REST states go to REST; `merged` goes to GraphQL (see
- * `MERGED_PRS_QUERY`). Both shapes normalise to the same row: GitHub models a
- * merged PR as closed, so `state` stays `"closed"` and `mergedAt` is what
- * distinguishes it.
- *
- * A failed read reports the failure (see `ListPullRequestsResult`) rather than
- * an empty list — no status is "there are none" here, unlike the 404 that
- * genuinely means it for a single-PR read.
- *
- * `limit` is `-L/--limit`. It reaches the API as the page size rather than
- * trimming the response, so asking for more than the default actually fetches
- * more; the shim rejects an out-of-range value before it gets here, and the
- * clamp is the belt to that braces.
- */
 export async function listPullRequests(
   token: string,
   owner: string,
@@ -763,13 +591,7 @@ async function listMergedPullRequests(
       };
     };
   };
-  // GraphQL answers 200 with an `errors` array, so this is the shape a
-  // permission failure takes here — reporting it as an empty list is exactly
-  // the confusion the result type exists to remove.
   if (data.errors) return { ok: false, error: data.errors[0]?.message ?? "Unknown GraphQL error" };
-  // A 200 whose body does not carry the node list did not answer the question,
-  // and "did not answer" is not "there are none" — defaulting the missing path
-  // to `[]` would smuggle the original bug back in through the last gap.
   const nodes = data.data?.repository?.pullRequests?.nodes;
   if (!Array.isArray(nodes)) {
     return { ok: false, error: "GitHub returned no pull request data for this repository" };
@@ -782,8 +604,6 @@ async function listMergedPullRequests(
       base: pr.baseRefName,
       head: pr.headRefName,
       title: pr.title,
-      // GitHub models a merged PR as closed; `mergedAt` is the distinguishing
-      // field, and REST would report exactly this pair for the same PR.
       state: "closed" as const,
       isDraft: pr.isDraft,
       mergedAt: pr.mergedAt,
@@ -791,16 +611,6 @@ async function listMergedPullRequests(
   };
 }
 
-/**
- * A pull request's details as `gh pr view` exposes them.
- *
- * `base`/`head` are ShipIt's original names and stay; `baseRefName`/
- * `headRefName` are the real-`gh` spellings, carried as aliases so an agent's
- * existing habits transfer (docs/255-pr-comment-reads req 7). The `author`/`labels`/timestamp
- * fields exist for the same reason: `--json` field names are now validated
- * strictly, so the error should fire on genuinely unsupported names rather than
- * on ordinary ones.
- */
 export interface PullRequestDetail {
   url: string; number: number;
   base: string; head: string;
@@ -813,9 +623,6 @@ export interface PullRequestDetail {
   createdAt: string; updatedAt: string; mergedAt: string | null;
 }
 
-/**
- * Fetch a single pull request's details.
- */
 export async function viewPullRequest(
   token: string,
   owner: string,
@@ -826,17 +633,6 @@ export async function viewPullRequest(
   return result.ok ? result.pr : null;
 }
 
-/**
- * Same read as `viewPullRequest`, but distinguishing "GitHub says this PR does
- * not exist" from "the request failed".
- *
- * `viewPullRequest` collapses both to `null`, so `gh pr view` reported a 403 on
- * a private repo — or a GitHub 5xx — as "No pull request found for this
- * branch". That is the same failure-looks-like-absence confusion docs/255
- * exists to remove, one layer down. The collapsing wrapper is kept because its
- * other callers (the merge path's title/body lookup, the release poller) treat
- * a failed read as "no extra info" and must not start throwing.
- */
 export async function viewPullRequestResult(
   token: string,
   owner: string,
@@ -847,9 +643,6 @@ export async function viewPullRequestResult(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
     token,
   );
-  // 404 is the only status that genuinely means "no such PR". Anything else —
-  // 401/403 (no access), 5xx, rate limiting — is a failure to read, and the
-  // caller must be able to say so.
   if (res.status === 404) return { ok: true, pr: null };
   if (!res.ok) return { ok: false, error: await parseGitHubError(res) };
   const pr = (await res.json()) as {
@@ -891,17 +684,6 @@ export async function viewPullRequestResult(
   };
 }
 
-// ---------------------------------------------------------------------------
-// PR conversation reads (docs/255)
-//
-// The agent could write PR comments (`gh pr comment`) but had no supported way
-// to READ them — `gh pr view --json comments` returned `{}`, indistinguishable
-// from a PR with no discussion, so review findings were invisible to the agent
-// that had to act on them. One GraphQL query covers all three concepts GitHub
-// splits review feedback across.
-// ---------------------------------------------------------------------------
-
-/** One issue-style conversation comment on a PR. */
 export interface PrConversationComment {
   id: string;
   author: { login: string } | null;
@@ -910,36 +692,25 @@ export interface PrConversationComment {
   url: string;
 }
 
-/** A review-level submission: its summary body and verdict. */
 export interface PrConversationReview {
   id: string;
   author: { login: string } | null;
   body: string;
-  /** APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED. */
   state: string;
   submittedAt: string;
   url: string;
 }
 
-/** An inline code-review thread anchored to a file and line. */
 export interface PrConversationThread {
   id: string;
   isResolved: boolean;
   isOutdated: boolean;
   path: string | null;
-  /** The thread's line in the CURRENT diff — null once the thread is outdated. */
+  /** Current diff line; null for an outdated thread. */
   line: number | null;
-  /**
-   * The line the thread was originally left on. GitHub keeps this after the
-   * code moves, so it is the only location an outdated thread has — and
-   * outdated threads are exactly the common case for a review you're reading
-   * after pushing a fix.
-   */
   originalLine: number | null;
-  /** The diff context the thread was left on (from its first comment). */
   diffHunk: string;
   comments: PrConversationComment[];
-  /** Total comments on the thread; `comments.length` may be a window of it. */
   commentsTotal: number;
 }
 
@@ -947,27 +718,13 @@ export interface PrConversation {
   comments: PrConversationComment[];
   reviews: PrConversationReview[];
   reviewThreads: PrConversationThread[];
-  /** APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | null (no review required). */
   reviewDecision: string | null;
-  /**
-   * How many GitHub actually holds, which is NOT `array.length`: the query is
-   * bounded (see the limits below), so a very busy PR comes back windowed.
-   * Without these the shim would print the window size as the total and tell
-   * the agent it had read everything — the same "looks complete, isn't"
-   * failure this feature exists to remove.
-   */
+  /** Totals can exceed the returned page sizes. */
   commentsTotal: number;
   reviewsTotal: number;
   reviewThreadsTotal: number;
 }
 
-/**
- * Bounds on the conversation query, mirroring the PR-status poller's caps
- * (`pr-status-parser.ts`): recent-first for the timeline, generous but finite
- * for threads. A conversation past these bounds is vanishingly rare, and the
- * caps keep one `gh pr view --comments` from pulling an unbounded payload —
- * the `*Total` fields above report what was left outside the window.
- */
 const CONVERSATION_COMMENT_LIMIT = 50;
 const CONVERSATION_REVIEW_LIMIT = 30;
 const CONVERSATION_THREAD_LIMIT = 50;
@@ -1014,11 +771,6 @@ interface RawConversationComment {
   author: { login: string } | null;
 }
 
-/**
- * GitHub's `totalCount` for a connection, floored at how many we actually
- * received — a total below the list we return would be nonsense, and a missing
- * one means "assume we have them all".
- */
 function totalOrLength(total: number | undefined, length: number): number {
   return typeof total === "number" && total > length ? total : length;
 }
@@ -1033,15 +785,6 @@ function mapComment(c: RawConversationComment): PrConversationComment {
   };
 }
 
-/**
- * Fetch a PR's conversation: issue comments, review submissions, and inline
- * review threads.
- *
- * Returns a discriminated result rather than `null` so a *failed* read can
- * never be rendered as "no comments" — the caller surfaces the error instead
- * (docs/255-pr-comment-reads req 5). A review still in `PENDING` state (an unsubmitted draft
- * review, visible only to its author) is dropped: it isn't feedback yet.
- */
 export async function viewPullRequestConversation(
   token: string,
   owner: string,
@@ -1093,9 +836,7 @@ export async function viewPullRequestConversation(
     if (!pr) return { ok: false, error: `Pull request #${pullNumber} not found` };
 
     const comments = (pr.comments?.nodes ?? []).map(mapComment);
-    // PENDING reviews are filtered out but still counted by `totalCount`, so
-    // derive the review total from what we kept plus whatever fell outside the
-    // window — never a number smaller than the list we return.
+    // Exclude draft reviews from the page and its total; retain unseen reviews.
     const rawReviews = pr.reviews?.nodes ?? [];
     const reviews = rawReviews
       .filter((r) => r.state !== "PENDING")
@@ -1135,7 +876,6 @@ export async function viewPullRequestConversation(
   }
 }
 
-/** Fetch the GraphQL node id for a pull request. */
 export async function getPullRequestNodeId(
   token: string,
   owner: string,
@@ -1151,17 +891,12 @@ export async function getPullRequestNodeId(
   return pr.node_id ?? null;
 }
 
-/**
- * Disable auto-merge on a pull request.
- * Uses the GraphQL API (`disablePullRequestAutoMerge` mutation).
- */
 export async function disableAutoMerge(
   token: string,
   owner: string,
   repo: string,
   pullNumber: number,
 ): Promise<{ success: boolean; message: string }> {
-  // Get the PR's node ID
   const prRes = await fetchGitHub(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
     token,

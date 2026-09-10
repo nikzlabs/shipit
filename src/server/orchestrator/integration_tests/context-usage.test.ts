@@ -28,23 +28,7 @@ import {
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 
-/**
- * Tests for the context-window-display feature (105). Asserts:
- *   1. `turn_usage_update` is emitted at the end of each completed turn.
- *   2. The per-turn series is fetchable from `/history` for reload-time
- *      rehydration of the dial (the canonical source is `usage_turns`).
- *   3. `MODEL_CONTEXT_WINDOWS` resolves correctly for known models.
- *   4. `UsageManager.getPerTurnUsage` returns turn rows with cache + model.
- *   5. A drop in input tokens between turns surfaces (the data the dial
- *      uses to detect compaction).
- */
-/**
- * docs/252 req 16 — the session's money figure. These sessions run without a
- * catalogue-resolvable selection, so every row is `legacy`: attributed rows
- * would land in `meteredCostUsd` instead, and neither is ever added to the
- * other. Summing the two here keeps the assertion about the DELTA arithmetic
- * these cases exist to check rather than about which bucket it fell into.
- */
+// Check cost deltas independently of legacy or metered attribution.
 function sessionSpend(totals: UsageTotals): number {
   return totals.meteredCostUsd + totals.legacyCostUsd;
 }
@@ -96,7 +80,7 @@ describe("Integration: Context window usage (105)", () => {
 
   it("emits turn_usage_update at end of turn with token + cache breakdown", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "hello" });
     await waitForClaude(() => lastClaude);
@@ -148,9 +132,8 @@ describe("Integration: Context window usage (105)", () => {
 
   it("emits turn_usage_update for each of two consecutive turns (matches cumulative usage)", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Turn 1
     client.send({ type: "send_message", text: "first" });
     await waitForClaude(() => lastClaude);
     lastClaude.emit("event", {
@@ -178,11 +161,7 @@ describe("Integration: Context window usage (105)", () => {
     expect(u1.turn.inputTokens).toBe(5_000);
     lastClaude.emit("done", 0);
 
-    // Turn 2 — pass the previous Claude instance to waitForClaude so it
-    // waits for the NEW process. Otherwise it returns immediately on the
-    // turn-1 instance (still runCalled=true) and we end up emitting events
-    // on a finished process while the real second-turn handleSendMessage
-    // runs after this test ends and the db has been closed.
+    // Exclude the finished process when waiting for the second turn.
     const turn1Claude = lastClaude;
     await new Promise((r) => setTimeout(r, 50));
     client.send({ type: "send_message", text: "second" });
@@ -207,10 +186,7 @@ describe("Integration: Context window usage (105)", () => {
     });
     const u2 = (await client.receiveType("turn_usage_update")) as WsTurnUsageUpdate;
     expect(u2.turnCount).toBe(2);
-    // total_cost_usd is the CLI's CUMULATIVE total for the resumed conversation
-    // (same session_id "ctx-2turn"): 0.05 then 0.07. The session bill is the
-    // latest cumulative 0.07 (turn 2's own cost is the 0.02 delta) — not 0.12,
-    // which double-counted turn 1.
+    // CLI cost is cumulative for a resumed conversation.
     expect(sessionSpend(u2.totals)).toBeCloseTo(0.07);
     expect(u2.turn.costUsd).toBeCloseTo(0.02);
     expect(u2.turn.inputTokens).toBe(12_000);
@@ -221,7 +197,7 @@ describe("Integration: Context window usage (105)", () => {
 
   it("exposes per-turn usage via UsageManager (canonical store) and the /history endpoint", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "hi" });
     await waitForClaude(() => lastClaude);
@@ -247,19 +223,14 @@ describe("Integration: Context window usage (105)", () => {
     await client.receiveType("turn_usage_update");
     lastClaude.emit("done", 0);
 
-    // Wait long enough for finalizeInProgress + auto-commit to complete
     await new Promise((r) => setTimeout(r, 250));
 
-    // UsageManager (the canonical store) exposes the per-turn record.
     const usageManager = new UsageManager(dbManager);
     const turns = usageManager.getPerTurnUsage(client.sessionId);
     expect(turns).toHaveLength(1);
     expect(turns[0].inputTokens).toBe(3_000);
     expect(turns[0].model).toBe("claude-sonnet-4-20250514");
 
-    // The /history HTTP endpoint surfaces the same per-turn series so the
-    // ContextDial can rehydrate after a session reload without re-running
-    // the agent.
     const historyRes = await app.inject({ method: "GET", url: `/api/sessions/${client.sessionId}/history` });
     expect(historyRes.statusCode).toBe(200);
     const history = historyRes.json() as {
@@ -279,13 +250,8 @@ describe("Integration: Context window usage (105)", () => {
   });
 
   it("lets backend telemetry replace the static context-window fallback", async () => {
-    // Two-bug regression: (a) the backend's active session window must replace
-    // the model's larger static/API fallback; (b) a tool-heavy turn's top-level
-    // cache_read_input_tokens is the SUM across all API calls and over-counts
-    // context. Both are fixed by reading `result.modelUsage.contextWindow` and
-    // `result.usage.iterations[]`.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "do a lot of work" });
     await waitForClaude(() => lastClaude);
@@ -298,7 +264,6 @@ describe("Integration: Context window usage (105)", () => {
     });
     await client.receiveType("session_started");
 
-    // Static fallback fires first via agent_init.
     const initModelInfo = await client.receiveType("model_info");
     expect(initModelInfo).toMatchObject({
       type: "model_info",
@@ -311,8 +276,6 @@ describe("Integration: Context window usage (105)", () => {
       message: { content: [{ type: "text", text: "done" }] },
     });
 
-    // Multi-iteration turn: 3 API calls, top-level sums are 3× the real
-    // context. Last iteration is the truth (~110K tokens occupied).
     lastClaude.emit("event", {
       type: "result",
       subtype: "success",
@@ -335,8 +298,6 @@ describe("Integration: Context window usage (105)", () => {
       },
     });
 
-    // The active backend profile is authoritative even when it is smaller
-    // than the model's maximum API context represented by the static fallback.
     const resultModelInfo = await client.receiveType("model_info");
     expect(resultModelInfo).toMatchObject({
       type: "model_info",
@@ -345,10 +306,7 @@ describe("Integration: Context window usage (105)", () => {
     });
 
     const turnUsage = (await client.receiveType("turn_usage_update")) as WsTurnUsageUpdate;
-    // Real per-turn context = 10 + 100_000 + 10_000 = 110_010 (last iteration),
-    // NOT 30 + 270_000 + 30_000 = 300_030 (the sum, which would over-count 3×).
     expect(turnUsage.turn.contextTokens).toBe(110_010);
-    // Turn-wide totals remain the sums (used for billing).
     expect(turnUsage.turn.inputTokens).toBe(30);
     expect(turnUsage.turn.cacheRead).toBe(270_000);
     expect(turnUsage.turn.cacheCreate).toBe(30_000);
@@ -358,22 +316,14 @@ describe("Integration: Context window usage (105)", () => {
   });
 
   it("MODEL_CONTEXT_WINDOWS resolves known and unknown models", () => {
-    // Exact match
     expect(getContextWindowForModel("sonnet")).toBe(MODEL_CONTEXT_WINDOWS.sonnet);
     expect(getContextWindowForModel("opus-1m")).toBe(1_000_000);
-    // Substring match (real CLI model identifiers contain dates/versions)
     expect(getContextWindowForModel("claude-sonnet-4-20250514")).toBe(200_000);
     expect(getContextWindowForModel("gpt-5.4-mini-2025")).toBe(272_000);
     expect(getContextWindowForModel("claude-sonnet-5")).toBe(1_000_000);
-    // Codex assigns its own 272K window to GPT-5.6 profiles; do not display
-    // the models' larger API-advertised maximum before telemetry arrives.
     expect(getContextWindowForModel("gpt-5.6-sol")).toBe(272_000);
     expect(getContextWindowForModel("gpt-5.6-terra")).toBe(272_000);
-    // Opus 4.8 has a 1M window. This is the static fallback for the first
-    // frame; the authoritative window comes from the CLI's
-    // `result.modelUsage.contextWindow` on the first turn.
     expect(getContextWindowForModel("claude-opus-4-8")).toBe(1_000_000);
-    // Unknown
     expect(getContextWindowForModel("unknown-model-xyz")).toBe(DEFAULT_CONTEXT_WINDOW_TOKENS);
     expect(getContextWindowForModel(undefined)).toBe(DEFAULT_CONTEXT_WINDOW_TOKENS);
   });

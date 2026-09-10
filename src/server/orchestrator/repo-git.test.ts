@@ -14,9 +14,7 @@ import {
 } from "./repo-git.js";
 import { ensureSharedTreeOwnedByShipIt } from "./shared-tree-ownership.js";
 
-// docs/272-shared-cache-ownership — the gate is inert below root by design, so a
-// real call proves nothing here. Spy on it and keep the real implementation, so
-// these tests observe that it is consulted without changing what it does.
+// The ownership gate is inert below root; spy to verify that callers consult it.
 vi.mock("./shared-tree-ownership.js", async (load) => {
   // eslint-disable-next-line no-restricted-syntax -- Vitest partial-module mock typing
   const real = await load<typeof import("./shared-tree-ownership.js")>();
@@ -29,9 +27,6 @@ let remoteUrl: string;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-repo-git-test-"));
-  // Build a local "remote" — a real on-disk bare repo with one commit.
-  // We use the file:// URL so `ensureBareCache` can `git clone --bare`
-  // without touching the network.
   const seedDir = path.join(tmpDir, "seed");
   fs.mkdirSync(seedDir, { recursive: true });
   execSync("git init -b main", { cwd: seedDir, stdio: "ignore" });
@@ -61,9 +56,7 @@ describe("ensureBareCache", () => {
 
     expect(recovered).toBe(true);
     expect(git).toBeDefined();
-    // Valid bare repo has HEAD at the top
     expect(fs.existsSync(path.join(cacheDir, "HEAD"))).toBe(true);
-    // The repo should have at least one commit (the seed README)
     expect(await git.isEmpty()).toBe(false);
   });
 
@@ -80,8 +73,6 @@ describe("ensureBareCache", () => {
   it("re-clones when the cache directory exists but has no HEAD (corrupt)", async () => {
     const cacheDir = path.join(tmpDir, "cache-corrupt");
     fs.mkdirSync(cacheDir, { recursive: true });
-    // Leave behind some unrelated files but no HEAD — simulates a partial
-    // download or a hand-edited cache.
     fs.writeFileSync(path.join(cacheDir, ".shipit-last-fetch"), "stale");
     fs.writeFileSync(path.join(cacheDir, "config"), "[remote]\n");
 
@@ -89,15 +80,12 @@ describe("ensureBareCache", () => {
 
     expect(recovered).toBe(true);
     expect(fs.existsSync(path.join(cacheDir, "HEAD"))).toBe(true);
-    // Stale marker should be wiped by the re-clone
     expect(fs.readFileSync(path.join(cacheDir, "config"), "utf-8")).not.toBe("[remote]\n");
   });
 
   it("returns the existing cache when HEAD is present (no re-clone)", async () => {
     const cacheDir = path.join(tmpDir, "cache-valid");
-    // Set up a valid bare cache by cloning once.
     execSync(`git clone --bare ${remoteDir} ${cacheDir}`, { stdio: "ignore" });
-    // Drop a marker we can use to confirm the dir was NOT wiped.
     const markerPath = path.join(cacheDir, ".keep-me");
     fs.writeFileSync(markerPath, "preserve");
 
@@ -108,21 +96,15 @@ describe("ensureBareCache", () => {
   });
 });
 
-/** Append a commit to the seed working clone and push it to the remote. */
 function advanceRemote(seedDir: string, remoteUrl: string, content: string): string {
   fs.writeFileSync(path.join(seedDir, "README.md"), content);
   execSync("git add . && git commit -m advance --no-gpg-sign", { cwd: seedDir, stdio: "ignore" });
-  // seed was the clone SOURCE for remote.git, so it has no remote configured.
   execSync(`git push ${remoteUrl} HEAD:main --force`, { cwd: seedDir, stdio: "ignore" });
   return execSync("git rev-parse HEAD", { cwd: seedDir }).toString().trim();
 }
 
 describe("RepoGit bare-cache fetch advances HEAD", () => {
   it("fetchCache moves the bare cache HEAD when the remote advances", async () => {
-    // Regression for docs/157: `git clone --bare` configures no fetch
-    // refspec, so `git fetch --all` only writes FETCH_HEAD and the cache's
-    // HEAD (→ refs/heads/main) stays frozen at clone time forever. Every
-    // --local clone then branches from that stale snapshot.
     const seedDir = path.join(tmpDir, "seed");
     const cacheDir = path.join(tmpDir, "cache-advance");
     fs.mkdirSync(cacheDir, { recursive: true });
@@ -134,7 +116,6 @@ describe("RepoGit bare-cache fetch advances HEAD", () => {
     const remoteHead = advanceRemote(seedDir, remoteUrl, "# advanced\n");
     expect(remoteHead).not.toBe(headBefore);
 
-    // ttlMs=0 bypasses the 60s freshness guard so the fetch always runs.
     await cacheGit.fetchCache(0);
 
     const headAfter = await cacheGit.readHead();
@@ -161,8 +142,6 @@ describe("RepoGit bare-cache fetch advances HEAD", () => {
     expect(cloneOriginHead).toBe(remoteHead);
   });
 
-  // docs/198 — clone prep excludes pnpm's relocated /workspace/.pnpm-store from git
-  // (via .git/info/exclude) so the post-turn auto-commit never stages the store.
   it("a fresh clone has .pnpm-store/ in .git/info/exclude", async () => {
     const cacheDir = path.join(tmpDir, "cache-exclude");
     fs.mkdirSync(cacheDir, { recursive: true });
@@ -177,23 +156,8 @@ describe("RepoGit bare-cache fetch advances HEAD", () => {
   });
 });
 
-/**
- * planning#425 / planning#428 / docs/272-shared-cache-ownership req 1 & 4 — the
- * bare cache must be ShipIt's own before ShipIt's git runs in it.
- *
- * Spied at the seam rather than exercised for real, because the failing state is
- * not creatable here: it needs a root process and a foreign-owned tree, and a
- * session container has neither (no root, `unshare -r` refused). The gate itself
- * is unit-tested in `shared-tree-ownership.test.ts`; what these two assert is the
- * part no behavioural test can reach — that the gate is CONSULTED, on both
- * operations, and by a path that does not depend on `ensureBareCache` having been
- * called first.
- */
 describe("the bare cache is made ShipIt's own before git touches it", () => {
   it("fetchCache checks the cache it is about to write refs into", async () => {
-    // The planning#425 site. A uid-1000 cache root makes `safeSimpleGit(repoDir)`
-    // drop to uid 1000, which then cannot create `refs/heads/shipit/<x>.lock`
-    // inside a root-owned subdirectory a pre-drop build left behind.
     const cacheDir = path.join(tmpDir, "cache-gate-fetch");
     fs.mkdirSync(cacheDir, { recursive: true });
     const cacheGit = createRepoGit(cacheDir);
@@ -206,11 +170,6 @@ describe("the bare cache is made ShipIt's own before git touches it", () => {
   });
 
   it("cloneFromCache checks the SOURCE, which is the tree arming refused", async () => {
-    // The planning#428 site, and the reason it survived three audits: the census
-    // asked who owned the DESTINATION (already handled — `handWorkspaceBackToWorker`
-    // runs at the end of this function) and never who owned the SOURCE. Root
-    // reading a uid-1000 cache is `fatal: detected dubious ownership`, and 6 of 10
-    // production caches were uid 1000.
     const cacheDir = path.join(tmpDir, "cache-gate-clone");
     fs.mkdirSync(cacheDir, { recursive: true });
     const cacheGit = createRepoGit(cacheDir);
@@ -236,10 +195,10 @@ describe("RepoGit overlay publish oracle (docs/183)", () => {
     const c1 = advanceRemote(seedDir, remoteUrl, "# c1\n");
     await cacheGit.fetchCache(0);
 
-    expect(await cacheGit.isAncestor(c0, c0)).toBe(true); // reflexive
-    expect(await cacheGit.isAncestor(c0, c1)).toBe(true); // strictly forward
-    expect(await cacheGit.isAncestor(c1, c0)).toBe(false); // behind
-    expect(await cacheGit.isAncestor("0000000000000000000000000000000000000000", c1)).toBe(false); // unknown
+    expect(await cacheGit.isAncestor(c0, c0)).toBe(true);
+    expect(await cacheGit.isAncestor(c0, c1)).toBe(true);
+    expect(await cacheGit.isAncestor(c1, c0)).toBe(false);
+    expect(await cacheGit.isAncestor("0000000000000000000000000000000000000000", c1)).toBe(false);
   });
 
   it("resolveDefaultBranchCommit tracks the bare cache's default branch tip", async () => {
@@ -257,26 +216,10 @@ describe("RepoGit overlay publish oracle (docs/183)", () => {
   });
 });
 
-/**
- * docs/262 req 19 — **no credential ever reaches `/project/.git/config`.**
- *
- * This is the assertion whose absence kept the violation open: every existing
- * plugin guard test checks a plugin container's mounts, environment and network,
- * and NONE of them can see a token sitting in the session clone's own git
- * config — which is mounted at `/project` and readable by the agent, by every
- * companion CLI, and (once that surface ships) by every plugin service.
- *
- * These drive real git and read the real config file, so they fail if any later
- * change re-introduces the credential by another route.
- *
- * Fixture note: the password is deliberately short and generic. `secret-scan.ts`
- * flags `<user>:<8+ chars>@` in a URL, so a realistic-looking PAT here would
- * trip the scanner on every commit. Don't "improve" it.
- */
 describe("no credential is recorded in a git config (docs/262 req 19)", () => {
+  // Keep the fixture password below the secret scanner's length threshold.
   const CREDENTIALED = "https://x-access-token:pw@github.com/o/r.git";
   const CLEAN = "https://github.com/o/r.git";
-  /** The shape `secret-scan.ts` looks for, minus its length floor. */
   const CREDENTIAL_IN_URL = /^\s*url\s*=\s*\S+:\/\/[^\s/@]+@/m;
 
   it("cloneFromCache writes a credential-free origin into the session clone", async () => {
@@ -285,8 +228,6 @@ describe("no credential is recorded in a git config (docs/262 req 19)", () => {
     const cacheGit = createRepoGit(cacheDir);
     await cacheGit.cloneBare(remoteUrl);
 
-    // The session clone. In production this directory is the container's
-    // `/project`, so its `.git/config` is `/project/.git/config`.
     const workspaceDir = path.join(tmpDir, "workspace-cred");
     await cacheGit.cloneFromCache(workspaceDir, CREDENTIALED);
 
@@ -312,12 +253,6 @@ describe("no credential is recorded in a git config (docs/262 req 19)", () => {
   });
 
   it("cloneBare never offers a URL-embedded credential, and never records one", async () => {
-    // Isolates `cloneBare` itself against a REAL server: an earlier version of
-    // this test reached the credential through `setRemoteUrl`, so a regression
-    // confined to `cloneBare` would have passed it. git sends URL userinfo as
-    // Basic auth, so "the server saw no Authorization header" is direct proof
-    // the credential was dropped before git ran — and the accepted cost is
-    // visible in the same assertion: the fetch is anonymous.
     let authorization: string | undefined;
     let requests = 0;
     const server = http.createServer((req, res) => {
@@ -328,14 +263,10 @@ describe("no credential is recorded in a git config (docs/262 req 19)", () => {
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as { port: number }).port;
-    // `server-test-setup.ts` pins GIT_ALLOW_PROTOCOL to `file`; this server IS
-    // the loopback, so opt in for the duration and put the guard back.
+    // Test setup permits only file transport; enable HTTP for the loopback server.
     const allowed = process.env.GIT_ALLOW_PROTOCOL;
     process.env.GIT_ALLOW_PROTOCOL = "file:http";
-    // And pin an EMPTY global config: `setGlobalCredentialHelper` (exercised by
-    // other suites in this process) installs a host-blind helper into the real
-    // global git config, which would answer for this loopback server and make
-    // the assertion below depend on test ordering rather than on this code.
+    // Exclude ambient credential helpers from the anonymous-request assertion.
     const emptyGlobal = path.join(tmpDir, "empty.gitconfig");
     fs.writeFileSync(emptyGlobal, "");
     const previousGlobal = process.env.GIT_CONFIG_GLOBAL;
@@ -345,7 +276,7 @@ describe("no credential is recorded in a git config (docs/262 req 19)", () => {
     try {
       await createRepoGit(cacheDir)
         .cloneBare(`http://x-access-token:pw@127.0.0.1:${port}/plugin.git`)
-        .catch(() => undefined); // Always refused — what matters is what git offered.
+        .catch(() => undefined);
     } finally {
       if (allowed === undefined) Reflect.deleteProperty(process.env, "GIT_ALLOW_PROTOCOL");
       else process.env.GIT_ALLOW_PROTOCOL = allowed;
@@ -354,23 +285,14 @@ describe("no credential is recorded in a git config (docs/262 req 19)", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
 
-    expect(requests).toBeGreaterThan(0); // Not vacuous: git did reach the server.
+    expect(requests).toBeGreaterThan(0);
     expect(authorization).toBeUndefined();
-    // Stated separately so a future ambient helper cannot make this pass
-    // vacuously: whatever git offered, it was never the URL's own credential.
     expect(Buffer.from((authorization ?? "").replace("Basic ", ""), "base64").toString("utf8"))
       .not.toContain("pw");
   }, 20_000);
 });
 
-/**
- * docs/262 req 10 — the per-instance credential. These drive REAL git, because
- * every part of the mechanism that can be wrong is a git behavior: whether the
- * inherited helper list is actually reset, whether a URL-scoped helper matches,
- * and whether the helper git shells out to inherits our environment.
- */
 describe("per-remote credential (RepoGit credential option)", () => {
-  /** A global gitconfig with a decoy helper — this stands in for the host PAT. */
   function globalConfigWithDecoy(): string {
     const file = path.join(tmpDir, "decoy.gitconfig");
     fs.writeFileSync(
@@ -381,14 +303,10 @@ describe("per-remote credential (RepoGit credential option)", () => {
     return file;
   }
 
-  /** Ask git what credential it would use for `host`, under our config + env. */
   function askGit(host: string, credential: GitRemoteCredential): string {
     const args = gitCredentialConfig(credential).flatMap((c) => ["-c", c]);
     return execFileSync("git", [...args, "credential", "fill"], {
       input: `protocol=https\nhost=${host}\n\n`,
-      // The same environment the production path builds — including the
-      // sanitizing, without which an inherited `GIT_ASKPASS` answers for a host
-      // the credential was never scoped to.
       env: {
         ...sanitizeGitEnv(process.env),
         GIT_CONFIG_GLOBAL: globalConfigWithDecoy(),
@@ -405,25 +323,18 @@ describe("per-remote credential (RepoGit credential option)", () => {
   };
 
   it("overrides the global helper instead of queueing behind it", () => {
-    // Without the reset the global helper answers first and the App token is
-    // never reached — which on an App-only install means no credential at all.
     const answer = askGit("github.com", cred);
     expect(answer).toContain("password=ghs_plugin_installation_token");
     expect(answer).not.toContain("DECOY-HOST-PAT");
   });
 
   it("offers the credential to its own host only", () => {
-    // A host-blind helper hands the token to whatever host git asks about
-    // (docs/172 Gap 2). Another host must get no answer at all — with prompts
-    // disabled, that is a failure, not a silent leak.
     expect(() => askGit("evil.example", cred)).toThrow();
   });
 
   it("keeps the token out of argv and out of the repository config", async () => {
     const cacheDir = path.join(tmpDir, "cache-credential");
     fs.mkdirSync(cacheDir, { recursive: true });
-    // A file:// remote needs no credential, so this also proves the extra
-    // config and environment do not disturb an ordinary fetch.
     const git = new RepoGit(cacheDir, cred);
     await git.cloneBare(remoteUrl);
     await git.fetchCache(0);
@@ -434,12 +345,6 @@ describe("per-remote credential (RepoGit credential option)", () => {
     expect(gitCredentialConfig(cred).join(" ")).not.toContain(cred.token!.password);
   });
 
-  /**
-   * The end-to-end proof, through `RepoGit` and simple-git rather than a git
-   * command this test composed itself: a server that demands Basic auth records
-   * what git actually sent. Everything in between — simple-git's `-c` handling,
-   * `.env()`, the helper, the scoping — is exercised for real.
-   */
   async function credentialGitSent(
     credentialFor: (port: number) => GitRemoteCredential,
   ): Promise<{ authorization: string | undefined; requests: number }> {
@@ -453,17 +358,12 @@ describe("per-remote credential (RepoGit credential option)", () => {
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as { port: number }).port;
-    // `server-test-setup.ts` pins GIT_ALLOW_PROTOCOL to `file` so no test pays
-    // for a network round-trip. This server IS the loopback, and http is the
-    // only transport it can speak without a certificate — so opt in for the
-    // duration, and put the guard back.
     const allowed = process.env.GIT_ALLOW_PROTOCOL;
     process.env.GIT_ALLOW_PROTOCOL = "file:http";
     try {
       const cacheDir = path.join(tmpDir, `cache-http-${port}`);
       fs.mkdirSync(cacheDir, { recursive: true });
       const git = new RepoGit(cacheDir, credentialFor(port));
-      // Always refused — what matters is what git offered on the way.
       await git.cloneBare(`http://127.0.0.1:${port}/plugin.git`).catch(() => undefined);
     } finally {
       if (allowed === undefined) Reflect.deleteProperty(process.env, "GIT_ALLOW_PROTOCOL");
@@ -484,20 +384,15 @@ describe("per-remote credential (RepoGit credential option)", () => {
   }, 20_000);
 
   it("sends nothing when the request is for another origin", async () => {
-    // Same server, credential scoped elsewhere: git offers no credential at
-    // all rather than handing this one to a host it was not minted for.
     const { authorization, requests } = await credentialGitSent(() => ({
       origin: "https://github.com",
       token: { username: "x-access-token", password: "ghs_plugin_installation_token" },
     }));
-    // git DID ask the server (so this is not vacuously true) and offered nothing.
     expect(requests).toBeGreaterThan(0);
     expect(authorization).toBeUndefined();
   }, 20_000);
 
   it("supplies nothing — but still resets — when no token is given", async () => {
-    // The anonymous case (`mode: "none"`): a public repository must still
-    // fetch, and a stale global helper must NOT answer for it.
     expect(gitCredentialConfig({ origin: "https://github.com" })).toEqual(["credential.helper="]);
     const { authorization, requests } = await credentialGitSent((port) => ({
       origin: `http://127.0.0.1:${port}`,
@@ -507,8 +402,6 @@ describe("per-remote credential (RepoGit credential option)", () => {
   }, 20_000);
 
   it("survives the environment variables simple-git guards", async () => {
-    // Any one of these present used to fail EVERY credentialed fetch before git
-    // ran — `PAGER=cat` was enough (review finding, P1).
     const guarded = {
       PAGER: "cat",
       GIT_PAGER: "less",
@@ -528,7 +421,6 @@ describe("per-remote credential (RepoGit credential option)", () => {
         token: { username: "x-access-token", password: "ghs_survives" },
       }));
       expect(authorization).toBeDefined();
-      // And the env-injected helper did not win either.
       expect(Buffer.from(authorization!.replace("Basic ", ""), "base64").toString("utf8"))
         .toBe("x-access-token:ghs_survives");
     } finally {
@@ -549,7 +441,6 @@ describe("per-remote credential (RepoGit credential option)", () => {
     });
     expect(cleaned).toEqual({
       PATH: "/usr/bin",
-      // Kept on purpose — identity, URL rewrites, and no interactive editor.
       GIT_CONFIG_GLOBAL: "/credentials/.gitconfig",
       GIT_EDITOR: "true",
     });
@@ -558,7 +449,7 @@ describe("per-remote credential (RepoGit credential option)", () => {
   it("refuses to build a helper for an origin that could reshape the config key", () => {
     expect(() => gitCredentialConfig({ origin: "https://github.com" })).not.toThrow();
     expect(() => gitCredentialConfig({ origin: "https://github.com.helper=x" })).toThrow(/Refusing/);
-    expect(() => gitCredentialConfig({ origin: "github.com" })).toThrow(/Refusing/); // no scheme
+    expect(() => gitCredentialConfig({ origin: "github.com" })).toThrow(/Refusing/);
     expect(() => gitCredentialConfig({ origin: "" })).toThrow(/Refusing/);
   });
 });

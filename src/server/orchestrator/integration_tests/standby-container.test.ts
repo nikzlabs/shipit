@@ -1,20 +1,3 @@
-/**
- * Integration tests for Phase 4b: container-level standby pre-warming.
- *
- * Validates that:
- *   - Startup warming does NOT create standby containers
- *   - Claim triggers re-warming with standby container
- *   - Standby containers are reused on activation (zero cold start)
- *   - Fetch origin is called during re-warming
- *   - Standby containers survive idle cleanup
- *   - No standby when at container cap
- *   - Standby destroyed on repo delete
- *   - Restart kills the unclaimed standby and re-warms the pool
- *   - Restart SPARES a claimed standby's container (the label outlives the
- *     claim, so only the session row can tell the two apart) and does not
- *     re-mark it as a standby
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -47,10 +30,6 @@ import type { GitHubAuthManager } from "../github-auth.js";
 
 const REPO_URL = "https://github.com/owner/standby-test-repo.git";
 
-// ---------------------------------------------------------------------------
-// Fake Docker (same pattern as container-lifecycle.test.ts)
-// ---------------------------------------------------------------------------
-
 function createFakeDocker() {
   let containerCounter = 0;
   const containers = new Map<string, {
@@ -72,9 +51,6 @@ function createFakeDocker() {
     createContainer: async (opts: any) => {
       containerCounter++;
       const id = `fake-container-${containerCounter}`;
-      // Distinct loopback IPs + a dead ephemeral workerPort: refuses
-      // instantly, can never be a real worker (see allocateDeadLoopbackPort
-      // in container-test-helpers.ts).
       const ip = `127.0.0.${containerCounter + 2}`;
       containers.set(id, {
         id, started: false, labels: opts.Labels ?? {}, ip,
@@ -110,11 +86,7 @@ function createFakeDocker() {
       remove: async () => { containers.delete(id); },
     }),
 
-    // Honours the `label` filter, which is not a nicety: the sweeps under test
-    // are told apart ONLY by which labels they ask for
-    // (`shipit-standby=true` for the agent standby, `shipit-parent-session` for
-    // its compose children). A fake that returned everything would let one
-    // sweep pass a test only the other could pass in production.
+    // Preserve label filtering to distinguish standby and Compose cleanup.
     listContainers: async (opts?: { filters?: { label?: string[] } }) => {
       const wanted = opts?.filters?.label ?? [];
       return [...containers.values()]
@@ -134,10 +106,6 @@ function createFakeDocker() {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 async function waitFor(
   predicate: () => boolean,
   timeoutMs = 10000,
@@ -150,10 +118,6 @@ async function waitFor(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 describe("standby container pre-warming", () => {
   let tmpDir: string;
   let app: FastifyInstance;
@@ -165,7 +129,6 @@ describe("standby container pre-warming", () => {
   let origGitTerminalPrompt: string | undefined;
   let origGitConfigGlobal: string | undefined;
   let dbManager: DatabaseManager;
-  /** Kept so the restart test can boot a second app with the same wiring. */
   let credentialStore: ReturnType<typeof createTestCredentialStore>;
 
   beforeEach(async () => {
@@ -189,16 +152,11 @@ describe("standby container pre-warming", () => {
       stackName: "shipit-test",
     });
 
-    // Set up credential store (and GIT_CONFIG_GLOBAL) BEFORE seeding the repo
-    // — git commit needs a valid identity config and `seedRepoCacheWithLocalBare`
-    // writes an `insteadOf` redirect into GIT_CONFIG_GLOBAL.
+    // Set GIT_CONFIG_GLOBAL before the seed helper writes its local fetch redirect.
     credentialStore = createTestCredentialStore(tmpDir);
 
-    // Seed the bare cache + matching local bare repo so warm-pool + claim
-    // fetches never block on real network traffic. See helper docstring.
     seedRepoCacheWithLocalBare({ tmpDir, repoUrl: REPO_URL });
 
-    // Add repo before buildApp so startup warming fires
     repoStore.add(REPO_URL);
     repoStore.setReady(REPO_URL);
 
@@ -243,7 +201,6 @@ describe("standby container pre-warming", () => {
   });
 
   it("startup warming creates a standby container (so pre-install runs ahead of the first claim)", async () => {
-    // Wait for warm session to be created
     await waitFor(
       () => !!repoStore.get(REPO_URL)?.warmSessionId,
       10000,
@@ -252,9 +209,6 @@ describe("standby container pre-warming", () => {
 
     const warmSessionId = repoStore.get(REPO_URL)!.warmSessionId!;
 
-    // The whole point of docs/148: startup warming must boot a standby so
-    // `agent.install` pre-install fires before the user clicks New Session.
-    // Standby creation is fire-and-forget, so wait for it to land.
     await waitFor(
       () => containerManager.isStandby(warmSessionId),
       10000,
@@ -272,7 +226,6 @@ describe("standby container pre-warming", () => {
     );
     const firstWarmId = repoStore.get(REPO_URL)!.warmSessionId!;
 
-    // Claim the warm session — this triggers re-warming (with standby + pre-install)
     const encodedUrl = encodeURIComponent(REPO_URL);
     const res = await app.inject({
       method: "POST",
@@ -281,7 +234,6 @@ describe("standby container pre-warming", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().sessionId).toBe(firstWarmId);
 
-    // Wait for the re-warmed session to appear
     await waitFor(
       () => {
         const repo = repoStore.get(REPO_URL);
@@ -293,7 +245,6 @@ describe("standby container pre-warming", () => {
 
     const newWarmId = repoStore.get(REPO_URL)!.warmSessionId!;
 
-    // The re-warmed session should have a standby container
     await waitFor(
       () => containerManager.isStandby(newWarmId),
       5000,
@@ -303,7 +254,6 @@ describe("standby container pre-warming", () => {
     expect(containerManager.get(newWarmId)).toBeDefined();
     expect(containerManager.get(newWarmId)!.status).toBe("running");
 
-    // Docker container should have the standby label
     const dockerContainer = [...fakeDocker._containers.values()].find(
       (c) => c.labels[CONTAINER_SESSION_ID_LABEL] === newWarmId,
     );
@@ -318,15 +268,12 @@ describe("standby container pre-warming", () => {
       "warm session",
     );
 
-    // Claim first warm session → triggers re-warming with standby
     const encodedUrl = encodeURIComponent(REPO_URL);
     const firstClaimRes = await app.inject({ method: "POST", url: `/api/repos/${encodedUrl}/claim-session` });
     const firstClaimedId = firstClaimRes.json().sessionId;
 
-    // Graduate the first session so it won't be returned by the reusable path
     sessionManager.setWarm(firstClaimedId, false);
 
-    // Wait for re-warmed session with standby
     await waitFor(
       () => {
         const repo = repoStore.get(REPO_URL);
@@ -344,25 +291,19 @@ describe("standby container pre-warming", () => {
 
     const standbyContainerId = containerManager.get(standbySessionId)!.id;
 
-    // Claim the standby session
     const claimRes = await app.inject({
       method: "POST",
       url: `/api/repos/${encodedUrl}/claim-session`,
     });
     expect(claimRes.json().sessionId).toBe(standbySessionId);
 
-    // Activate via WS — should reconnect to the standby container
     const client = await TestClient.connect(port, standbySessionId);
     await new Promise((r) => setTimeout(r, 500));
 
-    // Same container reused — no new container created for this session.
-    // (Total container count may increase because the claim fires off
-    // re-warming with a new standby for the next warm session.)
     const sc = containerManager.get(standbySessionId);
     expect(sc).toBeDefined();
     expect(sc!.id).toBe(standbyContainerId);
 
-    // Standby flag should be cleared after claiming
     expect(containerManager.isStandby(standbySessionId)).toBe(false);
 
     client.close();
@@ -375,10 +316,8 @@ describe("standby container pre-warming", () => {
       "warm session",
     );
 
-    // Capture the warm session ID before claiming so we can detect the new one
     const claimedWarmId = repoStore.get(REPO_URL)!.warmSessionId!;
 
-    // Claim → triggers re-warming with standby
     const encodedUrl = encodeURIComponent(REPO_URL);
     await app.inject({ method: "POST", url: `/api/repos/${encodedUrl}/claim-session` });
 
@@ -397,12 +336,9 @@ describe("standby container pre-warming", () => {
       "standby ready",
     );
 
-    // The standby container exists and is idle (no runner, no viewers)
     expect(containerManager.get(standbySessionId)).toBeDefined();
     expect(containerManager.isStandby(standbySessionId)).toBe(true);
 
-    // Activating another session triggers idle enforcement.
-    // The standby should survive because it's excluded from idle candidates.
     const sessionsDir = path.join(tmpDir, "sessions");
     const idleSessionId = `idle-test-${Date.now()}`;
     const idleDir = path.join(sessionsDir, idleSessionId);
@@ -414,7 +350,6 @@ describe("standby container pre-warming", () => {
     const client = await TestClient.connect(port, idleSessionId);
     await new Promise((r) => setTimeout(r, 500));
 
-    // The standby container should survive idle cleanup
     expect(containerManager.get(standbySessionId)).toBeDefined();
     expect(containerManager.isStandby(standbySessionId)).toBe(true);
 
@@ -428,10 +363,8 @@ describe("standby container pre-warming", () => {
       "warm session",
     );
 
-    // Capture the warm session ID before claiming so we can detect the new one
     const claimedWarmId = repoStore.get(REPO_URL)!.warmSessionId!;
 
-    // Claim → triggers re-warming with standby
     const encodedUrl = encodeURIComponent(REPO_URL);
     await app.inject({ method: "POST", url: `/api/repos/${encodedUrl}/claim-session` });
 
@@ -452,22 +385,16 @@ describe("standby container pre-warming", () => {
 
     expect(containerManager.get(standbySessionId)).toBeDefined();
 
-    // Delete the repo — should destroy the standby container
     const deleteRes = await app.inject({
       method: "DELETE",
       url: `/api/repos/${encodedUrl}`,
     });
     expect(deleteRes.statusCode).toBe(200);
 
-    // Standby container should be gone
     expect(containerManager.get(standbySessionId)).toBeUndefined();
     expect(containerManager.isStandby(standbySessionId)).toBe(false);
   }, 25000);
 
-  // The restart guarantee, end to end. A standby holds no work and runs the
-  // previous process's worker image, and nothing else would ever reap one: the
-  // idle enforcer skips standbys and rediscovery re-adopts them. So the boot
-  // must kill it, drop the warm row, and re-warm the pool from scratch.
   it("kills the previous process's standby container on restart and re-warms", async () => {
     await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10000, "warm session");
     const oldWarmId = repoStore.get(REPO_URL)!.warmSessionId!;
@@ -475,10 +402,6 @@ describe("standby container pre-warming", () => {
     const oldContainerId = containerManager.get(oldWarmId)!.id;
     expect(fakeDocker._containers.has(oldContainerId)).toBe(true);
 
-    // docs/288 — stand in for the warm session's pre-started compose service.
-    // Created straight on the daemon because that is all it is from boot's
-    // point of view: a running container labelled with its parent session,
-    // which no orchestrator-side record survives the restart to describe.
     const oldPreviewId = "fake-preview-of-warm";
     fakeDocker._containers.set(oldPreviewId, {
       id: oldPreviewId,
@@ -488,8 +411,6 @@ describe("standby container pre-warming", () => {
       hostConfig: {},
     });
 
-    // Restart: same Docker daemon and same DB, a fresh process — so a fresh
-    // container manager with an empty tracking map, exactly like production.
     await app.close();
     const restartedManager = new SessionContainerManager({
       docker: fakeDocker as any,
@@ -513,22 +434,11 @@ describe("standby container pre-warming", () => {
       sessionContainerManager: restartedManager,
     });
 
-    // The old standby is gone from the daemon, not merely untracked.
     expect(fakeDocker._containers.has(oldContainerId)).toBe(false);
     expect(restartedManager.isStandby(oldWarmId)).toBe(false);
-    // docs/288 req 6 — and its PRE-STARTED PREVIEW with it. The standby reap
-    // filters on `shipit-standby`, which lives on the agent container alone;
-    // the compose siblings carry `shipit-parent-session`. Left behind, a warm
-    // preview outlives the deploy as a running container with no session,
-    // serving the old code from the old image — the exact thing standby
-    // retirement exists to prevent, arriving through the one door it does not
-    // watch. This app is built with an INJECTED container manager, which is the
-    // path that skips the boot branch's own compose sweep.
     expect(fakeDocker._containers.has(oldPreviewId)).toBe(false);
-    // And its session is retired, so nothing hands the stale clone to a user.
     expect(sessionManager.get(oldWarmId)).toBeUndefined();
 
-    // The pool does not stay cold: a fresh warm session boots a fresh standby.
     await waitFor(
       () => {
         const id = repoStore.get(REPO_URL)?.warmSessionId;
@@ -539,15 +449,7 @@ describe("standby container pre-warming", () => {
     );
   }, 30000);
 
-  // Rediscovery adopts a labelled container as an ORDINARY one. A session id
-  // reaching `rediscover` is by construction a live, non-warm session — warm
-  // rows are retired earlier in boot — so a surviving `shipit-standby=true`
-  // label means "was claimed", not "is a standby". Restoring the flag from it
-  // marked live sessions standby, which silently skips them in
-  // `restart-turn-reattach.ts` (their in-flight turn is never reattached) and
-  // in the idle enforcer (their container is never disposed).
   it("rediscover adopts a claimed standby as an ordinary container", async () => {
-    // Create a standby container directly
     const standbyId = "standby-rediscover-test";
     const standbyDir = path.join(tmpDir, "sessions", standbyId);
     fs.mkdirSync(standbyDir, { recursive: true });
@@ -567,7 +469,6 @@ describe("standby container pre-warming", () => {
     expect(containerManager.isStandby(standbyId)).toBe(true);
     expect(containerManager.standbyCount).toBe(1);
 
-    // Simulate restart: create a new container manager and rediscover
     const newManager = new SessionContainerManager({
       docker: fakeDocker as any,
       imageName: "shipit-session-worker:test",
@@ -587,18 +488,13 @@ describe("standby container pre-warming", () => {
     expect(newManager.get(standbyId)!.status).toBe("running");
   });
 
-  // The regression the standby reap could most easily cause: a session the user
-  // claimed and graduated still runs a container labelled `shipit-standby=true`
-  // (the label is set at create time and Docker cannot change one afterwards),
-  // so a label-only sweep would destroy live sessions on every restart. docs/113.
   it("a claimed standby's container survives the restart", async () => {
     await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10000, "warm session");
     const claimedId = repoStore.get(REPO_URL)!.warmSessionId!;
     await waitFor(() => containerManager.isStandby(claimedId), 10000, "standby");
     const claimedContainerId = containerManager.get(claimedId)!.id;
 
-    // Claim it, then graduate it into an ordinary session the way the first
-    // message does — the row stops being warm, the Docker label does not change.
+    // Graduation clears the row's warm flag; the container keeps its creation label.
     const res = await app.inject({
       method: "POST",
       url: `/api/repos/${encodeURIComponent(REPO_URL)}/claim-session`,
@@ -630,27 +526,12 @@ describe("standby container pre-warming", () => {
       sessionContainerManager: restartedManager,
     });
 
-    // Still there, and not mistaken for a standby by the new process.
     expect(fakeDocker._containers.has(claimedContainerId)).toBe(true);
     expect(sessionManager.get(claimedId)).toBeDefined();
     expect(restartedManager.isStandby(claimedId)).toBe(false);
   }, 30000);
 
 });
-
-// ---------------------------------------------------------------------------
-// Standby resources propagated from shipit.yaml
-// ---------------------------------------------------------------------------
-//
-// Regression: warm-pool standby containers were created via
-// `containerManager.buildConfig(...)` without passing `memoryLimit` /
-// `cpuQuota` / `pidsLimit`, so they silently fell back to the manager's
-// compiled defaults instead of going through `resolveAgentDockerLimits`.
-// With automatic sizing (docs/229) the limits no longer come from shipit.yaml
-// — memory is host-derived — but the standby must still resolve them via
-// `resolveAgentDockerLimits` rather than the manager default, which this test
-// guards by comparing against the auto-derived sizing.
-// ---------------------------------------------------------------------------
 
 describe("standby container resources are auto-sized", () => {
   let tmpDir: string;
@@ -682,9 +563,6 @@ describe("standby container resources are auto-sized", () => {
 
     const credentialStore = createTestCredentialStore(tmpDir);
 
-    // Bare cache contains a shipit.yaml that still sets the removed resource
-    // fields — they must be warned-and-ignored, not honored. The helper also
-    // mirrors the cache as a local bare + sets `insteadOf` so fetches stay local.
     seedRepoCacheWithLocalBare({
       tmpDir,
       repoUrl: REPO_URL,
@@ -728,7 +606,6 @@ describe("standby container resources are auto-sized", () => {
     );
     const firstWarmId = repoStore.get(REPO_URL)!.warmSessionId!;
 
-    // Claim → re-warm reads shipit.yaml.
     const encodedUrl = encodeURIComponent(REPO_URL);
     await app.inject({ method: "POST", url: `/api/repos/${encodedUrl}/claim-session` });
 
@@ -747,14 +624,10 @@ describe("standby container resources are auto-sized", () => {
       "standby ready",
     );
 
-    // The fake docker captured the HostConfig passed to createContainer.
     const standbyDocker = [...fakeDocker._containers.values()].find(
       (c) => c.labels[CONTAINER_SESSION_ID_LABEL] === standbySessionId,
     );
     expect(standbyDocker).toBeDefined();
-    // Auto-sized: memory is host-derived (not the shipit.yaml 3072), pids fixed,
-    // cpu = host cores. Compared against the live derivation so a regression to
-    // the manager's compiled default would still fail.
     const expectedMem = deriveSessionMemorySizing().effectiveMb * 1024 * 1024;
     expect(standbyDocker!.hostConfig.Memory).toBe(expectedMem);
     expect(standbyDocker!.hostConfig.PidsLimit).toBe(8192);

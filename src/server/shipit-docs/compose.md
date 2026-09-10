@@ -149,12 +149,12 @@ services:
   web:
     image: node:24-slim
     ports: ["5173:5173"]
-    x-shipit-preview: auto     # Shown in preview pane
+    x-shipit-preview: auto
 
   db:
     image: postgres:16
     ports: ["5432:5432"]
-    x-shipit-preview: manual   # User starts when needed
+    x-shipit-preview: manual
 ```
 
 When omitted, the default is `auto` if the service has `ports`, `manual`
@@ -178,7 +178,7 @@ services:
     command: npm run dev -- --host 0.0.0.0 --port 3000
     ports: ["3000:3000"]
     x-shipit-preview: auto
-    x-shipit-depends-on-install: true   # default for auto — gate on install
+    x-shipit-depends-on-install: true
 ```
 
 When omitted, it defaults to `true` for `auto` services and `false` for
@@ -198,8 +198,8 @@ services:
   api:
     image: node:24-slim
     x-shipit-secrets:
-      - STRIPE_SECRET_KEY            # string shorthand
-      - name: DATABASE_URL           # object form with metadata
+      - STRIPE_SECRET_KEY
+      - name: DATABASE_URL
         description: PostgreSQL URL
         required: true
 ```
@@ -319,11 +319,11 @@ services:
     ports: ["8501:8501"]
     volumes: [".:/app"]
     x-shipit-preview: auto
-    x-shipit-depends-on-install: false   # no agent.install to gate on
+    x-shipit-depends-on-install: false
 ```
 
 ```yaml
-# shipit.yaml — no Python install step; the service self-installs
+# shipit.yaml
 compose: docker-compose.yml
 ```
 
@@ -380,10 +380,10 @@ is **not** "ask the user to click Start in the UI": when your task needs the
 service, bring it up yourself.
 
 ```bash
-shipit service list                       # every service: status, preview mode, port, url
-shipit service start db                   # bring up a manual service
-shipit service logs db --lines 200        # what it printed
-shipit service restart web                # pick up a config change
+shipit service list
+shipit service start db
+shipit service logs db --lines 200
+shipit service restart web
 shipit service stop db
 ```
 
@@ -493,7 +493,7 @@ compose: docker-compose.yml
 services:
   web:
     image: node:24-slim
-    command: npm run dev          # plain run, no install gate
+    command: npm run dev
     working_dir: /app
     ports: ["5173:5173"]
     volumes: [".:/app"]
@@ -518,15 +518,15 @@ general device passthrough.
 ```yaml
 services:
   emulator:
-    image: budtmo/docker-android:emulator_14.0   # or an AOSP emulator-webrtc image
-    user: "1300:1301"              # REQUIRED — the image's own user, numeric (see below)
+    image: budtmo/docker-android:emulator_14.0
+    user: "1300:1301"
     environment:
-      - WEB_VNC=true                       # REQUIRED — enables the noVNC web UI on 6080
-      - EMULATOR_DEVICE=Samsung Galaxy S10 # device profile
-    devices: ["/dev/kvm:/dev/kvm"] # the ONLY permitted device mapping
-    ports: ["6080:6080"]           # the emulator's web UI → rendered in the preview pane
-    expose: ["5555"]               # adb, reached on the session network by service name
-    x-shipit-preview: auto         # show the web UI as the interactive preview
+      - WEB_VNC=true
+      - EMULATOR_DEVICE=Samsung Galaxy S10
+    devices: ["/dev/kvm:/dev/kvm"]
+    ports: ["6080:6080"]
+    expose: ["5555"]
+    x-shipit-preview: auto
 ```
 
 - **This image is one that needs an explicit `user:`, written numerically.** By

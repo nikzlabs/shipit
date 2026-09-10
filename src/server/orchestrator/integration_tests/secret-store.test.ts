@@ -1,7 +1,3 @@
-/**
- * Integration tests for SecretStore — per-repo secret storage in SQLite.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import crypto from "node:crypto";
 import { SecretStore } from "../secret-store.js";
@@ -50,7 +46,6 @@ describe("Integration: SecretStore", () => {
 
     const names = store.loadSecretNames(repoUrl);
     expect(names.sort()).toEqual(["DATABASE_URL", "STRIPE_KEY"]);
-    // The values must not leak through this method.
     expect(JSON.stringify(names)).not.toContain("sk_test_123");
   });
 
@@ -109,8 +104,6 @@ describe("Integration: SecretStore", () => {
     expect(store.loadSecrets(repo2)).toEqual({ B: "2" });
   });
 
-  // ---- At-rest encryption (docs/220) ----
-
   describe("encryption", () => {
     const repoUrl = "https://github.com/org/repo";
 
@@ -119,23 +112,20 @@ describe("Integration: SecretStore", () => {
       const enc = new SecretStore(dbManager, cipher);
       enc.saveSecrets(repoUrl, { STRIPE_KEY: "sk_live_123" });
 
-      // Raw column is ciphertext — no plaintext value in the DB.
       const row = dbManager.db
         .prepare("SELECT value FROM secrets WHERE repo_url = ? AND key = 'STRIPE_KEY'")
         .get(repoUrl) as { value: string };
       expect(isEncrypted(row.value)).toBe(true);
       expect(row.value).not.toContain("sk_live_123");
 
-      // loadSecrets transparently decrypts.
       expect(enc.loadSecrets(repoUrl)).toEqual({ STRIPE_KEY: "sk_live_123" });
     });
 
     it("reads legacy plaintext rows and re-encrypts on construction", () => {
-      // Seed a plaintext row via a plaintext store.
       store.saveSecrets(repoUrl, { LEGACY: "plain-value" });
 
       const cipher = new SecretCipher(crypto.randomBytes(32));
-      const enc = new SecretStore(dbManager, cipher); // migrateToEncrypted runs
+      const enc = new SecretStore(dbManager, cipher);
       const row = dbManager.db
         .prepare("SELECT value FROM secrets WHERE repo_url = ? AND key = 'LEGACY'")
         .get(repoUrl) as { value: string };
@@ -147,8 +137,6 @@ describe("Integration: SecretStore", () => {
       new SecretStore(dbManager, new SecretCipher(crypto.randomBytes(32))).saveSecrets(repoUrl, {
         K: "v",
       });
-      // A wrong key is rejected when the store is built (decrypt-validation of
-      // existing ciphertext), not lazily on the first loadSecrets.
       expect(() => new SecretStore(dbManager, new SecretCipher(crypto.randomBytes(32)))).toThrow();
     });
 
@@ -156,8 +144,6 @@ describe("Integration: SecretStore", () => {
       new SecretStore(dbManager, new SecretCipher(crypto.randomBytes(32))).saveSecrets(repoUrl, {
         K: "v",
       });
-      // Disabling encryption (no cipher) over encrypted data must not silently
-      // hand ciphertext back as a plaintext value.
       expect(() => new SecretStore(dbManager)).toThrow(/encrypted secrets/);
     });
   });

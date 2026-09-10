@@ -5,21 +5,8 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
-/**
- * The ordering half of the 2026-08-18 LFS incident.
- *
- * Uploading the objects is only a fix if it happens BEFORE the ref that
- * references them reaches the remote — that is the whole reason git-lfs hangs
- * its upload off `pre-push` rather than `post-push`. A push that sends the ref
- * first is rejected with `GH008` and the upload afterwards is wasted work.
- *
- * `pushLfsObjects` is stubbed here (its own behaviour is covered against real
- * git in `git-lfs-push.test.ts`) so the stub can observe the *remote's* state at
- * the moment it is called. Everything else — the repo, the bare origin, the
- * push — is real.
- */
+// Stub only the upload to observe whether the real remote already has the ref.
 const hooks = vi.hoisted(() => ({
-  /** Whether the bare remote already had the branch when the upload ran. */
   observations: [] as { remote: string; branch: string; remoteHadBranch: boolean }[],
   probeRemote: null as null | (() => boolean),
   outcome: { status: "pushed" } as { status: string; detail?: string },
@@ -90,7 +77,6 @@ describe("orchestrator push paths upload LFS objects before the ref", () => {
   });
 
   it("uploads for a force push too — rewritten history can reference new objects", async () => {
-    // Seed the remote so the force push has something to replace.
     run("git push origin main", workDir);
     hooks.observations.length = 0;
 
@@ -107,8 +93,6 @@ describe("orchestrator push paths upload LFS objects before the ref", () => {
   });
 
   it("pushes the ref even when the upload failed", async () => {
-    // Invariant 2: the post-turn push may not gain a new way to fail. A failed
-    // upload is a degraded push; a thrown one would be a lost commit.
     hooks.outcome = { status: "failed", detail: "LFS: connection refused" };
 
     await expect(new GitManager(workDir).push("origin", "main")).resolves.toContain("Pushed to");

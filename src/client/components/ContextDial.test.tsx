@@ -27,9 +27,6 @@ describe("ContextDial", () => {
   });
 
   it("does not throw a hook-order error when modelInfo flips from null to set", () => {
-    // Regression: `topTurns` useMemo used to live *after* the
-    // `if (!modelInfo) return null` guard, so a re-render that populated
-    // modelInfo rendered one more hook than the previous pass → React #310.
     const { rerender, container } = render(
       <ContextDial modelInfo={null} turnUsage={[makeTurn(10_000)]} />,
     );
@@ -87,7 +84,6 @@ describe("ContextDial", () => {
         turnUsage={[makeTurn(250_000)]}
       />,
     );
-    // Dial still renders, level red
     expect(screen.getByTestId("context-dial").getAttribute("data-level")).toBe("red");
   });
 
@@ -115,7 +111,6 @@ describe("ContextDial", () => {
   });
 
   it("shows the 'context compacted' pill after a sharp input-token drop", () => {
-    // Two turns: first ~150K, second ~30K — a /compact-style drop.
     render(
       <ContextDial
         modelInfo={window200k}
@@ -138,9 +133,6 @@ describe("ContextDial", () => {
   });
 
   it("counts cache reads + writes toward context occupancy (not just inputTokens)", () => {
-    // Regression: with prompt caching, a turn reports tiny `inputTokens` while
-    // the real context lives in cacheRead/cacheCreate. The dial used to show
-    // "4 / 200K" — it must now report ~70K (4 + 38.7K + 30.4K) → orange.
     render(
       <ContextDial
         modelInfo={window200k}
@@ -148,40 +140,27 @@ describe("ContextDial", () => {
       />,
     );
     const dial = screen.getByTestId("context-dial");
-    // 4 + 120K + 50K = ~170K of a 200K window → orange.
     expect(dial.getAttribute("data-level")).toBe("orange");
   });
 
   it("prefers explicit contextTokens over the cache-sum for tool-heavy turns", () => {
-    // Regression for the "573K / 200K" bug: a multi-call turn's
-    // cacheRead/cacheCreate are SUMS across every API call in the turn,
-    // so summing them over-counts by N×. The adapter now extracts the
-    // last iteration's input + cache into `contextTokens`. The dial must
-    // honor it instead of re-summing.
     render(
       <ContextDial
         modelInfo={window200k}
         turnUsage={[
           makeTurn(30, {
-            cacheRead: 540_000, // sum across many iterations
+            cacheRead: 540_000,
             cacheCreate: 36_000,
-            contextTokens: 50_000, // real per-turn occupancy
+            contextTokens: 50_000,
           }),
         ]}
       />,
     );
     const dial = screen.getByTestId("context-dial");
-    // 50K of 200K = 25% → green (would be red if we summed cache fields).
     expect(dial.getAttribute("data-level")).toBe("green");
   });
 });
 
-/**
- * docs/252 req 16 — the dial is the canonical running-cost surface, and
- * `cost_usd` is money now, so a subscription session's would read $0. The
- * requirement is that it shows the at-API-rates estimate, labelled, instead of
- * a blank or a zero.
- */
 describe("ContextDial — the running figure (docs/252 req 16)", () => {
   const totals = (over: Partial<UsageTotals> = {}): UsageTotals => ({
     meteredCostUsd: 0, meteredTurns: 0, meteredTokens: 0,
@@ -201,7 +180,6 @@ describe("ContextDial — the running figure (docs/252 req 16)", () => {
     const figure = screen.getByTestId("context-dial-cost");
     expect(figure).toHaveTextContent("≈$2.10");
     expect(figure).toHaveAttribute("data-figure-kind", "at-api-rates");
-    // The label carries the distinction — this is never presented as spend.
     expect(figure.getAttribute("title")).toMatch(/subscription/i);
   });
 
@@ -220,8 +198,6 @@ describe("ContextDial — the running figure (docs/252 req 16)", () => {
   });
 
   it("does not let a stray metered consult eclipse the plan work on the trigger", () => {
-    // The reported bug: a 39-turn plan session whose popover read `≈$131.58`
-    // put `$0.004` on the trigger, because one sub-agent consult ran on a key.
     render(
       <ContextDial
         modelInfo={window200k}
@@ -235,7 +211,6 @@ describe("ContextDial — the running figure (docs/252 req 16)", () => {
     const figure = screen.getByTestId("context-dial-cost");
     expect(figure).toHaveTextContent("≈$131.58");
     expect(figure).toHaveAttribute("data-figure-kind", "at-api-rates");
-    // The metered sliver is not lost — it is a row of its own in the popover.
     fireEvent.click(screen.getByTestId("context-dial"));
     expect(screen.getByTestId("context-dial-cost-metered")).toHaveTextContent("$0.004");
   });
@@ -252,7 +227,6 @@ describe("ContextDial — the running figure (docs/252 req 16)", () => {
     expect(screen.getByTestId("context-dial-cost-metered")).toHaveTextContent("$0.42");
     expect(screen.getByTestId("context-dial-cost-at-api-rates")).toHaveTextContent("≈$6.90");
     expect(screen.getByTestId("context-dial-cost-earlier")).toHaveTextContent("$1.50");
-    // $8.82 is the number this design exists to never print.
     expect(screen.queryByText(/8\.82/)).toBeNull();
   });
 
@@ -265,13 +239,10 @@ describe("ContextDial — the running figure (docs/252 req 16)", () => {
       />,
     );
     fireEvent.click(screen.getByTestId("context-dial"));
-    // The trigger, the totals row and the turn row all agree on the estimate.
     expect(screen.getAllByText("≈$0.03").length).toBeGreaterThanOrEqual(2);
   });
 
   it("splits the pre-rehydration fallback too, so a plan session never flashes $0", () => {
-    // Without session totals the dial derives them from the turn series. Summing
-    // `costUsd` there would show a subscription session as having spent nothing.
     render(
       <ContextDial
         modelInfo={window200k}

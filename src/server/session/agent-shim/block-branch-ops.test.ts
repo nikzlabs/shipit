@@ -1,23 +1,9 @@
-/**
- * Tests for docker/agent-hooks/block-branch-ops.mjs — the Claude Code
- * PreToolUse hook that keeps the agent on the session's dedicated branch.
- *
- * Strategy: run the real script with `node`, feeding it the JSON envelope
- * Claude Code passes on stdin. We assert exit codes (0 = allow, 2 = block)
- * and that the block reason reaches stderr.
- *
- * The hook is a pure stdin→exit-code function — no git repo or filesystem
- * needed — so these tests are fast and hermetic.
- */
 
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Test lives next to gh.ts so vitest's src/server/** glob picks it up, but the
-// hook script ships from docker/agent-hooks/ (baked into the session-worker
-// image and run by the Claude CLI inside containers).
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOOK_SCRIPT = path.resolve(
   __dirname,
@@ -31,14 +17,7 @@ const HOOK_SCRIPT = path.resolve(
 );
 
 function runHook(payload: unknown, env?: Record<string, string>): { status: number | null; stderr: string } {
-  // Scrub the hook's own control variables from the inherited environment
-  // before layering the case's `env` on top. ShipIt sets
-  // `SHIPIT_GUARD_DESTRUCTIVE_GIT=1` inside a session whose PR has merged, so
-  // an agent running this suite in that state inherited it — and the
-  // "outside the guarded state" case then asserted against an environment that
-  // was, in fact, guarded, and failed. CI never sets it, which is why this only
-  // ever bit in-session. `SHIPIT_SANDBOX` is scrubbed for the mirror-image
-  // reason: inheriting it would silently disarm the *blocked* cases.
+  // Isolate test policy from the enclosing ShipIt session's hook settings.
   const {
     SHIPIT_GUARD_DESTRUCTIVE_GIT: _guard,
     SHIPIT_SANDBOX: _sandbox,
@@ -52,7 +31,6 @@ function runHook(payload: unknown, env?: Record<string, string>): { status: numb
   return { status: r.status, stderr: r.stderr };
 }
 
-/** Build a Bash-tool PreToolUse envelope for `command`. */
 function bash(command: string) {
   return {
     hook_event_name: "PreToolUse",
@@ -74,13 +52,10 @@ describe("block-branch-ops.mjs", () => {
       "git branch feature/foo",
       "git branch -f feature/foo origin/main",
       "git worktree add ../wt -b feature/foo",
-      // Buried in a compound command.
       'echo hi && git checkout -b feature/foo',
       "git add -A; git checkout -b feature/foo; git commit -m x",
       "git status | cat && git switch -c feature/foo",
-      // Leading env assignment before git.
       "GIT_PAGER=cat git checkout -b feature/foo",
-      // git global options before the subcommand.
       "git -C /workspace checkout -b feature/foo",
     ];
     for (const command of blocked) {
@@ -96,21 +71,21 @@ describe("block-branch-ops.mjs", () => {
   describe("allows everything else", () => {
     const allowed = [
       "git status",
-      "git checkout -- src/index.ts", // discard file changes
+      "git checkout -- src/index.ts",
       "git checkout src/index.ts",
-      "git branch", // list
+      "git branch",
       "git branch -a",
       "git branch --list 'feature/*'",
-      "git branch -d old-feature", // delete is fine
+      "git branch -d old-feature",
       "git branch -D old-feature",
       "git branch --delete old-feature",
-      "git commit -m 'checkout -b not a real branch'", // string arg, not a flag
-      'echo "git checkout -b foo"', // not actually invoking git
+      "git commit -m 'checkout -b not a real branch'",
+      'echo "git checkout -b foo"',
       "git log --oneline",
       "git push",
       "git add -A && git commit -m wip",
       "npm test",
-      "git switch", // no-op (errors in real git), nothing to block
+      "git switch",
     ];
     for (const command of allowed) {
       it(`allows: ${command}`, () => {
@@ -148,21 +123,14 @@ describe("block-branch-ops.mjs", () => {
       "git push --force-with-lease",
       "git push --force-with-lease=refs/heads/x:abc123",
       "git push --force-if-includes --force-with-lease origin HEAD",
-      // A rebase reaches the same end state as the hard reset above, and in this
-      // one state it is the wrong tool twice over: add/add conflicts against a
-      // squash-merged base, and — the 2026-08-30 incident — stranded published
-      // commits that no later plain auto-push can ever land.
       "git rebase origin/main",
       "git rebase",
       "git rebase -i origin/main",
       "git rebase --onto origin/main HEAD~3",
-      // The same rewrite under another name — the form an agent reaches for
-      // once the plain `rebase` is refused.
       "git pull --rebase",
       "git pull --rebase origin main",
       "git pull -r",
       "git pull --rebase=merges origin main",
-      // Buried in a compound command / behind an env prefix / after git globals.
       "git fetch origin && git reset --hard origin/main",
       "git fetch origin && git rebase origin/main",
       "GIT_PAGER=cat git reset --hard origin/main",
@@ -173,7 +141,6 @@ describe("block-branch-ops.mjs", () => {
         const r = runHook(bash(command), guarded);
         expect(r.status).toBe(2);
         expect(r.stderr).toContain("Blocked:");
-        // The refusal must route the agent at the safe command, not just say no.
         expect(r.stderr).toContain("shipit branch reset-to-base");
       });
     }
@@ -205,30 +172,20 @@ describe("block-branch-ops.mjs", () => {
 
     describe("allows non-destructive git even when guarded", () => {
       const allowed = [
-        // `shipit branch reset-to-base` is the sanctioned path — it relays to the
-        // orchestrator, so the agent never invokes git and the hook must not
-        // catch it. Guarding against a `git`-prefix false positive.
         "shipit branch reset-to-base",
         "shipit branch reset-to-base && npm test",
-        // planning#279 — the brokered break-glass must pass too. It is the only
-        // sanctioned override, so a hook that caught it would leave a stranded
-        // session with nothing but the hand-rolled reset this hook blocks.
         'shipit branch reset-to-base --force --reason "content shipped via cherry-pick"',
         "git fetch origin && shipit branch reset-to-base --force --reason 'stranded'",
-        "git reset", // mixed reset — unstages, destroys nothing
+        "git reset",
         "git reset --soft HEAD~1",
         "git reset HEAD -- src/index.ts",
-        "git checkout -- src/index.ts", // discard one file, still allowed
+        "git checkout -- src/index.ts",
         "git checkout src/index.ts",
-        // The in-progress verbs. Blocking these would trap the agent inside a
-        // rebase it started before the guard armed, or one the conflict flow
-        // left it in — with `--abort`, the way out, refused.
         "git rebase --continue",
         "git rebase --abort",
         "git rebase --skip",
         "git rebase --quit",
-        "git rebase --help", // a read, not a rewrite
-        // A plain pull MERGES; it rewrites nothing and can lose nothing.
+        "git rebase --help",
         "git pull",
         "git pull origin main",
         "git push",

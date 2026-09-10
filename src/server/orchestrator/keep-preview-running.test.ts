@@ -37,8 +37,6 @@ describe("keep-preview-running lifecycle", () => {
   });
 
   it("skips an archived session whose reservation flag was never cleared", () => {
-    // An archived session has no workspace left (archive evicts it), so a stale
-    // flag must not resurrect its container at every startup.
     const d = deps(session({ userArchived: true, archived: true }));
     expect(restoreReservedPreviews(d.value)).toEqual([]);
     expect(d.getOrCreate).not.toHaveBeenCalled();
@@ -51,12 +49,6 @@ describe("keep-preview-running lifecycle", () => {
     expect(d.getOrCreate).not.toHaveBeenCalled();
   });
 
-  // docs/290 — a surviving agent container is NOT a live preview. The routing
-  // lives in `serviceManagers`, which is process-local and empty at boot, so a
-  // reserved session skipped on "its container is running" was left unroutable
-  // with the reservation quietly broken. `getOrCreate` adopts the rediscovered
-  // container (the same call the docs/240 turn-adoption sweep makes) rather than
-  // creating a second one.
   it("restores routing for a reserved session whose container survived the restart", () => {
     const d = deps();
     d.containers.set("s1", { status: "running" });

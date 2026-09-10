@@ -7,8 +7,6 @@ import {
   detectFileReviewType,
 } from "./reviews.js";
 
-// ---- Helpers ----
-
 function selectionComment(
   partial: {
     id?: string;
@@ -39,10 +37,6 @@ function lineComment(
   };
 }
 
-// ============================================================
-// detectFileReviewType
-// ============================================================
-
 describe("detectFileReviewType", () => {
   it("detects markdown files by extension", () => {
     expect(detectFileReviewType("docs/foo/plan.md")).toBe("markdown");
@@ -57,10 +51,6 @@ describe("detectFileReviewType", () => {
     expect(detectFileReviewType("a/b.json")).toBe("code");
   });
 });
-
-// ============================================================
-// locateSelection
-// ============================================================
 
 describe("locateSelection", () => {
   it("returns the first occurrence when quoted text is unique", () => {
@@ -99,10 +89,6 @@ describe("locateSelection", () => {
     expect(idx).toBe(6);
   });
 });
-
-// ============================================================
-// reanchorComments
-// ============================================================
 
 describe("reanchorComments", () => {
   it("anchors selections whose quoted text appears in the body", () => {
@@ -143,10 +129,6 @@ describe("reanchorComments", () => {
     expect(result.orphaned).toHaveLength(0);
   });
 });
-
-// ============================================================
-// buildReviewPrompt — markdown
-// ============================================================
 
 describe("buildReviewPrompt (markdown)", () => {
   const CONTENT = [
@@ -201,10 +183,6 @@ describe("buildReviewPrompt (markdown)", () => {
   });
 });
 
-// ============================================================
-// buildReviewPrompt — code
-// ============================================================
-
 describe("buildReviewPrompt (code)", () => {
   it("emits per-line snippets sorted by line number", () => {
     const fileContent = [
@@ -253,10 +231,6 @@ describe("buildReviewPrompt (code)", () => {
     expect(prompt).toContain("Please address each comment.");
   });
 });
-
-// ============================================================
-// buildReviewPrompt — the send dialog's note (docs/260)
-// ============================================================
 
 describe("buildReviewPrompt (note)", () => {
   const CONTENT = "## Overview\nScope is unclear.";

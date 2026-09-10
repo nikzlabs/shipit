@@ -1,6 +1,3 @@
-// docs/262 — phase-1 parsing of the consumer `plugins:` block and the
-// plugin-side `exports.plugins:` manifest, plus the snapshot projection.
-
 import { describe, expect, it } from "vitest";
 import type { DeclaredTracker } from "./declared-tracker.js";
 import {
@@ -21,9 +18,6 @@ function repos(raw: unknown, trackers: DeclaredTracker[] = NO_TRACKERS) {
 }
 
 describe("parsePluginRepos — grammar", () => {
-  // Presence is the caller's signal (shipit-config gates on `"plugins" in
-  // raw`), so a null/empty value reaching this parser is a bare `plugins:` —
-  // still intent, and it must keep its tab (req 13).
   it("an empty `plugins:` key still declares intent", () => {
     const { config, warnings } = repos(undefined);
     expect(config.declared).toBe(true);
@@ -95,12 +89,8 @@ describe("parsePluginRepos — grammar", () => {
     expect(warnings).toContainEqual(expect.stringContaining("`owner/name` slug or `self`"));
   });
 
-  // Fail-closed at the use-entry level: a malformed override must never
-  // degrade into different executable semantics (review finding).
   it.each([
     ["a non-boolean autostart", { services: { svc: { autostart: "false" } } }, "autostart"],
-    // docs/266-plugin-service-ports req 2 — a quoted port is a different type with the same
-    // spelling, and a silently dropped one is a service that never previews.
     ["a quoted port", { services: { svc: { port: "4300" } } }, "port"],
     ["a fractional port", { services: { svc: { port: 43.5 } } }, "port"],
     ["a port out of range", { services: { svc: { port: 70000 } } }, "port"],
@@ -132,11 +122,6 @@ describe("parsePluginRepos — grammar", () => {
     expect(warnings).toContainEqual(expect.stringContaining("overrides.nope"));
   });
 
-  // nikzlabs/shipit#2298 finding 2 — a user wrote `settings:` on the `use`
-  // entry, got the manifest default, and reported that a consuming project
-  // cannot set a plugin setting at all. The key is known, one level down, so
-  // the warning has to name where it belongs; "unknown key" alone reads as
-  // "there is no such thing".
   it.each(["settings", "services", "commands"])(
     "an override key written one level too high names where it belongs (%s)",
     (key) => {
@@ -144,8 +129,6 @@ describe("parsePluginRepos — grammar", () => {
         repos: [{ repo: "a/b", name: "tools" }],
         use: [{ plugin: "p", from: "tools", [key]: {} }],
       });
-      // A misplaced key is still only a warning: the import itself is valid,
-      // and dropping it would withhold a working plugin over a typo.
       expect(config.uses).toHaveLength(1);
       expect(warnings).toContainEqual(
         expect.stringContaining(`\`plugins.use[0].overrides.${key}\``),
@@ -261,8 +244,6 @@ describe("parsePluginExports", () => {
       compose: "test-plugin/docker-compose.yml",
       cli: { probe: "test-plugin/cli/probe.mjs" },
       installInputs: ["test-plugin/install.mjs"],
-      // A bare string is a REQUIRED name — what every manifest written before
-      // optionality existed already meant (reqs 23, 24).
       credentials: [{ name: "PROBE_TOKEN", optional: false }],
       hosts: [{ name: "example.com", optional: false }],
     });
@@ -282,18 +263,13 @@ describe("parsePluginExports", () => {
       warnings,
     );
     expect(warnings).toEqual([]);
-    // Zero-config for the common npm plugin, exactly as `agent.dep-dirs` is.
     expect(byDefault!.depDirs).toEqual(["node_modules"]);
-    // Normalized and de-duplicated, like every other path this parser takes.
     expect(declared!.depDirs).toEqual(["node_modules", "tools/node_modules"]);
-    // An explicit empty list is how a plugin opts out of sharing entirely.
     expect(optedOut!.depDirs).toEqual([]);
   });
 
   it("drops a plugin whose dep-dirs escape the repository", () => {
     const warnings: string[] = [];
-    // A dep dir is mounted into every consumer of this plugin, so a path that
-    // leaves the repository is refused the same way `skills` and `compose` are.
     expect(parsePluginExports({ plugins: { bad: { "dep-dirs": ["../outside"] } } }, warnings)).toEqual([]);
     expect(parsePluginExports({ plugins: { bad: { "dep-dirs": "node_modules" } } }, [])).toEqual([]);
   });
@@ -312,7 +288,6 @@ describe("parsePluginExports", () => {
       warnings,
     );
     expect(exportsList.map((e) => e.name)).toEqual(["good"]);
-    // The message quotes the config key so the snapshot projection keeps it.
     expect(warnings).toContainEqual(expect.stringContaining("`exports.plugins.bad`"));
     expect(warnings).toContainEqual(expect.stringContaining("`exports.plugins.escaping`"));
     expect(warnings).toContainEqual(expect.stringContaining("`exports.plugins.bad-cred`"));
@@ -338,12 +313,6 @@ describe("parsePluginExports", () => {
     expect(warnings).toContainEqual(expect.stringContaining("bare hostnames"));
   });
 
-  // A name ShipIt itself sets in every plugin container. The check lives in the
-  // PARSER so both delivery surfaces inherit one answer — the compose surface
-  // drops such a name defensively while the CLI surface appends a duplicate
-  // `Env` entry whose resolution is unspecified — and so the plugin author is
-  // told at declaration time rather than the name being silently ignored on one
-  // surface and duplicated on the other.
   it("refuses a credential named after a ShipIt contract variable", () => {
     for (const name of PLUGIN_CONTRACT_ENV_NAMES) {
       const warnings: string[] = [];
@@ -353,8 +322,6 @@ describe("parsePluginExports", () => {
     }
   });
 
-  // reqs 23, 24 — optionality, expressed the SAME way in both lists because
-  // req 24 asks for "the same visibility req 23 gives credentials".
   describe("optional credentials and hosts", () => {
     it("reads a bare string as required and a mapping as what it says", () => {
       const warnings: string[] = [];
@@ -389,11 +356,6 @@ describe("parsePluginExports", () => {
     });
 
     it("validates a mapping's name exactly as a bare one, and says why it dropped", () => {
-      // The widening adds a way to WRITE a name, never a way to smuggle one
-      // past the rules: the same hostname and env-var shapes apply, and the
-      // ShipIt contract names stay reserved. Each drop must also SURFACE — a
-      // silently dropped export is a plugin that is simply not there, with no
-      // sentence anywhere saying so (req 13).
       const cases: [unknown, string][] = [
         [{ hosts: [{ name: "https://fal.run" }] }, "bare hostnames"],
         [{ credentials: [{ name: "lower_case" }] }, "look like environment variables"],
@@ -410,8 +372,6 @@ describe("parsePluginExports", () => {
     });
 
     it("drops the plugin when `optional` is not a boolean", () => {
-      // Fail-closed, the `overrides.services.<x>.autostart` rule: `optional:
-      // \"true\"` is a string, and either reading would be a guess.
       const warnings: string[] = [];
       expect(
         parsePluginExports(
@@ -429,8 +389,6 @@ describe("parsePluginExports", () => {
     });
 
     it("warns on an unknown key inside an entry, keeping the plugin", () => {
-      // Forward-compatibility, the same warn-not-drop rule every other unknown
-      // key gets — but a misspelled `optionl:` must not vanish silently.
       const warnings: string[] = [];
       const [exported] = parsePluginExports(
         { plugins: { p: { credentials: [{ name: "FAL_KEY", optionl: true }] } } },
@@ -442,8 +400,6 @@ describe("parsePluginExports", () => {
   });
 
   it("leaves an ordinary SHIPIT_-ish name alone — only the contract names are taken", () => {
-    // The reservation is the four names ShipIt sets, not a prefix land-grab: a
-    // plugin's own `SHIPIT_TOOL_TOKEN` collides with nothing.
     const warnings: string[] = [];
     const exportsList = parsePluginExports(
       { plugins: { p: { credentials: ["SHIPIT_TOOL_TOKEN", "FAL_KEY"] } } },
@@ -485,8 +441,6 @@ describe("parseShipitConfig integration (docs/262)", () => {
   });
 
   it("a bare `plugins:` key (YAML null) declares intent — the tab must appear", () => {
-    // The regression this guards: treating null as absent left the user with
-    // neither a tab nor a warning for a declaration they clearly started.
     const config = parseShipitConfig({ agent: {}, plugins: null });
     expect(config.plugins.declared).toBe(true);
   });
@@ -527,10 +481,6 @@ describe("buildPluginReposSnapshot", () => {
     expect(tools?.uses).toEqual([{ plugin: "probe", alias: "remote", found: null, credentials: [], hosts: [] }]);
   });
 
-  // req 8, req 12 — what the card's Refresh action is gated on. A pin is
-  // resolved once and deliberately frozen (`plugin-pins.ts`), so the only thing
-  // that moves it is an edit to this declaration; the tab must not offer an
-  // action that could never do anything.
   it("marks a pinned repository pinned, and a branch-tracking or self one not", () => {
     const warnings: string[] = [];
     const plugins = parsePluginRepos(
@@ -540,8 +490,6 @@ describe("buildPluginReposSnapshot", () => {
           { repo: "a/b", name: "tracked", branch: "main" },
           { repo: "a/c", name: "tagged", pin: "v1.2.0" },
           { repo: "a/d", name: "sha-pinned", pin: "0123456789abcdef0123456789abcdef01234567" },
-          // No `branch` and no `pin` — the repository's default branch, which
-          // is tracked just as much as a named one.
           { repo: "a/e", name: "defaulted" },
         ],
         use: [],
@@ -560,9 +508,6 @@ describe("buildPluginReposSnapshot", () => {
     });
   });
 
-  // The declaration decides, not the generation: a project that pinned a
-  // repository AFTER a branch-built generation went live would otherwise keep
-  // being offered a refresh that cannot move it.
   it("reads pinned off the declaration even when a live generation records a branch ref", () => {
     const warnings: string[] = [];
     const plugins = parsePluginRepos(
@@ -593,7 +538,6 @@ describe("buildPluginReposSnapshot", () => {
       NO_TRACKERS,
       warnings,
     );
-    // The export is dropped for a bad path, so the selector can't resolve.
     const exportsList = parsePluginExports({ plugins: { probe: { compose: "/abs.yml" } } }, warnings);
     const snapshot = buildPluginReposSnapshot(plugins, exportsList, null, warnings);
     expect(snapshot.repos[0].issues).toHaveLength(1);
@@ -601,8 +545,6 @@ describe("buildPluginReposSnapshot", () => {
   });
 
   it("an exports-only repo grows no tab from a manifest warning", () => {
-    // plan §3: the tab renders only when the PROJECT declares plugins. A
-    // plugin author's own manifest warning belongs in the config banner.
     const snapshot = buildPluginReposSnapshot(
       { declared: false, repos: [], uses: [] },
       [],
@@ -613,8 +555,6 @@ describe("buildPluginReposSnapshot", () => {
     expect(snapshot.warnings).toEqual([]);
   });
 
-  // The four tracked-repo states the card distinguishes (req 15: a failed
-  // refresh over a live prior version is not "never fetched").
   describe("runtime status projection", () => {
     const declaration = { repos: [{ repo: "a/b", name: "tools", branch: "main" }], use: [{ plugin: "p", from: "tools" }] };
     const build = (runtime: Record<string, PluginRepoRuntime>) => {
@@ -626,18 +566,10 @@ describe("buildPluginReposSnapshot", () => {
     it("a live generation is active, with its exact commit", () => {
       const card = build({ tools: { commit: "abc123", exports: ["p"] } });
       expect(card).toMatchObject({ status: "active", commit: "abc123" });
-      // The live generation's manifest is what phase-2 selectors resolve against.
       expect(card.uses[0].found).toBe(true);
       expect(card.issues).toEqual([]);
     });
 
-    // Seen in the dogfood, which has no install runner so EVERY activation
-    // carries this sentence: it rendered twice on the card. `manifestWarnings`
-    // (durable, on the generation record) and `warning` (transient, from the
-    // activation attempt) are both unshifted into one `issues` list, and
-    // `activateGeneration` was writing the same string to both. This asserts
-    // the merge, so a future caller that repopulates both is caught here rather
-    // than by someone reading a card.
     it("does not render the same sentence twice when both warning channels carry it", () => {
       const notInstalled =
         "`p` declares an install command, which this runtime cannot run — "
@@ -649,9 +581,6 @@ describe("buildPluginReposSnapshot", () => {
     });
 
     it("keeps both when the two channels carry DIFFERENT facts", () => {
-      // The reason the fix is "stop writing it twice" and not "dedupe on
-      // render": a moved-tag advisory and an uninstalled generation are
-      // unrelated, and the card must state both.
       const card = build({
         tools: {
           commit: "abc123",
@@ -690,9 +619,6 @@ describe("buildPluginReposSnapshot", () => {
       expect(build({}).uses[0].found).toBeNull();
     });
 
-    // Found live in the dogfood instance: a pinned version that does not export
-    // the selected plugin produced two bullets for one fact — the phase-2
-    // failure and this projection's own generic message.
     it("states a failed selector once, not twice", () => {
       const card = build({
         tools: {
@@ -708,7 +634,6 @@ describe("buildPluginReposSnapshot", () => {
     });
 
     it("still reports a live-manifest gap when the attempt failed for another reason", () => {
-      // A fetch failure plus a newly declared selector: two different facts.
       const card = build({ tools: { commit: "abc123", exports: ["other"], error: "authorization failed" } });
       expect(card.issues).toEqual([
         "authorization failed",
@@ -716,11 +641,6 @@ describe("buildPluginReposSnapshot", () => {
       ]);
     });
 
-    // req 19 — "the repository, ref, and exact commit BEING EXECUTED". `ref`
-    // came from the declaration and `commit` from the live generation, so an
-    // edited declaration rendered `active` at a (ref, commit) pair no round
-    // ever produced. Seen in the dogfood instance, where a round needs an
-    // attached runner and an edit made with none never settles.
     it("pairs the commit with the ref that produced it, never the declared one", () => {
       const card = build({ tools: { commit: "abc123", exports: ["p"], ref: "pin v1.0.0" } });
       expect(card).toMatchObject({ status: "active", ref: "pin v1.0.0", commit: "abc123" });
@@ -732,28 +652,17 @@ describe("buildPluginReposSnapshot", () => {
     });
 
     it("shows the running ref even when the declaration has moved past it", () => {
-      // And says nothing else about the difference: the `activating` /
-      // `degraded` framing covers the gap, and a "your declaration has moved"
-      // row cannot be told apart from a ref that legitimately resolves to the
-      // live commit — activation short-circuits to `unchanged` there and leaves
-      // the record's ref alone, so such a row would never clear (review
-      // finding). Distinguishing them needs a network resolve plan §3 rules out.
       const card = build({ tools: { commit: "abc123", exports: ["p"], ref: "branch next" } });
       expect(card).toMatchObject({ status: "active", ref: "branch next", commit: "abc123" });
       expect(card.issues).toEqual([]);
     });
 
     it("a live generation with no recorded ref reports the commit alone", () => {
-      // The record is parsed with an unchecked cast, so this shape is
-      // reachable. Falling back to the DECLARED ref here would rebuild exactly
-      // the ref/commit pair no round produced (review finding).
       const card = build({ tools: { commit: "abc123", exports: ["p"] } });
       expect(card).toMatchObject({ status: "active", ref: null, commit: "abc123" });
     });
   });
 
-  // docs/262 req 24 — the same projection for declared hosts, and the property
-  // the requirement is emphatic about: the declaration decides nothing.
   describe("host needs projection", () => {
     const declaration = {
       repos: [{ repo: "a/b", name: "tools", branch: "main" }],
@@ -788,8 +697,6 @@ describe("buildPluginReposSnapshot", () => {
     });
 
     it("an unallowed host is a need, never an issue row", () => {
-      // A gap the user may close deliberately is not a malfunction of the
-      // version: the plugin is live and whole, one allowlist entry away.
       const card = build([
         { repo: "tools", plugin: "palette", alias: "artk", hosts: [{ host: "fal.run", reach: "grantable", optional: false }] },
       ]);
@@ -802,8 +709,6 @@ describe("buildPluginReposSnapshot", () => {
     });
   });
 
-  // docs/262 req 23 — needs hang off the `use` entry that declares them, so
-  // the card can say WHICH plugin lacks the key.
   describe("credential needs projection", () => {
     const declaration = {
       repos: [{ repo: "a/b", name: "tools", branch: "main" }],
@@ -838,8 +743,6 @@ describe("buildPluginReposSnapshot", () => {
         alias: "artk",
         credentials: [{ name: "FAL_KEY", satisfied: false, optional: false }],
       });
-      // A plugin with no declared credentials carries an empty list, not the
-      // other plugin's needs.
       expect(card.uses[1]).toMatchObject({ alias: "probe", credentials: [] });
     });
 

@@ -19,10 +19,10 @@ session on the repository you are editing:
 ```yaml
 exports:
   plugins:
-    requirements: { ... }        # the manifest — schema in plugins.md
+    requirements: { ... }
 plugins:
   repos:
-    - repo: self                 # no `branch:` and no `pin:` — both are errors
+    - repo: self # branch and pin are not allowed.
       name: dev
   use:
     - plugin: requirements
@@ -298,21 +298,19 @@ Ports do not collide, because **an exported fragment does not declare one**. See
 [Your service does not choose its port](#your-service-does-not-choose-its-port).
 
 ```yaml
-# the plugin repository's own shipit.yaml
+# shipit.yaml
 agent:
   install:
     - npm ci
-    - npm run build        # the same build the manifest's `install` runs
-  # a skipped install restores only these, so the build output is named too
+    - npm run build
   dep-dirs: [node_modules, plugins/web/dist]
-compose: docker-compose.yml        # the DEV service lives here
+compose: docker-compose.yml
 
 exports:
   plugins:
     web:
-      compose: plugins/web/docker-compose.yml   # the PRODUCTION service
+      compose: plugins/web/docker-compose.yml
       install: npm ci && npm run build
-      # `plugins/web/dist` is load-bearing the moment you add `install-inputs`
       dep-dirs: [node_modules, plugins/web/dist]
 
 plugins:
@@ -324,22 +322,17 @@ plugins:
       from: dev
       overrides:
         services:
-          web: { autostart: false }   # the dev service owns the preview here
+          web: { autostart: false }
 ```
 
 ```yaml
-# plugins/web/docker-compose.yml — what a consumer runs
+# plugins/web/docker-compose.yml
 services:
   web:
     image: node:22-alpine
-    # No `user:` — ShipIt supplies the consuming session's own uid, which is
-    # per-session and therefore not something a fragment could name. A pinned
-    # uid cannot own `/project`, so git and dependency caches fail there.
     working_dir: /app
-    command: node /app/serve.mjs     # reads SHIPIT_PLUGIN_PORT; no watcher
-    volumes: [".:/app:ro"]           # `.` is THIS FILE'S directory: plugins/web
-    # no `ports:` — the consuming project names it, and the server reads
-    # SHIPIT_PLUGIN_PORT. Declaring one here is refused.
+    command: node /app/serve.mjs
+    volumes: [".:/app:ro"]
 ```
 
 **A fragment's `.` is the fragment's own directory, not the repository root** —
@@ -351,15 +344,13 @@ repository root's `node_modules` finds nothing. The whole tree is mounted as
 well, at `/plugin`, for a service that would rather run from the root.
 
 ```yaml
-# docker-compose.yml — your own session only; never reaches a consumer
+# docker-compose.yml
 services:
-  web-dev:                       # a DIFFERENT name from the exported service
+  web-dev:
     image: node:22-alpine
-    # No `user:` needed, in a contained session either — ShipIt fills in this
-    # session's own identity, which is what lets the service write this mount.
     working_dir: /app
     command: npm run dev -- --host 0.0.0.0 --port 4301
-    volumes: [".:/app"]          # writable here; watching and hot reload are fine
+    volumes: [".:/app"]
     ports: ["4301:4301"]
     x-shipit-preview: auto
 ```

@@ -181,11 +181,10 @@ push a tag. The equivalent by hand, if the command is unavailable:
 
 ```
 git fetch origin
-git checkout -B release/0.3.0 origin/stable     # release.branch (default: stable)
-# bring in what you're shipping:
+git checkout -B release/0.3.0 origin/stable
 #   release from main → git merge --no-ff origin/main
 #   hotfix            → git cherry-pick <sha-from-main> [<sha> …]
-# bump the version source (e.g. edit package.json "version" to 0.3.0)
+# Set the version to 0.3.0.
 git commit -am "Release v0.3.0"
 ```
 
@@ -212,11 +211,11 @@ confirmed release you take explicit control so the tag points at exactly the
 right commit:
 
 ```
-# bump the version source (e.g. edit package.json "version" to 0.3.0)
+# Set the version to 0.3.0.
 git add -A && git commit -m "Release v0.3.0"
-git tag -a v0.3.0 -m "Release v0.3.0"   # annotated, not lightweight
-git push origin HEAD          # the bump commit
-git push origin v0.3.0        # the tag — triggers the repo's release CI
+git tag -a v0.3.0 -m "Release v0.3.0"
+git push origin HEAD
+git push origin v0.3.0
 ```
 
 Then emit a tagged marker including the tag's commit SHA:
@@ -261,14 +260,14 @@ rendered chat — they drive the card.
 ```yaml
 release:
   mechanism: release-branch      # tag-triggered (default) | release-branch | brokered
-  branch: stable                 # maintenance branch for release-branch; default: stable
+  branch: stable
   version-source: package.json   # package.json | Cargo.toml | pyproject.toml | VERSION | tag
-  version-source-path: packages/api/package.json  # monorepo: where the version file lives
+  version-source-path: packages/api/package.json
   tag-pattern: "v{version}"      # must contain {version}; default: "v{version}"
   prerelease-pattern: "v{version}-rc.{n}"  # {n} auto-increments; default shown
   notes: github-generated        # github-generated | commits | changelog:CHANGELOG.md
-  gate: "npm test"               # optional: local command the agent runs before tagging
-  workflow: .github/workflows/release.yml  # path used for existence checks / scaffolding
+  gate: "npm test"
+  workflow: .github/workflows/release.yml
 ```
 
 All fields are optional. `release-branch` requires a file-backed `version-source`

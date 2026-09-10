@@ -23,7 +23,6 @@ export async function handleTerminalStart(ctx: ConnectionCtx & RunnerCtx, msg: W
   if (!runner.remoteTerminalRunning) {
     await runner.startTerminalOnWorker(msg.cols, msg.rows);
   } else {
-    // Terminal already running — replay buffered output for this viewer
     const buffered = runner.getTerminalOutputBuffer();
     if (buffered) {
       ctx.send({ type: "terminal_output", data: buffered });
@@ -46,4 +45,3 @@ export async function handleTerminalResize(ctx: ConnectionCtx & RunnerCtx, msg: 
   const rows = typeof msg.rows === "number" ? Math.max(1, Math.min(200, msg.rows)) : 24;
   await runner.resizeTerminalOnWorker(cols, rows);
 }
-

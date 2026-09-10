@@ -1,22 +1,9 @@
-/**
- * planning#432 — the diff half of the OpenCode recognition guards.
- *
- * The rest of the surface-treatment guards live next to the normalizer
- * (`session/agents/opencode/opencode-tool-normalizer.test.ts`); this one needs
- * `projectToolUse` / `DIFF_INPUT_TOOLS`, which are orchestrator-side, and the
- * layer-boundary lint allows the crossing only here. It pins the contract that
- * failed in the docs/272 run: an OpenCode edit/write, normalized, must come out
- * of the wire projection with `diffStats` — the artifact the DiffBlock renders —
- * and with its `file_path` still on the wire.
- */
-
 import { describe, it, expect } from "vitest";
 import { projectToolUse } from "../transcript-projection.js";
 import { normalizeOpencodeToolCall } from "../../session/agents/opencode/opencode-tool-normalizer.js";
 
 describe("OpenCode edit/write recognition through the wire projection", () => {
-  // Bodies above INPUT_STRIP_FLOOR_BYTES (200), so the projection strips them —
-  // the path where diffStats is the ONLY surviving diff information.
+  // Exceed INPUT_STRIP_FLOOR_BYTES to exercise body stripping.
   const bigOld = Array.from({ length: 20 }, (_, i) => `old line ${i}`).join("\n");
   const bigNew = Array.from({ length: 30 }, (_, i) => `new line ${i}`).join("\n");
 
@@ -29,8 +16,6 @@ describe("OpenCode edit/write recognition through the wire projection", () => {
     const projected = projectToolUse({ id: "call_1", ...call });
     expect(projected.diffStats).toEqual({ added: 30, removed: 20 });
     expect(projected.input.file_path).toBe("/workspace/a.ts");
-    // The body keys are dropped from the wire (modal-fetchable), which is only
-    // safe BECAUSE diffStats was computed first.
     expect(projected.bodyTruncated).toBe(true);
     expect(projected.input.old_string).toBeUndefined();
     expect(projected.input.new_string).toBeUndefined();

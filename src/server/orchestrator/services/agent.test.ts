@@ -20,8 +20,6 @@ describe("dispatchAgentMessage authentication", () => {
         get: () => ({ hasRunnableModels: true }),
       },
       credentialStore: {},
-      // Regression boundary: this is the obsolete value that rejected added
-      // account rows before the account-aware AgentRegistry could route them.
       authManager: { authenticated: false, checkCredentials: vi.fn() },
       sessionManager: { get: () => ({ warm: false }) },
       graduation: {},
@@ -36,7 +34,6 @@ describe("dispatchAgentMessage authentication", () => {
 });
 
 describe("dispatchAgentMessage image admission (planning#460)", () => {
-  /** The minimum deps a dispatch needs to reach the image checks. */
   function depsFor(session: Record<string, unknown>) {
     return {
       runnerRegistry: {
@@ -59,11 +56,6 @@ describe("dispatchAgentMessage image admission (planning#460)", () => {
   const PNG = [{ data: "aGk=", mediaType: "image/png", filename: "shot.png" }];
 
   it("refuses an image dispatched at a session pinned to a text-only model", async () => {
-    // The dispatched twin of the WS gate, covering the HTTP message route
-    // (`api-routes-agent.ts`) — the one ingress that reaches a turn through this
-    // service rather than through the composer. Ingresses that call
-    // `runner.dispatch` DIRECTLY (Quick Capture) never come through here at all;
-    // the backstop in `dispatched-turn.ts` is what covers those.
     const deps = depsFor({ warm: false, serviceId: "deepseek", billingMode: "key", model: "deepseek-v4-pro" });
     await expect(dispatchAgentMessage(deps as never, "session", { text: "what is this?", images: PNG }))
       .rejects.toThrow(/cannot read images/s);

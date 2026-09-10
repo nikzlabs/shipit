@@ -1,19 +1,7 @@
-/**
- * Shared stubs and helpers for container/worker integration tests.
- *
- * Used by worker-terminal.test.ts, worker-file-watcher.test.ts, and the
- * fake-Docker container fixtures (container-lifecycle, standby-container,
- * warm-pool-staleness, child-message-resume).
- */
-
 import { EventEmitter } from "node:events";
 import http from "node:http";
 import net from "node:net";
 import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams, PermissionMode } from "../../shared/types.js";
-
-// ---------------------------------------------------------------------------
-// Stubs
-// ---------------------------------------------------------------------------
 
 export class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentProcess {
   readonly agentId: AgentId = "claude";
@@ -53,7 +41,6 @@ export class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements
   }
 }
 
-/** Stub TerminalProcess that doesn't spawn a real PTY. */
 export class StubTerminal extends EventEmitter {
   startCalled = false;
   lastCwd = "";
@@ -79,7 +66,6 @@ export class StubTerminal extends EventEmitter {
   get running(): boolean { return this.startCalled; }
 }
 
-/** Stub FileWatcher that doesn't watch the filesystem. */
 export class StubWatcher extends EventEmitter {
   startCalled = false;
   stopCalled = false;
@@ -93,46 +79,13 @@ export class StubWatcher extends EventEmitter {
   stop(): void { this.stopCalled = true; }
   removeAllListeners() { super.removeAllListeners(); return this; }
 
-  /** Test helper: simulate file changes. */
   simulateChanges(paths: string[]) {
     this.emit("changes", paths);
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Allocate a loopback TCP port that is guaranteed to have no listener.
- *
- * Fake-Docker container fixtures need a `workerPort` (and IP) whose resulting
- * worker URL (a) can NEVER reach a real session worker and (b) fails
- * instantly. Both constraints are load-bearing:
- *
- * - The production worker port (9100) must never appear in a fixture. When
- *   this suite runs inside a ShipIt session container (dogfooding), the
- *   session's REAL worker listens on 127.0.0.1:9100 — a fixture pointing
- *   there makes the test orchestrator's persistent-409 recovery
- *   (container-session-runner.ts, docs/142 Problem B2) POST /agent/kill and
- *   SIGTERM the very agent running vitest, mid-turn. Observed in production.
- * - Bridge IPs (172.18.x) are no safer: inside a session container they can
- *   be live NEIGHBOR session workers on the shared Docker network, and in
- *   some CI network namespaces they blackhole, resolving only on a 12s
- *   fail-open timeout that blows the per-test budget.
- * - Loopback + a dead port yields an instant ECONNREFUSED everywhere, so the
- *   env-prep secret pushes, SSE connects, and /agent/start calls that
- *   ContainerSessionRunner fires at the fixture URL fail fast and touch
- *   nothing real.
- *
- * Binding port 0 lets the kernel pick a free ephemeral port; closing the
- * listener frees it dead. The kernel cycles through the ephemeral range
- * before reusing a port, so it stays dead for the lifetime of a test run.
- *
- * Fixture IPs may be any distinct `127.0.0.x` (the whole 127/8 block is
- * loopback on Linux) — with the dead port they all refuse instantly, and
- * distinctness keeps per-container IP assertions meaningful.
- */
+// Avoid port 9100 and bridge IPs: fixture recovery could kill real session workers.
+// This port is closed, not reserved; another process could bind it later.
 export async function allocateDeadLoopbackPort(): Promise<number> {
   const srv = net.createServer();
   const port = await new Promise<number>((resolve, reject) => {
@@ -147,7 +100,6 @@ export async function allocateDeadLoopbackPort(): Promise<number> {
   return port;
 }
 
-/** Collect SSE events from a raw HTTP connection to the worker. */
 export function collectSSE(
   workerUrl: string,
   onEvent: (type: string, data: unknown) => void,
@@ -182,7 +134,6 @@ export function collectSSE(
   return { close: () => req.destroy() };
 }
 
-/** Wait for a condition to become true. */
 export async function waitFor(fn: () => boolean, timeoutMs = 3000, label = "condition"): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

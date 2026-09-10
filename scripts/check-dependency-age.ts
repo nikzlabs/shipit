@@ -1,51 +1,4 @@
 #!/usr/bin/env tsx
-/**
- * Dependency age policy enforcement.
- *
- * Policy: every package version listed in a POLICY_MANIFESTS manifest must have
- * been published to the registry at least MIN_AGE_DAYS ago. This is a defense
- * against supply-chain attacks where a compromised maintainer publishes a
- * malicious version — we want a buffer window for the community (and
- * automated scanners) to catch it before we pull it into our build.
- *
- * Also asserts that every version is pinned to an exact version (no `^`,
- * `~`, `*`, ranges, tags, or git URLs).
- *
- * The escape hatch is `.dependency-age-allowlist.json`, not a lowered
- * MIN_AGE_DAYS — same shape as `.audit-allowlist.json`: a reason and an expiry,
- * because an entry without either is not a decision. A waiver names one exact
- * `manifest` + `package` + `version`, so it covers only the artifact that was
- * signed off and can never carry forward into a bump nobody weighed. Note what
- * that does NOT say: a waiver stops APPLYING when the pin moves, but it is not
- * destroyed — move the pin back to the waived version before `expires` and it
- * suppresses again. That is intended (it is the same version a human approved,
- * inside the window they approved it for); `expires` is what bounds it, which
- * is why the expiry is capped at MAX_WAIVER_DAYS. It suppresses `too-new` ONLY;
- * `not-pinned` and `lookup-failed` are not risk-window questions and stay
- * unwaivable.
- *
- * One deliberate difference from the audit allowlist: a waiver whose version
- * has since aged past MIN_AGE_DAYS is reported as stale and safe to delete
- * rather than failing the build. The subject of an age waiver ages out on its
- * own, so the entry becomes harmless without anyone acting, and failing CI over
- * dead weight would be churn. `expires` still bites where it matters — past it,
- * a waiver stops suppressing, and the underlying `too-new` violation fails
- * normally.
- *
- * Two manifests are under the policy, not one. `docker/agent-cli/package.json`
- * pins the agent CLIs baked into the session-worker image — code that runs with
- * the agent's own credentials — so it is the manifest a supply-chain attack
- * would most want, yet it was unchecked here for as long as this script existed.
- * Renovate's `minimumReleaseAge` was the only thing holding those bumps, and a
- * cooldown configured per-package is not a gate: when a CLI was absent from the
- * rule's name list it got no cooldown at all, and #2502 duly bumped `opencode-ai`
- * to a version published the same morning, green. A CI check that reads the
- * manifest cannot be opted out of by a package nobody remembered to list.
- *
- * Run:  npm run check-deps
- *
- * Exits non-zero on any violation so it can be wired into CI.
- */
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -55,30 +8,14 @@ export const MIN_AGE_DAYS = 7;
 const MIN_AGE_MS = MIN_AGE_DAYS * 24 * 60 * 60 * 1000;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-/**
- * How far ahead an age waiver's `expires` may sit. Bounded so a waiver cannot
- * be written to outlive the problem it was granted for — an unbounded expiry is
- * how a temporary exception becomes a permanent one nobody revisits.
- */
 export const MAX_WAIVER_DAYS = 90;
 
-/**
- * Every manifest the policy covers, repo-relative. Add a manifest here when one
- * is introduced — a pinned dependency that no entry names is unchecked, which
- * is the exact hole this list closes.
- */
 export const POLICY_MANIFESTS = ["package.json", "docker/agent-cli/package.json"] as const;
 
-/** Repo-relative path of the age-waiver allowlist. Absent file = no waivers. */
 export const ALLOWLIST_PATH = ".dependency-age-allowlist.json";
 
 const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
-// `npm view` reaches the registry over the network, so a transient blip
-// (DNS hiccup, 5xx, rate-limit) makes a single call fail and would otherwise
-// fail the whole build with a spurious `lookup-failed`. Retry a few times with
-// a short synchronous backoff before giving up; genuine failures still surface
-// after the last attempt, behaving exactly as before.
 const VIEW_ATTEMPTS = 4;
 const VIEW_BACKOFF_MS = 1500;
 
@@ -90,57 +27,27 @@ export interface Violation {
   detail: string;
 }
 
-/** A manifest's `dependencies` + `devDependencies`, flattened and labelled. */
 export interface ManifestDeps {
   manifest: string;
   deps: Array<[string, string]>;
 }
 
-/**
- * One signed-off waiver of the minimum-age rule. Every field is matched
- * exactly — a waiver is for one pin at one version in one manifest, never for a
- * package in general, so bumping the pin invalidates it automatically.
- */
 export interface AgeWaiver {
-  /** Repo-relative manifest, e.g. "docker/agent-cli/package.json". */
   manifest: string;
-  /** Package name, e.g. "@anthropic-ai/claude-code". */
   package: string;
-  /** The exact version waived. A different version is not covered. */
   version: string;
-  /** Why the cooldown is being skipped. Required: without one it is not a decision. */
   reason: string;
-  /** ISO date (YYYY-MM-DD). Past this the waiver stops suppressing anything. */
   expires: string;
 }
 
-/**
- * True only for a canonical YYYY-MM-DD naming a real day. The lexicographic
- * `expires < today` comparison is sound only for canonical dates, so
- * "2026-9-04" and "2026-02-31" are rejected here rather than mis-compared —
- * and so are the false-PASS spellings ("never", "9999") that would otherwise
- * read as unexpired forever.
- */
+// Lexicographic expiry checks require real, canonical YYYY-MM-DD dates.
 function isCalendarDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00Z`);
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 
-/**
- * Rejects an object with the same member name twice, BEFORE `JSON.parse` gets
- * to hide it. This file's authorization happens through diff review, and
- * `JSON.parse` silently keeps the LAST duplicate — so
- *
- *     { "package": "opencode-ai", "package": "@anthropic-ai/claude-code", … }
- *
- * reads to a reviewer as a waiver for one package and waives a different one.
- * Standard JSON permits duplicates, which is exactly why the check has to be
- * here rather than assumed away.
- *
- * Deliberately a scanner over the raw text, not a re-parse: by the time there
- * is an object to inspect, the evidence is gone.
- */
+// Inspect raw text: JSON.parse discards duplicate keys and keeps only the last value.
 function assertNoDuplicateKeys(raw: string): void {
   const seen: Array<Set<string>> = [];
   let i = 0;
@@ -153,8 +60,7 @@ function assertNoDuplicateKeys(raw: string): void {
       i++;
       while (i < raw.length && raw[i] !== '"') {
         if (raw[i] === "\\") {
-          // Keep the escape verbatim: two spellings of one name are still two
-          // distinct source tokens, and normalizing them is not this check's job.
+          // Compare source spellings; escaped equivalents are not normalized.
           text += raw[i] + (raw[i + 1] ?? "");
           i += 2;
           continue;
@@ -162,7 +68,7 @@ function assertNoDuplicateKeys(raw: string): void {
         text += raw[i];
         i++;
       }
-      i++; // closing quote
+      i++;
       pendingKey = text;
       continue;
     }
@@ -171,8 +77,6 @@ function assertNoDuplicateKeys(raw: string): void {
     } else if (ch === "}") {
       seen.pop();
     } else if (ch === ":") {
-      // Runs after JSON.parse succeeded, so a ':' outside a string always
-      // follows a key and `seen` always has a scope to record it in.
       const scope = seen[seen.length - 1];
       if (scope && pendingKey !== undefined) {
         if (scope.has(pendingKey)) {
@@ -189,11 +93,6 @@ function assertNoDuplicateKeys(raw: string): void {
   }
 }
 
-/**
- * Parses and validates the allowlist. Throws on anything malformed: a waiver
- * this script cannot read is a waiver nobody can audit, and silently ignoring
- * it would fail *open* the next time someone fat-fingers a field name.
- */
 export function parseWaivers(raw: string, now: number = Date.now()): AgeWaiver[] {
   let parsed: unknown;
   try {
@@ -224,9 +123,6 @@ export function parseWaivers(raw: string, now: number = Date.now()): AgeWaiver[]
     if (typeof e?.expires !== "string" || !isCalendarDate(e.expires)) {
       problems.push(`${label} — "expires" must be a real calendar date, YYYY-MM-DD`);
     } else if (e.expires > horizon) {
-      // A canonical far-future date ("9999-12-31") passes every other check and
-      // is how a "temporary" waiver quietly becomes permanent. Nothing waiving a
-      // 7-day cooldown needs longer than this.
       problems.push(
         `${label} — "expires" is ${e.expires}, beyond the ${MAX_WAIVER_DAYS}-day ` +
           `limit (${horizon}); a waiver this long is a policy change, not a waiver`,
@@ -241,37 +137,22 @@ export function parseWaivers(raw: string, now: number = Date.now()): AgeWaiver[]
   return parsed as AgeWaiver[];
 }
 
-/** Reads the allowlist from disk. A missing file means no waivers, not an error. */
 export function loadWaivers(repoRoot: string, now: number = Date.now()): AgeWaiver[] {
   const path = resolve(repoRoot, ALLOWLIST_PATH);
   if (!existsSync(path)) return [];
   return parseWaivers(readFileSync(path, "utf8"), now);
 }
 
-/** The outcome of applying waivers to a raw violation list. */
 export interface WaiverPartition {
-  /** Violations that still fail the build. */
   violations: Violation[];
-  /** Violations a live waiver suppressed, with the waiver that did it. */
   suppressed: Array<{ violation: Violation; waiver: AgeWaiver }>;
-  /**
-   * Waivers that matched a violation but have expired. The violation is in
-   * `violations` and fails; this is the explanation of why it was not waived.
-   */
   expired: Array<{ violation: Violation; waiver: AgeWaiver }>;
-  /** Waivers matching no current violation — dead weight, reported not fatal. */
   stale: AgeWaiver[];
 }
 
-/**
- * Resolves the publish timestamp of `name@version` as an ISO string, or
- * `undefined` when the registry knows the package but not that version.
- * Throws when the lookup itself fails.
- */
 export type PublishLookup = (name: string, version: string) => string | undefined;
 
 function sleepSync(ms: number): void {
-  // Block synchronously (this script is intentionally sequential/sync).
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
@@ -291,24 +172,12 @@ function npmViewTime(spec: string): string {
   throw lastErr;
 }
 
-/** The real registry lookup, retried. Swapped out in tests. */
 export const npmPublishLookup: PublishLookup = (name, version) => {
   const times = JSON.parse(npmViewTime(`${name}@${version}`)) as Record<string, string>;
   return times[version];
 };
 
-/**
- * Reads one manifest's dependencies. `manifest` is repo-relative.
- *
- * `optionalDependencies` is read alongside the other two: it installs like a
- * dependency and would otherwise be an unchecked place to put a pin.
- *
- * `overrides` is NOT read, deliberately — it is a nested, differently-shaped
- * block that pins *transitives*, and it is governed by `npm run check-audit`
- * (see CLAUDE.md, dependency policy rule 3) rather than by this cooldown. So a
- * young version reached through `overrides` is outside this gate; say so rather
- * than implying the check is total.
- */
+// Transitive overrides are covered by check-audit, not this age gate.
 export function readManifestDeps(repoRoot: string, manifest: string): ManifestDeps {
   const pkg = JSON.parse(readFileSync(resolve(repoRoot, manifest), "utf8")) as {
     dependencies?: Record<string, string>;
@@ -325,11 +194,6 @@ export function readManifestDeps(repoRoot: string, manifest: string): ManifestDe
   };
 }
 
-/**
- * Applies both rules — exact pin, then minimum age — to every dependency of
- * every manifest. Pure apart from the injected lookup, so the tests drive it
- * without touching the registry.
- */
 export function findViolations(
   manifests: ManifestDeps[],
   options: { now: number; lookup: PublishLookup },
@@ -364,10 +228,6 @@ export function findViolations(
         }
         publishedAt = Date.parse(stamp);
         if (Number.isNaN(publishedAt)) {
-          // `NaN < MIN_AGE_MS` is false, so an unparseable stamp would sail
-          // through as "old enough" — a fail-OPEN on a malformed or hostile
-          // registry response. Treat it as a lookup that did not produce an
-          // answer, which is what it is.
           violations.push({
             manifest,
             name,
@@ -404,12 +264,6 @@ export function findViolations(
   return violations;
 }
 
-/**
- * Splits violations into what still fails and what a waiver excuses. Only
- * `too-new` is waivable: a floating range or an unresolvable version is a
- * broken pin rather than a cooldown someone chose to skip, so no allowlist
- * entry can suppress those however it is written.
- */
 export function applyWaivers(
   violations: Violation[],
   waivers: AgeWaiver[],
@@ -447,17 +301,6 @@ export function applyWaivers(
   return partition;
 }
 
-/**
- * The whole policy for one repo root: read the manifests, read the waivers,
- * find violations, apply waivers. `main()` below only prints and picks an exit
- * code.
- *
- * The composition lives here rather than inside `main()` so a test can prove
- * the steps are actually WIRED TOGETHER. With the logic in `main()`, every
- * helper could be perfect and green while the allowlist was never loaded, or
- * `applyWaivers` never called — a regression the pure-helper tests cannot fail
- * on, because they call the helpers directly.
- */
 export function evaluatePolicy(
   repoRoot: string,
   options: { now: number; lookup: PublishLookup },

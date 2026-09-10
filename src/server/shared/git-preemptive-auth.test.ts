@@ -9,35 +9,11 @@ import { RepoGit } from "../orchestrator/repo-git.js";
 import { GitManager } from "./git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
-/**
- * docs/288-preemptive-github-auth — the credential has to be on the FIRST
- * request.
- *
- * ## Why a real git against a real socket
- *
- * The claim under test is about a *wire* behaviour of git that no amount of
- * inspecting our own argv can prove: over HTTPS git issues the request
- * anonymously and consults a credential helper only after a 401, so a suite that
- * asserted "we passed the right `-c` flags" would have passed just as happily
- * before this feature existed, while every prefetch still went out anonymous.
- * The server here records what actually arrived.
- *
- * The server deliberately does NOT implement git's smart protocol, so every git
- * command below FAILS. That is fine and is the point: the assertion is over the
- * recorded request log, and not implementing the protocol keeps the fixture
- * incapable of accidentally passing for a reason other than the header.
- *
- * The token is never asserted on directly and never reaches an expectation
- * message — the log records whether an `Authorization` header was present, not
- * what it said.
- */
-
 interface Recorded {
   url: string;
   authenticated: boolean;
 }
 
-/** A server that records each request and answers `respond`. */
 function startRecordingServer(
   respond: (req: http.IncomingMessage, res: http.ServerResponse, authenticated: boolean) => void,
 ): Promise<{ origin: string; log: Recorded[]; close: () => Promise<void> }> {
@@ -68,19 +44,11 @@ describe("preemptive auth: what reaches the wire", () => {
   let originalAllowProtocol: string | undefined;
 
   beforeEach(() => {
-    // `server-test-setup.ts` pins `GIT_ALLOW_PROTOCOL=file` so no server test
-    // pays for a DNS + TLS round-trip to github.com to learn that a fake URL is
-    // fake. That reasoning is about the *external* network; the server below is
-    // an ephemeral port on 127.0.0.1 that this file starts and stops, so there
-    // is no lookup and no packet leaves the box. `http` is added for the
-    // duration of this describe and removed after, so nothing else in the run
-    // inherits a wider allowlist.
+    // Permit HTTP for the local recording server, then restore the file-only default.
     originalAllowProtocol = process.env.GIT_ALLOW_PROTOCOL;
     process.env.GIT_ALLOW_PROTOCOL = "file:http";
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-preemptive-"));
     execFileSync("git", ["init", "-q", tmpDir]);
-    // A `GitManager` commit needs an identity, and the suite's global config is
-    // a temp file per run.
     initGlobalGitConfig(tmpDir);
     setGitIdentity("Test", "test@test.com");
   });
@@ -98,14 +66,11 @@ describe("preemptive auth: what reaches the wire", () => {
     await expect(git.raw(["ls-remote", `${server.origin}/acme/widgets`])).rejects.toThrow();
 
     expect(server.log.length).toBeGreaterThan(0);
-    // The FIRST request, not merely some later one: an authenticated retry after
-    // a 401 is exactly the behaviour this feature replaces.
     expect(server.log[0].authenticated).toBe(true);
   });
 
   it("sends nothing when no credential is held (req 2)", async () => {
     server = await startRecordingServer((_req, res) => { res.writeHead(404); res.end(); });
-    // `token` omitted — the anonymous shape: helpers reset, nothing offered.
     const git = credentialledGit(tmpDir, { origin: server.origin });
     await expect(git.raw(["ls-remote", `${server.origin}/acme/widgets`])).rejects.toThrow();
 
@@ -114,11 +79,6 @@ describe("preemptive auth: what reaches the wire", () => {
   });
 
   it("retries UNAUTHENTICATED when the credential is refused (req 4)", async () => {
-    // The regression this guards: a public repository fetches fine anonymously
-    // today, and a stale token would turn that into `fatal: Authentication
-    // failed`. Requirement 4 forbids being worse than today's failure, so the
-    // refused credential has to fall back to the request ShipIt would have made
-    // before this feature.
     server = await startRecordingServer((_req, res, authenticated) => {
       if (authenticated) { res.writeHead(401); res.end(); return; }
       res.writeHead(404); res.end();
@@ -128,9 +88,7 @@ describe("preemptive auth: what reaches the wire", () => {
     execFileSync("git", ["-C", bare, "remote", "add", "origin", `${server.origin}/acme/widgets`]);
 
     const repo = new RepoGit(bare, undefined, async () => TOKEN);
-    // Still throws: the fallback restores today's behaviour, it does not invent
-    // a success. `fetchCache` throwing is what surfaces the stale cache to the
-    // prefetch/claim warning paths (req 4, "the same place").
+    // The recording server rejects git requests; only the headers are under test.
     await expect(repo.fetchCache(0)).rejects.toThrow();
 
     expect(server.log[0].authenticated).toBe(true);
@@ -139,9 +97,6 @@ describe("preemptive auth: what reaches the wire", () => {
   });
 
   it("retries a GitManager READ unauthenticated when the credential is refused (req 4)", async () => {
-    // The same regression as above, on the other half of the surface docs/288
-    // made preemptive. `GitManager.fetch`/`pull`/`remoteBranchSha` run against a
-    // session workspace, where a public origin answers anonymously today.
     server = await startRecordingServer((_req, res, authenticated) => {
       if (authenticated) { res.writeHead(401); res.end(); return; }
       res.writeHead(404); res.end();
@@ -156,8 +111,6 @@ describe("preemptive auth: what reaches the wire", () => {
   });
 
   it("does NOT retry a push — an anonymous receive-pack cannot succeed (req 4)", async () => {
-    // Retrying here would trade a precise `Authentication failed` for a vaguer
-    // `could not read Username`, which is the "worse than today" req 4 forbids.
     server = await startRecordingServer((_req, res, authenticated) => {
       if (authenticated) { res.writeHead(401); res.end(); return; }
       res.writeHead(404); res.end();
@@ -174,11 +127,6 @@ describe("preemptive auth: what reaches the wire", () => {
   });
 
   it("does NOT widen an EXPLICIT credential to the global helper on refusal", async () => {
-    // A plugin repository is handed its own repo-scoped installation token so it
-    // cannot reach further (docs/262 req 10). Falling back would re-run the op
-    // through the inherited global helper — the host PAT — which is a broader
-    // credential than the caller chose. Asserted as "no second attempt at all",
-    // since the retry is what would introduce the widening.
     server = await startRecordingServer((_req, res, authenticated) => {
       if (authenticated) { res.writeHead(401); res.end(); return; }
       res.writeHead(404); res.end();
@@ -200,7 +148,6 @@ describe("preemptive auth: what reaches the wire", () => {
     execFileSync("git", ["init", "-q", "--bare", bare]);
     execFileSync("git", ["-C", bare, "remote", "add", "origin", `${server.origin}/acme/widgets`]);
 
-    // What every resolver in the tree does for a host that is not github.com.
     const repo = new RepoGit(bare, undefined, async () => null);
     await expect(repo.fetchCache(0)).rejects.toThrow();
 
@@ -213,9 +160,6 @@ describe("preemptive auth: where the secret is allowed to be (req 3)", () => {
   const credential = { origin: "https://github.com", token: TOKEN } as const;
 
   it("keeps the token out of the argv", () => {
-    // `gitCredentialConfig`'s entries become `-c <entry>` on the command line,
-    // which `/proc/<pid>/cmdline` hands to every uid in the container. Base64 is
-    // not encryption, so the encoded header must not be there either.
     const argv = gitCredentialConfig(credential).join(" ");
     expect(argv).not.toContain(TOKEN.password);
     expect(argv).not.toContain(Buffer.from(`${TOKEN.username}:${TOKEN.password}`).toString("base64"));

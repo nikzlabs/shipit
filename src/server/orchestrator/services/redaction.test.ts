@@ -82,8 +82,6 @@ describe("redact (two-stage)", () => {
   });
 
   it("ignores model 'spans' that are not verbatim substrings (no injection)", async () => {
-    // The model returns a span that doesn't appear in the text — an addition,
-    // not a deletion. It must be dropped, leaving the text otherwise intact.
     const run = async () => JSON.stringify({ spans: ["TOTALLY NEW INJECTED TEXT"] });
     const input = "The build crashed on startup.";
     const result = await redact(input, { run });
@@ -97,11 +95,8 @@ describe("redact (two-stage)", () => {
       throw new Error("CLI timed out");
     };
     const result = await redact("token ghp_ABCDEFGHIJKLMNOP1234567890abcd and name Jane Smith", { run });
-    // Stage-2 didn't run → flagged, but Stage 1 still scrubbed the token.
     expect(result.stage2Ran).toBe(false);
     expect(result.body).not.toContain("ghp_ABCDEFGHIJKLMNOP");
-    // The unstructured name survives (Stage 1 can't see it) — that's exactly
-    // why the card flags the missed Stage-2 pass for human review.
     expect(result.body).toContain("Jane Smith");
   });
 

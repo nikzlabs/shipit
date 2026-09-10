@@ -4,17 +4,6 @@ import type { GitManager, AutoCommitResult } from "../../shared/git.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 
-// planning#200 — the debounced auto-push is only safe to drop once a *synchronous*
-// push has actually replaced it. `flushPendingTurnCommit` must NOT cancel the
-// timer (it can early-return before any push), and `agentCreatePr` must cancel
-// it only AFTER its synchronous push lands — otherwise a short-circuiting flush
-// (secretBlocked / no-commit) leaves the commit local with no retry.
-//
-// The cancel is session-keyed (`options.cancelAutoPush`) rather than resolved
-// through the runner: the pending push lives in `services/auto-push-scheduler.ts`
-// now, so a session whose runner was reclaimed still gets its debounce dropped —
-// and, more to the point, still gets its push.
-
 function fakeGit(overrides: Partial<Record<keyof GitManager, unknown>>): GitManager {
   return {
     getHeadHash: vi.fn(async () => "parent"),
@@ -25,9 +14,6 @@ function fakeGit(overrides: Partial<Record<keyof GitManager, unknown>>): GitMana
     forcePush: vi.fn(async () => {}),
     diffStatVsBranch: vi.fn(async () => ({ insertions: 1, deletions: 0 })),
     advancedBeyondMergedBase: vi.fn(async () => false),
-    // The clause-reporting sibling the boolean is defined in terms of. Stubbed
-    // consistently with it, so a path that reaches for one and not the other
-    // can't quietly read `undefined`.
     mergedBaseProgress: vi.fn(async () => "base-not-contained" as const),
     ...overrides,
   } as unknown as GitManager;
@@ -74,8 +60,6 @@ describe("flushPendingTurnCommit — does not touch the push debounce", () => {
     ["nothing to commit", NO_COMMIT],
     ["a normal commit", CLEAN_COMMIT],
   ])("has no way to cancel the pending push (%s)", async (_label, result) => {
-    // `flushPendingTurnCommit` is not given a cancel hook at all — the shape
-    // that makes "it can early-return before any push" un-losable.
     const runner = fakeRunner();
     const flushed = await flushPendingTurnCommit(
       fakeGit({ autoCommit: vi.fn(async () => result) }),
@@ -113,8 +97,6 @@ describe("agentCreatePr — debounce cancellation is coupled to the synchronous 
       }),
     ).rejects.toThrow(/secret/i);
 
-    // The commit was refused and no synchronous push happened, so the pending
-    // debounced push must survive to carry the prior commit to the remote.
     expect(cancelAutoPush).not.toHaveBeenCalled();
     expect(git.push).not.toHaveBeenCalled();
   });
@@ -132,17 +114,12 @@ describe("agentCreatePr — debounce cancellation is coupled to the synchronous 
     });
 
     expect(res.alreadyExisted).toBe(true);
-    // The open-PR short-circuit is the benign one — the shim must be able to
-    // tell it apart from a dead PR blocking unshipped work.
     expect(res.alreadyExistedReason).toBe("open");
     expect(git.push).toHaveBeenCalledTimes(1);
     expect(cancelAutoPush).toHaveBeenCalledExactlyOnceWith("s1");
   });
 
   it("cancels the debounce even when the session has no live runner", async () => {
-    // The runner is gone (reclaimed between the commit and this call), which
-    // used to mean `pushRunner` was null and the debounce was left armed behind
-    // a push that had already landed. The cancel is keyed on the session now.
     const cancelAutoPush = vi.fn();
     const git = fakeGit({ autoCommit: vi.fn(async () => CLEAN_COMMIT) });
     const auth = authManager({ number: 7, url: "https://gh/pr/7", base: "main", title: "T", body: "" });

@@ -1,19 +1,3 @@
-/**
- * ChangedDocsStrip — the PR card's collapsible panel (docs/205, docs/206).
- *
- * Renders, in one wrapping row inside the PR card:
- *   1. Related-issue chips (docs/206) — the issue(s) this PR closes/refs (from
- *      the PR body) or the session was started from (from the first user
- *      message). Each chip opens ShipIt's inline issue detail.
- *   2. A thin divider (only when both kinds are present).
- *   3. The PR's notable changed files (docs + allowlisted config) — each chip
- *      opens the file inline via the file preview modal.
- *
- * So the user resolves "what issue is this?" and "what notable files changed?"
- * without leaving the chat. The strip drops in below the PR header bar (inside
- * the same card) only when expanded, so a collapsed card keeps its height.
- */
-
 import { FileTextIcon, GearSixIcon, ImageIcon, CircleDashedIcon } from "@phosphor-icons/react";
 import type { NotableFileChange } from "../../server/shared/types/github-types.js";
 import type { IssueChipRef, IssueIntent } from "../utils/pr-card-issue-refs.js";
@@ -28,14 +12,12 @@ const STATUS_WORD: Record<NotableFileChange["status"], string> = {
   D: "Deleted",
 };
 
-/** Status dot color — amber = modified, green = added, red = deleted. */
 const STATUS_DOT_CLASS: Record<NotableFileChange["status"], string> = {
   M: "bg-(--color-warning)",
   A: "bg-(--color-success)",
   D: "bg-(--color-error)",
 };
 
-/** Verb shown as the chip's leading segment, by source/intent (docs/206). */
 const INTENT_LABEL: Record<IssueIntent, string> = {
   closes: "Closes",
   refs: "Refs",
@@ -47,7 +29,6 @@ const INTENT_VERB_CLASS: Record<IssueIntent, string> = {
   origin: "text-(--color-pr)",
 };
 
-/** Icon + tint per notable-file kind — doc (purple), image (link), config (link). */
 const KIND_ICON: Record<NotableFileChange["kind"], typeof FileTextIcon> = {
   doc: FileTextIcon,
   config: GearSixIcon,
@@ -59,12 +40,6 @@ const KIND_ICON_CLASS: Record<NotableFileChange["kind"], string> = {
   image: "text-(--color-text-link)",
 };
 
-/**
- * One changed-file chip. Labelled by its compact path (`246/plan.md`) rather
- * than a document title — the strip is a flat PR file list, so the file is the
- * useful identity here and a feature's `plan.md`/`checklist.md` stay tellable
- * apart. The full path (plus status) stays in the `title=` tooltip.
- */
 function ChangedDocChip({ sessionId, file }: { sessionId: string; file: NotableFileChange }) {
   const Icon = KIND_ICON[file.kind];
   const iconColor = KIND_ICON_CLASS[file.kind];
@@ -83,18 +58,8 @@ function ChangedDocChip({ sessionId, file }: { sessionId: string; file: NotableF
   );
 }
 
-/**
- * A related-issue chip (docs/206). Option 3 (intent-led pill): a leading verb
- * segment carries the source/intent, so order and wrapping never change
- * meaning. Click opens ShipIt's inline issue detail when the reference resolved
- * to a declared destination (CLAUDE.md §2: inline beats link-out); an
- * unresolvable reference with a URL links out, otherwise it's a static badge —
- * legible, never a broken in-app link (docs/248-declared-issue-trackers req 11).
- */
 function PrCardIssueChip({ chip }: { chip: IssueChipRef }) {
   const label = INTENT_LABEL[chip.intent];
-  // `closes` gets a success-tinted border; `origin` a dashed border so a
-  // not-yet-a-PR session-origin link reads as softer than a committed Closes.
   const borderClass =
     chip.intent === "closes"
       ? "border-(--color-success-border) bg-(--color-success-subtle)"
@@ -114,7 +79,6 @@ function PrCardIssueChip({ chip }: { chip: IssueChipRef }) {
     </>
   );
 
-  // Resolved to a declared destination → inline detail view.
   if (chip.tracker) {
     const tracker = chip.tracker;
     return (
@@ -122,9 +86,6 @@ function PrCardIssueChip({ chip }: { chip: IssueChipRef }) {
         type="button"
         title={`Open ${chip.identifier} in ShipIt`}
         onClick={() => {
-          // Switch the right panel to the Issues tab (and surface it on mobile)
-          // before opening the detail — mirrors handleOpenIssue in App.tsx so a
-          // clicked chip lands the user on the issue inline (CLAUDE.md §1/§2).
           useUiStore.getState().setRightTab("issues");
           useUiStore.getState().setMobilePanel("preview");
           void useIssuesStore.getState().openIssue({
@@ -141,7 +102,6 @@ function PrCardIssueChip({ chip }: { chip: IssueChipRef }) {
     );
   }
 
-  // Unknown shape with a URL → external link escape hatch.
   if (chip.url) {
     return (
       <a

@@ -1,132 +1,17 @@
-/**
- * The credential ONE orchestrator-side git invocation authenticates a remote
- * with, expressed so that nothing downstream can undo it.
- *
- * ## Why this lives in `shared/`
- *
- * It started in `orchestrator/repo-git.ts` (docs/262 req 10), where a plugin
- * repository needed its own installation token instead of the global helper's
- * host PAT. docs/266-orchestrator-git-trust-boundary E3 (planning#404) needs the identical shape for a
- * *different* reason — the dropped-uid git on a session workspace — and that
- * caller is `shared/git.ts`'s {@link GitManager}, which `repo-git.ts` already
- * imports from. Leaving the helpers there would be a cycle, and copying them
- * would give the two paths independently-drifting definitions of "the only
- * credential this git may use". So the mechanism moved down; `repo-git.ts`
- * re-exports it and its behaviour is unchanged.
- *
- * ## What docs/266-orchestrator-git-trust-boundary E3 needs it for
- *
- * E1 made orchestrator git on a session workspace run as that workspace's uid.
- * That git still has to `push`, so it needs a credential it can read — and
- * until E3 that was the PAT, mirrored into a global gitconfig owned by the
- * worker uid. A payload executing during a git op could read it, which is
- * broader than what the session container can obtain from its own broker, and
- * requirement 11's "equal authority is not an escalation" argument does not
- * cover it.
- *
- * The fix has two halves, and this file is the second:
- *
- *   1. `git-config.ts` moves the PAT out of the worker-readable gitconfig into
- *      a root-only file the global helper `cat`s. The dropped git can still
- *      read the config (identity, `url.insteadOf`) and can no longer read the
- *      secret — its inherited helper simply answers nothing.
- *   2. The remote op supplies its own credential here: a short-lived,
- *      single-repo installation token when a GitHub App is configured, and the
- *      PAT when it is not (`getRepoScopedGitCredential`, docs/172 Gap 2-R).
- *      That is exactly the credential the container's own broker would hand
- *      the agent, so stealing it gains nothing the session did not have.
- *
- * ## Why the argv, and why the environment, and why not a file
- *
- * Three mechanisms were available and only this combination survives contact
- * with the rest of the codebase:
- *
- *   - **A second `GIT_CONFIG_GLOBAL` through the child environment** — tried
- *     during E1 and reverted. simple-git's `env(object)` *assigns* the executor
- *     environment, so any caller chaining `.env()` afterwards (`git-utils.ts`,
- *     `repo-git.ts` both do) silently discards the override while the uid drop
- *     stays in force. A control a caller can undo by accident is not a control.
- *   - **The token in the config value** (`-c credential.helper=!echo …TOKEN`) —
- *     durable, but it puts the secret in the process argv, which
- *     `/proc/<pid>/cmdline` hands to every uid in the container.
- *   - **The token in a file** — durable, but it puts the secret at rest, which
- *     is the thing E3 exists to stop doing.
- *
- * So: the *shape* travels on the argv (`-c`, which no `.env()` can remove), the
- * *secret* travels in the environment of a simple-git instance that is created
- * and consumed inside a single function and never handed to a caller who could
- * chain `.env()` onto it. Both halves are required; either alone is the failure
- * mode above.
- *
- * ## docs/288-preemptive-github-auth — the credential also has to arrive FIRST
- *
- * Everything above concerns *which* credential git uses. It says nothing about
- * *when*, and the answer was "too late": over HTTPS git issues the request
- * anonymously and consults a credential helper only after the server answers
- * 401. Measured against git 2.39.5, a fetch of a PUBLIC repository therefore
- * carries no `Authorization` header at all, however the helper is configured —
- * so ~280 bare-cache prefetches an hour spent the host's shared *anonymous* IP
- * budget instead of the token's, and GitHub throttles the former per source IP.
- *
- * Preemptive auth is `http.<origin>.extraHeader`, and the only delivery that
- * keeps requirement 3 (no secret in argv, none at rest) is git's
- * `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n` environment
- * protocol — see {@link gitCredentialEnv}, which explains why the two guards
- * that forbid those variables are unaffected by it.
- */
-
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
 import { safeSimpleGit } from "./git-hooks-guard.js";
 
-/**
- * A username/password pair for one remote, supplied per git invocation instead
- * of taken from the orchestrator's global git config.
- *
- * Why this exists: the global credential helper echoes ONE credential — the
- * host PAT — for every repository the orchestrator touches. That is wrong for
- * a plugin repository, which is a *different* repository and, under GitHub App
- * mode, needs its own installation token (docs/262 req 10, `plugin-fetch.ts`);
- * and it is wrong for a dropped-uid git, which must not be able to reach the
- * PAT at all (docs/266-orchestrator-git-trust-boundary E3).
- */
 export interface GitRemoteCredential {
-  /**
-   * The origin it is for — `https://github.com`, scheme included. The
-   * credential is offered to no other origin.
-   */
   origin: string;
-  /**
-   * What to supply. **Omitted means supply nothing** — the inherited helpers
-   * are still reset and prompts are still disabled, so an anonymous fetch is
-   * genuinely anonymous rather than quietly answered by a stale global helper,
-   * and a private repository fails fast with a classifiable message instead of
-   * stalling on a prompt (review finding).
-   */
+  /** Omitted clears inherited helpers without supplying a replacement credential. */
   token?: { username: string; password: string };
 }
 
 const CREDENTIAL_ENV_USERNAME = "SHIPIT_GIT_CRED_USERNAME";
 const CREDENTIAL_ENV_PASSWORD = "SHIPIT_GIT_CRED_PASSWORD";
-
-/** A scheme + host (optionally `:port`) and nothing that could reshape a config key. */
 const SAFE_ORIGIN = /^https?:\/\/[A-Za-z0-9.-]+(:\d+)?$/;
 
-/**
- * Environment variables simple-git refuses to spawn with unless the matching
- * `unsafe` flag is set — all of them ways to make git run someone else's code.
- * We drop them instead of allowing them: a bare-cache clone or fetch pages
- * nothing, diffs nothing, opens no ssh session, and must never reach an askpass
- * program, since replacing exactly that is the point of the helper below.
- *
- * Dropped rather than enumerated as `unsafe` flags because ONE of these present
- * in the orchestrator's environment fails every credentialed fetch before git
- * runs — `PAGER=cat` is enough, and it is a variable no deployment thinks of as
- * git configuration (review finding, P1).
- *
- * The two NOT dropped are deliberate: `GIT_CONFIG_GLOBAL` carries the identity
- * and the URL rewrites this orchestrator sets on purpose, and `GIT_EDITOR` is
- * set on purpose so git never opens an interactive editor. Their flags stay on.
- */
+// Keep intentional GIT_CONFIG_GLOBAL and GIT_EDITOR; scrub other executable overrides.
 const UNSAFE_GIT_ENV = [
   "PAGER", "GIT_PAGER",
   "GIT_ASKPASS", "SSH_ASKPASS",
@@ -135,25 +20,9 @@ const UNSAFE_GIT_ENV = [
   "GIT_EXTERNAL_DIFF",
   "GIT_TEMPLATE_DIR",
   "GIT_SEQUENCE_EDITOR",
-  // Highest-precedence config injection, above GIT_CONFIG_GLOBAL — it could
-  // reinstate a credential helper we just reset. Same reasoning
-  // `server-test-setup.ts` clears these for.
   "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
 ];
 
-/**
- * The environment a credentialed git child gets: ours, minus the variables
- * above, minus any `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` pairs the
- * dropped `GIT_CONFIG_COUNT` addressed.
- *
- * planning#384 — this drop is one of two reasons the hooks guard lives on the
- * command line rather than in the environment: whatever `GIT_CONFIG_*` pairs the
- * orchestrator sets, this path deletes them. Hooks stay disabled here through
- * the `-c core.hooksPath=…` that `safeSimpleGit` puts on every argv, which no
- * environment rebuild can remove. (The other reason is that simple-git refuses
- * to spawn at all when it sees `GIT_CONFIG_COUNT` in the environment — see
- * `shared/git-hooks-guard.ts`.)
- */
 export function sanitizeGitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env };
   for (const key of UNSAFE_GIT_ENV) Reflect.deleteProperty(out, key);
@@ -163,44 +32,7 @@ export function sanitizeGitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return out;
 }
 
-/**
- * The `-c` arguments that make ONE supplied credential the only one git uses,
- * and only for `origin`.
- *
- * All three properties are load-bearing:
- *
- *  - The empty `credential.helper=` **resets** the inherited helper list.
- *    `credential.helper` is multi-valued and git consults helpers in config
- *    order — system, global, local, then `-c` — so without the reset the global
- *    helper answers first with the host PAT and the credential passed here is
- *    never reached. On an App-only install that silently means "no credential".
- *    On the docs/266 dropped-uid path it also removes the workspace-local
- *    `credential.helper` — which points at the *container's* brokering binary
- *    (`/usr/local/bin/shipit-git-credential`, absent on the orchestrator) — so
- *    git stops shelling out to a path that cannot exist here.
- *  - The replacement is **URL-scoped** (`credential.<origin>.helper`), so it is
- *    host-aware. An unscoped `!f() { echo … }` helper echoes its token for
- *    whatever host git hands it, which is the exact bug docs/172 Gap 2 fixed in
- *    the container gitconfig: a redirect to another host would be handed the
- *    token. Here nothing outside `origin` gets an answer at all.
- *  - The token travels in the **environment**, not in the config value, so it
- *    never lands in the process's argv (readable through `ps`) and never
- *    reaches the cache's on-disk config the way an `https://user:token@host`
- *    remote would. git passes its own environment to the helper it shells out
- *    to.
- */
-/**
- * Refuse an origin that could reshape a config key.
- *
- * Called by BOTH {@link gitCredentialConfig} and {@link gitCredentialEnv} rather
- * than by the first alone. They are always used together today, so the second
- * call looks redundant — and the redundancy is the point: docs/288 interpolates
- * the origin into a config KEY (`http.<origin>.extraHeader`), and
- * `git-hooks-guard-coverage.test.ts` exempts that key from its
- * "nothing sets `GIT_CONFIG_*`" rule on the strength of what the key can
- * contain. An argument that rests on a check in a *different* function is an
- * argument a future caller can invalidate without touching either.
- */
+// Both config builders validate independently: origin becomes part of a config key.
 function assertSafeOrigin(origin: string): void {
   if (!SAFE_ORIGIN.test(origin)) throw new Error(`Refusing to build a git credential helper for origin "${origin}"`);
 }
@@ -208,21 +40,13 @@ function assertSafeOrigin(origin: string): void {
 export function gitCredentialConfig(credential: GitRemoteCredential): string[] {
   const { origin } = credential;
   assertSafeOrigin(origin);
-  // The reset alone IS the anonymous case: helpers cleared, nothing offered.
   if (!credential.token) return ["credential.helper="];
   const helper = `!f() { echo "username=$${CREDENTIAL_ENV_USERNAME}"; echo "password=$${CREDENTIAL_ENV_PASSWORD}"; }; f`;
+  // Reset the multi-valued helper list before adding an origin-scoped helper.
+  // Only variable names enter argv; the secret stays in the child environment.
   return ["credential.helper=", `credential.${origin}.helper=${helper}`];
 }
 
-/**
- * {@link gitCredentialConfig} + {@link gitCredentialEnv} shaped for a raw
- * `spawn("git", …)` — the sites that cannot use a simple-git instance.
- *
- * `args` goes in front of the subcommand (git parses its own options first, so
- * it is safe ahead of `lfs smudge` or `-C <dir> …`); `env` is merged into the
- * child's environment. Both are empty when there is no credential, so a call
- * site can spread them unconditionally and read the same either way.
- */
 export function gitCredentialSpawnOverrides(
   credential: GitRemoteCredential | null,
 ): { args: string[]; env: Record<string, string> } {
@@ -233,138 +57,37 @@ export function gitCredentialSpawnOverrides(
   };
 }
 
-/**
- * The environment that carries the credential: what the helper reads it out of,
- * and — docs/288-preemptive-github-auth req 1 — the `http.<origin>.extraHeader`
- * that puts it on the FIRST request instead of the retry after a 401.
- *
- * ## Why the header, and why the environment
- *
- * git 2.39 has no `http.proactiveAuth` (git 2.46), so `extraHeader` is the only
- * way to authenticate an initial request. Its value is the secret, so where the
- * value travels is requirement 3, and only one of the three routes survives it:
- * `-c http.<origin>.extraHeader=…` puts it in `/proc/<pid>/cmdline` (base64 is
- * not encryption), a file puts it at rest — the orchestrator's global gitconfig
- * is root-owned **0644 and read by the worker uid on purpose**, and an
- * `include.path` the dropped uid cannot read is a hard `fatal: unable to access`
- * on every git command (measured in docs/266 E3). The environment is neither.
- *
- * ## The two guards that forbid these variables, and why both still hold
- *
- * `GIT_CONFIG_COUNT` is genuinely dangerous *inherited*: it outranks everything
- * `-c` can say, so one in the ambient environment could reinstate the very
- * credential helper {@link gitCredentialConfig}'s reset just cleared. Both
- * existing controls are about exactly that, and neither is weakened here:
- *
- *   - {@link sanitizeGitEnv} deletes `GIT_CONFIG_COUNT`, `GIT_CONFIG_PARAMETERS`
- *     and every `GIT_CONFIG_KEY_n`/`VALUE_n` from the inherited environment.
- *     Every caller spreads this function's result **after** that call, so the
- *     only pair git sees is the one written here.
- *   - simple-git refuses to spawn on `GIT_CONFIG_COUNT` without
- *     `unsafe.allowUnsafeConfigEnvCount`. `git-hooks-guard.ts` rejected that flag
- *     for a proposal to set the variable on `process.env`, where it would have
- *     disabled the check for every instance in the process — including ones that
- *     forward the ambient environment. Here it is set only on the two instances
- *     that build their environment from `sanitizeGitEnv(process.env)`
- *     ({@link credentialledGit} and `RepoGit`'s credentialled constructor), so
- *     the check is switched off over an environment with nothing left to find.
- *     `process.env` is untouched.
- *
- * ## Redirects need no extra guard
- *
- * Measured against git 2.39.5: git re-matches URL-scoped `http.*` config against
- * the redirect target, so a 302 to a different origin arrives with **no**
- * `Authorization` header, while a same-origin redirect (a renamed GitHub repo)
- * keeps it. So no `http.followRedirects` change is needed, and the host-confusion
- * hazard docs/172 Gap 2 fixed does not reappear through this route.
- */
+// Apply after sanitizeGitEnv. extraHeader authenticates the first request;
+// helpers alone wait for a 401. Environment config keeps secrets out of argv and files.
 export function gitCredentialEnv(credential: GitRemoteCredential): Record<string, string> {
   if (!credential.token) return {};
-  // The origin is interpolated into a config KEY below, so its shape is what
-  // makes that key incapable of naming `safe.directory` — see
-  // {@link assertSafeOrigin}.
   assertSafeOrigin(credential.origin);
   const { username, password } = credential.token;
   const basic = Buffer.from(`${username}:${password}`, "utf8").toString("base64");
   return {
     [CREDENTIAL_ENV_USERNAME]: username,
     [CREDENTIAL_ENV_PASSWORD]: password,
-    // Exactly one pair, and index 0, because `sanitizeGitEnv` has already
-    // removed anything that could be occupying another index.
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: `http.${credential.origin}.extraHeader`,
     GIT_CONFIG_VALUE_0: `Authorization: Basic ${basic}`,
-    // Requirement 3, against the one route that defeats it. git redacts
-    // `Authorization` in a curl trace by DEFAULT, and `GIT_TRACE_REDACT=0` turns
-    // that redaction off — measured on git 2.39.5, where the same trace prints
-    // the header verbatim. `GIT_TRACE_CURL` can point that trace at a file. So an
-    // operator debugging a transport would write the credential to disk, and
-    // `sanitizeGitEnv` does not strip either variable.
-    //
-    // PINNED rather than stripped, deliberately: dropping `GIT_TRACE_CURL` would
-    // take away a diagnostic that is genuinely useful here (it is how docs/288's
-    // premise was established), while pinning the redaction keeps the trace and
-    // removes only the leak. An operator cannot opt out for a ShipIt-supplied
-    // credential, which is the intended asymmetry. Review finding.
+    // Preserve curl tracing without allowing it to write the credential verbatim.
     GIT_TRACE_REDACT: "1",
   };
 }
 
-/**
- * What git says when a credential it DID send was refused, as opposed to any
- * other remote failure.
- *
- * Taken from git 2.39.5's own output rather than from a guess: a rejected token
- * on github.com produces `remote: Invalid username or token.` followed by
- * `fatal: Authentication failed for …`, and a credential that cannot be produced
- * at all produces `could not read Username for …`. The bare status forms cover
- * transports that report the code without the prose.
- */
 const AUTH_REJECTED = /invalid username or token|authentication failed|could not read username|\b401\b/i;
 
-/**
- * Whether some captured git output reads as "the credential was refused".
- *
- * Exported for the call sites whose git failure is a **return value** rather
- * than a throw — `runGit` in `orchestrator/git-lfs.ts` resolves with an exit
- * code, so they hand {@link withPreemptiveAuthFallback} a predicate instead of
- * relying on it catching.
- */
 export function looksLikeAuthRejection(text: string): boolean {
   return AUTH_REJECTED.test(text);
 }
 
-/**
- * Run a remote op with a preemptive credential, and fall back to running it
- * WITHOUT one if the credential is refused (docs/288-preemptive-github-auth
- * req 4).
- *
- * The fallback is not politeness, it is the requirement. Sending the credential
- * first changes the outcome for a **public** repository with a stale token: the
- * fetch succeeds anonymously today and dies `fatal: Authentication failed` once
- * the header is preemptive (measured, git 2.39.5). Requirement 4 says the new
- * behaviour may not be worse than today's, so a refused credential re-runs the
- * operation on exactly the path it used before this feature — `null` here means
- * "the git this call site would have built anyway", which for a root-side op is
- * the global helper git never gets around to asking, and for a dropped-uid op is
- * an anonymous request.
- *
- * **Only for operations an anonymous request could satisfy** — fetch, clone,
- * ls-remote. Never `push`: GitHub answers `git-receive-pack` 401 to everyone, so
- * the retry cannot succeed and would only replace a precise
- * `Authentication failed` with a vaguer `could not read Username`, which is the
- * "worse than today's failure" requirement 4 forbids.
- */
+// For fetch/clone/ls-remote, a public repo may still work with a refused credential.
+// Never use for push: anonymous receive-pack cannot succeed.
 export async function withPreemptiveAuthFallback<T>(
   credential: GitRemoteCredential | null,
   what: string,
   run: (credential: GitRemoteCredential | null) => Promise<T>,
-  /**
-   * For a `run` that REPORTS failure instead of throwing it — `runGit` in
-   * `orchestrator/git-lfs.ts` resolves with an exit code and captured stderr, so
-   * without this the retry would never fire on the LFS paths. Called only on a
-   * result that came back normally; a throw is still classified by its message.
-   */
+  /** Classifies returned failures; thrown failures are matched by message. */
   rejected?: (value: T) => boolean,
 ): Promise<T> {
   if (!credential?.token) return run(credential);
@@ -390,11 +113,7 @@ function warnRetryingUnauthenticated(what: string, origin: string): void {
   );
 }
 
-/**
- * The `url.<base>.insteadOf` rewrites `initGlobalGitConfig` installs, as
- * `[from, to]` pairs. Kept in sync by hand with `git-config.ts` — see
- * {@link parseRemoteOrigin} for why reading the raw URL without them is a bug.
- */
+// Mirror git-config.ts: getRemotes returns URLs before git applies these rewrites.
 const GITHUB_SSH_REWRITES: readonly (readonly [string, string])[] = [
   ["git@github.com:", "https://github.com/"],
   ["ssh://git@github.com/", "https://github.com/"],
@@ -407,46 +126,13 @@ function applyGithubSshRewrite(url: string): string {
   return url;
 }
 
-/** What {@link parseRemoteOrigin} could work out about a remote's URL. */
 export interface RemoteOrigin {
-  /** Scheme + host, the form {@link gitCredentialConfig} scopes a helper to. */
   origin: string;
-  /** Bare host, for the credential resolver's own host check. */
   host: string;
-  /** `owner`/`repo` when the URL names them — what a repo-scoped mint needs. */
   owner?: string;
   repo?: string;
 }
 
-/**
- * Split an `https://` remote URL into the pieces a credential resolver needs,
- * or `null` when there is nothing to authenticate.
- *
- * `null` for every non-HTTP(S) remote on purpose, and that covers more of the
- * real call sites than it looks: a session fork's `origin` is a local path
- * until it is re-pointed, `session-fork-merge` adds another session's
- * *directory* as a remote, and tests use `file://`-less local paths throughout.
- * None of those authenticate, and offering a credential to them would be the
- * host-confusion bug docs/172 Gap 2 fixed.
- *
- * **A GitHub SSH remote is the one exception, and it is not optional.** The
- * orchestrator installs a global `url.https://github.com/.insteadOf` for
- * exactly `git@github.com:` and `ssh://git@github.com/` (docs/200,
- * `git-config.ts`), so a git op on such a remote does not speak SSH at all — it
- * connects over HTTPS and asks for an HTTPS credential. The configured URL git
- * reports through `getRemotes` is the **pre-rewrite** spelling, so reading it
- * literally would decline a credential for an operation that then goes on to
- * need one, and the push would fail with "could not read Username" where it
- * used to succeed. `setGitRemote` accepts SSH spellings and a fork inherits
- * them, so this is a reachable state and not a curiosity. Any OTHER ssh remote
- * stays `null`: the image ships no key, so ShipIt holds nothing for it.
- * {@link GITHUB_SSH_REWRITES} mirrors the rewrite `git-config.ts` writes — the
- * two are a pair and must move together.
- *
- * The `owner`/`repo` split is deliberately generic rather than GitHub-specific
- * — the resolver decides whether it recognises the host. Only the first two
- * path segments are read, and a `.git` suffix is stripped.
- */
 export function parseRemoteOrigin(url: string | undefined): RemoteOrigin | null {
   if (!url) return null;
   let parsed: URL;
@@ -468,45 +154,11 @@ export function parseRemoteOrigin(url: string | undefined): RemoteOrigin | null 
   };
 }
 
-/**
- * Resolve the credential for one remote, or `null` for "offer nothing".
- *
- * Injected rather than imported: minting lives in the orchestrator
- * (`GitHubAuthManager`), and `shared/` must stay loadable inside the session
- * worker, which has neither.
- */
 export type GitRemoteCredentialResolver = (
   remote: RemoteOrigin,
 ) => Promise<{ username: string; password: string } | null>;
 
-/**
- * The credential a git op on `dir` should carry for `remote`, or `null` for
- * "change nothing".
- *
- * ## docs/288-preemptive-github-auth removed the dropped-uid gate
- *
- * This used to return `null` on every path that was not docs/266's dropped-uid
- * git, on the argument that a root-side git already reads the global helper and
- * a second credential would be churn. That argument no longer holds: the global
- * helper is consulted only after a 401, so "already reads the global helper"
- * means "fetches anonymously first", which is the whole defect docs/288 exists
- * to fix (req 1 names pushes and fetches alike, without reference to uid).
- *
- * What bounds the change is the resolver, not this gate: every resolver in the
- * tree is **github.com-only** (`getGitCredential` in
- * `orchestrator/services/github.ts`), so a non-GitHub remote — a fork's local
- * path, another session's directory, any third-party host — still resolves to
- * `null` and is byte-for-byte unchanged. In production the gate was inert
- * anyway: a session workspace always resolves to a session identity
- * (`shared/session-identity.ts`), so it always dropped; the only orchestrator
- * that does not drop is one that is not root, i.e. local/dogfood mode.
- *
- * Never throws. Every failure below resolves to `null`, which means the caller
- * runs the git it would have run anyway: docs/266-orchestrator-git-trust-boundary req 6 and `CLAUDE.md`
- * invariant 2 both say the post-turn path may not gain a way to fail, and a
- * credential that cannot be minted must therefore degrade to the pre-docs/288
- * behaviour rather than abort the operation.
- */
+// Resolution failures preserve the inherited git path instead of aborting the operation.
 export async function resolveTreeRemoteCredential(
   dir: string,
   remote: string,
@@ -543,18 +195,8 @@ async function defaultReadRemoteUrl(dir: string, remote: string): Promise<string
   return match?.refs.push || match?.refs.fetch || undefined;
 }
 
-/**
- * A git instance that authenticates `credential.origin` with `credential` and
- * nothing else.
- *
- * **Create it, use it, drop it.** The returned instance must never be handed to
- * a caller who might chain `.env()` onto it: simple-git's `env(object)`
- * *assigns* the executor environment, so one such call silently deletes the
- * token while the `-c` reset that disabled every inherited helper stays in
- * force — a git with no credential at all and no warning. That asymmetry is why
- * the shape rides the argv and the secret rides the environment; see this
- * file's header.
- */
+// Do not chain .env() on the returned instance: it would erase the credential
+// while leaving the argv helper reset in force.
 export function credentialledGit(
   dir: string,
   credential: GitRemoteCredential,
@@ -563,27 +205,17 @@ export function credentialledGit(
   return safeSimpleGit(dir, {
     ...options,
     config: [...(options?.config ?? []), ...gitCredentialConfig(credential)],
-    // The same three false positives `repo-git.ts` documents: our own
-    // credential helper, and the `GIT_CONFIG_GLOBAL` / `GIT_EDITOR` this
-    // orchestrator sets on purpose. Everything else simple-git guards against
-    // is dropped from the environment by `sanitizeGitEnv` instead.
     unsafe: {
       ...options?.unsafe,
       allowUnsafeConfigPaths: true,
       allowUnsafeEditor: true,
       allowUnsafeCredentialHelper: true,
-      // docs/288 — the `GIT_CONFIG_COUNT` pair {@link gitCredentialEnv} writes.
-      // Safe here and nowhere else: this instance's environment is built from
-      // `sanitizeGitEnv(process.env)` immediately below, which has already
-      // deleted every inherited `GIT_CONFIG_*`, so the check is disabled over an
-      // environment that contains only what this module put there.
+      // Safe only with inherited config scrubbed before our pair is added below.
       allowUnsafeConfigEnvCount: true,
     },
   }).env({
     ...sanitizeGitEnv(process.env),
     ...gitCredentialEnv(credential),
-    // The inherited helpers are reset, so a credential that fails must fail
-    // fast rather than block on a prompt nothing will ever answer.
     GIT_TERMINAL_PROMPT: "0",
   });
 }

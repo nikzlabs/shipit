@@ -2,13 +2,6 @@ import { describe, it, expect, vi } from "vitest";
 import { decideMerge, readMergeObservation, mergeFlushRefusal, type MergeObservation } from "./merge-gate.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 
-/**
- * docs/287-agent-merge-per-repo §3 — the observation table. Every row, in both
- * modes, because requirement 7 says the guardrails apply to EVERY agent merge:
- * this read replaced `getCheckStatus()` on the sandbox path too, where mapping a
- * swallowed API failure to `"none"` and merging on it is a live fail-open.
- */
-
 function manager(result: unknown): Pick<GitHubAuthManager, "graphqlQuery"> {
   return { graphqlQuery: vi.fn(async () => result) } as unknown as Pick<GitHubAuthManager, "graphqlQuery">;
 }
@@ -32,7 +25,6 @@ function prNode(over: Record<string, unknown> = {}, rollup: string | null = "SUC
   };
 }
 
-/** A clean observation the individual tests mutate one field of. */
 function observed(over: Partial<Extract<MergeObservation, { kind: "read" }>> = {}): MergeObservation {
   return {
     kind: "read",
@@ -77,9 +69,6 @@ describe("readMergeObservation", () => {
   });
 
   it("is unreadable when the response carries GraphQL errors, even with data", async () => {
-    // The dangerous shape: a partial response with `errors` AND a null rollup.
-    // `graphqlQuery` logs non-rate-limit errors and returns the body anyway, so
-    // without this check that reads as "this repository has no CI" and merges.
     const gh = manager({ ...prNode({}, null), errors: [{ message: "Something went wrong" }] });
     const obs = await readMergeObservation(gh, "o", "r", 7);
     expect(obs.kind).toBe("unreadable");
@@ -121,9 +110,6 @@ describe("decideMerge — the observation table", () => {
   });
 
   it("refuses when the checks describe an older commit than the head (req 16)", async () => {
-    // The branch moved after CI started. Merging on those checks merges code CI
-    // never saw — and this is checked BEFORE the state checks, so a stale answer
-    // is never reported as a CI failure.
     const decision = await decide(observed({ rollupCommitOid: "sha-older", rollupState: "SUCCESS" }));
     expect(decision).toMatchObject({ action: "refuse", reason: "head-moved-since-checks" });
   });
@@ -138,11 +124,6 @@ describe("decideMerge — the observation table", () => {
   });
 
   it("refuses when the workspace's own commit could not be read (req 14)", async () => {
-    // The case that used to share `null` with the sandbox exemption above, and
-    // therefore merged with no local comparison at all: a repo-bound workspace
-    // that is evicted, broken, or unreadable has NOT passed req 14's check
-    // (cross-agent review finding). The two are distinct values now, so this
-    // cannot regress into the exemption by accident.
     const decision = await decide(observed(), {
       localHead: { kind: "unreadable", reason: "not a git repository" },
     });
@@ -155,8 +136,6 @@ describe("decideMerge — the observation table", () => {
   });
 
   it("reports already-merged even when the head has moved since", async () => {
-    // The merge already happened; a moved head cannot change that, and saying
-    // "push and merge again" to someone whose work shipped is just wrong.
     const decision = await decide(
       observed({ prState: "MERGED", headRefOid: "sha-new", rollupCommitOid: "sha-old" }),
       { localHead: { kind: "head", sha: "sha-local" } },
@@ -174,7 +153,6 @@ describe("decideMerge — the observation table", () => {
   });
 
   it("refuses a rollup state it does not recognise, rather than merging", async () => {
-    // An unknown value is not permission. GitHub can add states.
     await expect(decide(observed({ rollupState: "SOMETHING_NEW" }))).resolves.toMatchObject({
       action: "refuse", reason: "checks-failing",
     });
@@ -192,10 +170,6 @@ describe("decideMerge — the observation table", () => {
   });
 
   it("refuses a review decision it does not recognise, rather than merging", async () => {
-    // The same rule as the rollup above, and it was missing here: naming the two
-    // refusals GitHub documents today lets a value it adds tomorrow fall through
-    // to a merge — the one direction this gate must never fail in (cross-agent
-    // review finding). Only APPROVED and null permit a merge.
     const decision = await decide(observed({ reviewDecision: "SOMETHING_NEW" }));
     expect(decision).toMatchObject({ action: "refuse", reason: "review-required" });
     expect(decision.action === "refuse" && decision.message).toContain("SOMETHING_NEW");
@@ -216,8 +190,7 @@ describe("decideMerge — the observation table", () => {
   });
 
   it("does not consult the grace when checks reported", async () => {
-    // Consulting it would START a grace window as a side effect of a merge that
-    // never needed one.
+    // Reading grace can start a new window as a side effect.
     const grace = vi.fn(async () => true);
     await decide(observed({ rollupState: "SUCCESS" }), { graceSaysWait: grace });
     expect(grace).not.toHaveBeenCalled();
@@ -238,15 +211,8 @@ describe("mergeFlushRefusal", () => {
   });
 });
 
-/**
- * docs/288 — the same table, one extra verdict. What must NOT change is the
- * order: an arming still refuses on everything a merge refuses on, so a request
- * is never recorded and then cancelled a tick later by the executor's own table.
- */
 describe("decideMerge — arming (docs/288)", () => {
   it("arms rather than merging when the checks are already green", async () => {
-    // `--auto` never merges inline. One flag, one meaning: an agent that wants
-    // the merge now calls `gh pr merge` without it.
     expect(await decide(observed(), { localHead: LOCAL, arming: true }))
       .toEqual({ action: "arm", sha: "sha-head" });
   });
@@ -257,7 +223,6 @@ describe("decideMerge — arming (docs/288)", () => {
   });
 
   it("arms while the zero-check grace is still open", async () => {
-    // The command must not wait, but the request is exactly a thing that waits.
     expect(await decide(
       observed({ rollupState: null }),
       { localHead: LOCAL, arming: true, graceSaysWait: async () => true },
@@ -265,8 +230,6 @@ describe("decideMerge — arming (docs/288)", () => {
   });
 
   it("arms at the new head when the rollup still describes the old one", async () => {
-    // The ordinary shape right after the flush and push: CI has not started on
-    // the new commit. Refusing here would refuse the exact case `--auto` is for.
     expect(await decide(
       observed({ headRefOid: "sha-new", rollupCommitOid: "sha-old", rollupState: "SUCCESS" }),
       { localHead: { kind: "head", sha: "sha-new" }, arming: true },
@@ -274,8 +237,6 @@ describe("decideMerge — arming (docs/288)", () => {
   });
 
   it("does not read a lagging rollup's FAILURE as the armed commit's", async () => {
-    // A failure on the commit the push replaced says nothing about the new one,
-    // and reading it would refuse the request that push was made to arm.
     expect(await decide(
       observed({ headRefOid: "sha-new", rollupCommitOid: "sha-old", rollupState: "FAILURE" }),
       { localHead: { kind: "head", sha: "sha-new" }, arming: true },
@@ -294,8 +255,6 @@ describe("decideMerge — arming (docs/288)", () => {
   });
 
   it("still requires the pull request head to be this workspace's commit", async () => {
-    // req 14 is not waived by arming: binding a request to a commit this session
-    // is not on would ask ShipIt to merge somebody else's push.
     expect(await decide(observed(), { localHead: { kind: "head", sha: "sha-other" }, arming: true }))
       .toMatchObject({ action: "refuse", reason: "local-head-differs" });
   });

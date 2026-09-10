@@ -1,17 +1,3 @@
-/**
- * docs/262 req 23 — the credential store boundary, proved rather than asserted.
- *
- * Two properties this file exists for:
- *   1. A plugin credential resolves from the CONSUMING project's own secret
- *      store — never from the plugin repository's store, the trap `plan.md` §3
- *      records for the "Add key…" affordance, here on the read side.
- *   2. ShipIt's own platform credentials — the user's GitHub identity, tracker
- *      tokens, agent/provider tokens — can NEVER satisfy a plugin's declared
- *      name, whatever the plugin calls it. The test populates a real
- *      `CredentialStore` with all three and shows the plugin still reports a
- *      gap.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -31,7 +17,6 @@ import {
 const CONSUMER_URL = "https://github.com/nicolasalt/my-project.git";
 const PLUGIN_REPO_URL = "https://github.com/nicolasalt/art-kit.git";
 
-/** A session dir laid out the way `createSessionDirFactory` guarantees. */
 function makeSession(shipitYaml: string): { sessionDir: string; workspaceDir: string } {
   const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-creds-"));
   const workspaceDir = path.join(sessionDir, "workspace");
@@ -40,13 +25,6 @@ function makeSession(shipitYaml: string): { sessionDir: string; workspaceDir: st
   return { sessionDir, workspaceDir };
 }
 
-/**
- * A published generation for `repoName`, carrying its own manifest AND the
- * record activation writes beside it. The record is not decoration: it names the
- * repository the generation was built FROM, and every reader through the
- * `active` symlink checks it, because the declaration name it is filed under is
- * re-pointable.
- */
 function publishGeneration(
   sessionDir: string,
   repoName: string,
@@ -107,10 +85,6 @@ describe("plugin credential resolution — the consuming project's store (req 23
     ]);
   });
 
-  // The name is filed on disk; the repository it points at is not. Answering
-  // from a generation another repository left would tell this project to supply
-  // THAT repository's credential names — a gap it can never close, against a
-  // plugin it no longer uses.
   it("reports nothing when the live generation came from a repository the declaration no longer names", () => {
     const session = track(
       makeSession(`plugins:\n  repos:\n    - repo: nicolasalt/art-kit\n      name: art-kit\n      branch: main\n  use:\n    - plugin: palette\n      from: art-kit\n      alias: artk\n`),
@@ -137,9 +111,6 @@ describe("plugin credential resolution — the consuming project's store (req 23
   });
 
   it("resolves against the consuming project's store — NOT the plugin repository's", () => {
-    // The store trap (plan §3): the key sits in the PLUGIN repository's store,
-    // which is a different store entirely. The consuming project has no value,
-    // so the plugin's need is an unsatisfied, named gap.
     secretStore.saveSecrets(PLUGIN_REPO_URL, { FAL_KEY: "fixture-from-the-wrong-store" });
 
     const declarations = [
@@ -151,7 +122,6 @@ describe("plugin credential resolution — the consuming project's store (req 23
     );
     expect(group.credentials).toEqual([{ name: "FAL_KEY", satisfied: false, optional: false }]);
 
-    // …and it flips the moment the value lands in the CONSUMING project's store.
     secretStore.saveSecrets(CONSUMER_URL, { FAL_KEY: "fixture-live" });
     const [after] = resolvePluginCredentials(
       declarations,
@@ -196,7 +166,6 @@ describe("platform credentials are unreachable from a plugin's store (req 23)", 
   });
 
   it("a plugin declaring ShipIt's own credential names still reports every one as a gap", () => {
-    // Everything ShipIt holds on the user's behalf, all set, all real.
     const credentialStore = new CredentialStore(credentialsDir);
     credentialStore.setGithubToken("fixture-the-users-github-identity");
     credentialStore.setLinearToken("fixture-the-users-tracker-token");
@@ -207,9 +176,6 @@ describe("platform credentials are unreachable from a plugin's store (req 23)", 
       expiresAt: Date.now() + 3_600_000,
     });
 
-    // A plugin that asks for exactly those names — by the names ShipIt itself
-    // uses. The consuming project's store is empty, which is the only store a
-    // plugin's credentials can resolve from.
     const declarations = [
       {
         repo: "art-kit",
@@ -237,8 +203,6 @@ describe("platform credentials are unreachable from a plugin's store (req 23)", 
       { name: "MCP_PLATFORM_NOTION", satisfied: false, optional: false },
     ]);
 
-    // The platform store is genuinely populated — the gaps above are the
-    // boundary holding, not an empty fixture.
     expect(credentialStore.getGithubToken()).toBeTruthy();
     expect(credentialStore.getLinearToken()).toBeTruthy();
     expect(credentialStore.getAllAgentEnv().ANTHROPIC_API_KEY).toBeTruthy();
@@ -246,9 +210,6 @@ describe("platform credentials are unreachable from a plugin's store (req 23)", 
   });
 
   it("a value the USER placed in the project store under a platform-ish name is theirs, and resolves", () => {
-    // The boundary is about ShipIt's own credentials, not about names. A key
-    // the user typed into Settings → Secrets is a user-placed plugin value
-    // whatever it is called (req 23: "holds only values the user placed there").
     secretStore.saveSecrets(CONSUMER_URL, { GITHUB_TOKEN: "fixture-the-users-own-choice" });
     const [group] = resolvePluginCredentials(
       [{ repo: "r", plugin: "p", alias: "p", credentials: [{ name: "GITHUB_TOKEN", optional: false }] }],
@@ -275,15 +236,12 @@ describe("liveManifestReader", () => {
   });
 
   it("returns the self manifest without touching the state dir", () => {
-    // A workspace that is NOT `<sessionDir>/workspace` has no derivable state
-    // dir; a self repo must still read (req 27 — its manifest is this file).
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-creds-flat-"));
     try {
       const selfExports = [
         { name: "probe", cli: {}, installInputs: [], depDirs: [], credentials: [{ name: "PROBE_KEY", optional: false }], hosts: [], settings: {} },
       ];
       const repos: DeclaredPluginRepo[] = [{ name: "dev", source: { kind: "self" } }];
-      // A self repo reads without any generation being resolvable at all.
       const read = liveManifestReader(repos, selfExports, () => null);
       expect(read("dev")).toEqual(selfExports);
       expect(read("other")).toBeNull();

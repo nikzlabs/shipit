@@ -1,19 +1,4 @@
-/**
- * Agent controller — owns the worker's single resident agent slot and the
- * in-flight sub-agent registry, and registers the `/agent/*` endpoints
- * (start, interrupt, kill, spawn, stdin, permission-mode, message, compact,
- * status).
- *
- * The single-occupant `this.agent` slot is the primary turn; sub-agent spawns
- * (docs/144) run OUTSIDE it as plain subprocesses keyed by spawnId. Agent
- * events are wired to the SSE stream here so the orchestrator sees them.
- *
- * A spawn's lifetime belongs to the SPAWN, not to the primary turn
- * (docs/144 §8, revised): nothing on the primary's lifecycle — an interrupt, a
- * kill, a turn ending — may end one. The only two terminators are the spawn's
- * own wall-clock cap (`DEFAULT_SUB_AGENT_TIMEOUT_MS`) and the container going
- * away, which reaches the spawns here through {@link AgentController.stop}.
- */
+// Sub-agent spawns survive primary turns and interrupts; only their timeout or worker shutdown cancels them.
 
 import type { FastifyInstance } from "fastify";
 import type {
@@ -38,7 +23,6 @@ import {
   type SubAgentRunHandle,
 } from "../shared/sub-agent-run.js";
 
-/** Factory function that creates an AgentProcess from an agent ID. */
 export type WorkerAgentFactory = (agentId: AgentId) => AgentProcess;
 
 export interface AgentControllerDeps {
@@ -47,106 +31,33 @@ export interface AgentControllerDeps {
   broadcast: (event: WorkerSSEEvent) => void;
   permissionBroker: PermissionBroker;
   mcpConfig: McpConfigController;
-  /** Reports the latest SSE sequence for `/agent/status`. */
   latestSseSeq: () => number;
-  /**
-   * docs/240 — reports the OLDEST sequence still in the SSE replay buffer.
-   * `/agent/status` publishes it so an orchestrator adopting a turn that was
-   * in flight across its restart can tell whether the buffer still covers the
-   * whole turn (complete replay) or only its tail (partial). Optional so
-   * existing constructions without the getter keep working.
-   */
   oldestSseSeq?: () => number;
-  /**
-   * docs/242 — live work in the container that this controller does not own: a
-   * running PTY (`TerminalController`) and an `agent.install` in flight
-   * (`InstallController`).
-   *
-   * Reported through `/agent/status` rather than through their own endpoints
-   * because the consumer is a *reclaim* decision, and a decision made from two
-   * probes taken at different instants is a decision about a state the
-   * container was never in. The orchestrator's boot sweep destroys a stale idle
-   * container outright, and without this it reads a session whose terminal is
-   * running a test suite as idle (review finding).
-   *
-   * Optional: constructions that predate it (tests, older wiring) report
-   * neither, which reads as "no such work" — the same answer they gave before.
-   */
+  /** Include other work in the status snapshot used for container reclamation. */
   otherWorkerLiveness?: () => { terminalActive: boolean; installRunning: boolean };
 }
 
 export class AgentController {
   private agent: AgentProcess | null = null;
 
-  /**
-   * docs/240 — metadata about the spawn occupying the slot, published via
-   * `/agent/status` so an orchestrator that restarted mid-turn can re-create a
-   * proxy with the SAME run token (keeping `isStaleSpawnEvent` correlation
-   * intact) and in the right streaming mode.
-   */
   private residentSpawn: { runToken?: string; streaming: boolean } | null = null;
 
-  /**
-   * planning#266 — the durable DELIVERY id of the turn currently in flight, when the
-   * orchestrator dispatched it on behalf of a server-side delivery (a
-   * notify-on-merge wake). Published via `/agent/status` so a restarted
-   * orchestrator can re-identify the delivery and rebind its completion
-   * settlement onto the adopted turn instead of dispatching a duplicate.
-   *
-   * Deliberately keyed to the TURN, not the spawn: a resident streaming process
-   * outlives its turn, so a delivery held on `residentSpawn` would keep reading
-   * as live after the turn ended (suppressing a legitimate redispatch forever)
-   * and would leak onto the NEXT turn that `/agent/message` starts on the same
-   * process. Cleared by {@link endTurn}.
-   */
+  // Delivery identity belongs to the turn, not the resident process that can outlive it.
   private turnDeliveryId: string | undefined;
 
-  /**
-   * docs/240 — whether a turn is genuinely in flight on the resident process.
-   * Set when a turn starts (`/agent/start`, or `/agent/message` into an idle
-   * resident streaming process); cleared on `agent_result` and on process exit.
-   */
   private turnActive = false;
   private turnStartSseSeq = 0;
 
-  /**
-   * docs/242 — the docs/235 liveness axis, worker-side, so a *restarted*
-   * orchestrator can see it. `backgroundTaskCount` is the level signal (the last
-   * `agent_background_tasks` list length) and is process-scoped: a turn may end
-   * with tasks still outstanding, which is exactly the state that must not read
-   * as idle. `selfWakeActive` is the edge signal and is turn-scoped, so
-   * {@link endTurn} clears it.
-   *
-   * Both are only ever emitted by a backend that has them (Claude today), so a
-   * backend that never self-wakes simply reports 0/false.
-   */
   private backgroundTaskCount = 0;
   private selfWakeActive = false;
 
-  // docs/144 — in-flight sub-agent spawns, keyed by orchestrator-supplied
-  // spawnId. These run OUTSIDE the single-occupant `this.agent` slot as plain
-  // subprocesses and never broadcast to SSE; their output is returned
-  // synchronously over the `/agent/spawn` HTTP response. Tracked ONLY so
-  // {@link stop} can SIGTERM them as the worker goes down — no route reaches
-  // into this map, by design (see the module docstring).
   private readonly spawnedAgents = new Map<string, SubAgentRunHandle>();
 
-  /**
-   * docs/248-repo-node-version req 8 — whether the "your Node pin isn't being honored" note has
-   * already ridden a turn's prompt.
-   *
-   * Scoped to this controller, i.e. to the container: the pin is resolved once
-   * at worker boot, so "the first turn" means the first turn *since that
-   * resolution*, not the first of the session. A long-lived session whose
-   * container is recreated re-resolves the pin and tells the agent again —
-   * which is right, because the answer may have changed and the new agent
-   * process never saw the old note.
-   */
+  // Warn again after container recreation, which resolves the Node pin again.
   private nodeNoticeDelivered = false;
 
   constructor(private readonly deps: AgentControllerDeps) {}
 
-  /** The resident agent's id, if any — read by the permission endpoints. */
   get currentAgentId(): AgentId | undefined {
     return this.agent?.agentId;
   }
@@ -162,44 +73,19 @@ export class AgentController {
         return reply.code(400).send({ error: "agentId and params are required" });
       }
 
-      // docs/248 — everything the agent runs (its bash tool, its builds, its
-      // test runs) inherits this worker's PATH, so the pinned Node has to be on
-      // it before the CLI spawns. Awaited outside the try: a provisioning
-      // failure is already folded into a reported status and never throws.
       const nodeRuntime = await whenNodeRuntimeReady();
 
-      // req 8 — and when the pin could NOT be honored, say so on the first turn
-      // rather than leaving the agent to debug against a runtime it believes is
-      // the project's. Rides the prompt, not the system prompt: the latter is
-      // precomputed per (agentId, isOps) and must stay byte-stable for the
-      // prompt cache. Silent for every session whose pin is honored or absent.
+      // Add the notice to the turn prompt so the cached system prompt stays byte-stable.
       const nodeNotice = this.nodeNoticeDelivered ? null : formatNodeRuntimeNotice(nodeRuntime);
       if (nodeNotice) this.nodeNoticeDelivered = true;
 
       try {
-        // docs/240 — mark the turn in flight BEFORE the adapter can emit
-        // anything, and record the seq the turn starts at. A restarted
-        // orchestrator replays from exactly here, so the live turn's events are
-        // re-delivered while the previous (already-persisted) turn's are not.
+        // Capture turn identity and replay position before the adapter emits anything.
         this.beginTurn();
-        // planning#266 — stamp the delivery AFTER `beginTurn` (which clears nothing,
-        // but keeps the "turn identity is established first" reading) and
-        // before anything can be emitted.
         this.turnDeliveryId = deliveryId;
         this.residentSpawn = { runToken, streaming: params.useStreaming === true };
-        // docs/155 hair 10 — each adapter knows its own MCP wire format
-        // (Claude: per-turn `--mcp-config` JSON; Codex: `config.toml` block;
-        // Cursor: `mcp.json`). The worker hands over the cross-cutting
-        // context (user-configured servers, review-bridge paths, SSE
-        // failure channel) and consumes a uniform { mcpConfigPath?,
-        // runtimeEnv?, cleanup? } result.
         this.agent = this.deps.agentFactory(agentId);
         this.wireAgentEvents(this.agent, runToken);
-        // docs/193 — give an adapter with a native blocking approval channel
-        // (Codex) the broker so its escalation requests surface the same
-        // approve/deny card as Claude's sensitive-file gate, rather than being
-        // silently auto-approved. Claude has no such channel here — its gate is
-        // bridged via `--permission-prompt-tool` (the `shipit` bridge's permission tool).
         this.agent.setPermissionRequester?.((input) => this.deps.permissionBroker.request(input));
         const mcpWrite = this.deps.mcpConfig.invokeAgentMcpWriter(this.agent, params);
 
@@ -225,18 +111,6 @@ export class AgentController {
     });
 
     app.post("/agent/interrupt", async (_request, reply) => {
-      // Deliberately does NOT touch `spawnedAgents`. Interrupting the primary
-      // turn used to cancel every sub-agent running on its behalf ("symmetric
-      // cancel", docs/144 §8) — but most interrupts are not user actions at
-      // all: the orchestrator interrupts the turn on every well-formed
-      // `AskUserQuestion` and `ExitPlanMode` tool call, because the CLI
-      // auto-resolves those and the turn has to stop for the card to be
-      // answerable (`ws-handlers/agent-listeners.ts`). In production that
-      // SIGTERMed a 5.4-minute review the primary had backgrounded moments
-      // earlier, purely because the primary then asked its user a question.
-      // Scoping the exemption to the trigger would have left `ExitPlanMode`,
-      // `/agent/kill` and every future internal interrupt free to re-create it,
-      // so the coupling is cut HERE, at the route.
       if (!this.agent) {
         return reply.code(404).send({ error: "No agent running" });
       }
@@ -245,15 +119,7 @@ export class AgentController {
     });
 
     app.post<{ Body: WorkerAgentKillBody | null }>("/agent/kill", async (request, reply) => {
-      // Identity-guarded kill (prod incident 2026-08-09, session 468191f5): the
-      // orchestrator's kill is fire-and-forget and can execute here long after
-      // it was issued. planning#290 guarded the ORCHESTRATOR-side slot clear, but
-      // the request itself carried no victim identity, so a late-executing kill
-      // SIGTERMed whichever process was resident at execution time — including
-      // a newer live one mid-turn (whose in-flight turn then died silently).
-      // When the caller names its victim, refuse to kill anyone else. A body
-      // without `runToken` (legacy caller / recovery paths that intentionally
-      // clear whatever is resident) keeps the unconditional behavior.
+      // A delayed kill must not target a replacement process. Missing tokens retain legacy behavior.
       const victimRunToken = request.body?.runToken;
       if (typeof victimRunToken === "string" && this.residentSpawn?.runToken !== victimRunToken) {
         console.warn(
@@ -262,13 +128,6 @@ export class AgentController {
         );
         return { killed: false, staleVictim: true };
       }
-      // Like `/agent/interrupt`, leaves `spawnedAgents` alone: the primary's
-      // death is not the sub-agent's. Killing the resident process from here is
-      // routine (the 409-retry dance, a superseded spawn, a failed-auth heal),
-      // none of which is a decision to abandon a consult. Container teardown —
-      // the one terminator that genuinely removes a spawn — goes through
-      // `stop()`, and orchestrator-side through
-      // `ContainerSessionRunner.cancelInFlightSubAgents`.
       if (!this.agent) {
         return reply.code(404).send({ error: "No agent running" });
       }
@@ -277,15 +136,6 @@ export class AgentController {
       return { killed: true };
     });
 
-    // docs/144 — spawn a one-shot SUB-AGENT subprocess. This is a NEW code path,
-    // not a reuse of `/agent/start`: it instantiates a fresh per-agent adapter
-    // OUTSIDE the single-occupant slot (`this.agent` is untouched), wires its
-    // events into a local result accumulator instead of the broadcast SSE, and
-    // returns the accumulated final assistant text synchronously. The
-    // orchestrator (`services/sub-agent.ts`) owns authorization, credentials,
-    // and the per-turn cap; the worker just runs the adapter. Two CLI processes
-    // are alive during the spawn window (the primary, blocked on the caller's
-    // `shipit agent` shell call, and this sub-agent).
     app.post<{ Body: { agentId: AgentId; prompt: string; spawnId: string; depth?: number; model?: string; serviceRouting?: ServiceRouting; homeDir?: string; reasoningEffort?: string; timeoutMs?: number; maxOutputChars?: number } }>(
       "/agent/spawn",
       async (request, reply) => {
@@ -294,12 +144,6 @@ export class AgentController {
           console.warn("[sub-agent] worker rejected spawn: agentId, prompt, and spawnId are required");
           return reply.code(400).send({ error: "agentId, prompt, and spawnId are required" });
         }
-        // docs/261 req 7 — a spawn that names no model is REFUSED, not run on
-        // whatever the CLI would pick. The orchestrator already refuses an
-        // incomplete call at its own edge; this is the same rule at the boundary
-        // where the blank would actually be filled, so a propagation slip
-        // between the two fails loudly instead of quietly reinstating the
-        // per-harness default this feature deleted.
         if (!model) {
           console.warn(`[sub-agent] worker rejected spawn=${spawnId}: no model named`);
           return reply.code(400).send({ error: "model is required — a spawn names the model it runs" });
@@ -311,8 +155,6 @@ export class AgentController {
           console.warn(`[sub-agent] worker rejected spawn=${spawnId}: unknown agent ${agentId}`);
           return reply.code(400).send({ error: `Unknown agent: ${agentId} (${getErrorMessage(err)})` });
         }
-        // planning#280 — this whole path used to be silent, so a consult that never
-        // produced an artifact left nothing in the worker logs either.
         console.log(
           `[sub-agent] worker spawn=${spawnId} agent=${agentId} depth=${depth ?? 0} `
           + `promptBytes=${Buffer.byteLength(prompt)} model=${model ?? "default"} `
@@ -323,11 +165,7 @@ export class AgentController {
           prompt,
           cwd: this.deps.workspaceDir,
           ...(model !== undefined ? { model } : {}),
-          // docs/252 phase 3 — a consult runs on its own selection, so it needs
-          // the same base-URL/credential shaping a primary turn gets.
           ...(serviceRouting !== undefined ? { serviceRouting } : {}),
-          // A same-harness spawn's isolated per-spawn HOME (container path) —
-          // keeps its credentials off the subtree the live primary CLI reads.
           ...(homeDir !== undefined ? { homeDir } : {}),
           ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
           ...(timeoutMs !== undefined ? { timeoutMs } : {}),
@@ -336,11 +174,7 @@ export class AgentController {
         const handle = runAgentToCompletion(agent, runOpts, Date.now());
         this.spawnedAgents.set(spawnId, handle);
         try {
-          // Stamp SHIPIT_AGENT_DEPTH = caller depth + 1 on the subprocess env so
-          // the sub-agent's own `shipit agent` calls forward a non-zero depth and
-          // are rejected by the orchestrator's recursion guard. withTemporaryEnv
-          // restores process.env after the synchronous spawn; the child has
-          // already captured the value.
+          // The child captures this depth synchronously; the orchestrator uses it to reject recursion.
           const childDepth = String((depth ?? 0) + 1);
           this.withTemporaryEnv({ SHIPIT_AGENT_DEPTH: childDepth }, () => {
             agent.run(buildSubAgentRunParams(runOpts));
@@ -374,13 +208,6 @@ export class AgentController {
       return { written: true };
     });
 
-    // POST /agent/permission-mode — change the resident agent's permission
-    // mode mid-stream without a restart. The adapter pushes a
-    // `set_permission_mode` control_request onto the streaming CLI's stdin;
-    // adapters that don't support mid-stream switching (one-shot) no-op.
-    // See docs/138 / docs/140 for the protocol details. `mode: null` is the
-    // wire encoding for ShipIt "auto" (no flag), so the JSON body always
-    // travels as a string-or-null.
     const ALLOWED_MODES = new Set(["plan", "guarded", "auto"]);
     app.post<{ Body: { mode: string | null } }>(
       "/agent/permission-mode",
@@ -405,7 +232,6 @@ export class AgentController {
       },
     );
 
-    // POST /agent/message — inject a user message (live steering, docs/140)
     app.post<{ Body: { text: string } }>(
       "/agent/message",
       async (request, reply) => {
@@ -419,28 +245,16 @@ export class AgentController {
           console.warn(`[steer-worker] /agent/message rejected: text is required (got ${typeof text})`);
           return reply.code(400).send({ error: "text is required" });
         }
-        // docs/140 diag — confirm the worker accepted and forwarded to the
-        // adapter. The adapter (`[claude-adapter]`) and CLI-stdin
-        // (`[streaming-claude]`) logs follow.
         console.log(
           `[steer-worker] /agent/message → agent.sendUserMessage (bytes=${text.length}, text=${snippet})`,
         );
-        // docs/240 — a message into an IDLE resident streaming process starts a
-        // new turn (this is how every turn after the first runs under live
-        // steering), so it must mark the turn in flight and anchor the replay
-        // cursor. A message into a turn already in flight is a mid-turn steer:
-        // leave the existing anchor alone so the whole turn stays replayable.
+        // Preserve the replay anchor when steering an active turn.
         if (!this.turnActive) this.beginTurn();
         this.agent.sendUserMessage(text);
         return { success: true };
       },
     );
 
-    // POST /agent/compact — trigger a context compaction on the resident agent
-    // (docs/178). Claude (streaming) injects the `/compact` slash command; Codex
-    // (live thread) sends the `thread/compact/start` RPC. Adapters that don't
-    // implement compact(), or have no resident process to talk to, no-op — the
-    // orchestrator handles the non-resident case by spawning a `/compact` turn.
     app.post<{ Body: { instructions?: string } }>("/agent/compact", async (request, reply) => {
       if (!this.agent) {
         return reply.code(404).send({ error: "No agent running" });
@@ -472,54 +286,26 @@ export class AgentController {
     }));
   }
 
-  /**
-   * docs/240 — mark a turn as in flight and anchor the SSE replay cursor at the
-   * seq the turn starts from. Called before anything the turn emits, so a
-   * restarted orchestrator replaying from `turnStartSseSeq` sees the whole turn
-   * and none of the previous (already-persisted) one.
-   */
   private beginTurn(): void {
     this.turnActive = true;
     this.turnStartSseSeq = this.deps.latestSseSeq();
   }
 
-  /**
-   * The single-occupant slot is now empty: the resident process is dead or has
-   * been killed.
-   *
-   * One method rather than the four open-coded copies it replaces, because the
-   * background-task count is the first piece of slot state whose omission
-   * FAILS CLOSED. `/agent/kill` nulls `this.agent` synchronously, so the late
-   * `done` handler's `this.agent === agent` identity guard is already false by
-   * the time it runs and its cleanup never executes — a kill after
-   * `agent_background_tasks` therefore left a count of 1 on a slot with no
-   * process, and the boot sweep reads that as "busy forever" and never reclaims
-   * the container (review finding).
-   */
+  // Clear process state here: late done events fail the identity guard after a kill.
   private vacateSlot(): void {
     this.agent = null;
     this.residentSpawn = null;
     this.endTurn();
-    // docs/242 — the tasks belonged to that process, and a dead CLI will never
-    // send the drained list. Turn-scoped state is `endTurn`'s; this is the
-    // process-scoped half.
     this.backgroundTaskCount = 0;
   }
 
-  /** docs/240 — the turn ended (result, process exit, or kill). */
   private endTurn(): void {
     this.turnActive = false;
-    // docs/242 — the self-wake flag belongs to the turn it started. The
-    // background-task COUNT deliberately survives: a turn routinely ends with
-    // tasks still running, and that is the state the boot sweep must not read
-    // as idle. It is cleared where the process dies instead.
+    // Background tasks can outlive a turn; retain their count until the process ends.
     this.selfWakeActive = false;
-    // planning#266 — the delivery belongs to the turn that just ended; a later
-    // `/agent/status` must not report it as still live.
     this.turnDeliveryId = undefined;
   }
 
-  /** Kill the resident agent and cancel all sub-agent spawns (worker shutdown). */
   stop(): void {
     this.cancelAllSpawns();
     if (this.agent) {
@@ -544,12 +330,6 @@ export class AgentController {
     }
   }
 
-  /**
-   * SIGTERM every in-flight sub-agent spawn. Reachable ONLY from {@link stop} —
-   * the worker is going down and the child process dies with it either way, so
-   * this is orderly cleanup, not policy. Nothing on the primary turn's
-   * lifecycle may call it (see the module docstring).
-   */
   private cancelAllSpawns(): void {
     for (const [spawnId, handle] of this.spawnedAgents) {
       console.warn(`[sub-agent] worker cancelling spawn=${spawnId} (worker shutting down)`);
@@ -557,60 +337,18 @@ export class AgentController {
     }
   }
 
-  /**
-   * Wire agent events to the SSE stream.
-   *
-   * `runToken` is the orchestrator's per-SPAWN correlation token (see
-   * `ProxyAgentProcess.runToken`). It is captured in the done/error/
-   * auth_required closures and stamped onto those SSE events so the
-   * orchestrator can tell a stale exit from a previous spawn apart from the
-   * current one and refuse to null the live `_agent` slot. Undefined for
-   * callers that don't supply one (legacy / direct test starts) — the
-   * orchestrator then falls back to its object-identity guards.
-   */
+  // Capture instance and token so late events cannot clear a replacement locally or across SSE.
   private wireAgentEvents(agent: AgentProcess, runToken?: string): void {
     agent.on("event", (event: AgentEvent) => {
-      // A Playwright screenshot arrives shrunk to fit the model's token budget;
-      // the full-resolution capture is on disk beside it. Swap it in here, on
-      // the one path every backend's events pass through, so what ShipIt
-      // persists and renders is the sharp one. The model's copy is already
-      // delivered and is not affected. See `playwright-screenshot.ts`.
       const forWire = restoreFullResolutionScreenshots(event);
-      // planning#290 — the event channel carries the spawn token too. It used to be
-      // the only channel that didn't, so a retired process's late `agent_result`
-      // (the canonical turn-ended signal) was routed into whatever proxy held
-      // the orchestrator's slot, settling a turn that had just started. The
-      // orchestrator strips the token back off before handing the event to the
-      // proxy, so `AgentEvent` consumers never see it.
       this.deps.broadcast({ type: "agent_event", data: { ...forWire, runToken } });
       if (this.agent !== agent) return;
-      // docs/240 — `agent_result` is the canonical turn-ended signal (the same
-      // one the orchestrator keys its post-turn flow off). A resident streaming
-      // process stays in the slot afterwards, so `running` alone can't tell an
-      // in-flight turn from an idle-resident one — this can.
       if (event.type === "agent_result") this.endTurn();
-      // docs/242 — mirror the docs/235 liveness the orchestrator tracks on the
-      // runner, so it survives an orchestrator restart (see WorkerAgentStatus).
       else if (event.type === "agent_background_tasks") this.backgroundTaskCount = event.tasks.length;
       else if (event.type === "agent_self_wake") this.selfWakeActive = true;
     });
 
-    // Capture `agent` in the closure so the done/error handlers compare against
-    // the specific instance they were wired to. Without this guard, a late
-    // `done` from an OLD streaming process (killed by /agent/kill during the
-    // 409-retry dance in container-session-runner.ts) would null out the
-    // freshly-spawned NEW agent that already replaced `this.agent`, stranding
-    // the worker with no agent reference while the new CLI keeps running.
-    //
-    // The captured `runToken` is the orchestrator-side correlation for the SAME
-    // purpose across the SSE boundary: the orchestrator can't compare process
-    // identity, so it compares this token (see container-session-runner.ts
-    // `isStaleSpawnEvent`).
     agent.on("done", (exitCode: number) => {
-      // docs/193 — the backend process is gone; settle any held permission
-      // promise internally so the worker doesn't leak. This broadcasts nothing,
-      // so an unanswered card stays `pending` (no synthetic "expired" — ShipIt
-      // imposes no deadline on the user's decision).
       this.deps.permissionBroker.clearPending();
       this.deps.broadcast({ type: "agent_done", data: { exitCode, runToken } });
       if (this.agent === agent) this.vacateSlot();
@@ -630,10 +368,6 @@ export class AgentController {
       this.deps.broadcast({ type: "agent_log", data: { source, text } });
     });
 
-    // docs/088: per-MCP-server liveness reported by the CLI (Claude's init
-    // event populates this; Codex never emits). One SSE event per server so
-    // the orchestrator's relay (container-session-runner.ts) doesn't need to
-    // unpack arrays.
     agent.on("mcp_status", (statuses) => {
       for (const status of statuses) {
         this.deps.broadcast({

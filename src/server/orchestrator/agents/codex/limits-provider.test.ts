@@ -2,7 +2,6 @@ import { describe, it, expect, vi } from "vitest";
 import { CodexLimitsProvider } from "./limits-provider.js";
 import type { CodexAuthManager } from "./auth-manager.js";
 
-/** docs/150 — every snapshot is now attributed to a route (account) id. */
 const ROUTE = "acct-test";
 
 function makeAuthStub(
@@ -74,17 +73,6 @@ describe("CodexLimitsProvider (event-fed)", () => {
   });
 });
 
-/**
- * planning#454 — this reader DOES state which windows the plan has, because its
- * source is a complete statement: `account/rateLimits/updated` carries both
- * `rateLimits.primary` and `.secondary` in one notification, so a window absent
- * from a reading is one the plan does not have.
- *
- * The opposite call from Claude's reader on the same field, and the difference
- * is a property of the SOURCE rather than of the vendor. A ChatGPT plan that
- * reports no 5-hour window was one of the pills the reporting user was looking
- * at, drawing a `5h · —` that nothing would ever fill.
- */
 describe("CodexLimitsProvider and the windows it declares", () => {
   const auth = () => makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" });
 

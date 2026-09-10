@@ -6,67 +6,29 @@ import { registerOriginGuard, type OriginPolicy } from "./api-origin-guard.js";
 import { framePolicyFor, registerFrameGuard } from "./frame-guard.js";
 import type { RuntimeMode } from "../shared/types.js";
 
-/**
- * Create the Fastify instance and register the transport-level middleware that
- * every route depends on: WebSocket + multipart support and the CORS /
- * browser-origin guard.
- *
- * This is pure app assembly — it instantiates and configures the server but
- * registers no application routes (those live in `route-registry.ts`) and wires
- * no managers (that's `bootstrap-managers.ts`). Extracted from `index.ts` as
- * part of the P4 split (docs/201).
- *
- * `originPolicy` is a test seam; production reads it from the environment.
- *
- * `runtimeMode` selects the anti-framing policy (planning#379). It defaults to
- * `"containerized"` — the strict answer — so a caller that forgets it fails
- * closed; production passes the resolved mode from `initializeManagers`.
- */
 export async function createOrchestratorApp(
   originPolicy?: OriginPolicy,
   runtimeMode: RuntimeMode = "containerized",
 ): Promise<FastifyInstance> {
-  // Fastify's maxParamLength defaults to 100: a request whose *decoded* path
-  // param exceeds it doesn't 404 — it silently falls through to the SPA static
-  // handler. The repo-scoped routes (DELETE /api/repos/:url and
-  // POST /api/repos/:url/claim-session) carry a full encodeURIComponent'd remote
-  // URL in the path, so any URL longer than ~100 chars (long org/repo names, or
-  // a credential-bearing URL) makes the repo silently undeletable from the UI.
-  // Raise the ceiling so every realistic remote URL routes correctly.
+  // Repo routes carry full remote URLs; Fastify's 100-character default is too short.
   const app = Fastify({ logger: false, routerOptions: { maxParamLength: 2048 } });
 
   await app.register(fastifyWebsocket);
   await app.register(fastifyMultipart, {
     limits: {
-      fileSize: 50 * 1024 * 1024, // 50 MB per file
-      files: 20,                   // max 20 files per request
+      fileSize: 50 * 1024 * 1024,
+      files: 20,
     },
   });
 
-  // ---- CORS + browser-origin trust boundary (planning#370) ----
-  // This hook used to reflect ANY `Origin` back with
-  // `Access-Control-Allow-Credentials: true`, which let any page the user's
-  // browser loaded — a preview page most of all — call `/api/*` and read the
-  // answers. It is now an allowlist plus a refusal on `/api/*` and `/ws/*`.
-  // Registered here so it stays the FIRST `onRequest` hook, ahead of the
-  // container guard and the preview proxy. See `api-origin-guard.ts`.
+  // The origin guard must precede the container guard and preview proxy.
   registerOriginGuard(app, originPolicy);
 
-  // ---- Anti-framing / clickjacking (planning#379) ----
-  // The origin guard above cannot see this attack: a clickjack makes ShipIt's
-  // OWN frame issue the request, so it is same-origin and passes. Refuse the
-  // framing instead. Off in local mode, which exists to be framed — see
-  // `frame-guard.ts` for why that split is safe.
   registerFrameGuard(app, framePolicyFor(runtimeMode));
 
   return app;
 }
 
-/**
- * Serve the built client files from `dist/client/` with an SPA fallback.
- * No-op (other than the guard) when `shouldServeStatic` is false — integration
- * tests run with static serving disabled.
- */
 export async function serveStaticClient(
   app: FastifyInstance,
   clientDir: string,
@@ -78,17 +40,9 @@ export async function serveStaticClient(
       root: clientDir,
       prefix: "/",
       wildcard: false,
-      // Own the Cache-Control header ourselves; @fastify/static's default
-      // (`public, max-age=0`) would otherwise clobber what setHeaders sets.
+      // Prevent @fastify/static from overwriting setHeaders' cache policy.
       cacheControl: false,
       setHeaders: (res, filePath) => {
-        // The PWA must always boot the latest code — never a cached shell or a
-        // cached (and possibly stale-caching) service worker. The HTML
-        // entrypoints and the worker script get `no-store` so a standalone
-        // install behaves exactly like a fresh browser tab, paired with the
-        // cache-free service worker (public/service-worker.js). Everything else
-        // (Vite's content-hashed assets) keeps the prior always-revalidate
-        // behavior — no new caching is introduced. See docs/222-pwa-installable.
         if (filePath.endsWith(".html") || filePath.endsWith("service-worker.js")) {
           res.header("Cache-Control", "no-store, must-revalidate");
         } else {
@@ -96,12 +50,10 @@ export async function serveStaticClient(
         }
       },
     });
-    // SPA fallback — serve index.html for non-file routes
     app.setNotFoundHandler((_req, reply) => {
       reply.sendFile("index.html", clientDir);
     });
   } catch {
-    // Client build may not exist during dev; that's fine
     console.log("[server] No built client found at", clientDir);
   }
 }

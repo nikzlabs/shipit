@@ -1,13 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
-// docs/156 — every session-creation surface now ends with `graduateSession`,
-// which fires `generateSessionName` (real CLI child, 15s timeout) for any
-// path without an explicit title. Mock to null so the placeholder title sticks
-// and the branch is unchanged. Without this, every test here would shell out to
-// a real provider CLI — since planning#413 the route takes no `branch` either,
-// so nothing on this path can pin a name and skip the namer.
-// docs/252 phase 7 — `generateSessionName` returns `{ name, usage?, failure? }`.
-// `{ name: null }` is "naming produced no title", which is what these tests want.
+// Prevent session naming from starting a provider CLI.
 vi.mock("../session-namer.js", () => ({
   generateSessionName: vi.fn().mockResolvedValue({ name: null }),
 }));
@@ -36,11 +29,6 @@ import {
 
 const REPO_URL = "https://github.com/owner/quick-capture-test.git";
 
-/**
- * Build a multipart/form-data body for app.inject() with a mix of text fields
- * and file parts (the shape the quick-capture overlay POSTs when the user
- * attaches an image).
- */
 function buildMultipart(
   fields: Record<string, string>,
   files: { name: string; filename: string; content: Buffer }[],
@@ -94,9 +82,7 @@ describe("Integration: quick-capture headless sessions", () => {
     sessionManager = new SessionManager(dbManager);
     repoStore = new RepoStore(dbManager);
 
-    // Set up credentials (which sets GIT_CONFIG_GLOBAL) before seeding the
-    // cache — `seedRepoCacheWithLocalBare` writes its `insteadOf` redirect
-    // there. Without this, warming would fire a real github.com fetch.
+    // Set GIT_CONFIG_GLOBAL before the seed helper writes its local fetch redirect.
     const credentialStore = createTestCredentialStore(tmpDir);
     seedRepoCacheWithLocalBare({
       tmpDir,
@@ -105,8 +91,6 @@ describe("Integration: quick-capture headless sessions", () => {
     });
     repoStore.add(REPO_URL);
     repoStore.setReady(REPO_URL);
-    // Quick capture starts an agent turn immediately, so its repository
-    // fixture represents one the user has already trusted.
     repoStore.setTrusted(REPO_URL, true);
 
     githubAuth = new StubGitHubAuthManager();
@@ -139,13 +123,7 @@ describe("Integration: quick-capture headless sessions", () => {
   });
 
   it("POST /api/sessions/headless creates and starts a session without WebSocket attachment", { timeout: 15_000 }, async () => {
-    // Wait for the warm pool to register a warm session before claiming.
-    // buildApp() schedules warming via setTimeout(0); if claim runs before
-    // that fires (CI load) it falls to the slow-clone path, which calls
-    // `ensureBareCache` — the helper sees no `HEAD` file at the top of the
-    // *non-bare* seeded cache and `rm -rf`s it, racing the warm pool's
-    // concurrent `git fetch` for an ENOTEMPTY on `.git/`. Matches
-    // `agent-spawned-session.test.ts`'s `claimGraduatedParent` waitFor.
+    // Avoid a slow clone racing the warm pool's fetch in the seeded cache.
     await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
 
     const res = await app.inject({
@@ -170,10 +148,6 @@ describe("Integration: quick-capture headless sessions", () => {
       status: "running",
       session: { title: "Fix the flaky test" },
     });
-    // planning#413 — the route takes no `branch`; the name is always generated,
-    // so no two calls can land on one remote branch. `branchRenamed` is
-    // deliberately not asserted here: with neither a branch nor a title pinned,
-    // graduation defers it behind the (mocked) namer.
     expect(body.branch).toMatch(/^shipit\/[a-z0-9_-]{1,6}$/);
 
     const session = sessionManager.get(body.sessionId);
@@ -195,13 +169,6 @@ describe("Integration: quick-capture headless sessions", () => {
   });
 
   it("drops the image and says so when the new session's model cannot see (planning#460)", { timeout: 15_000 }, async () => {
-    // Quick Capture reaches a turn through `runner.dispatch` DIRECTLY — it never
-    // calls `dispatchAgentMessage`, so neither of planning#460's admission gates
-    // sees it. The backstop in `runDispatchedTurn` is what covers this, and it
-    // is a notice rather than a refusal on purpose: a fire-and-forget capture is
-    // worth running for its prompt even when one of its files is unreadable by
-    // the pinned model. What must NOT happen is the image being withheld in
-    // silence, which is all that gating OpenCode's modality would give here.
     await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
 
     const png = Buffer.from(
@@ -231,26 +198,15 @@ describe("Integration: quick-capture headless sessions", () => {
 
     await waitFor(() => createdAgents.some((a) => a.runCalled), 5000, "headless agent start");
     const prompt = createdAgents[0].lastPrompt ?? "";
-    // The prompt still carries the user's text and NOT an instruction to go read
-    // a picture the model cannot see.
     expect(prompt).toContain("Match this design");
     expect(prompt).not.toContain("<attached_images>");
 
-    // And the drop is TOLD, in the transcript — the assertion that separates this
-    // fix from the silent loss it replaces. A version that merely stopped
-    // referencing the image would pass everything above.
     const history = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
     expect(history.body).toContain("cannot read images");
     expect(history.body).toContain("V4 Pro");
   });
 
   it("references an attached image in the dispatched first-turn prompt", { timeout: 15_000 }, async () => {
-    // Regression: an image attached in the quick-capture overlay is saved into
-    // the new session's uploads dir but was NEVER folded into the prompt the
-    // agent receives — `runDispatchedTurn` passed `prompt: text` only, dropping
-    // `opts.uploads`. The agent never saw the screenshot. The dispatch path now
-    // resolves upload refs and assembles the same `<attached_images>` prompt
-    // block the WS path does, so the first turn references the image by path.
     await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
 
     const png = Buffer.from(
@@ -279,31 +235,18 @@ describe("Integration: quick-capture headless sessions", () => {
 
     await waitFor(() => createdAgents.some((a) => a.runCalled), 5000, "headless agent start");
     const prompt = createdAgents.find((a) => a.runCalled)!.lastPrompt;
-    // The agent's prompt carries the user text AND the attached-image block that
-    // points it at the saved /uploads/ path — proof the image reached the turn.
     expect(prompt).toContain("Match this design");
     expect(prompt).toContain("<attached_images>");
     expect(prompt).toMatch(/\/uploads\/screenshot[^\s]*\.png/);
 
-    // The image was actually written to the session's uploads dir on disk.
     const uploadsDir = path.join(path.dirname(session!.workspaceDir!), "uploads");
     const saved = fs.readdirSync(uploadsDir).filter((f) => f.endsWith(".png"));
     expect(saved.length).toBe(1);
   });
 
   it("never recycles a user's ungraduated /{repo}/new draft", { timeout: 20_000 }, async () => {
-    // Regression: a headless session (quick-capture, issue-seeded start, webhook)
-    // is always a NEW session for the requested work, never a recycle of an
-    // existing draft. A `/{repo}/new` page claims a warm session that stays
-    // `warm = 1` until its first message graduates it; without `skipReuse: true`
-    // on the headless claim, the reuse path (`findUngraduatedWarm`) could hand
-    // that live draft to a concurrent quick-capture for the same repo —
-    // graduating it and dispatching the quick-capture prompt into the session
-    // the user is composing in (a message appearing from nowhere mid-compose).
     await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm before draft claim");
 
-    // Simulate the user's `/{repo}/new` page: claim a warm session and leave it
-    // ungraduated. This is the draft the headless create must NOT steal.
     const draftRes = await app.inject({
       method: "POST",
       url: `/api/repos/${encodeURIComponent(REPO_URL)}/claim-session`,
@@ -312,7 +255,6 @@ describe("Integration: quick-capture headless sessions", () => {
     const { sessionId: draftId } = draftRes.json() as { sessionId: string };
     expect(sessionManager.get(draftId)?.warm).toBe(true);
 
-    // Re-warm so the headless create has a clean pool session to take.
     await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "re-warm after draft claim");
 
     const res = await app.inject({
@@ -323,10 +265,7 @@ describe("Integration: quick-capture headless sessions", () => {
     expect(res.statusCode, res.body).toBe(200);
     const { sessionId: headlessId } = res.json() as { sessionId: string };
 
-    // The headless session is its own session — NOT the user's draft.
     expect(headlessId).not.toBe(draftId);
-    // The draft is untouched: still ungraduated (`warm = 1`). Had reuse fired,
-    // it would have graduated (`warm = false`) and run the headless prompt.
     expect(sessionManager.get(draftId)?.warm).toBe(true);
     expect(sessionManager.get(headlessId)?.workspaceDir).not.toBe(
       sessionManager.get(draftId)?.workspaceDir,
@@ -334,20 +273,6 @@ describe("Integration: quick-capture headless sessions", () => {
   });
 
   it("refuses a harness that cannot run the requested model (planning#389)", { timeout: 15_000 }, async () => {
-    // docs/166 made this pair — a Claude model with a conflicting
-    // `agent: "codex"` — resolve to Claude, so a stale `vibe-agent-id` could not
-    // pin a session to a harness the user never chose. It did that by rerouting,
-    // and rerouting is the wrong half of the remedy: the session ran, was pinned
-    // write-once to Claude and BILLED for it, with `pending_agent_notice` NULL,
-    // so a caller who meant "codex" was told nothing at all. Measured on a live
-    // instance 2026-08-15 — four such requests, one of them $0.14.
-    //
-    // A refusal prevents the wrong pin just as well and costs nothing. The pair
-    // is refused, not corrected, because the two readings of it (a stale key vs.
-    // a caller who means it) are the SAME request and no rule can tell them
-    // apart — which is the answer `shipit agent run` and `shipit session create`
-    // already give (docs/261 req 7, planning#304). docs/166's client half, which
-    // stops the pair being sent, is untouched.
     await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
 
     const before = sessionManager.list().length;
@@ -366,16 +291,11 @@ describe("Integration: quick-capture headless sessions", () => {
     expect((res.json() as { error: string }).error).toContain(
       "Codex cannot run Opus 5 — they share no API style.",
     );
-    // Nothing was created and nothing ran: no session row, and no agent spawned
-    // on the harness the caller did not ask for.
     expect(sessionManager.list().length).toBe(before);
     expect(createdAgents.some((a) => a.runCalled)).toBe(false);
   });
 
   it("still derives the agent from the model when none was named (docs/166)", { timeout: 15_000 }, async () => {
-    // The half of docs/166's server guard that survives planning#389: the model
-    // is the source of truth, so a caller who names one and no harness gets the
-    // harness that model belongs to — not the install default.
     await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
 
     const res = await app.inject({
@@ -398,12 +318,6 @@ describe("Integration: quick-capture headless sessions", () => {
   });
 
   it("honours the requested harness when it can run the model (both can)", { timeout: 15_000 }, async () => {
-    // The other half of the rule above, and the one that made Quick Capture's
-    // harness picker look broken: docs/252 ended "each model belongs to exactly
-    // one harness", so `deepseek-v4-pro` is in BOTH lists and `agentIdForModel`
-    // answers with whichever sorts first (claude). Deriving there is not
-    // defending against a mismatch — there is none — it is discarding a harness
-    // the caller asked for and can actually run, write-once.
     await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
 
     const res = await app.inject({
@@ -427,11 +341,6 @@ describe("Integration: quick-capture headless sessions", () => {
   });
 
   it("arms auto-merge at creation when armAutoMerge is true (docs/175)", { timeout: 15_000 }, async () => {
-    // The pre-PR arm path requires GitHub auth (`toggleAutoMerge` throws 401
-    // otherwise). Authenticate the stub, then create an armed quick session and
-    // assert the poller seeded the per-session armed state — the same state the
-    // overflow toggle would have set, which `activatePendingAutoMergeForPr`
-    // applies once the first turn opens a PR.
     await githubAuth.setToken("test-token");
     await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
 
@@ -452,8 +361,6 @@ describe("Integration: quick-capture headless sessions", () => {
     const state = app.prStatusPoller?.getAutoMergeState(body.sessionId);
     expect(state?.enabled).toBe(true);
 
-    // Decision #1 — the flag is transient: nothing about auto-merge is persisted
-    // onto the session row / DB.
     expect(JSON.stringify(sessionManager.get(body.sessionId))).not.toContain("autoMerge");
   });
 

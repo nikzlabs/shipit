@@ -1,14 +1,3 @@
-/**
- * Tests for the activation→preview-ready clock.
- *
- * The one measurement that spans two modules: `ServiceManager` starts it when
- * `docker compose up` returns, `preview-proxy` stops it on the first request the
- * upstream answered. What matters is that it reports once per boot (a preview
- * serves hundreds of requests), that a partial stack boot cannot re-open or
- * re-attribute another batch's port, and that it stays silent with no start
- * time to measure from.
- */
-
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { markStackUp, markPreviewReachable, forgetStackUp } from "./preview-timing.js";
 
@@ -69,9 +58,6 @@ describe("preview timing", () => {
   });
 
   it("leaves an untouched port alone when a later batch starts other services", () => {
-    // The real sequence: the non-gated services come up first, the
-    // install-gated ones minutes later. The second `up` must not re-open the
-    // first batch's port, nor charge its boot to the gated batch's clock.
     markStackUp(SID, [{ name: "web", port: 5173 }]);
     markPreviewReachable(SID, 5173);
     logged.length = 0;

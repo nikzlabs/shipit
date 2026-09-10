@@ -15,10 +15,6 @@ describe("build id", () => {
 });
 
 describe("resolveVersion", () => {
-  // resolveVersion shells out against the host repo (/opt/shipit). When that
-  // mount is absent — local/dogfood mode, CI — it must degrade gracefully to
-  // the baked build id with the edge channel. These assertions only hold when
-  // /opt/shipit is not a git repo, which is the case everywhere but a prod box.
   const hostRepoPresent = existsSync("/opt/shipit/.git");
 
   it.skipIf(hostRepoPresent)("falls back to edge + short sha when host repo is absent", () => {
@@ -35,7 +31,6 @@ describe("composeVersion", () => {
   const head = "2222222222222222222222222222222222222222";
 
   it("names the running (baked) commit, not the checkout HEAD", () => {
-    // The whole #1047 fix: identity follows the running image, not HEAD.
     const v = composeVersion("edge", baked, head, noTag);
     expect(v.commit).toBe(baked);
     expect(v.version).toBe("main @ 1111111");

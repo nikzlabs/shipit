@@ -12,7 +12,6 @@ import {
   CONTAINER_CREDENTIAL_HELPER,
 } from "./git-config.js";
 
-/** Create a mock GitHub API response for fetch. */
 function mockGitHubUserResponse(data: { login: string; avatar_url: string; id: number; name: string | null }): void {
   vi.spyOn(globalThis, "fetch").mockResolvedValue(
     new Response(JSON.stringify(data), { status: 200, headers: { "Content-Type": "application/json" } }),
@@ -29,9 +28,6 @@ describe("GitHubAuthManager", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-github-auth-"));
     credentialStore = new CredentialStore(tmpDir);
     origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
-    // Clear GITHUB_TOKEN so checkCredentials() tests don't accidentally
-    // pick up an env-injected token from the CI shell. Individual tests
-    // that exercise the env-fallback path re-set it explicitly.
     origGithubToken = process.env.GITHUB_TOKEN;
     delete process.env.GITHUB_TOKEN;
     initGlobalGitConfig(tmpDir);
@@ -93,9 +89,6 @@ describe("GitHubAuthManager", () => {
       process.env.GITHUB_TOKEN = "ghp_from_env_only";
       const mgr = new GitHubAuthManager(tmpDir, credentialStore);
       expect(mgr.checkCredentials()).toBe(true);
-      // The CredentialStore on disk should remain empty — env is the source
-      // of truth in dogfooding mode and we don't want to mask token rotation
-      // with a stale on-disk copy.
       expect(credentialStore.getGithubToken()).toBeNull();
     });
   });
@@ -197,7 +190,6 @@ describe("GitHubAuthManager", () => {
 
   describe("markTokenInvalid", () => {
     it("clears credentials and emits token_invalid when GitHub also rejects the token", async () => {
-      // GET /user fails too → the token really is invalid → clear it.
       vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Unauthorized", { status: 401 }));
 
       credentialStore.setGithubToken("ghp_testtoken");
@@ -216,9 +208,6 @@ describe("GitHubAuthManager", () => {
     });
 
     it("preserves a token that still validates against GET /user (repo-specific 401 from a fine-grained PAT)", async () => {
-      // GET /user succeeds → the token is still valid globally; the per-repo
-      // git failure was a scope issue, not an expired credential. The token
-      // must not be cleared and no `token_invalid` event must be emitted.
       vi.spyOn(globalThis, "fetch").mockResolvedValue(
         new Response(
           JSON.stringify({ login: "octocat", avatar_url: "https://example.com/a.png", id: 1, name: null }),
@@ -252,9 +241,6 @@ describe("GitHubAuthManager", () => {
     });
 
     it("preserves the token when GitHub is unreachable (5xx outage), no event", async () => {
-      // The git failure and the GET /user verification are both casualties of
-      // the same outage. Clearing here would log the user out for an incident
-      // they didn't cause — only the user may clear their token implicitly.
       vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Bad Gateway", { status: 502 }));
 
       credentialStore.setGithubToken("ghp_validtoken");
@@ -358,10 +344,8 @@ describe("GitHubAuthManager.configureGitCredentials (docs/172 Gap 2 / planning#7
     origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
     origGithubToken = process.env.GITHUB_TOKEN;
     delete process.env.GITHUB_TOKEN;
-    // Point the global git config at a fresh, token-free file in tmpDir.
     initGlobalGitConfig(tmpDir);
 
-    // A real git repo whose LOCAL .git/config we configure.
     workspaceDir = path.join(tmpDir, "workspace");
     fs.mkdirSync(workspaceDir);
     execFileSync("git", ["init", "-q", "-b", "main"], { cwd: workspaceDir });
@@ -375,22 +359,16 @@ describe("GitHubAuthManager.configureGitCredentials (docs/172 Gap 2 / planning#7
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  /** Run `git credential fill` in the workspace; return combined stdout+stderr. */
   function credentialFill(host: string): string {
     try {
       return execFileSync("git", ["credential", "fill"], {
         cwd: workspaceDir,
         input: `protocol=https\nhost=${host}\n\n`,
         encoding: "utf-8",
-        // Disable interactive prompts and the system gitconfig so the test
-        // observes only the global + local helpers we control.
         env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1" },
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
-      // With no helper able to supply a password and prompts disabled, git
-      // exits non-zero — capture whatever it emitted so the test can assert
-      // the token never appears in any output channel.
       const e = err as { stdout?: Buffer | string; stderr?: Buffer | string };
       return `${String(e.stdout ?? "")}${String(e.stderr ?? "")}`;
     }
@@ -406,8 +384,6 @@ describe("GitHubAuthManager.configureGitCredentials (docs/172 Gap 2 / planning#7
     const config = fs.readFileSync(path.join(workspaceDir, ".git", "config"), "utf-8");
     expect(config).not.toContain(TOKEN);
     expect(config).not.toContain("ghp_");
-    // The workspace is routed through the brokering helper instead of an
-    // inline token echo.
     const helper = execFileSync("git", ["config", "--local", "credential.helper"], {
       cwd: workspaceDir,
       encoding: "utf-8",
@@ -419,12 +395,6 @@ describe("GitHubAuthManager.configureGitCredentials (docs/172 Gap 2 / planning#7
     credentialStore.setGithubToken(TOKEN);
     const mgr = new GitHubAuthManager(workspaceDir, credentialStore);
     mgr.checkCredentials();
-    // `checkCredentials` installs the orchestrator's global inline helper.
-    // Clear it so this test isolates the *workspace* config: pre-fix, the
-    // inline local helper echoed the token for ANY host straight from
-    // .git/config. With the brokering helper (whose binary is absent on the
-    // orchestrator/test host, and which is host-scoped anyway), no token is
-    // ever produced for an attacker host.
     clearGlobalCredentialHelper();
     mgr.configureGitCredentials(workspaceDir);
 
@@ -436,23 +406,15 @@ describe("GitHubAuthManager.configureGitCredentials (docs/172 Gap 2 / planning#7
   it("git credential fill for github.com still resolves the token via the global helper (push/pull unaffected)", () => {
     credentialStore.setGithubToken(TOKEN);
     const mgr = new GitHubAuthManager(workspaceDir, credentialStore);
-    mgr.checkCredentials(); // installs the global inline helper (orchestrator side)
-    mgr.configureGitCredentials(workspaceDir); // local broker helper
+    mgr.checkCredentials();
+    mgr.configureGitCredentials(workspaceDir);
 
-    // The global inline helper is consulted first and fills the credential, so
-    // the (orchestrator-side) push/pull path is unaffected even though the
-    // local config now points at the broker.
     const out = credentialFill("github.com");
     expect(out).toContain("username=x-access-token");
     expect(out).toContain(`password=${TOKEN}`);
   });
 
   it("silently skips a target dir that no longer exists (no spurious ENOENT)", () => {
-    // setGitHubToken backfills creds into EVERY persisted session, including
-    // ones whose on-disk checkout was reclaimed (archive / disk-janitor) while
-    // metadata is kept. A non-existent cwd makes spawnSync fail to chdir and
-    // surface a misleading "spawnSync git ENOENT" (path: 'git'). The guard
-    // turns that into a clean no-op.
     credentialStore.setGithubToken(TOKEN);
     const mgr = new GitHubAuthManager(workspaceDir, credentialStore);
     mgr.checkCredentials();
@@ -463,15 +425,11 @@ describe("GitHubAuthManager.configureGitCredentials (docs/172 Gap 2 / planning#7
   });
 });
 
-/** Narrow fetch's `url` argument to a string. The auth manager only ever
- * passes string URLs, so we assert that and keep the test types clean. */
 function urlOf(input: Parameters<typeof fetch>[0]): string {
   if (typeof input !== "string") throw new Error("Expected string URL in test");
   return input;
 }
 
-/** Narrow fetch's `init.body` to a string. The auth manager only sends JSON
- * strings, so this is a safe narrowing for tests. */
 function jsonBody(init: RequestInit | undefined): unknown {
   const body = init?.body;
   if (typeof body !== "string") throw new Error("Expected JSON string body in test");
@@ -502,8 +460,6 @@ describe("GitHubAuthManager.mergePullRequest", () => {
   });
 
   it("forwards the PR title and body as commit_title / commit_message", async () => {
-    // First fetch (viewPullRequest in the wrapper) returns PR details. Second
-    // fetch (mergePullRequest impl) is the actual PUT we want to inspect.
     let mergeBody: Record<string, unknown> | undefined;
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const u = urlOf(input);
@@ -655,8 +611,6 @@ describe("GitHubAuthManager.enableAutoMerge", () => {
     fetchSpy.mockRestore();
   });
 
-  // The returned `message` is surfaced verbatim in the managed-merge tooltip
-  // (docs/077), so GitHub's cryptic GraphQL errors are mapped to actionable text.
   function mockGraphqlError(message: string) {
     return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const u = urlOf(input);
@@ -805,7 +759,7 @@ describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
         status: 403,
         headers: {
           "x-ratelimit-remaining": "0",
-          "x-ratelimit-reset": "1747843200", // epoch seconds
+          "x-ratelimit-reset": "1747843200",
         },
       }),
     );
@@ -818,10 +772,6 @@ describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
   });
 
   it("treats 200 + errors[].type RATE_LIMITED as a failure and returns null", async () => {
-    // GitHub's nastiest rate-limit shape: 200 OK with empty-looking data and
-    // the rate-limit signal hiding in `errors[]`. Without the body-level
-    // check, the poller would interpret this as "no PRs" and promote every
-    // tracked session to merged.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({
         data: { repository: { pullRequests: { nodes: [] } } },
@@ -834,10 +784,6 @@ describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
   });
 
   it("treats 200 + errors[].type RATE_LIMIT (graphql_rate_limit) as a failure", async () => {
-    // The shape prod actually sees when the primary GraphQL budget is exhausted:
-    // GitHub returns `type:"RATE_LIMIT"` (singular) with `code:"graphql_rate_limit"`,
-    // not the `RATE_LIMITED` label the docs hint at. Previously this slipped
-    // through the predicate and the poller hammered GitHub at full cadence.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({
         data: null,
@@ -850,8 +796,6 @@ describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
   });
 
   it("falls back to errors[].code graphql_rate_limit when type is unfamiliar", async () => {
-    // Defense in depth: if GitHub renames the type yet again, the `code` field
-    // should still trip the predicate.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({
         data: null,
@@ -876,14 +820,12 @@ describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
   });
 
   it("clears rate-limit state on a clean 200 response", async () => {
-    // First call: limited.
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response("", { status: 429, headers: { "retry-after": "60" } }),
     );
     await mgr.graphqlQuery("query{ x }");
     expect(mgr.getRateLimitState().limited).toBe(true);
 
-    // Second call: success.
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify({ data: { viewer: { login: "octocat" } } }), {
         status: 200,
@@ -914,7 +856,6 @@ describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
     const events: unknown[] = [];
     mgr.on("rate_limit_changed", (e) => events.push(e));
 
-    // Clean success — was already clean, no event.
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify({ data: {} }), {
         status: 200,
@@ -924,17 +865,12 @@ describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
     await mgr.graphqlQuery("q");
     expect(events).toHaveLength(0);
 
-    // Now hit a 403 — transition, should fire.
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response("", { status: 403, headers: { "retry-after": "60" } }),
     );
     await mgr.graphqlQuery("q");
     expect(events).toHaveLength(1);
 
-    // Another 403 with same shape — limited stays true, resetAt may shift
-    // slightly because retry-after is relative; the implementation only
-    // emits if `limited` or `resetAt` changed, so this can be 1 or 2 events
-    // depending on timing. Just confirm it didn't silently lose state.
     expect(mgr.getRateLimitState().limited).toBe(true);
   });
 });

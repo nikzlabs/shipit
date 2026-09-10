@@ -34,7 +34,6 @@ describe("AddRepoDialog", () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
     render(<AddRepoDialog {...defaultProps} onClose={onClose} />);
-    // Radix Dialog closes on Escape; use that instead of clicking the old aria-hidden backdrop
     await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -119,15 +118,11 @@ describe("AddRepoDialog", () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     const { rerender } = render(<AddRepoDialog {...defaultProps} onAdd={onAdd} repos={repos} />);
 
-    // Simulate adding a repo
     const input = screen.getByPlaceholderText("Search GitHub repos or paste a URL...");
     fireEvent.change(input, { target: { value: "https://github.com/test/repo.git" } });
     fireEvent.click(screen.getByText("Add"));
 
-    // After the add promise resolves, pendingUrl is set — rerender with cloning repo
     rerender(<AddRepoDialog {...defaultProps} onAdd={onAdd} repos={repos} />);
-    // Note: the cloning indicator only shows after handleSubmitUrl sets pendingUrl.
-    // In a real scenario, the useEffect would fire. For this test, we just verify the repo list renders.
   });
 
   it("calls onRepoReady and closes when pending repo becomes ready", async () => {
@@ -145,13 +140,11 @@ describe("AddRepoDialog", () => {
       <AddRepoDialog {...defaultProps} onAdd={onAdd} onClose={onClose} onRepoReady={onRepoReady} repos={cloningRepos} />,
     );
 
-    // Simulate adding the repo so pendingUrl is set
     const input = screen.getByPlaceholderText("Search GitHub repos or paste a URL...");
     fireEvent.change(input, { target: { value: "https://github.com/test/repo.git" } });
     fireEvent.click(screen.getByText("Add"));
     await waitFor(() => expect(onAdd).toHaveBeenCalled());
 
-    // Repo transitions from cloning to ready
     rerender(
       <AddRepoDialog {...defaultProps} onAdd={onAdd} onClose={onClose} onRepoReady={onRepoReady} repos={readyRepos} />,
     );
@@ -167,7 +160,6 @@ describe("AddRepoDialog", () => {
       render(<AddRepoDialog {...defaultProps} githubAuthenticated={false} />);
       expect(screen.getByText("Connect GitHub to add repositories")).toBeTruthy();
       expect(screen.getByTestId("github-token-form")).toBeTruthy();
-      // The search input and add/create affordances are hidden.
       expect(screen.queryByPlaceholderText("Search GitHub repos or paste a URL...")).toBeNull();
       expect(screen.queryByText("Create new repository")).toBeNull();
       expect(screen.queryByText("Add")).toBeNull();
@@ -193,7 +185,6 @@ describe("AddRepoDialog", () => {
     const onSearch = vi.fn();
     render(<AddRepoDialog {...defaultProps} onSearch={onSearch} />);
 
-    // Initial open triggers a lazy-load fetch for the user's repos
     const initialCalls = onSearch.mock.calls.length;
 
     const input = screen.getByPlaceholderText("Search GitHub repos or paste a URL...");
@@ -201,10 +192,8 @@ describe("AddRepoDialog", () => {
     fireEvent.change(input, { target: { value: "tes" } });
     fireEvent.change(input, { target: { value: "test" } });
 
-    // No immediate search call from typing (only the initial lazy-load)
     expect(onSearch).toHaveBeenCalledTimes(initialCalls);
 
-    // After debounce
     vi.advanceTimersByTime(300);
     expect(onSearch).toHaveBeenCalledTimes(initialCalls + 1);
     expect(onSearch).toHaveBeenCalledWith("test");

@@ -1,12 +1,3 @@
-/**
- * docs/262 req 23 — plugin credential needs on the `secrets_status` snapshot.
- *
- * The other half of `plugin-credentials.test.ts`: that file proves which store
- * decides satisfaction; this one proves the snapshot the browser receives
- * groups the answer per plugin, keeps one row per stored secret, and does not
- * let a plugin's gap escalate into the project's blocking secrets banner.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -96,9 +87,6 @@ describe("plugin credential needs on secrets_status (req 23)", () => {
     ]);
   });
 
-  // reqs 23, 24 — this row is what the Plugins card's "Add key…" opens, so the
-  // two must not disagree: a card saying "`artk` needs `FAL_KEY`" beside a
-  // field offering "value (optional)" is one surface contradicting the other.
   it("says whether a claiming plugin can work without the name", async () => {
     const resolver = makeResolver({
       plugins: () => [
@@ -117,14 +105,10 @@ describe("plugin credential needs on secrets_status (req 23)", () => {
     const byName = new Map(resolver.getSnapshot().declared.map((d) => [d.name, d]));
     expect(byName.get("FAL_KEY")?.pluginRequired).toBe(true);
     expect(byName.get("PIXELLAB_KEY")?.pluginRequired).toBe(false);
-    // Both are still settable rows: an optional key is one the user may want to
-    // provide, so it must not vanish from the panel where a value is entered.
     expect(byName.get("PIXELLAB_KEY")?.plugins).toEqual(["artk"]);
   });
 
   it("never writes a plugin's answer onto compose's `required`", async () => {
-    // `required` gates the preview's blocking banner; `pluginRequired` gates
-    // nothing. A plugin declaring a project secret must not promote it.
     const resolver = makeResolver({
       plugins: () => [
         { repo: "art-kit", plugin: "palette", alias: "artk", credentials: [{ name: "FAL_KEY", optional: false }] },
@@ -134,15 +118,10 @@ describe("plugin credential needs on secrets_status (req 23)", () => {
     const falKey = resolver.getSnapshot().declared.find((d) => d.name === "FAL_KEY");
     expect(falKey?.pluginRequired).toBe(true);
     expect(falKey?.required).toBeUndefined();
-    // …and it reaches the blocking banner through neither route: the project's
-    // own required-and-missing secret is there, the plugin's is not.
     expect(resolver.getSnapshot().missingRequired).not.toContain("FAL_KEY");
   });
 
   it("does not fire the project's blocking secrets banner", async () => {
-    // `missingRequired` drives "configure secrets to run this project" in the
-    // preview. A plugin's missing key is reported on the plugin's own card; it
-    // does not stop the project's services from running.
     const resolver = makeResolver({ plugins: () => [PALETTE] });
     await resolver.sync([]);
     expect(resolver.getSnapshot().missingRequired).toEqual([]);
@@ -157,7 +136,6 @@ describe("plugin credential needs on secrets_status (req 23)", () => {
     expect(falKey).toHaveLength(1);
     expect(falKey[0]).toMatchObject({ services: ["api"], plugins: ["artk"] });
 
-    // A plugin never gets to rewrite the project's own declaration metadata.
     const dbUrl = snapshot.declared.find((d) => d.name === "DATABASE_URL");
     expect(dbUrl).toMatchObject({ required: true, description: "Postgres URL", services: ["api"] });
     expect(dbUrl?.plugins).toBeUndefined();
@@ -165,9 +143,6 @@ describe("plugin credential needs on secrets_status (req 23)", () => {
   });
 
   it("ShipIt's account-level credentials never satisfy a plugin's declared name", async () => {
-    // `accountAgentEnvLoader` carries the user's provider/agent tokens and MCP
-    // OAuth into the AGENT's environment. req 23 puts them out of a plugin's
-    // reach: satisfaction reads the project's secret store and nothing else.
     const resolver = makeResolver({
       userSecrets: {},
       accountEnv: { OPENAI_API_KEY: "fixture-account-level", MCP_PLATFORM_NOTION: "tok" },
@@ -180,7 +155,6 @@ describe("plugin credential needs on secrets_status (req 23)", () => {
       { name: "FAL_KEY", satisfied: false, optional: false },
       { name: "OPENAI_API_KEY", satisfied: false, optional: false },
     ]);
-    // …and the account value is still there for the agent, untouched.
     expect(snapshot.agentValues.OPENAI_API_KEY).toBe("fixture-account-level");
   });
 
@@ -233,17 +207,7 @@ describe("plugin credential needs on secrets_status (req 23)", () => {
   });
 });
 
-/**
- * docs/262 req 23 — the DELIVERY half. The snapshot above says which declared
- * names a plugin has a value for; these prove the plugin's service containers
- * actually receive exactly those, from the consuming project's own store.
- *
- * The defect this closes: the card reported `satisfied` while a plugin service
- * was started with nothing, because the compose path merged only the fragment's
- * own environment with ShipIt's `SHIPIT_*` names.
- */
 describe("plugin credential DELIVERY to services (req 23)", () => {
-  /** One surfaced plugin service of the `palette` plugin above. */
   const paletteService = { name: "probe", credentials: ["FAL_KEY", "OPENAI_API_KEY"] };
 
   it("delivers exactly the declared names the project has a value for", async () => {
@@ -253,9 +217,6 @@ describe("plugin credential DELIVERY to services (req 23)", () => {
     });
     await resolver.sync([], [paletteService]);
 
-    // Declared and set → delivered. Declared and unset → omitted, never sent
-    // empty, so a missing key stays a named gap instead of a third-party
-    // authentication error. Stored but never declared → not a plugin's to have.
     expect(resolver.getPluginServiceEnv()).toEqual({ probe: { FAL_KEY: "fixture-live" } });
   });
 
@@ -273,9 +234,6 @@ describe("plugin credential DELIVERY to services (req 23)", () => {
   });
 
   it("carries a value of any shape, unaltered", async () => {
-    // The reason delivery is the override's `environment` and not an env file:
-    // Compose's env-file parser applies quote, comment and `${VAR}` handling to
-    // what it reads, so these would not arrive as stored.
     const awkward = `line1\nline2 # not a comment $\{HOME} "quoted"`;
     const resolver = makeResolver({
       userSecrets: { FAL_KEY: awkward },
@@ -309,10 +267,6 @@ describe("plugin credential DELIVERY to services (req 23)", () => {
   });
 
   it("nothing is written to disk for a plugin service", async () => {
-    // Values ride the generated override, which lives in the session state dir.
-    // No new file, no sweep, and no path for the project's own secrets pass —
-    // which runs from callers that used to know nothing about plugins — to
-    // delete a running plugin's credentials.
     const resolver = makeResolver({ userSecrets: { FAL_KEY: "v" }, plugins: () => [PALETTE] });
     await resolver.sync(apiService, [paletteService]);
     const envRoot = path.join(sessionDir, "service-env", "s1");

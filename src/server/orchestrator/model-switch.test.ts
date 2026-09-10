@@ -9,16 +9,6 @@ import {
 } from "./model-switch.js";
 import type { AgentInfo, EligibleModel } from "../shared/agent-registry.js";
 
-/**
- * docs/252 phase 4 (req 4) — the rules a mid-session switch obeys.
- *
- * The catalogue rows used here are real ones, chosen because they are the case
- * this feature creates: `anthropic/claude-opus-5` is offered by BOTH OpenRouter
- * and Vercel AI Gateway, at different endpoints, on the same harness. A switch
- * between them changes everything about where a turn goes and nothing about the
- * model id — which is precisely why none of these rules may key on the id.
- */
-
 const OPENROUTER_OPUS: EligibleModel = {
   serviceId: "openrouter",
   serviceName: "OpenRouter",
@@ -47,11 +37,6 @@ const ANTHROPIC_SUB_OPUS: EligibleModel = {
 function agent(
   eligibleModels: EligibleModel[],
   reasoning?: { value: string; label: string }[],
-  /**
-   * planning#435 — the harness the switch is TO. It is needed now because the
-   * level's survival is asked of the resulting SELECTION, and that question has
-   * no answer without knowing which harness is asking (docs/274 req 14).
-   */
   id: AgentInfo["id"] = "claude",
 ): Pick<AgentInfo, "id" | "name" | "eligibleModels" | "capabilities"> {
   return {
@@ -79,8 +64,6 @@ describe("isEligibleOnAgent — the whole triple, never the id", () => {
   it("distinguishes two services offering the SAME model id", () => {
     const a = agent([OPENROUTER_OPUS]);
     expect(isEligibleOnAgent(a, { ...OPENROUTER_OPUS })).toBe(true);
-    // Same model id, different service — not the same row, and this is the
-    // whole reason nothing here compares ids.
     expect(
       isEligibleOnAgent(a, {
         serviceId: "vercel",
@@ -117,10 +100,6 @@ describe("verifyExplicitSelection — honoured or refused, never re-resolved", (
   });
 
   it("REFUSES a catalogue-valid triple with no credential rather than falling back", () => {
-    // The regression this rule exists for: the user picks Opus on Vercel with no
-    // Vercel key. Falling through to bare-id resolution would silently land the
-    // session on OpenRouter — a different service, a different bill, and a
-    // selection the user never made (req 11).
     const verdict = verifyExplicitSelection(
       a,
       modelSelectionFrom("anthropic/claude-opus-5", "vercel", "key"),
@@ -144,12 +123,6 @@ describe("verifyExplicitSelection — honoured or refused, never re-resolved", (
   });
 
   it("refuses HALF a triple rather than dropping the half it was given", () => {
-    // The two fields are independently optional on the wire. Reading "one
-    // missing" as "no triple" throws away the field that WAS sent and
-    // re-resolves the bare id — so `{model: X, serviceId: "vercel"}` could
-    // persist X on OpenRouter, which is the same mis-billing the refusal rule
-    // exists to prevent, arriving through a malformed request rather than a
-    // stale one. Found by cross-backend review.
     const noMode = verifyExplicitSelection(
       a,
       modelSelectionFrom("anthropic/claude-opus-5", "vercel", undefined),
@@ -180,9 +153,6 @@ describe("conformSelectionToAgent — what a harness switch moves", () => {
   });
 
   it("moves a selection whose SERVICE the new harness cannot reach, keeping nothing", () => {
-    // The id is in the new harness's list — through OpenRouter — while the
-    // session is pinned to Vercel. An id-only test kept the Vercel pinning and
-    // left the session on a service this harness has no credential for.
     const move = conformSelectionToAgent({
       agent: agent([OPENROUTER_OPUS]),
       current: { serviceId: "vercel", billingMode: "key", modelId: "anthropic/claude-opus-5" },
@@ -194,8 +164,6 @@ describe("conformSelectionToAgent — what a harness switch moves", () => {
       modelId: "anthropic/claude-opus-5",
     });
     expect(move.serviceMoved).toBe(true);
-    // The model id itself did NOT change — which is why the notice has to name
-    // the service rather than only the model.
     expect(move.modelMoved).toBe(false);
   });
 
@@ -216,8 +184,6 @@ describe("conformSelectionToAgent — what a harness switch moves", () => {
 
   it("degrades to an id test when there is no triple (the new-session composer)", () => {
     const a = agent([OPENROUTER_OPUS]);
-    // Known id, no session row — leave it alone rather than rewrite a selection
-    // the composer never persisted.
     expect(
       conformSelectionToAgent({
         agent: a,
@@ -226,7 +192,6 @@ describe("conformSelectionToAgent — what a harness switch moves", () => {
         currentReasoning: undefined,
       }).selection,
     ).toBeUndefined();
-    // Unknown id — move, as before.
     expect(
       conformSelectionToAgent({
         agent: a,
@@ -259,16 +224,6 @@ describe("conformSelectionToAgent — what a harness switch moves", () => {
     ).toBe(true);
   });
 
-  /**
-   * docs/274 req 14 — a level the new harness DECLARES but does not send on the
-   * row being landed on is cleared too.
-   *
-   * Grok is the case: it declares xhigh/high/medium/low and its CLI drops
-   * `--reasoning-effort` before the wire on every key-billed row. A
-   * vocabulary-only check would carry the level across the switch and report
-   * `reasoningCleared: false`, so the move notice would stay silent about a
-   * setting that had stopped meaning anything.
-   */
   it("clears a level the new harness declares but does not send on the landing row", () => {
     const grok = agent(
       [{ serviceId: "xai", billingMode: "key", modelId: "grok-4.6" } as EligibleModel],
@@ -282,7 +237,6 @@ describe("conformSelectionToAgent — what a harness switch moves", () => {
         currentReasoning: "high",
       }).reasoningCleared,
     ).toBe(true);
-    // …and the same harness on the row that DOES send it keeps the level.
     const grokSub = agent(
       [{ serviceId: "xai", billingMode: "sub", modelId: "grok-4.6" } as EligibleModel],
       [{ value: "high", label: "High" }],

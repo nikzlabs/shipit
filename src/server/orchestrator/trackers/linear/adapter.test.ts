@@ -16,15 +16,8 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-/**
- * docs/248 — the team key comes from the repository's declaration, so the
- * adapter resolves it to Linear's internal team id lazily on the first call that
- * needs one. Every stub therefore answers `TeamByKey` first; it is prepended
- * rather than declared per test because it is plumbing, not behavior under test.
- */
 const TEAM_LOOKUP = { match: "TeamByKey", data: { teams: { nodes: [{ id: "team-123", key: "SHI" }] } } };
 
-/** A fetch stub that routes by a substring of the GraphQL `query`/`mutation`. */
 function routerFetch(routes: { match: string; data: unknown }[]) {
   const all = [TEAM_LOOKUP, ...routes];
   return vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
@@ -35,12 +28,6 @@ function routerFetch(routes: { match: string; data: unknown }[]) {
   });
 }
 
-/**
- * The GraphQL `variables` of the call whose query matched `match`. Selecting the
- * call by its query rather than by index keeps these assertions stable when the
- * adapter adds a lookup ahead of the operation under test (as the lazy team
- * resolution did).
- */
 function varsFor(fetchImpl: { mock: { calls: readonly (readonly unknown[])[] } }, match: string): Record<string, unknown> {
   const bodyOf = (c: readonly unknown[]): string => ((c[1] as RequestInit | undefined)?.body as string) ?? "{}";
   const call = fetchImpl.mock.calls.find((c) =>
@@ -50,12 +37,10 @@ function varsFor(fetchImpl: { mock: { calls: readonly (readonly unknown[])[] } }
   return (JSON.parse(bodyOf(call)) as { variables: Record<string, unknown> }).variables;
 }
 
-/** The `input` variable of the call whose query matched `match`. */
 function inputFor(fetchImpl: { mock: { calls: readonly (readonly unknown[])[] } }, match: string): Record<string, unknown> {
   return varsFor(fetchImpl, match).input as Record<string, unknown>;
 }
 
-/** A minimal issue node matching ISSUE_FIELDS_WITH_STATES for write responses. */
 function issueNode(over: Record<string, unknown> = {}) {
   return {
     id: "uuid-1",
@@ -88,9 +73,6 @@ describe("LinearTracker", () => {
   });
 
   it("exposes binding info for the sub-tab", () => {
-    // docs/248 — the id names the destination (the declared team), the label is
-    // the declared name, and the binding is the team key. The workspace comes
-    // from the credential (req 23), so nothing here identifies one.
     const info = new LinearTracker({ token: "t", teamKey: "SHI", name: "roadmap" }).info();
     expect(info).toEqual({
       id: "linear:SHI",
@@ -145,7 +127,6 @@ describe("LinearTracker", () => {
     const tracker = new LinearTracker({ token: "lin_api_x", teamKey: "SHI", fetchImpl });
     const issues = await tracker.listIssues();
 
-    // Urgent sorts before Low.
     expect(issues.map((i) => i.identifier)).toEqual(["SHI-1", "SHI-2"]);
     expect(issues[0].priority).toEqual({ level: "urgent", sortOrder: 0, label: "Urgent" });
     expect(issues[0].status).toEqual({ name: "In Progress", type: "started", color: "#f2c94c" });
@@ -154,7 +135,6 @@ describe("LinearTracker", () => {
     expect(issues[1].assignee).toEqual({ name: "Nik", avatarUrl: "http://a/avatar.png" });
     expect(issues[1].description).toBe("desc 2");
 
-    // Auth header carries the raw token (personal API key form, no Bearer).
     const [url, init] = fetchImpl.mock.calls[fetchImpl.mock.calls.length - 1];
     expect(url).toBe(LINEAR_GRAPHQL_ENDPOINT);
     expect((init?.headers as Record<string, string>).Authorization).toBe("lin_api_x");
@@ -166,18 +146,8 @@ describe("LinearTracker", () => {
     await expect(tracker.listIssues()).rejects.toThrow(/rejected the API token/);
   });
 
-  /**
-   * docs/247 — Linear does NOT share GitHub's 403-means-either blind spot: no
-   * throttle shape it produces can reach the "re-connect Linear" message. What
-   * it did produce was a bare `Linear API returned <status>`, which gave the
-   * caller nothing to act on. Linear reports a throttle in the GraphQL error
-   * body (`extensions.code === "RATELIMITED"`, on a 400) as well as by status,
-   * so both shapes are covered — along with the regression that 401/403 still
-   * sends the user to the credential.
-   */
   it("reports a RATELIMITED GraphQL error body as rate limiting, not a bare 400", async () => {
     const rateLimited = { errors: [{ message: "Rate limit exceeded", extensions: { code: "RATELIMITED" } }] };
-    // The 400 form, which would otherwise stop at the generic status branch.
     const on400 = new LinearTracker({
       token: "t",
       teamKey: "SHI",
@@ -186,7 +156,6 @@ describe("LinearTracker", () => {
     await expect(on400.listIssues()).rejects.toThrow(/rate-limiting requests/);
     await expect(on400.listIssues()).rejects.toThrow(/not an auth or access failure/);
 
-    // …and the same code riding on a 200, which GraphQL is free to do.
     const on200 = new LinearTracker({
       token: "t",
       teamKey: "SHI",
@@ -226,10 +195,6 @@ describe("LinearTracker", () => {
     await expect(tracker.listIssues()).rejects.toThrow(/boom/);
   });
 
-  // docs/248-declared-issue-trackers reqs 11/17 — Linear's `issue(id:)` is workspace-global, so an id for
-  // another team resolves. An operation that named THIS tracker must not act on
-  // it: the reference resolver cannot close this, because a raw `tracker=`+`id=`
-  // pair over the agent relay never passes through the resolver.
   it("refuses an issue that belongs to a different team than the declared one", async () => {
     const fetchImpl = routerFetch([
       { match: "query Issue", data: { issue: issueNode({ identifier: "ENG-7", team: { key: "ENG" } }) } },
@@ -245,7 +210,6 @@ describe("LinearTracker", () => {
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
     await expect(tracker.addComment("ENG-7", "hi")).rejects.toThrow(/not to `SHI`/);
-    // The mutation never fired — no substitution, and no write to the wrong team.
     const wrote = fetchImpl.mock.calls.some((c) =>
       ((JSON.parse(((c[1] as RequestInit | undefined)?.body as string) ?? "{}") as { query?: string }).query ?? "")
         .includes("AddComment"),
@@ -253,8 +217,6 @@ describe("LinearTracker", () => {
     expect(wrote).toBe(false);
   });
 
-  // A response that carried no team is unverifiable, so it is refused for the
-  // same reason rather than waved through.
   it("refuses an issue whose team the response did not carry", async () => {
     const fetchImpl = routerFetch([
       { match: "query Issue", data: { issue: issueNode({ identifier: "SHI-1", team: null }) } },
@@ -279,9 +241,6 @@ describe("LinearTracker", () => {
     expect(varsFor(fetchImpl, "TeamIssues").excludedTypes).toEqual(["canceled"]);
   });
 
-  // docs/248-declared-issue-trackers req 5 — the declaration carries the team KEY; Linear's own queries
-  // want the internal id, so the adapter resolves one to the other lazily and
-  // caches it for the request's lifetime.
   it("resolves the declared team key to a team id once, then reuses it", async () => {
     const fetchImpl = routerFetch([{ match: "TeamIssues", data: { team: { issues: { nodes: [] } } } }]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
@@ -297,8 +256,6 @@ describe("LinearTracker", () => {
     expect(lookups).toHaveLength(1);
   });
 
-  // The workspace comes from the credential (req 23), so "no such team" and
-  // "this token can't see that team" are indistinguishable — the error names both.
   it("fails closed when the declared team is not reachable with the credential", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ data: { teams: { nodes: [] } } }));
     const tracker = new LinearTracker({ token: "t", teamKey: "NOPE", fetchImpl });
@@ -316,7 +273,6 @@ describe("resolveLinearStateId (docs/177 status mapping)", () => {
   });
 
   it("picks the earliest-by-position state when several share a type", () => {
-    // Both In Progress and In Review are `started`; the earlier position wins.
     expect(resolveLinearStateId("started", STATES)).toBe("s-prog");
   });
 
@@ -380,9 +336,6 @@ describe("LinearTracker writes (docs/177)", () => {
     await expect(tracker.deleteComment("c1")).resolves.toBeUndefined();
   });
 
-  // docs/248-declared-issue-trackers req 17 — a comment id is workspace-global, and the undo path hands
-  // this adapter one recorded before its declared name was re-pointed. Deleting
-  // it would mutate a team this adapter does not name.
   it("refuses to delete a comment belonging to another team", async () => {
     const fetchImpl = routerFetch([
       { match: "CommentTeam", data: { comment: { issue: { team: { key: "OPS" } } } } },
@@ -395,21 +348,12 @@ describe("LinearTracker writes (docs/177)", () => {
     ).toBe(false);
   });
 
-  // Already gone — undo stays idempotent rather than throwing on the guard read.
   it("treats a missing comment as already deleted", async () => {
     const fetchImpl = routerFetch([{ match: "CommentTeam", data: { comment: null } }]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
     await expect(tracker.deleteComment("gone")).resolves.toBeUndefined();
   });
 
-  // ---- comment edit (planning#88) ----------------------------------------------
-  //
-  // A comment id is workspace-global, so the adapter reads the comment (plus
-  // `viewer`) in one query and checks three things before the mutation: the
-  // team, that the comment hangs off the issue the caller named, and that its
-  // author is the identity the workspace PAT writes as.
-
-  /** The CommentOwner guard read, overridable per case. */
   const commentOwner = (over: Record<string, unknown> = {}) => ({
     viewer: { id: "u-shipit", displayName: "ShipIt" },
     comment: {
@@ -464,7 +408,6 @@ describe("LinearTracker writes (docs/177)", () => {
   });
 
   it("refuses to edit a comment on another team's issue (docs/248-declared-issue-trackers req 17)", async () => {
-    // The team guard fires on the issue leg, before the comment is even read.
     const fetchImpl = routerFetch([
       { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "OPS" } } } },
     ]);
@@ -535,7 +478,6 @@ describe("LinearTracker writes (docs/177)", () => {
             issue: issueNode({
               identifier: "SHI-9",
               title: "Redesign the secret auth flow",
-              // Linear's API appends a title-derived slug to the URL.
               url: "https://linear.app/shipit/issue/SHI-9/redesign-the-secret-auth-flow",
             }),
           },
@@ -574,7 +516,6 @@ describe("LinearTracker writes (docs/177)", () => {
       kind: "label",
       options: ["security"],
     });
-    // Only the team lookup + labels query ran; issueCreate never fired.
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
@@ -598,8 +539,6 @@ describe("LinearTracker writes (docs/177)", () => {
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
     await tracker.updateIssue("SHI-1", { parent: "SHI-204" });
-    // resolveUuid runs for both the target and the parent (both "IssueId"); the
-    // mutation input carries the resolved parentId.
     const input = JSON.parse((fetchImpl.mock.calls.at(-1)![1]?.body as string)).variables.input;
     expect(input).toEqual({ parentId: "uuid-1" });
   });
@@ -613,7 +552,6 @@ describe("LinearTracker writes (docs/177)", () => {
     await tracker.updateIssue("SHI-1", { parent: null });
     const input = inputFor(fetchImpl, "IssueUpdate");
     expect(input).toEqual({ parentId: null });
-    // Detach needs no parent resolution — only the target resolveUuid + update.
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
@@ -630,7 +568,6 @@ describe("LinearTracker writes (docs/177)", () => {
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
     const issue = await tracker.getIssue("SHI-1");
-    // Linear's color is already `#`-prefixed; a colorless label omits `color`.
     expect(issue?.labels).toEqual([{ name: "security", color: "#d73a4a" }, { name: "backend" }]);
   });
 
@@ -668,7 +605,6 @@ describe("LinearTracker writes (docs/177)", () => {
     const label = await tracker.createLabel({ name: "t3code", color: "0ea5e9", description: "T3 code area" });
     expect(label).toEqual({ id: "lbl-1", name: "t3code", color: "#0ea5e9" });
     const input = inputFor(fetchImpl, "LabelCreate");
-    // Bound to the adapter's team, and a bare hex is normalized to Linear's `#rrggbb`.
     expect(input).toEqual({ teamId: "team-123", name: "t3code", color: "#0ea5e9", description: "T3 code area" });
   });
 
@@ -692,8 +628,6 @@ describe("LinearTracker writes (docs/177)", () => {
       },
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
-    // `issueLabels` is workspace-wide, so a same-named label can live in another
-    // team; this tracker's own team wins rather than whichever came back first.
     expect(await tracker.findLabel("BUG")).toEqual({
       id: "lbl-ours",
       name: "bug",
@@ -722,15 +656,12 @@ describe("LinearTracker writes (docs/177)", () => {
       name: "Bug",
       color: "#d73a4a",
     });
-    // A bare hex is normalized to Linear's `#rrggbb`, as on create.
     expect(inputFor(fetchImpl, "LabelUpdate")).toEqual({ name: "Bug", color: "#d73a4a" });
   });
 
   it("refuses to edit a label belonging to another team (planning#88)", async () => {
     const fetchImpl = routerFetch([{ match: "LabelOwner", data: { issueLabel: { team: { key: "OPS" } } } }]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
-    // A label id is workspace-global, so the guard is enforced here rather than
-    // trusting the caller — a direct relay POST reaches this same path.
     await expect(tracker.updateLabel("lbl-other", { color: "#000000" })).rejects.toThrow(/not to `SHI`/);
     for (const call of fetchImpl.mock.calls) {
       expect(JSON.parse(call[1]?.body as string).query).not.toContain("issueLabelUpdate");
@@ -768,7 +699,6 @@ describe("LinearTracker writes (docs/177)", () => {
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
     await expect(tracker.deleteUnusedLabel("lbl-1", "t3code")).rejects.toThrow(/in use.*SHI-9/);
-    // No delete mutation was attempted.
     for (const call of fetchImpl.mock.calls) {
       expect(JSON.parse(call[1]?.body as string).query).not.toContain("issueLabelDelete");
     }
@@ -809,7 +739,6 @@ describe("LinearTracker writes (docs/177)", () => {
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
     await expect(tracker.setStatus("SHI-1", "frobnicate")).rejects.toThrow(TrackerResolutionError);
-    // Only the states query ran; the update never fired.
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -867,7 +796,6 @@ describe("LinearTracker writes (docs/177)", () => {
     ]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
     await tracker.setAssignee("SHI-1", "raw-uuid-7", { raw: true });
-    // No Users query — the id is used directly.
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     const input = inputFor(fetchImpl, "IssueUpdate");
     expect(input).toEqual({ assigneeId: "raw-uuid-7" });
@@ -890,8 +818,6 @@ describe("LinearTracker writes (docs/177)", () => {
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
     const issue = await tracker.getIssue("SHI-1");
     expect(issue?.createdAt).toBe("2025-11-02T09:15:00.000Z");
-    // The field has to be in the selection set, not just mapped — Linear returns
-    // only what is asked for, so a missing selection reads as a missing date.
     const queries = fetchImpl.mock.calls.map(
       (c) =>
         (JSON.parse(((c[1] as RequestInit | undefined)?.body as string) || "{}") as { query?: string }).query ?? "",
@@ -907,7 +833,6 @@ describe("LinearTracker writes (docs/177)", () => {
 
   it("listStatuses returns the team's workflow states in board order (docs/191)", async () => {
     const fetchImpl = routerFetch([
-      // Deliberately out of position order — listStatuses sorts by position.
       {
         match: "TeamStates",
         data: {

@@ -1,12 +1,3 @@
-/**
- * OpenAI transcript-cleanup adapter (docs/144).
- *
- * Fallback cleanup path, used when the user hasn't connected Claude Code (so
- * there's no OAuth bearer) but did provide an OpenAI voice key. Hits
- * `gpt-4o-mini` with the same locked prompt so behavior matches the Claude
- * path as closely as the models allow.
- */
-
 import { buildCleanupPrompt } from "../cleanup-prompt.js";
 import { VoiceProviderError, type CleanupOptions, type CleanupProvider } from "./types.js";
 

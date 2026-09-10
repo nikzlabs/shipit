@@ -16,31 +16,11 @@ export interface WsSessionRenamed {
   session: SessionInfo;
 }
 
-/**
- * Server → Client: progress update for a Rescue session ("Restart container")
- * operation.
- *
- * Emitted as the operation moves through phases inside
- * `POST /api/sessions/:id/container/restart`. The client renders a phased
- * overlay so the user can see *which* step is in flight and, when something
- * goes wrong, *where* the operation failed (rather than an opaque spinner
- * timing out).
- *
- * See docs/124-session-rescue-and-diagnostics §3.2.
- */
 export type RescuePhase =
   | "stopping_stack"
   | "destroying_container"
   | "creating_container"
   | "starting_stack"
-  /**
-   * `restarting_agent` is emitted by the `restartAgent` recovery flow
-   * (POST /api/sessions/:id/agent/container/restart). It's a single
-   * cosmetic phase wrapping destroy+recreate of the agent container while
-   * leaving the compose stack running. The client renders "Restarting
-   * agent…" instead of the full Rescue phase sequence. See
-   * docs/127-restart-agent.
-   */
   | "restarting_agent"
   | "ready"
   | "failed";
@@ -48,123 +28,46 @@ export type RescuePhase =
 export interface WsContainerRestarting {
   type: "container_restarting";
   sessionId: string;
-  /**
-   * Current phase. Older clients ignore this; newer ones render a
-   * step-by-step overlay. Absent on a final `ready`/`failed` re-broadcast
-   * is treated as the legacy single-event payload.
-   */
   phase?: RescuePhase;
-  /** When `phase === "failed"`, the underlying reason (e.g. "destroy_timeout"). */
   reason?: string;
-  /** Human-readable detail to render under the phase label. */
   message?: string;
 }
 
-/** Runtime comparison between a session worker image and the orchestrator. */
 export type ContainerFreshness =
   | { state: "current"; workerBuildId: string; orchestratorBuildId: string }
   | { state: "stale"; workerBuildId: string; orchestratorBuildId: string }
   | { state: "unknown"; workerBuildId?: string; orchestratorBuildId?: string };
 
-/** Transient, session-scoped worker freshness signal (docs/242). */
 export interface WsSessionContainerFreshness {
   type: "session_container_freshness";
   sessionId: string;
   freshness: ContainerFreshness;
 }
 
-/**
- * docs/213 — sticky "auto-commit is blocked by a secret" state for one session.
- *
- * Unlike the `system_notice` row that accompanies it, this is *state*, not
- * transcript content: it stays on screen for as long as the block holds and
- * disappears the moment a commit lands. The notice scrolled away under later
- * turns, which is exactly how the block went unnoticed while every subsequent
- * turn silently failed to commit (planning#317).
- *
- * `block: null` clears the banner.
- */
 export interface WsSecretBlockStatus {
   type: "secret_block_status";
   sessionId: string;
   block: SessionSecretBlock | null;
 }
 
-/** Server → Client: full reset completed successfully. */
 export interface WsFullResetComplete {
   type: "full_reset_complete";
 }
 
-// ---- Session runner messages (server → client) ----
-
-/**
- * Server → Client: current runtime state of a session.
- *
- * `running` is a **turn transition**, not a poll: every emitter sends this
- * message because a turn just started or just ended. The client treats it as
- * authoritative on "is a turn in flight" — it adds/removes the session from
- * `activeRunnerSessions` and drives the chat spinner off it. Anything that
- * merely wants to report some *other* piece of session state must therefore get
- * its own message rather than piggy-backing here with a `running` snapshot: a
- * snapshot taken at an arbitrary moment reads as "the turn ended" and produces a
- * spurious idle blip (the docs/235 regression — see {@link WsBackgroundTasks}).
- */
+/** Turn transition, not a snapshot: unrelated updates must not change running. */
 export interface WsSessionStatus {
   type: "session_status";
   sessionId: string;
   running: boolean;
   queueLength?: number;
-  /** Present when the session encountered a fatal error (e.g. container crash). */
   error?: string;
-  /**
-   * Optional explanation for a notable state transition. Lets the client
-   * surface a non-error inline notice ("Session paused after N minutes
-   * idle. Send a message to resume.") instead of leaving the user to
-   * guess why their container went away.
-   *
-   * - `agent-reclaimed` — the idle enforcer stopped the AGENT container to
-   *   stay inside the memory budget, and the session's preview services are
-   *   still running (docs/284 tier 1).
-   * - `memory-pressure` — the container AND the preview services were stopped
-   *   (feature 122; docs/284 tier 2).
-   *
-   * There is no plain "idle" reason: since docs/284 reclaim happens only when
-   * ShipIt is over its memory budget, never because time passed (req 5).
-   * See docs/124-session-rescue-and-diagnostics §1.6.
-   */
+  /** agent-reclaimed keeps previews; memory-pressure also stops them. */
   reason?: "agent-reclaimed" | "memory-pressure";
-  /** When `reason` is set, how long the session was idle before disposal (ms). */
   idleMs?: number;
-  /**
-   * Most recent failure from a best-effort `agent/kill` call (Interrupt or
-   * Rescue session). Non-fatal — the kill is best-effort by design — but
-   * useful when the worker is wedged and the user wonders why the button
-   * "did nothing." Renders as a non-blocking toast on the client.
-   *
-   * See docs/124-session-rescue-and-diagnostics §1.4.
-   */
   lastInterruptError?: string;
 }
 
-/**
- * Server → Client: the session's outstanding agent-initiated background tasks
- * (docs/235) — a `Bash(run_in_background)` job, a scheduled wake-up. Carries the
- * **complete current list** every time (`count: 0` is the explicit drained
- * signal), so one message fully re-states the truth.
- *
- * Deliberately its own message type rather than a field on
- * {@link WsSessionStatus}. The first implementation rode along on
- * `session_status` and had to fill in a `running` value; the CLI drains the task
- * list ~1ms *before* it emits the self-wake that marks the runner busy again, so
- * that message carried `running: false` and the client read a turn that was
- * about to start as a session going idle — clearing the running indicator and
- * firing the "needs attention" chime, then flipping back a frame later. Splitting
- * the level signal off means a background-task update can never assert anything
- * about turn state.
- *
- * `descriptions` feeds the chat status line so it can name the work ("Waiting
- * for: npm test") instead of showing a bare count.
- */
+/** Complete task list; independent of turn state. */
 export interface WsBackgroundTasks {
   type: "background_tasks";
   sessionId: string;
@@ -172,111 +75,48 @@ export interface WsBackgroundTasks {
   descriptions: string[];
 }
 
-/**
- * Server → Client: the OOM circuit breaker tripped for this session.
- *
- * Fired once when the breaker flips from healthy to tripped — i.e. the
- * Nth agent-container OOM kill within the rolling window. Future
- * container creations for this session will be refused (with a clear
- * error in the SessionHealthStrip) until the user explicitly opts back
- * in via the "Rescue session" / agent-container-restart endpoint, which
- * resets the breaker.
- *
- * Note: this is the *agent* container OOM, not a compose-child OOM
- * (which still uses `service_oom`). The two events are intentionally
- * distinct — a service OOM is recoverable, an agent-container OOM kills
- * the agent and triggers the destroy/recreate loop this breaker exists
- * to short-circuit.
- */
+/** Agent-container OOM breaker; further creation requires explicit rescue. */
 export interface WsSessionMemoryExhausted {
   type: "session_memory_exhausted";
   sessionId: string;
-  /** OOM kills counted in the rolling window when the breaker tripped. */
   countInWindow: number;
-  /** Rolling-window length in ms (informational, for UI copy). */
   windowMs: number;
-  /** Threshold the breaker tripped at (informational, for UI copy). */
   threshold: number;
 }
 
-/** Server → Client: agent started running in a session (broadcast to all clients). */
 export interface WsSessionAgentStarted {
   type: "session_agent_started";
   sessionId: string;
-  /** Optional activity label for system-initiated turns (e.g. "Auto-fixing CI..."). */
   activity?: string;
 }
 
-/** Server → Client: agent finished in a session (broadcast to all clients). */
 export interface WsSessionAgentFinished {
   type: "session_agent_finished";
   sessionId: string;
 }
 
-/**
- * Server → Client: the user message that starts a turn, surfaced to every
- * attached viewer.
- *
- * Two producers, distinguished by `clientRequestId`:
- *
- *  - **Server-initiated** (CI fix, child spawn, `POST /agent/dispatch`) — no
- *    `clientRequestId`. Some of these have an optimistic bubble on the
- *    dispatching tab, deduped by text; the rest append.
- *  - **User-typed over the WebSocket** — carries the sender's `clientRequestId`.
- *    The sending tab already rendered an optimistic bubble and dedupes on that
- *    id; every OTHER attached viewer (a second tab, the desktop while the user
- *    types on their phone) has nothing to render without this echo, and used to
- *    see the agent reply to a message that was never on screen until they
- *    reloaded.
- *
- * Attachments ride along in the same shapes chat history persists, so the echo
- * renders identically to the reloaded bubble. Per docs/244 the images carry a
- * content-addressed `src` rather than base64 `data` — safe because the executor
- * emits this AFTER the user row is persisted, which is what that URL resolves
- * against.
- */
+/** Emit after persistence so attachment URLs resolve. */
 export interface WsSystemUserMessage {
   type: "system_user_message";
   sessionId: string;
   text: string;
-  /** Activity label for the UI (e.g. "Auto-fixing CI..."). */
   activity?: string;
   agentInterface?: AgentInterfaceProvenance;
-  /** Another session's agent supplied this prompt, rather than the user. */
   messageOrigin?: SessionMessageOrigin;
-  /**
-   * The sending client's `send_message` / `answer_question` request id. Set only
-   * for user-typed messages, and the exact key that tab dedupes its own
-   * optimistic bubble on — text matching cannot tell a repeated "continue" from
-   * its own echo.
-   */
+  /** Deduplicates the sender's optimistic bubble; text cannot distinguish repeated sends. */
   clientRequestId?: string;
   images?: { data?: string; mediaType: string; src?: string }[];
   files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
   uploadPaths?: string[];
-  /** "Send comments" metadata, so the echo renders the `UserReviewCard` a reload would. */
   userReview?: { filePaths: string[]; commentCount: number };
 }
 
-/**
- * Server → Client: an informational system note rendered inline in the chat
- * (docs/138). Distinct from `error` — it does NOT clear the loading state, so
- * it can be emitted mid-turn (e.g. "guarded mode unavailable, continuing in
- * auto") as well as post-turn (e.g. a summary of classifier-blocked actions).
- * Broadcast via `runner.emitMessage()` so every viewer sees it and it lands in
- * the turn-event buffer for reconnecting viewers.
- */
+/** Does not clear the loading state. */
 export interface WsSystemNotice {
   type: "system_notice";
   sessionId: string;
   message: string;
-  /** Visual emphasis. `warn` for blocked-action / abort notices; `info` otherwise. */
   level?: "info" | "warn";
-  /**
-   * Stable id shared with the persisted chat row. Notices are now persisted (so
-   * they survive a full reload, not just a WS reconnect); the id lets the client
-   * dedupe a notice re-delivered by the turn-event buffer replay on reconnect
-   * against the copy `loadSessionHistory` rehydrated from the DB.
-   */
+  /** Shared with the persisted row for replay deduplication. */
   id?: string;
 }

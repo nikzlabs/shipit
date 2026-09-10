@@ -1,8 +1,3 @@
-/**
- * File and document API routes.
- * Handles: file tree, file content, write/edit, docs, uploads.
- */
-
 import fs from "node:fs/promises";
 import { etagFor, matchesIfNoneMatch } from "./http-etag.js";
 import path from "node:path";
@@ -39,21 +34,6 @@ import { pushToOrigin } from "./git-utils.js";
 import { emitNoticePostTurn, persistNoticeUnattached } from "./chat-card-persistence.js";
 import { formatUnreadableWorkspaceNotice } from "./services/unreadable-workspace-notice.js";
 
-/**
- * Commit a manual file edit so it lands as its own commit instead of being
- * silently folded into the next agent turn (or lost on a rewind, which resets
- * to a commit-linked chat message). Best-effort: a failed commit must not fail
- * the save — the file is already written and the post-turn auto-commit will
- * sweep it up as a fallback.
- *
- * Skipped while an agent turn is running: `autoCommit` does `git add -A`, so
- * committing mid-turn would capture the agent's in-progress changes under a
- * misleading "Edit <file>" message and confuse the post-turn commit. The edit
- * is still written to disk and committed by the normal post-turn flow.
- *
- * Shares the per-workspace mutex with the post-turn commit / plugin install so
- * the `git add -A` here can't race those on the same workspace.
- */
 async function commitManualEdit(
   deps: ApiDeps,
   sessionId: string,
@@ -61,24 +41,14 @@ async function commitManualEdit(
   filePath: string,
 ): Promise<void> {
   const runner = deps.runnerRegistry.get(sessionId);
+  // autoCommit stages all files; a running turn must commit its own edits.
   if ((runner as { running?: boolean } | undefined)?.running) return;
-  // docs/128 / docs/211 — ShipIt does not auto-commit an ops or sandbox session
-  // (`services/auto-commit-gate.ts`). A UI file edit is still ShipIt committing
-  // on its own: the agent asked for nothing, and for a sandbox `/workspace` is
-  // not even a repo. The edit is still written to disk; committing it is the
-  // agent's business in those kinds.
   if (!sessionAutoCommitAllowed(deps.sessionManager, sessionId)) return;
   try {
     const git = deps.createGitManager(dir);
     const { commitHash, unreadable } = await withWorkspaceLock(dir, () =>
       git.autoCommit(`Edit ${path.basename(filePath)}`),
     );
-    // docs/266-orchestrator-git-trust-boundary reqs 14 + 15 / planning#407 — the save itself succeeded (the file is
-    // on disk), but the user was told nothing about the commit either way, and
-    // a `blocked` add commits NOTHING while returning the same null hash as
-    // "nothing to commit". Persisted, because the point is that the edit the
-    // user just made is not on the branch and will not be until the path is
-    // readable.
     if (unreadable) {
       const message = formatUnreadableWorkspaceNotice(unreadable, {
         committed: commitHash !== null,
@@ -87,20 +57,10 @@ async function commitManualEdit(
       if (runner) {
         emitNoticePostTurn((m) => runner.emitMessage(m), deps.chatHistoryManager, sessionId, message, "warn");
       } else {
-        // A UI save reaches a session with no runner (the container was
-        // reclaimed while the file tree stayed open), and the notice still
-        // belongs in the transcript the user comes back to.
         persistNoticeUnattached(deps.chatHistoryManager, sessionId, message, "warn");
       }
     }
-    // Push so the change reaches the PR without waiting for the next turn,
-    // matching ShipIt's inline-PR model. Fire-and-forget: push latency must
-    // not block the save response, and auth failures surface on the next
-    // post-turn auto-push rather than here.
     if (commitHash && deps.githubAuthManager.authenticated) {
-      // `onSkip` for the same reason the post-turn scheduler passes one: both of
-      // `pushToOrigin`'s null returns are otherwise a commit that lands and a
-      // push that says nothing anywhere.
       void pushToOrigin(git, (reason) => {
         const why = reason === "no-origin" ? "no `origin` remote" : "no current branch (detached HEAD)";
         console.warn(`[files] manual-edit auto-push skipped for ${sessionId}: ${why}`);
@@ -120,21 +80,11 @@ export async function registerFileRoutes(
   const { sessionManager, defaultAgentId, runnerRegistry, marketplaceStore, agentRegistry } = deps;
   const cacheRoot = getCatalogCacheRoot(deps.stateDir ?? deps.workspaceDir);
 
-  // GET /api/sessions/:id/files — file tree
-  //
-  // planning#375 — this is now the ONLY place the workspace tree is served; it
-  // used to ride along with `GET /history` as well, where it was 325 KB of a
-  // 2.67 MB payload re-sent on every transcript change. It carries an ETag for
-  // the same reason the history route does: the tree changes far more rarely
-  // than the transcript, so an attach should usually cost a 304 and nothing
-  // else. The tag is the hash of the body, so it cannot disagree with it.
   app.get<{ Params: { id: string } }>("/api/sessions/:id/files", async (request, reply) => {
     const dir = resolveSessionDir(sessionManager, request.params.id, reply);
     if (!dir) return;
     const body = JSON.stringify({ tree: await getFileTree(dir) });
     const etag = etagFor(body);
-    // Weak comparison, per RFC 9110 — Cloudflare re-compresses and hands the
-    // browser `W/"…"`, which is what comes back. See `http-etag.ts`.
     if (matchesIfNoneMatch(request.headers["if-none-match"], etag)) {
       reply.code(304).send();
       return;
@@ -143,7 +93,6 @@ export async function registerFileRoutes(
     return reply.send(body);
   });
 
-  // GET /api/sessions/:id/files/* — file content
   app.get<{ Params: { id: string; "*": string }; Querystring: { tree?: string; raw?: string } }>(
     "/api/sessions/:id/files/*",
     async (request, reply) => {
@@ -155,12 +104,10 @@ export async function registerFileRoutes(
         return;
       }
       try {
-        // Upload files live in a sibling "uploads" directory, not inside workspace
         const resolveDir = filePath.startsWith("uploads/")
           ? path.dirname(dir)
           : dir;
 
-        // raw=true: serve image bytes directly (for <img src> usage)
         if (request.query.raw === "true") {
           const safePath = path.resolve(resolveDir, filePath);
           if (!safePath.startsWith(`${resolveDir}/`)) {
@@ -203,15 +150,11 @@ export async function registerFileRoutes(
     },
   );
 
-  // PUT /api/sessions/:id/files/* — write UTF-8 file content
   app.put<{ Params: { id: string; "*": string }; Body: { content?: unknown } }>(
     "/api/sessions/:id/files/*",
     async (request, reply) => {
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
-      // Direct editing is disabled until the session graduates from the warm
-      // pool (takes its first turn). A warm session has no committed history of
-      // its own yet, so a manual edit there has nothing meaningful to attach to.
       const session = sessionManager.get(request.params.id);
       if (session?.warm) {
         reply.code(409).send({
@@ -242,7 +185,6 @@ export async function registerFileRoutes(
     },
   );
 
-  // GET /api/sessions/:id/files/download/* — download raw file
   app.get<{ Params: { id: string; "*": string } }>(
     "/api/sessions/:id/files/download/*",
     async (request, reply) => {
@@ -268,20 +210,11 @@ export async function registerFileRoutes(
     },
   );
 
-  // GET /api/sessions/:id/docs — doc list with optional status metadata
   app.get<{ Params: { id: string } }>("/api/sessions/:id/docs", async (request, reply) => {
     const dir = resolveSessionDir(sessionManager, request.params.id, reply);
     if (!dir) return;
     const docs = await listDocs(dir);
-    // Flag docs the agent actually changed this session, from the committed
-    // merge-base diff vs the session's base branch — the SAME change set the PR
-    // card's notable-files strip uses (`committedChangesVsBase`), so the two
-    // surfaces show exactly the same documents. We resolve the base the way the
-    // PR lifecycle does (the tracked PR's base, else a re-armed session's prior
-    // base, else the repo's own default branch) rather than hardcoding `main`,
-    // so a PR onto a non-main base — and a `master`/`trunk` repo — line up too.
-    // Best-effort — on any git error we leave the flag unset and the client
-    // falls back gracefully.
+    // Use the PR's base so document flags match the PR's changed files.
     try {
       const session = sessionManager.get(request.params.id);
       const git = deps.createGitManager(dir);
@@ -299,13 +232,6 @@ export async function registerFileRoutes(
     return { docs };
   });
 
-  // GET /api/sessions/:id/skills — user-invocable skills for the composer's `/`
-  // autocomplete. The backend is the session's locked-in agent (falling back to
-  // the optional ?agent= override, then the server default): Claude scans
-  // `.claude/skills/**`, Codex scans `.codex/skills/**`. For Codex we also merge
-  // its built-in system skills (`~/.codex/skills/**`), which live inside the
-  // container and are scanned by a session-worker endpoint (the orchestrator
-  // can't read that path directly). See docs/138-skill-invocation.
   app.get<{ Params: { id: string }; Querystring: { agent?: string } }>(
     "/api/sessions/:id/skills",
     async (request, reply) => {
@@ -321,14 +247,11 @@ export async function registerFileRoutes(
 
       const skillsDirName = agentRegistry.get(agentId)?.capabilities.skillsDirName ?? ".claude";
       const projectSkills = await listSkills(dir, skillsDirName);
-      // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 8: Codex ships built-in skills inside ~/.codex/skills/; Claude has none today. Becomes an optional runner method (`getBuiltinSkills?()`) once a second backend ships built-ins.
+      // eslint-disable-next-line no-restricted-syntax -- Codex bundles skills inside the container.
       if (agentId !== "codex") {
         return { skills: projectSkills };
       }
 
-      // Merge Codex's container-side built-ins. Best-effort — if there's no
-      // running container or the worker is unreachable, fall back to project
-      // skills alone rather than failing the autocomplete.
       let bundled: Awaited<ReturnType<typeof listSkills>> = [];
       const runner = runnerRegistry.get(request.params.id);
       if (runner?.getCodexBuiltinSkills) {
@@ -338,7 +261,6 @@ export async function registerFileRoutes(
           bundled = [];
         }
       }
-      // Project skills win over a built-in of the same name.
       const names = new Set(projectSkills.map((s) => s.name));
       const merged = [...projectSkills, ...bundled.filter((s) => !names.has(s.name))];
       merged.sort((a, b) => a.name.localeCompare(b.name));
@@ -346,7 +268,6 @@ export async function registerFileRoutes(
     },
   );
 
-  // GET /api/sessions/:id/docs/* — doc content
   app.get<{ Params: { id: string; "*": string } }>(
     "/api/sessions/:id/docs/*",
     async (request, reply) => {
@@ -370,7 +291,6 @@ export async function registerFileRoutes(
     },
   );
 
-  // POST /api/sessions/:id/files/uploads — upload files
   app.post<{ Params: { id: string } }>(
     "/api/sessions/:id/files/uploads",
     async (request, reply) => {
@@ -386,20 +306,12 @@ export async function registerFileRoutes(
 
       const uploadsDir = path.join(path.dirname(session.workspaceDir), "uploads");
 
-      // docs/293 — the batch is all-or-nothing. Files were saved one at a time
-      // and a failure part-way (a later file over the size limit, or over the
-      // session quota) left the earlier ones on disk while the response carried
-      // no paths for them. The client marks the whole batch failed, so a retry
-      // re-POSTed a file the server already had and `deduplicateFilename` stored
-      // it a second time under a new name — an orphan no chip refers to. Undoing
-      // this request's writes is what makes docs/293 req 3's retry safe.
+      // Roll back the batch on failure so retries cannot leave duplicate files.
       const results: UploadedFile[] = [];
       const rollback = async () => {
         for (const saved of results) {
-          // Safe to delete: `saveUploadedFile` claims each name with an
-          // exclusive create, so this request is the only writer of it.
+          // saveUploadedFile exclusively creates each name; this request owns it.
           await deleteUpload(uploadsDir, path.basename(saved.path)).catch((err: unknown) => {
-            // Not silent — a failure here leaves a file no chip refers to.
             app.log.warn(`[upload] rollback of ${saved.path} failed: ${getErrorMessage(err)}`);
           });
         }
@@ -437,7 +349,6 @@ export async function registerFileRoutes(
     },
   );
 
-  // DELETE /api/sessions/:id/files/uploads/:filename — delete an uploaded file
   app.delete<{ Params: { id: string; filename: string } }>(
     "/api/sessions/:id/files/uploads/:filename",
     async (request, reply) => {
@@ -469,7 +380,6 @@ export async function registerFileRoutes(
     },
   );
 
-  // GET /api/sessions/:id/files/uploads — list uploaded files
   app.get<{ Params: { id: string } }>(
     "/api/sessions/:id/files/uploads",
     async (request, reply) => {
@@ -489,31 +399,7 @@ export async function registerFileRoutes(
     },
   );
 
-  // ---- Plugin install/uninstall (docs/149) ----
-  // These are session-scoped because the install writes into the session's
-  // workspace and auto-commits there. App-wide marketplace browsing lives in
-  // `api-routes-marketplace.ts`; the routes here are the action verbs that
-  // mutate the workspace.
-  //
-  // The install flow:
-  //   1. Refuses while `runner.running` (no install during a turn — see plan
-  //      §Concurrency case 1). The runner state mutex shared with
-  //      `postTurnCommit` covers the post-turn commit window.
-  //   2. Acquires the per-workspace install mutex (shared with `postTurnCommit`
-  //      via `withWorkspaceLock`) so install↔post-turn-commit and
-  //      install↔install on the same workspace are fully serialized.
-  //   3. Calls `installPlugin()` which uses a path-scoped `git add` (not -A).
-  //   4. Calls `killAgent` on the runner — noop for one-shot `claude -p`
-  //      between turns; SIGKILLs persistent backends so the next turn
-  //      respawns with the new skills picked up.
-
   if (marketplaceStore) {
-    // POST /api/sessions/:id/plugins/install — session-scoped install. Retained
-    // as the seam for a future "install into this workspace" destination option
-    // (docs/149). The primary install path is the app-wide, repo-targeted
-    // `POST /api/plugins/install` (api-routes-marketplace.ts), which opens a PR.
-    // There is deliberately NO uninstall route: removing a skill is a plain
-    // "delete the dir + commit" the user asks the agent to do (CLAUDE.md §5).
     app.post<{
       Params: { id: string };
       Body: { marketplaceId?: unknown; pluginName?: unknown };
@@ -532,7 +418,6 @@ export async function registerFileRoutes(
         return;
       }
 
-      // Refuse install while a turn is running — see plan §Concurrency case 1.
       const runner = runnerRegistry.get(request.params.id) as
         | { running?: boolean } | undefined;
       if (runner?.running) {
@@ -558,19 +443,13 @@ export async function registerFileRoutes(
           });
         });
 
-        // Persistent backends need a kill so the next turn re-scans skills.
-        // For one-shot `claude -p` this is a noop between turns.
+        // Restart persistent backends so they read the installed skills.
         try {
           await killAgent({
             sessionManager,
             containerManager: deps.containerManager ?? null,
             runnerRegistry,
             defaultAgentId: deps.defaultAgentId,
-            // Plugin install/uninstall: killAgent is just here to force the
-            // next turn's CLI to re-scan skills. The install path already
-            // committed its own changes via withWorkspaceLock, so the
-            // post-interrupt fallback is a no-op (clean tree) but we wire
-            // the deps anyway for consistency with the recovery path.
             ...(deps.prStatusPoller
               ? {
                   postInterruptCommitDeps: {
@@ -586,8 +465,6 @@ export async function registerFileRoutes(
               : {}),
           }, request.params.id);
         } catch (err) {
-          // The worker may be unreachable during install (e.g. fresh session).
-          // That's fine — skills are read from disk on next agent spawn.
           console.warn("[marketplace] post-install killAgent failed:", getErrorMessage(err));
         }
 

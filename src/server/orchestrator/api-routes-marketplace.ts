@@ -1,12 +1,3 @@
-/**
- * Marketplace HTTP routes (docs/149 — skill install UX).
- *
- * App-wide routes for browsing pre-seeded marketplace catalogs and previewing
- * a plugin's SKILL.md before install. Session-scoped install/uninstall verbs
- * live in `api-routes-files.ts` alongside the existing
- * `GET /api/sessions/:id/skills` from doc 138.
- */
-
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import type { MarketplaceStore } from "./marketplace-store.js";
@@ -34,7 +25,6 @@ export async function registerMarketplaceRoutes(
   const { marketplaceStore, stateDir } = deps;
   const cacheRoot = getCatalogCacheRoot(stateDir);
 
-  // GET /api/marketplaces?agent=claude|codex — list the catalogs the user can browse.
   app.get<{ Querystring: { agent?: string } }>(
     "/api/marketplaces",
     async (request) => {
@@ -47,9 +37,6 @@ export async function registerMarketplaceRoutes(
     },
   );
 
-  // GET /api/marketplaces/:id/plugins — list installable plugins from a catalog.
-  // Triggers a lazy fetch if the cache is missing (e.g. the startup pre-clone
-  // hasn't completed yet, or it previously failed and the user clicked Retry).
   app.get<{ Params: { id: string } }>(
     "/api/marketplaces/:id/plugins",
     async (request, reply) => {
@@ -68,9 +55,6 @@ export async function registerMarketplaceRoutes(
     },
   );
 
-  // POST /api/marketplaces/:id/refresh — user-initiated re-clone / pull.
-  // Same operation the startup pre-clone runs, exposed for the Retry button
-  // on the Discover tab's per-marketplace fetch-failed state.
   app.post<{ Params: { id: string } }>(
     "/api/marketplaces/:id/refresh",
     async (request, reply) => {
@@ -87,13 +71,6 @@ export async function registerMarketplaceRoutes(
     },
   );
 
-  // POST /api/plugins/install — repo-targeted install (docs/149 v1c).
-  //
-  // App-wide, NOT session-scoped: the user explicitly picks a repo, and the
-  // install runs in its own freshly-spawned session on a new branch and opens a
-  // PR. The current session (if any) is never touched. The session-scoped
-  // `POST /api/sessions/:id/plugins/install` route is retained in
-  // api-routes-files.ts for the future "install into this workspace" option.
   app.post<{ Body: { marketplaceId?: unknown; pluginName?: unknown; repoUrl?: unknown; agentId?: unknown } }>(
     "/api/plugins/install",
     async (request, reply) => {
@@ -101,10 +78,6 @@ export async function registerMarketplaceRoutes(
       const pluginName = typeof request.body.pluginName === "string" ? request.body.pluginName : null;
       const repoUrl = typeof request.body.repoUrl === "string" ? request.body.repoUrl.trim() : null;
       const requestedAgentId = typeof request.body.agentId === "string" ? request.body.agentId : null;
-      // docs/252 phase 9 (req 14) — resolve against the INSTALLED agents, not
-      // every agent the catalogue knows: an install session pins the agent it is
-      // given, so accepting a harness this deployment does not have would create
-      // a session whose first turn cannot run.
       const installedAgents = deps.agentRegistry.list().filter((agent) => isHarnessInstalled(agent.id));
       const agentId = requestedAgentId
         ? installedAgents.find((agent) => agent.id === requestedAgentId)?.id ?? null
@@ -154,7 +127,6 @@ export async function registerMarketplaceRoutes(
     },
   );
 
-  // GET /api/marketplaces/:id/plugins/:plugin/skills/:skill — Monaco preview body.
   app.get<{ Params: { id: string; plugin: string; skill: string } }>(
     "/api/marketplaces/:id/plugins/:plugin/skills/:skill",
     async (request, reply) => {

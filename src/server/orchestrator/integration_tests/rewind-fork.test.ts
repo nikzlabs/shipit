@@ -286,9 +286,6 @@ describe("Integration: rewind and fork", () => {
     const initialHead = await git.getHeadHash();
     expect(initialHead).toBeTruthy();
 
-    // No autoCommit calls — every message lacks commitHash and parentCommitHash,
-    // so findCommitBeforeGap returns null. Used to fail the action entirely;
-    // now degrades to chat-only.
     chatHistoryManager.append(sessionId, { role: "user", text: "first message" });
     chatHistoryManager.append(sessionId, { role: "assistant", text: "first reply" });
     chatHistoryManager.append(sessionId, { role: "user", text: "discard me" });
@@ -358,9 +355,6 @@ describe("Integration: rewind and fork", () => {
   });
 
   it("forks a session with no code commits from a past gap, basing the clone on HEAD", async () => {
-    // planning#186: no autoCommit calls, so no message carries a commitHash and
-    // findCommitBeforeGap returns null. This used to fail with "No code state
-    // available to fork."; now it forks at HEAD (the repo's base).
     const { sessionId, workspaceDir } = await createSession();
     const git = new GitManager(workspaceDir);
     const head = await git.getHeadHash();
@@ -387,9 +381,6 @@ describe("Integration: rewind and fork", () => {
   });
 
   it("allows fork while a turn is running but still blocks in-place rewind", async () => {
-    // planning#184: fork is independent of the running turn (new session off a
-    // committed SHA), so it must succeed; chat/code/both still conflict with
-    // the agent mutating the workspace and stay gated.
     const { sessionId } = await createSession();
     chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
     chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });

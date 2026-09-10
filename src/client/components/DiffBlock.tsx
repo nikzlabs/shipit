@@ -1,11 +1,3 @@
-/**
- * DiffBlock — renders a compact inline file change summary in the chat.
- *
- * Shows a one-line summary with the file path and a colored diff stat
- * like "+40 -12" (green for additions, red for removals).
- * The stats are clickable and open a modal showing the full diff.
- */
-
 import { useState, useMemo } from "react";
 import { type Icon, NotePencilIcon, PencilSimpleIcon, TrashIcon } from "@phosphor-icons/react";
 import { highlightCode, languageFromPath } from "../syntax-highlight.js";
@@ -20,34 +12,20 @@ export interface DiffBlockProps {
   filePath: string;
   oldString?: string;
   newString?: string;
-  /** When true, the entire content is a new file write (no old content). */
   isWrite?: boolean;
-  /**
-   * A unified-diff string (e.g. Codex's apply_patch). When set, line stats and
-   * the modal body are derived from the diff rather than old/new strings.
-   */
   unifiedDiff?: string;
-  /** Override the leading verb ("Edit"/"Write"); used for Codex change kinds. */
   label?: string;
-  /**
-   * docs/244 — the file body was stripped on the serve path. The inline summary
-   * is drawn from `stats` instead of the (absent) strings, and the body is
-   * fetched when the modal opens. Only ever set together with `stats`.
-   */
+  /** Fetch the omitted body on open; requires stats. */
   toolUseId?: string;
   stats?: { added: number; removed: number };
 }
 
-// Exported so docs/244 can pin the server's stat computation against this one:
-// the `+N -M` summary is drawn from server-computed stats once the body is
-// stripped, so the two must agree exactly or the summary changes on reload.
 export function countLines(text: string): number {
   if (!text) return 0;
   const normalized = text.endsWith("\n") ? text.slice(0, -1) : text;
   return normalized ? normalized.split("\n").length : 0;
 }
 
-/** Count added/removed lines in a unified diff, ignoring file/hunk headers. */
 function countDiffLines(diff: string): { added: number; removed: number } {
   let added = 0;
   let removed = 0;
@@ -62,9 +40,6 @@ export function DiffBlock({ filePath, oldString, newString, isWrite, unifiedDiff
   const [showModal, setShowModal] = useState(false);
   const isUnified = unifiedDiff !== undefined;
   const sessionId = useSessionStore((s) => s.sessionId);
-  // Server-computed stats when the body was stripped (docs/244) — computed from
-  // the same `countLines` before stripping, so the summary is byte-identical to
-  // what recomputing here would have produced.
   const { added, removed } = stats ?? (isUnified
     ? countDiffLines(unifiedDiff)
     : { added: countLines(newString ?? ""), removed: countLines(oldString ?? "") });
@@ -120,16 +95,6 @@ export function DiffBlock({ filePath, oldString, newString, isWrite, unifiedDiff
   );
 }
 
-/**
- * The diff-block verb ("Edit"/"Write"/"Delete", or a Codex apply_patch kind) as
- * a glyph rather than a word — the verb moves to the icon's accessible
- * label/tooltip. Verbs we don't have a glyph for fall back to plain text.
- *
- * Deliberately icon-only (no visible word), unlike the inline tool line which
- * shows icon + verb: here the file path and colored +/- stats already anchor
- * the meaning, so the glyph is enough. The verb stays in `aria-label` for
- * screen readers.
- */
 const VERB_ICONS: Record<string, Icon> = {
   Edit: PencilSimpleIcon,
   Write: NotePencilIcon,
@@ -158,12 +123,9 @@ function DiffModal({ filePath, oldString, newString, isWrite, unifiedDiff, verb,
   isWrite?: boolean;
   unifiedDiff?: string;
   verb: string;
-  /** docs/244 — when set, the body was stripped and is fetched on open. */
   lazyToolUseId?: string;
   onClose: () => void;
 }) {
-  // The body is not in the transcript (docs/244); opening the modal IS the
-  // moment it has to be fetched.
   const lazy = useLazyToolInput(lazyToolUseId, !!lazyToolUseId);
   const str = (key: string): string | undefined =>
     typeof lazy.input?.[key] === "string" ? lazy.input[key] : undefined;
@@ -197,13 +159,6 @@ function DiffModal({ filePath, oldString, newString, isWrite, unifiedDiff, verb,
   );
 }
 
-/**
- * Renders a unified diff with per-line coloring (additions, removals, hunks).
- *
- * Long lines wrap rather than scrolling sideways. The `+`/`-`/`@@` marker is
- * part of the line text here, so each row gets a hanging indent — the wrapped
- * remainder lines up with the content, not under the marker.
- */
 function UnifiedDiff({ diff }: { diff: string }) {
   const lines = diff.split("\n");
   return (
@@ -231,9 +186,6 @@ function EditDiff({ oldString, newString }: { oldString?: string; newString?: st
   const oldLines = oldString ? oldString.split("\n") : [];
   const newLines = newString ? newString.split("\n") : [];
 
-  // Long lines wrap instead of scrolling sideways. The marker is its own
-  // non-shrinking column so the wrapped remainder stays aligned under the
-  // content rather than sliding beneath the `-`/`+`.
   return (
     <pre className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-words">
       {oldLines.map((line, i) => (
@@ -252,11 +204,6 @@ function EditDiff({ oldString, newString }: { oldString?: string; newString?: st
   );
 }
 
-/**
- * `filePath` is what keeps this off auto-detection: the modal already knows the
- * file being written, so the grammar is a lookup rather than 26 speculative
- * highlight passes over a whole file body.
- */
 function WriteContent({ content, filePath }: { content: string; filePath: string }) {
   const highlighted = useMemo(
     () => (content ? highlightCode(content, languageFromPath(filePath)) : null),

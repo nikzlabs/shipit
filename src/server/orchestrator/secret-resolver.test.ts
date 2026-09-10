@@ -17,7 +17,6 @@ import {
 import type { ComposeService } from "./compose-generator.js";
 
 describe("collectMcpAgentEnv (docs/088)", () => {
-  // Stub helper covering both methods the new signature touches.
   function stub(opts: {
     agentEnv?: Record<string, string>;
     mcpOAuth?: Record<string, { accessToken: string }>;
@@ -51,8 +50,6 @@ describe("collectMcpAgentEnv (docs/088)", () => {
   });
 
   it("is independent of resolveSecrets — does not consult compose declarations", () => {
-    // resolveSecrets with no services produces no agentValues; collectMcpAgentEnv
-    // still surfaces the account-level mcp__* keys.
     const resolution = resolveSecrets({ services: [], userSecrets: {} });
     expect(resolution.agentValues).toEqual({});
     expect(collectMcpAgentEnv(stub({ agentEnv: { mcp__x__KEY: "v" } }))).toEqual({
@@ -140,7 +137,6 @@ describe("resolveSecrets", () => {
       userSecrets: { STRIPE_KEY: "sk_test_123", UNUSED: "x" },
     });
     expect(result.perServiceEnv.web).toContain("STRIPE_KEY=sk_test_123");
-    // Unused user secrets shouldn't appear in any service env file
     expect(result.perServiceEnv.web).not.toContain("UNUSED");
     expect(result.declaredNames).toEqual(["STRIPE_KEY"]);
   });
@@ -235,10 +231,6 @@ describe("resolveSecrets", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Phase 2: extended syntax — required, descriptions, declared aggregation
-// ---------------------------------------------------------------------------
-
 describe("resolveSecrets — Phase 2 extended syntax", () => {
   it("flags missing-required secrets via missingRequiredByService", () => {
     const services: ComposeService[] = [
@@ -247,7 +239,7 @@ describe("resolveSecrets — Phase 2 extended syntax", () => {
         secrets: ["DATABASE_URL", "OPTIONAL_KEY"],
         secretRequirements: [
           { name: "DATABASE_URL", required: true },
-          { name: "OPTIONAL_KEY" }, // not required → not in missingRequired
+          { name: "OPTIONAL_KEY" },
         ],
       },
     ];
@@ -283,7 +275,7 @@ describe("resolveSecrets — Phase 2 extended syntax", () => {
         name: "api",
         secrets: ["STRIPE_KEY", "DATABASE_URL"],
         secretRequirements: [
-          { name: "STRIPE_KEY", required: true }, // required wins (OR'd)
+          { name: "STRIPE_KEY", required: true },
           { name: "DATABASE_URL", description: "Postgres URL", required: true },
         ],
       },
@@ -293,9 +285,9 @@ describe("resolveSecrets — Phase 2 extended syntax", () => {
 
     const stripe = result.declared.find((d) => d.name === "STRIPE_KEY");
     expect(stripe).toBeDefined();
-    expect(stripe?.required).toBe(true); // OR'd across services
-    expect(stripe?.description).toBe("Stripe publishable key"); // first non-empty wins
-    expect(stripe?.services).toEqual(["api", "web"]); // sorted
+    expect(stripe?.required).toBe(true);
+    expect(stripe?.description).toBe("Stripe publishable key");
+    expect(stripe?.services).toEqual(["api", "web"]);
 
     const db = result.declared.find((d) => d.name === "DATABASE_URL");
     expect(db?.services).toEqual(["api"]);
@@ -327,7 +319,6 @@ describe("resolveSecrets — Phase 2 extended syntax", () => {
   });
 
   it("falls back to legacy string-only secrets when secretRequirements absent", () => {
-    // Older callers / shorthand-only compose files without object form still work.
     const services: ComposeService[] = [
       { name: "api", secrets: ["STRIPE_KEY"] },
     ];
@@ -350,10 +341,6 @@ describe("resolveSecrets — Phase 2 extended syntax", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Phase 3: agent: true → agentEnv / agentValues
-// ---------------------------------------------------------------------------
-
 describe("resolveSecrets — Phase 3 agent injection", () => {
   it("collects values for entries marked agent: true", () => {
     const services: ComposeService[] = [
@@ -362,7 +349,7 @@ describe("resolveSecrets — Phase 3 agent injection", () => {
         secrets: ["DATABASE_URL", "STRIPE_KEY"],
         secretRequirements: [
           { name: "DATABASE_URL", agent: true },
-          { name: "STRIPE_KEY" }, // not agent → service-only
+          { name: "STRIPE_KEY" },
         ],
       },
     ];
@@ -386,13 +373,12 @@ describe("resolveSecrets — Phase 3 agent injection", () => {
     const result = resolveSecrets({ services, userSecrets: {} });
     expect(result.agentValues).toEqual({});
     expect(result.agentEnv).toBe("");
-    // Still surfaces in missingRequired even though no agent value emitted.
     expect(result.missingRequiredByService.api).toEqual(["DATABASE_URL"]);
   });
 
   it("returns empty agentEnv string when no agent entries exist", () => {
     const services: ComposeService[] = [
-      { name: "api", secrets: ["STRIPE_KEY"] }, // legacy form, no agent flag
+      { name: "api", secrets: ["STRIPE_KEY"] },
     ];
     const result = resolveSecrets({
       services,
@@ -420,7 +406,6 @@ describe("resolveSecrets — Phase 3 agent injection", () => {
       userSecrets: { DATABASE_URL: "postgres://x" },
     });
     expect(result.agentValues).toEqual({ DATABASE_URL: "postgres://x" });
-    // env file body has one DATABASE_URL line, not two
     const lines = result.agentEnv.trim().split("\n").filter((l) => !l.startsWith("#"));
     expect(lines).toEqual(["DATABASE_URL=postgres://x"]);
   });
@@ -429,12 +414,6 @@ describe("resolveSecrets — Phase 3 agent injection", () => {
 describe("writeAgentEnvFile", () => {
   let tmpDir: string;
 
-  /**
-   * A real session layout: the clone at `<sessionDir>/workspace`. docs/246 writes
-   * `.env.agent` into the `state/` sibling, resolved from the clone path — and
-   * planning#288 removed the in-clone fallback, so a bare temp dir is now refused.
-   * Returns the clone.
-   */
   function setup() {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-env-"));
     const dir = path.join(tmpDir, "workspace");
@@ -442,7 +421,6 @@ describe("writeAgentEnvFile", () => {
     return dir;
   }
 
-  /** The state dir for a clone produced by {@link setup}. */
   const stateOf = (dir: string) => path.resolve(dir, "..", "state");
 
   afterEach(() => {
@@ -455,11 +433,9 @@ describe("writeAgentEnvFile", () => {
       workspaceDir: dir,
       body: "DATABASE_URL=postgres://x\n",
     });
-    // Relative to the clone — and it points OUT of it.
     expect(written).toBe(path.join("..", "state", ".env.agent"));
     const contents = fs.readFileSync(path.join(stateOf(dir), ".env.agent"), "utf-8");
     expect(contents).toContain("DATABASE_URL=postgres://x");
-    // Nothing lands in the user's repository.
     expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(false);
   });
 
@@ -485,8 +461,6 @@ describe("writeAgentEnvFile", () => {
     expect(() => writeAgentEnvFile({ workspaceDir: dir, body: "" })).not.toThrow();
   });
 
-  // planning#288 — the legacy flat layout is refused rather than degraded back into
-  // the clone. A session of that shape is unserviceable by decision.
   it("refuses a clone that is not <sessionDir>/workspace", () => {
     const flat = fs.mkdtempSync(path.join(os.tmpdir(), "agent-env-flat-"));
     try {
@@ -498,10 +472,6 @@ describe("writeAgentEnvFile", () => {
     }
   });
 });
-
-// ---------------------------------------------------------------------------
-// docs/184: source: platform:* is no longer forwarded
-// ---------------------------------------------------------------------------
 
 describe("resolveSecrets — source: platform:* no longer forwarded (docs/184)", () => {
   it("resolves a platform-sourced entry from userSecrets[name]", () => {
@@ -518,8 +488,6 @@ describe("resolveSecrets — source: platform:* no longer forwarded (docs/184)",
       services,
       userSecrets: { GITHUB_TOKEN: "ghp_user_supplied" },
     });
-    // Resolves from the user secret store under the declared name, NOT from
-    // any platform credential.
     expect(result.perServiceEnv.orchestrator).toContain("GITHUB_TOKEN=ghp_user_supplied");
     expect(result.missingByService).toEqual({});
   });
@@ -548,7 +516,7 @@ describe("resolveSecrets — source: platform:* no longer forwarded (docs/184)",
         secretRequirements: [
           { name: "ANTHROPIC_API_KEY", source: "platform:claude_oauth" },
           { name: "GITHUB_TOKEN", source: "platform:github_token" },
-          { name: "SENTRY_DSN" }, // no source → no warning
+          { name: "SENTRY_DSN" },
         ],
       },
     ];
@@ -568,9 +536,6 @@ describe("resolveSecrets — source: platform:* no longer forwarded (docs/184)",
   });
 
   it("regression: a real GitHub token is never injected from platform state", () => {
-    // A hostile repo declares source: platform:github_token. With NO user
-    // secret of that name set, the service gets nothing — the user's real
-    // token is never forwarded.
     const services: ComposeService[] = [
       {
         name: "evil",
@@ -584,8 +549,6 @@ describe("resolveSecrets — source: platform:* no longer forwarded (docs/184)",
     expect(noSecret.perServiceEnv.evil).not.toContain("GITHUB_TOKEN=");
     expect(noSecret.missingByService.evil).toEqual(["GITHUB_TOKEN"]);
 
-    // With a same-named user secret set, the service gets the user-supplied
-    // value instead — never a platform identity.
     const withSecret = resolveSecrets({
       services,
       userSecrets: { GITHUB_TOKEN: "ghp_user_dedicated" },
@@ -607,10 +570,6 @@ describe("resolveSecrets — source: platform:* no longer forwarded (docs/184)",
     expect(result.declared[0].source).toBe("platform:github_token");
   });
 });
-
-// ---------------------------------------------------------------------------
-// Phase 1 follow-up: Docker-secrets isolation
-// ---------------------------------------------------------------------------
 
 describe("perServiceValues (Phase 1 follow-up)", () => {
   it("captures resolved key-value pairs per service", () => {
@@ -634,7 +593,6 @@ describe("perServiceValues (Phase 1 follow-up)", () => {
       { name: "api", secrets: ["MISSING_KEY"] },
     ];
     const result = resolveSecrets({ services, userSecrets: {} });
-    // perServiceValues[api] exists but is empty
     expect(result.perServiceValues.api).toEqual({});
   });
 });
@@ -699,7 +657,6 @@ describe("writeIsolatedSecretFiles (Phase 1 follow-up)", () => {
       values: { K: "v" },
     });
     const stat = fs.statSync(path.join(dir, "s", "K"));
-    // Check user RW, no group/other (lower 9 bits = 0o600).
     expect(stat.mode & 0o777).toBe(0o600);
   });
 
@@ -762,7 +719,6 @@ describe("stageSecretsEntrypoint (planning#287)", () => {
     const staged = path.join(root, "_entrypoint", "secrets-entrypoint.sh");
     expect(hostPath).toBe(staged);
     expect(fs.readFileSync(staged, "utf-8")).toContain("exec \"$@\"");
-    // Service containers execute it, so it has to be executable by everyone.
     expect(fs.statSync(staged).mode & 0o777).toBe(0o755);
   });
 
@@ -776,13 +732,9 @@ describe("stageSecretsEntrypoint (planning#287)", () => {
       sourcePath: bakedWrapper(dir),
     });
     expect(hostPath).toBe("/var/lib/shipit/secrets/_entrypoint/secrets-entrypoint.sh");
-    // ...while the copy still lands where the orchestrator can write it.
     expect(fs.existsSync(path.join(root, "_entrypoint", "secrets-entrypoint.sh"))).toBe(true);
   });
 
-  // The staging dir is a SIBLING of the per-session secret dirs, never inside
-  // one: writeIsolatedSecretFiles() sweeps every entry of a session dir that
-  // isn't a declared secret, and teardown removes the dir wholesale.
   it("survives a session's secret sweep and teardown", () => {
     const dir = setup();
     const root = path.join(dir, "secrets");
@@ -805,7 +757,6 @@ describe("stageSecretsEntrypoint (planning#287)", () => {
     fs.writeFileSync(src, "#!/bin/sh\n# v2\nexec \"$@\"\n", { mode: 0o755 });
     const staged = stageSecretsEntrypoint({ rootDir: root, sessionId: "s2", sourcePath: src })!;
     expect(fs.readFileSync(staged, "utf-8")).toContain("# v2");
-    // No temp files left behind for either session.
     expect(fs.readdirSync(path.join(root, "_entrypoint"))).toEqual(["secrets-entrypoint.sh"]);
   });
 
@@ -826,7 +777,6 @@ describe("writeServiceEnvFilesToRoot (docs/183)", () => {
 
   function setup() {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "service-env-183-"));
-    // Workspace and external root are siblings — root is outside the workspace.
     const workspaceDir = path.join(tmpDir, "workspace");
     const rootDir = path.join(tmpDir, "service-env");
     fs.mkdirSync(workspaceDir, { recursive: true });
@@ -896,7 +846,6 @@ describe("writeServiceEnvFilesToRoot (docs/183)", () => {
         perServiceEnv: { web: "X=1\n" },
       }),
     ).toThrow(/inside the agent workspace/);
-    // Nothing was written.
     expect(fs.existsSync(insideRoot)).toBe(false);
   });
 
@@ -914,9 +863,6 @@ describe("writeServiceEnvFilesToRoot (docs/183)", () => {
 
   it("follows symlinks: a root symlinked to inside the workspace is rejected", () => {
     const { workspaceDir, rootDir } = setup();
-    // `rootDir` is lexically a sibling of the workspace, but it's a symlink
-    // whose target lives INSIDE the workspace — the lexical check alone would
-    // be fooled; realpath resolution must catch it.
     const insideTarget = path.join(workspaceDir, "leaky-service-env");
     fs.mkdirSync(insideTarget, { recursive: true });
     fs.symlinkSync(insideTarget, rootDir);
@@ -929,7 +875,6 @@ describe("writeServiceEnvFilesToRoot (docs/183)", () => {
         perServiceEnv: { web: "X=1\n" },
       }),
     ).toThrow(/inside the agent workspace/);
-    // Nothing leaked into the symlink target.
     expect(fs.existsSync(path.join(insideTarget, "sess1"))).toBe(false);
   });
 
@@ -942,9 +887,7 @@ describe("writeServiceEnvFilesToRoot (docs/183)", () => {
     removeSessionServiceEnvDir({ rootDir, sessionId: "sess1" });
     expect(fs.existsSync(sessionDir)).toBe(false);
 
-    // Second call (already gone) must not throw.
     expect(() => removeSessionServiceEnvDir({ rootDir, sessionId: "sess1" })).not.toThrow();
-    // Empty sessionId is ignored (defensive — never rm the whole root).
     expect(() => removeSessionServiceEnvDir({ rootDir, sessionId: "" })).not.toThrow();
     expect(fs.existsSync(rootDir)).toBe(true);
   });
@@ -953,17 +896,13 @@ describe("writeServiceEnvFilesToRoot (docs/183)", () => {
     const { rootDir } = setup();
     const sessionDir = path.join(rootDir, "sess1");
     fs.mkdirSync(sessionDir, { recursive: true });
-    // Docker-secrets mode writes per-secret files named by the secret (no .env. prefix).
     fs.writeFileSync(path.join(sessionDir, "DATABASE_URL"), "postgres://x");
 
     removeSessionSecretsDir({ internalDir: rootDir, sessionId: "sess1" });
     expect(fs.existsSync(sessionDir)).toBe(false);
 
-    // Already gone — must not throw.
     expect(() => removeSessionSecretsDir({ internalDir: rootDir, sessionId: "sess1" })).not.toThrow();
-    // Empty sessionId is ignored (defensive — never rm the whole root).
     expect(() => removeSessionSecretsDir({ internalDir: rootDir, sessionId: "" })).not.toThrow();
     expect(fs.existsSync(rootDir)).toBe(true);
   });
 });
-

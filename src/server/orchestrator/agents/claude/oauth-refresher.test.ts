@@ -1,15 +1,3 @@
-/**
- * Unit tests for ClaudeOAuthRefresher (docs/153).
- *
- * Strategy: stand the refresher up on a temp credentials root, inject a fake
- * spawn that we can drive deterministically. Each spawn invocation has a chance
- * to (a) write a fresh credentials file to disk, simulating CLI-driven OAuth
- * rotation, (b) write content to the debug-file arg, simulating the
- * `--debug api` log capture, and (c) emit stdout/stderr text. We assert on
- * RefreshResult outcomes, observable file mutations, repush callback invocations,
- * SSE broadcasts, and scheduling state via `_inspectForTest`.
- */
-
 import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -22,8 +10,6 @@ import type { ClaudeOAuthRefresherDeps, RefreshResult } from "./oauth-refresher.
 import type { ProviderAccountManager } from "../../provider-account-manager.js";
 import { writeSessionAccountMarker } from "../../session-credentials-scaffold.js";
 import type { CredentialRoute, AgentId } from "../../../shared/types.js";
-
-// ---- helpers ----
 
 function makeAccount(id: string, overrides: Partial<CredentialRoute> = {}): CredentialRoute {
   return {
@@ -72,25 +58,13 @@ function writeCredentials(accountRoot: string, payload: { expiresAt: number }): 
   );
 }
 
-/**
- * A credential-shaped string for the redaction tests. Assembled rather than
- * written out so the repository's own secret scanner does not have to be told
- * about a fake — the value only has to LOOK like what the `--debug api` capture
- * carries.
- */
+// Assemble the fake token to avoid triggering the secret scanner.
 const FAKE_OAUTH_TOKEN = ["sk", "ant", "oat01", "F".repeat(40)].join("-");
 
-/** The account root's own token file — what every session is served from. */
 function accountTokenFile(rootDir: string, accountId: string): string {
   return path.join(rootDir, "provider-accounts", "claude", accountId, ".claude", ".credentials.json");
 }
 
-/**
- * What the CLI leaves behind when it is asked to refresh with a grant the OAuth
- * server has already spent: the file stays, every token in it is erased. It
- * still parses as a credential, which is why the ordinary write-back guard
- * refuses to overwrite it.
- */
 function writeBlankedCredentials(accountRoot: string): void {
   const dir = path.join(accountRoot, ".claude");
   fs.mkdirSync(dir, { recursive: true });
@@ -109,11 +83,6 @@ function writeBlankedCredentials(accountRoot: string): void {
   );
 }
 
-/**
- * A session's credential subtree: its own copy of the token, plus the docs/260
- * marker recording WHOSE copy it is. `accountId: null` writes no marker, which
- * is a pre-260 subtree — an identity the harvest is not allowed to guess at.
- */
 function writeSessionToken(
   rootDir: string,
   sessionId: string,
@@ -135,7 +104,6 @@ function writeSessionToken(
   if (opts.accountId !== null) writeSessionAccountMarker(rootDir, sessionId, "claude", opts.accountId);
 }
 
-/** Collect `console.log` lines for the tests that assert on log SHAPE. */
 function captureLogs(): { lines: string[]; restore: () => void } {
   const lines: string[] = [];
   const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
@@ -145,23 +113,16 @@ function captureLogs(): { lines: string[]; restore: () => void } {
 }
 
 interface SpawnEffect {
-  /** If set, write a new credentials file with this expiresAt before exit. */
   rotateTo?: number;
-  /** Content to write to the `--debug-file` arg, if any. */
   debugLog?: string;
-  /** Content to push to stderr. */
   stderr?: string;
-  /** Content to push to stdout. */
   stdout?: string;
-  /** Exit code. Defaults to 0. */
   exitCode?: number;
-  /** Delay (ms) before exit. Defaults to 0 (sync). */
   delayMs?: number;
 }
 
 interface FakeSpawnHandle {
   invocations: { args: string[]; accountRoot: string }[];
-  /** Queue of per-invocation effects. Index N applies to invocation N. */
   effects: SpawnEffect[];
   spawn: (cmd: string, args?: readonly string[], opts?: { env?: Record<string, string> }) => ChildProcess;
 }
@@ -209,8 +170,7 @@ function makeFakeSpawn(getAccountRoot: (env: Record<string, string>) => string):
     if (effect.delayMs && effect.delayMs > 0) {
       setTimeout(fire, effect.delayMs);
     } else {
-      // Fire on next macrotask so the caller sees the unresolved promise
-      // first (important for single-flight tests).
+      // Let concurrent callers see the pending promise.
       setTimeout(fire, 0);
     }
     return child;
@@ -284,8 +244,6 @@ function cleanupRig(rig: TestRig): void {
   fs.rmSync(rig.rootDir, { recursive: true, force: true });
 }
 
-// ---- tests ----
-
 describe("ClaudeOAuthRefresher", () => {
   let rigs: TestRig[] = [];
   afterEach(() => {
@@ -295,21 +253,20 @@ describe("ClaudeOAuthRefresher", () => {
 
   it("noop when token is healthy and tier1 doesn't rotate", async () => {
     const now = 1_700_000_000_000;
-    const future = now + 8 * 60 * 60 * 1000; // 8h out
+    const future = now + 8 * 60 * 60 * 1000;
     const rig = buildRig({
       accounts: [makeAccount("claude-default")],
       initialExpiries: { "claude-default": future },
       initialNow: now,
     });
     rigs.push(rig);
-    rig.spawnHandle.effects = [{ /* no rotation, no debug log */ }];
+    rig.spawnHandle.effects = [{}];
 
     const [result] = await rig.refresher.refreshNow("claude-default");
     expect(result!.outcome).toBe("noop");
-    expect(rig.spawnHandle.invocations.length).toBe(1); // tier1 only
+    expect(rig.spawnHandle.invocations.length).toBe(1);
     expect(rig.spawnHandle.invocations[0]!.args).toContain("status");
     expect(rig.repushCalls.length).toBe(0);
-    // Failure counter not incremented on noop.
     expect(rig.refresher._inspectForTest("claude-default").failureCount).toBe(0);
   });
 
@@ -328,13 +285,13 @@ describe("ClaudeOAuthRefresher", () => {
     const [result] = await rig.refresher.refreshNow("claude-default");
     expect(result!.outcome).toBe("rotated_tier1");
     expect(result!.afterExpiresAt).toBe(rotatedTo);
-    expect(rig.spawnHandle.invocations.length).toBe(1); // tier2 not invoked
+    expect(rig.spawnHandle.invocations.length).toBe(1);
     expect(rig.repushCalls).toEqual([{ agentId: "claude", accountId: "claude-default" }]);
   });
 
   it("falls through to tier2 when tier1 doesn't rotate and token is near expiry", async () => {
     const now = 1_700_000_000_000;
-    const nearExpiry = now + 10 * 60 * 1000; // 10m out, less than 30m margin
+    const nearExpiry = now + 10 * 60 * 1000;
     const rotatedTo = now + 8 * 60 * 60 * 1000;
     const rig = buildRig({
       accounts: [makeAccount("claude-default")],
@@ -343,14 +300,13 @@ describe("ClaudeOAuthRefresher", () => {
     });
     rigs.push(rig);
     rig.spawnHandle.effects = [
-      { /* tier1 noop */ },
-      { rotateTo: rotatedTo }, // tier2 rotates
+      {},
+      { rotateTo: rotatedTo },
     ];
 
     const [result] = await rig.refresher.refreshNow("claude-default");
     expect(result!.outcome).toBe("rotated_tier2");
     expect(rig.spawnHandle.invocations.length).toBe(2);
-    // Tier2 args must include `--print`, `--model`, `--no-session-persistence`.
     const tier2Args = rig.spawnHandle.invocations[1]!.args;
     expect(tier2Args).toContain("--print");
     expect(tier2Args).toContain("--model");
@@ -368,8 +324,8 @@ describe("ClaudeOAuthRefresher", () => {
     });
     rigs.push(rig);
     rig.spawnHandle.effects = [
-      { stderr: "HTTP 429 rate_limit_error" }, // tier1
-      { stderr: "HTTP 429 rate_limit_error" }, // tier2
+      { stderr: "HTTP 429 rate_limit_error" },
+      { stderr: "HTTP 429 rate_limit_error" },
     ];
 
     const [result] = await rig.refresher.refreshNow("claude-default");
@@ -377,9 +333,6 @@ describe("ClaudeOAuthRefresher", () => {
     expect(rig.repushCalls.length).toBe(0);
     expect(rig.refresher._inspectForTest("claude-default").failureCount).toBe(1);
     expect(rig.refresher._inspectForTest("claude-default").hasTimer).toBe(true);
-    // No agent_auth_failed SSE on rate-limit, only on revoked. (docs/155 Phase 2b
-    // unified the refresher's legacy `auth_required` emit into the
-    // `agent_auth_failed` family.)
     expect(rig.sseCalls.find((c) => c.event === "agent_auth_failed")).toBeUndefined();
     expect(rig.sseCalls.find((c) => c.event === "claude_account_unauthenticated")).toBeUndefined();
   });
@@ -403,30 +356,18 @@ describe("ClaudeOAuthRefresher", () => {
 
     const sseEvents = rig.sseCalls.map((c) => c.event);
     expect(sseEvents).toContain("claude_account_unauthenticated");
-    // docs/155 Phase 2b — refresher signals "this account is dead, show
-    // sign-in" via the unified `agent_auth_failed` event with
-    // `reason: "revoked"`. Replaces the legacy `auth_required` broadcast.
     expect(sseEvents).toContain("agent_auth_failed");
     const failed = rig.sseCalls.find((c) => c.event === "agent_auth_failed");
-    // docs/150-multiple-provider-subscriptions req 19 — names the revoked account; the client has no
-    // provider-wide slot left to absorb an unqualified failure.
     expect(failed!.data).toEqual({ loginId: "anthropic-oauth", accountId: "claude-default", reason: "revoked" });
 
     const perAccount = rig.sseCalls.find((c) => c.event === "claude_account_unauthenticated");
     expect(perAccount!.data).toEqual({ accountId: "claude-default" });
 
     expect(rig.refresher._inspectForTest("claude-default").emittedUnauthenticated).toBe(true);
-    // After revoked we do NOT reschedule a tick on the failure path (auth_complete will rearm).
     expect(rig.refresher._inspectForTest("claude-default").hasTimer).toBe(false);
   });
 
   it("classifies runtime 401 invalid-credentials output as unknown_failure (NOT revoked) and keeps retrying", async () => {
-    // Regression: a 401 on the tier-2 API attempt is the ROUTINE pre-refresh
-    // state of an expired access token (`--debug api` captures it verbatim
-    // before refresh-on-use fires). When the refresh then fails transiently
-    // (network blip, timeout), classifying the 401 phrase as `revoked` signed
-    // the user out daily and stopped the schedule. Only invalid_grant proves
-    // the refresh token is dead.
     const now = 1_700_000_000_000;
     const nearExpiry = now + 5 * 60 * 1000;
     const rig = buildRig({
@@ -448,7 +389,6 @@ describe("ClaudeOAuthRefresher", () => {
     const [result] = await rig.refresher.refreshNow("claude-default");
     expect(result!.outcome).toBe("unknown_failure");
 
-    // No sign-out: no SSEs, backoff timer armed so the next tick retries.
     const sseEvents = rig.sseCalls.map((c) => c.event);
     expect(sseEvents).not.toContain("claude_account_unauthenticated");
     expect(sseEvents).not.toContain("agent_auth_failed");
@@ -457,10 +397,6 @@ describe("ClaudeOAuthRefresher", () => {
   });
 
   it("classifies expired-token 401 + refresh 429 as rate_limited (NOT revoked)", async () => {
-    // The daily-logout shape: token already past expiry, tier-2's first API
-    // attempt 401s ("authentication_error" in the debug capture), then the
-    // OAuth refresh itself gets rate-limited. The 401 text is incidental —
-    // the correct classification is rate_limited with backoff.
     const now = 1_700_000_000_000;
     const expired = now - 5 * 60 * 1000;
     const rig = buildRig({
@@ -499,8 +435,8 @@ describe("ClaudeOAuthRefresher", () => {
     });
     rigs.push(rig);
     rig.spawnHandle.effects = [
-      { stderr: "invalid_grant" }, { stderr: "invalid_grant" }, // first refreshNow
-      { stderr: "invalid_grant" }, { stderr: "invalid_grant" }, // second refreshNow
+      { stderr: "invalid_grant" }, { stderr: "invalid_grant" },
+      { stderr: "invalid_grant" }, { stderr: "invalid_grant" },
     ];
 
     await rig.refresher.refreshNow("claude-default");
@@ -521,8 +457,8 @@ describe("ClaudeOAuthRefresher", () => {
     });
     rigs.push(rig);
     rig.spawnHandle.effects = [
-      { stderr: "invalid_grant" }, { stderr: "invalid_grant" }, // revoked
-      { rotateTo: rotatedTo }, // recovered (e.g., user re-authed; refresh-now nudged)
+      { stderr: "invalid_grant" }, { stderr: "invalid_grant" },
+      { rotateTo: rotatedTo },
     ];
 
     await rig.refresher.refreshNow("claude-default");
@@ -545,8 +481,8 @@ describe("ClaudeOAuthRefresher", () => {
     });
     rigs.push(rig);
     rig.spawnHandle.effects = [
-      { stderr: "invalid_grant" }, { stderr: "invalid_grant" }, // revoked
-      { rotateTo: rotatedTo }, // recovered
+      { stderr: "invalid_grant" }, { stderr: "invalid_grant" },
+      { rotateTo: rotatedTo },
     ];
 
     const reauthEvents: string[] = [];
@@ -555,11 +491,9 @@ describe("ClaudeOAuthRefresher", () => {
     });
 
     await rig.refresher.refreshNow("claude-default");
-    // Revoked tick must NOT signal recovery.
     expect(reauthEvents).toEqual([]);
 
     await rig.refresher.refreshNow("claude-default");
-    // The recovery tick fires exactly one reauth signal for the account.
     expect(reauthEvents).toEqual(["claude-default"]);
   });
 
@@ -595,7 +529,6 @@ describe("ClaudeOAuthRefresher", () => {
       initialNow: now,
     });
     rigs.push(rig);
-    // First (and only) invocation delays so the second caller sees an in-flight.
     rig.spawnHandle.effects = [{ rotateTo: rotatedTo, delayMs: 25 }];
 
     const [a, b] = await Promise.all([
@@ -617,11 +550,9 @@ describe("ClaudeOAuthRefresher", () => {
       initialNow: now,
     });
     rigs.push(rig);
-    // acct-a tier1 + tier2 both fail with invalid_grant → revoked
-    // acct-b tier1 is read-only and the token is healthy → noop
     rig.spawnHandle.effects = [
-      { stderr: "invalid_grant" }, { stderr: "invalid_grant" }, // acct-a
-      { /* tier1 noop on healthy */ },                          // acct-b
+      { stderr: "invalid_grant" }, { stderr: "invalid_grant" },
+      {},
     ];
 
     const results = await rig.refresher.refreshNow();
@@ -653,7 +584,6 @@ describe("ClaudeOAuthRefresher", () => {
       expect(rig.refresher._inspectForTest("acct-a").hasTimer).toBe(false);
       expect(rig.refresher._inspectForTest("acct-b").hasTimer).toBe(false);
 
-      // After stop(), advancing time must not trigger any spawn.
       vi.advanceTimersByTime(10 * 60 * 60 * 1000);
       expect(rig.spawnHandle.invocations.length).toBe(0);
     } finally {
@@ -689,7 +619,6 @@ describe("ClaudeOAuthRefresher", () => {
     const rig = buildRig({
       accounts: [makeAccount("claude-default")],
       initialNow: now,
-      // No initialExpiries → no file written.
     });
     rigs.push(rig);
 
@@ -720,12 +649,10 @@ describe("ClaudeOAuthRefresher", () => {
     expect(rig.refresher._inspectForTest("claude-default").emittedUnauthenticated).toBe(false);
   });
 
-  // ---- ensureFresh (docs/179) — proactive pre-read heal ----
-
   describe("ensureFresh", () => {
     it("is a no-op (no CLI spawn) and returns true when the token is healthy", async () => {
       const now = 1_700_000_000_000;
-      const future = now + 8 * 60 * 60 * 1000; // 8h out, well beyond the margin
+      const future = now + 8 * 60 * 60 * 1000;
       const rig = buildRig({
         accounts: [makeAccount("claude-default")],
         initialExpiries: { "claude-default": future },
@@ -735,12 +662,12 @@ describe("ClaudeOAuthRefresher", () => {
 
       const ok = await rig.refresher.ensureFresh("claude-default");
       expect(ok).toBe(true);
-      expect(rig.spawnHandle.invocations.length).toBe(0); // never touched the CLI
+      expect(rig.spawnHandle.invocations.length).toBe(0);
     });
 
     it("heals a within-margin token via a single-flight refresh and returns true", async () => {
       const now = 1_700_000_000_000;
-      const nearExpiry = now + 10 * 60 * 1000; // 10m out, inside the 45m margin
+      const nearExpiry = now + 10 * 60 * 1000;
       const rotatedTo = now + 8 * 60 * 60 * 1000;
       const rig = buildRig({
         accounts: [makeAccount("claude-default")],
@@ -748,7 +675,7 @@ describe("ClaudeOAuthRefresher", () => {
         initialNow: now,
       });
       rigs.push(rig);
-      rig.spawnHandle.effects = [{ rotateTo: rotatedTo }]; // tier1 rotates
+      rig.spawnHandle.effects = [{ rotateTo: rotatedTo }];
 
       const ok = await rig.refresher.ensureFresh("claude-default");
       expect(ok).toBe(true);
@@ -758,7 +685,7 @@ describe("ClaudeOAuthRefresher", () => {
 
     it("returns false when an expired token can't be refreshed (revoked)", async () => {
       const now = 1_700_000_000_000;
-      const expired = now - 60 * 1000; // already expired
+      const expired = now - 60 * 1000;
       const rig = buildRig({
         accounts: [makeAccount("claude-default")],
         initialExpiries: { "claude-default": expired },
@@ -766,12 +693,12 @@ describe("ClaudeOAuthRefresher", () => {
       });
       rigs.push(rig);
       rig.spawnHandle.effects = [
-        { stderr: "invalid_grant" }, // tier1
-        { stderr: "invalid_grant" }, // tier2
+        { stderr: "invalid_grant" },
+        { stderr: "invalid_grant" },
       ];
 
       const ok = await rig.refresher.ensureFresh("claude-default");
-      expect(ok).toBe(false); // token still expired after a failed heal
+      expect(ok).toBe(false);
     });
 
     it("returns false when there is no source token", async () => {
@@ -779,7 +706,6 @@ describe("ClaudeOAuthRefresher", () => {
       const rig = buildRig({
         accounts: [makeAccount("claude-default")],
         initialNow: now,
-        // no initialExpiries → no file
       });
       rigs.push(rig);
 
@@ -788,29 +714,22 @@ describe("ClaudeOAuthRefresher", () => {
       expect(rig.spawnHandle.invocations.length).toBe(0);
     });
 
-    // ---- forced heal (docs/179 — the runtime-401 recovery path) ----
-    //
-    // The production failure this covers: six `auth healed` events in six hours
-    // with ZERO refresher log lines beside them. `expiresAt` still had margin,
-    // so the unforced short-circuit answered `true` having spawned nothing, the
-    // executor re-dispatched on byte-identical credentials, and it 401'd again.
-
     it("forced: probes a healthy token with tier 2 instead of short-circuiting", async () => {
       const now = 1_700_000_000_000;
-      const future = now + 8 * 60 * 60 * 1000; // 8h out — the unforced path returns true with no spawn
+      const future = now + 8 * 60 * 60 * 1000;
       const rig = buildRig({
         accounts: [makeAccount("claude-default")],
         initialExpiries: { "claude-default": future },
         initialNow: now,
       });
       rigs.push(rig);
-      rig.spawnHandle.effects = [{ /* tier1: read-only, no rotation */ }, { /* tier2: no rotation */ }];
+      rig.spawnHandle.effects = [{}, {}];
 
       const ok = await rig.refresher.ensureFresh("claude-default", { force: true });
-      expect(ok).toBe(true); // live token — the recovery's repush is what repairs the session
+      expect(ok).toBe(true);
       expect(rig.spawnHandle.invocations.length).toBe(2);
       expect(rig.spawnHandle.invocations[0]!.args).toContain("status");
-      expect(rig.spawnHandle.invocations[1]!.args).toContain("--print"); // tier 2 ran
+      expect(rig.spawnHandle.invocations[1]!.args).toContain("--print");
     });
 
     it("forced: a probe that rotates repushes the new token to pinned sessions", async () => {
@@ -831,8 +750,6 @@ describe("ClaudeOAuthRefresher", () => {
 
     it("forced: reports NOT healed when the probe finds a revoked grant", async () => {
       const now = 1_700_000_000_000;
-      // Future expiry — the timestamp says healthy, the grant is dead. This is
-      // the exact state expiry cannot detect and a live 401 proves.
       const future = now + 8 * 60 * 60 * 1000;
       const rig = buildRig({
         accounts: [makeAccount("claude-default")],
@@ -843,7 +760,7 @@ describe("ClaudeOAuthRefresher", () => {
       rig.spawnHandle.effects = [{ stderr: "invalid_grant" }, { stderr: "invalid_grant" }];
 
       const ok = await rig.refresher.ensureFresh("claude-default", { force: true });
-      expect(ok).toBe(false); // caller surfaces the sign-in card instead of burning the retry
+      expect(ok).toBe(false);
     });
 
     it("forced: a live-token probe does not push the account into refresh backoff", async () => {
@@ -855,12 +772,9 @@ describe("ClaudeOAuthRefresher", () => {
         initialNow: now,
       });
       rigs.push(rig);
-      rig.spawnHandle.effects = [{ /* tier1 */ }, { /* tier2, no rotation */ }];
+      rig.spawnHandle.effects = [{}, {}];
 
       await rig.refresher.ensureFresh("claude-default", { force: true });
-      // The tick ran tier 2 as a probe, not as a due refresh: a token that was
-      // never near expiry must not count as a failed rotation, or every 401 in
-      // any session would derail this account's expiry-derived schedule.
       expect(rig.refresher._inspectForTest("claude-default").failureCount).toBe(0);
     });
 
@@ -885,7 +799,6 @@ describe("ClaudeOAuthRefresher", () => {
       const pam = makeProviderAccountManager({ rootDir, accounts });
       const accountRoot = pam.resolveCredentialRoot("claude", "claude-default");
       fs.mkdirSync(accountRoot, { recursive: true });
-      // Even with an EXPIRED token, local mode must not spawn the CLI.
       writeCredentials(accountRoot, { expiresAt: 1 });
       const spawnHandle = makeFakeSpawn((env) => env.HOME ?? "");
       const refresher = new ClaudeOAuthRefresher({
@@ -904,21 +817,11 @@ describe("ClaudeOAuthRefresher", () => {
     });
   });
 
-  // ---- harvest before spend ----
-  //
-  // A session's resident CLI refreshes on its own clock, between turns. Because
-  // Anthropic's refresh tokens are single-use, the copy on the account root is
-  // dead the moment it does — so a tick that spends it cannot succeed, and the
-  // spend is what makes the CLI blank the source and take the account down.
-  // Every tick therefore reconciles with the sessions first.
-
   describe("harvest before spend", () => {
     it("adopts a pinned session's newer token and never spawns the CLI", async () => {
       const now = 1_700_000_000_000;
       const rig = buildRig({
         accounts: [makeAccount("acct-1")],
-        // Inside the 45m margin, so without a harvest this tick reaches the
-        // billable tier-2 spend of a refresh token the session already used.
         initialExpiries: { "acct-1": now + 10 * 60 * 1000 },
         initialNow: now,
       });
@@ -931,9 +834,7 @@ describe("ClaudeOAuthRefresher", () => {
       expect(result!.outcome).toBe("harvested_session");
       expect(result!.afterExpiresAt).toBe(rotatedTo);
       expect(rig.spawnHandle.invocations.length).toBe(0);
-      // The session's actual token bytes reached the source, not just an expiry.
       expect(fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8")).toContain(`sess_tok_${rotatedTo}`);
-      // And every OTHER pinned session gets it (docs/142 A3).
       expect(rig.repushCalls).toEqual([{ agentId: "claude", accountId: "acct-1" }]);
     });
 
@@ -973,7 +874,6 @@ describe("ClaudeOAuthRefresher", () => {
 
       expect(result!.outcome).toBe("rotated_tier1");
       expect(rig.spawnHandle.invocations.length).toBe(1);
-      // A stale copy must never be published over the source.
       expect(fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8")).not.toContain("sess_tok_");
     });
 
@@ -985,8 +885,6 @@ describe("ClaudeOAuthRefresher", () => {
         initialNow: now,
       });
       rigs.push(rig);
-      // The subtree holds acct-2's bearer — publishing it to acct-1 would leave
-      // both accounts authenticating as one subscription.
       writeSessionToken(rig.rootDir, "sess-a", { expiresAt: now + 8 * 60 * 60 * 1000, accountId: "acct-2" });
       rig.spawnHandle.effects = [{ rotateTo: now + 6 * 60 * 60 * 1000 }];
 
@@ -1013,24 +911,18 @@ describe("ClaudeOAuthRefresher", () => {
       expect(fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8")).not.toContain("sess_tok_");
     });
 
-    // A `<sessionDir>/.claude` symlink into an account root (pre-docs/150 req 19
-    // provisioning) makes the session path a second name for THAT account's
-    // credential. Reading through one would compare account B's own source
-    // against A's and copy it in — no race required, so the harvest checks that
-    // a candidate's token file physically lives in its own subtree.
     it("skips a session whose subtree escapes into another account's root", async () => {
       const now = 1_700_000_000_000;
       const rig = buildRig({
         accounts: [makeAccount("acct-1"), makeAccount("acct-2")],
         initialExpiries: {
           "acct-1": now + 10 * 60 * 1000,
-          "acct-2": now + 8 * 60 * 60 * 1000, // acct-2's own token is much newer
+          "acct-2": now + 8 * 60 * 60 * 1000,
         },
         initialNow: now,
       });
       rigs.push(rig);
 
-      // The subtree is marked to acct-1, but its `.claude` is acct-2's root.
       const sessionDir = path.join(rig.rootDir, "sessions", "sess-a");
       fs.mkdirSync(sessionDir, { recursive: true });
       writeSessionAccountMarker(rig.rootDir, "sess-a", "claude", "acct-1");
@@ -1043,7 +935,6 @@ describe("ClaudeOAuthRefresher", () => {
       const [result] = await rig.refresher.refreshNow("acct-1");
 
       expect(result!.outcome).toBe("rotated_tier1");
-      // acct-2's bearer never reached acct-1's root.
       const acct1 = fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8");
       const acct2 = fs.readFileSync(accountTokenFile(rig.rootDir, "acct-2"), "utf8");
       const acct2Token = (JSON.parse(acct2) as { claudeAiOauth: { accessToken: string } })
@@ -1051,22 +942,12 @@ describe("ClaudeOAuthRefresher", () => {
       expect(acct1).not.toContain(acct2Token);
     });
 
-    // Diagnosis only, deliberately: a file this reader believes is empty may be
-    // a partial write or a shape it has not been taught, and the account is
-    // unusable either way. Nothing deletes or repairs it.
-    //
-    // planning#495 did NOT change this. The blank probe it added applies to a
-    // session's REPLICA, never to an account root — a blanked source stays
-    // `unorderable`, so the harvest still cannot publish over one, and the
-    // sign-in race that ruled out repairing it here is left untouched.
     it("leaves a blanked source on disk and still reports missing_credentials", async () => {
       const now = 1_700_000_000_000;
       const rig = buildRig({ accounts: [makeAccount("acct-1")], initialNow: now });
       rigs.push(rig);
       const accountRoot = path.join(rig.rootDir, "provider-accounts", "claude", "acct-1");
       writeBlankedCredentials(accountRoot);
-      // Even with a live session copy sitting right there, the harvest cannot
-      // publish over a credential-shaped source (the planning#449 guard).
       writeSessionToken(rig.rootDir, "sess-a", { expiresAt: now + 8 * 60 * 60 * 1000, accountId: "acct-1" });
 
       const [result] = await rig.refresher.refreshNow("acct-1");
@@ -1076,8 +957,6 @@ describe("ClaudeOAuthRefresher", () => {
       expect(fs.existsSync(path.join(accountRoot, ".claude", ".credentials.json"))).toBe(true);
     });
   });
-
-  // ---- failure diagnosability ----
 
   describe("failure logging", () => {
     it("names a blanked source distinctly from a missing one", async () => {
@@ -1120,12 +999,9 @@ describe("ClaudeOAuthRefresher", () => {
 
       expect(result!.outcome).toBe("unknown_failure");
       expect(result!.reason).toContain("token refresh did not complete");
-      // The `--debug api` capture carries live credentials; nothing token-shaped
-      // may reach a log line or a RefreshResult.
       expect(result!.reason).not.toContain(FAKE_OAUTH_TOKEN);
       const failureLine = logs.lines.find((line) => line.includes("unknown_failure failure_count=1"));
       expect(failureLine).toBeDefined();
-      // The sentence runbooks grep for is unchanged; the field is appended.
       expect(failureLine).toContain("— short backoff reason=\"");
       expect(failureLine).not.toContain(FAKE_OAUTH_TOKEN);
     });
@@ -1146,7 +1022,7 @@ describe("summarizeRefreshFailure", () => {
   });
 
   it("redacts credentials in every shape the CLI emits them", () => {
-    const opaque = "A".repeat(48); // a bare token with no key or prefix to spot it by
+    const opaque = "A".repeat(48);
     const summary = summarizeRefreshFailure(
       `Error: {"accessToken":"abc123","refreshToken":"${FAKE_OAUTH_TOKEN}"} `
         + `authorization: Bearer ${opaque}`,
@@ -1158,21 +1034,15 @@ describe("summarizeRefreshFailure", () => {
   });
 
   it("drops credential-bearing headers whole, whatever the value looks like", () => {
-    // `Basic dXNlcjpwdw==` is short, base64-padded and carries no recognizable
-    // prefix: no token pattern catches it, so the header must go by NAME.
     const summary = summarizeRefreshFailure(
       "x-api-key: abc123\nAuthorization: Basic dXNlcjpwdw==",
     );
     expect(summary).not.toContain("abc123");
     expect(summary).not.toContain("dXNlcjpwdw==");
-    // The header name stays — which credential was sent is the diagnostic
-    // value; only the value itself has to go.
     expect(summary).toContain("x-api-key: [redacted]");
   });
 
   it("keeps the failure line and drops noise around it", () => {
-    // A real capture is mostly headers. The signal filter is what keeps the
-    // excerpt about the failure rather than about the request.
     const summary = summarizeRefreshFailure(
       "POST /v1/oauth/token\nAuthorization: Bearer abcdef\nError: 401 invalid_grant",
     );

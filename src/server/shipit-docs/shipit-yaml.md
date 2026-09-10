@@ -17,9 +17,9 @@ agent:
   install:
     - npm ci
     - npx prisma generate
-  install-inputs:            # required once a step is not a plain dep install —
-    - package.json           # otherwise the content-keyed install skip turns off
-    - package-lock.json      # and ShipIt can no longer re-check deps after a sync
+  install-inputs:
+    - package.json
+    - package-lock.json
     - prisma/schema.prisma
 
 compose: docker-compose.yml
@@ -52,12 +52,12 @@ Configures the agent container (runs the AI coding agent — Claude Code or Code
 
 ```yaml
 agent:
-  install:            # Install commands, run sequentially
+  install:
     - npm ci
     - npx prisma generate
-  dep-dirs:           # Dependency dirs for the overlay store (default: [node_modules])
+  dep-dirs:
     - node_modules
-  install-inputs:     # Dependency input files for the content-keyed install skip
+  install-inputs:
     - package.json
     - package-lock.json
     - prisma/schema.prisma
@@ -207,7 +207,7 @@ agent:
   install:
     - npm ci
     - npx prisma generate
-  install-inputs:        # replaces the inferred set; opts content-keying back on
+  install-inputs:
     - package.json
     - package-lock.json
     - prisma/schema.prisma
@@ -251,18 +251,18 @@ output is present, plausible, and wrong.
 For (b), take the build out of `agent.install` entirely:
 
 ```yaml
-# shipit.yaml — install is now a pure dependency install, so content-keying works
+# shipit.yaml
 agent:
   install: npm ci
-  dep-dirs: [node_modules]   # NOT dist/ — the service builds it, not the install
+  dep-dirs: [node_modules]
 ```
 
 ```yaml
-# docker-compose.yml — the build moves into the service that needs it
+# docker-compose.yml
 services:
   web:
     command: sh -c "npm run build && npm start"
-    x-shipit-depends-on-install: true   # wait for node_modules, then build
+    x-shipit-depends-on-install: true
 ```
 
 The build then re-runs whenever the service starts, against whatever the tree
@@ -291,7 +291,7 @@ directory your install writes and git ignores is restored only if it is here.
 agent:
   dep-dirs:
     - node_modules
-    - packages/web/node_modules   # extra dirs in a monorepo
+    - packages/web/node_modules
 ```
 
 - **Literal relative paths only** — no globs. Each entry must be a relative path
@@ -337,10 +337,10 @@ Path to a Docker Compose file, relative to workspace root. Accepts a string
 (just the path) or an object (path + flags):
 
 ```yaml
-# String form (most projects)
+# String form
 compose: docker-compose.yml
 
-# Object form (when flags are needed)
+# Object form
 compose:
   file: docker-compose.yml
   docker-socket: true
@@ -372,12 +372,12 @@ declaration order.
 ```yaml
 issues:
   trackers:
-    - kind: github           # which backend backs this tracker
-      repo: owner/planning   # GitHub Issues: `owner/name`
-      name: planning         # how references and operations address it
-      label: Planning        # optional label for the Issues tab
+    - kind: github
+      repo: owner/planning
+      name: planning
+      label: Planning
     - kind: linear
-      team: SHI              # Linear binds a tracker to one team
+      team: SHI
       name: roadmap
 ```
 

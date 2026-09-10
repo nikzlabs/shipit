@@ -19,8 +19,6 @@ afterEach(() => {
   dbManager.close();
 });
 
-// docs/254 — the color is user-supplied, so the service is the boundary that
-// keeps an unrenderable index out of the database.
 describe("setRepoColorIndex", () => {
   it("stores a valid index", () => {
     setRepoColorIndex(repoStore, url, 9);
@@ -67,18 +65,12 @@ describe("setRepoColorIndex", () => {
     }
   });
 
-  // The route validates the WHOLE body up front via this assert, so a PATCH
-  // carrying a good `hidden` and a bad `colorIndex` writes neither.
   it("exposes a standalone assert the route can run before any write", () => {
     expect(() => assertValidRepoColorIndex(0)).not.toThrow();
     expect(() => assertValidRepoColorIndex(REPO_COLOR_COUNT)).toThrow(ServiceError);
     expect(() => assertValidRepoColorIndex("2")).toThrow(ServiceError);
   });
 
-  // docs/262 req 19 — the credential a user types into the Add-repo field is
-  // dropped, not stored. Everything downstream (the bare cache's origin, every
-  // session clone's `/project/.git/config`) is written from this stored value,
-  // so this is where the credential would otherwise enter the system.
   it("drops a credential typed into the repository URL", () => {
     const repo = addRepo(repoStore, "https://x-access-token:pw@github.com/owner/other.git");
     expect(repo.url).toBe("https://github.com/owner/other.git");
@@ -87,9 +79,6 @@ describe("setRepoColorIndex", () => {
     );
   });
 
-  // The credentialed spelling and the clean one are ONE repository: the follow-up
-  // calls (`setReady`, `setWarmSessionId`) address the row by the URL the caller
-  // has, and a strip that only ran in `add` would leave them addressing nothing.
   it("keeps a credentialed re-add on the same row it already created", () => {
     const first = addRepo(repoStore, "https://github.com/owner/same.git");
     const second = addRepo(repoStore, "https://x-access-token:pw@github.com/owner/same.git");
@@ -102,7 +91,6 @@ describe("setRepoColorIndex", () => {
   it("leaves hidden untouched when a combined update is rejected up front", () => {
     setRepoHidden(repoStore, url, false);
     setRepoColorIndex(repoStore, url, 5);
-    // What the route does: validate everything, then write.
     expect(() => assertValidRepoColorIndex(99)).toThrow(ServiceError);
     expect(repoStore.get(url)?.hidden).toBe(false);
     expect(repoStore.get(url)?.colorIndex).toBe(5);

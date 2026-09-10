@@ -1,24 +1,6 @@
-/**
- * Integration tests for the upward session-report channel
- * (docs/233, planning#243).
- *
- * Exercises the orchestrator end of the chain end-to-end through `buildApp`:
- *
- *   GET  /api/sessions/:sessionId/cohort   (a child resolving ITSELF)
- *   POST /api/sessions/:sessionId/report   (a child pushing a report upward)
- *   → a persisted report card lands in each recipient's history
- *   → a self-describing system turn is dispatched into each recipient's runner
- *
- * The recipient-resolution rules, validation, and the rate limit are unit-tested
- * in `services/session-report.test.ts`. Here we prove the HTTP routes plus the
- * real runner-registry / chat-history delivery in a fully-wired app — including
- * that a report from a real spawned child reaches its real parent.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
-// docs/252 phase 7 — `generateSessionName` returns `{ name, usage?, failure? }`.
-// `{ name: null }` is "naming produced no title", which is what these tests want.
+// Keep naming local and preserve the supplied titles.
 vi.mock("../session-namer.js", () => ({
   generateSessionName: vi.fn().mockResolvedValue({ name: null }),
 }));
@@ -78,9 +60,6 @@ describe("Integration: session report (docs/233)", () => {
     seedRepoCacheWithLocalBare({ tmpDir, repoUrl: REPO_URL, seedFiles: { "README.md": "# x\n" } });
     repoStore.add(REPO_URL);
     repoStore.setReady(REPO_URL);
-    // docs/243 — a report is delivered as a wake-turn, and every agent turn
-    // now passes runner-owned trust admission. This suite exercises report
-    // delivery after repository consent, not the trust gate itself.
     repoStore.setTrusted(REPO_URL, true);
 
     app = await buildApp({
@@ -158,7 +137,6 @@ describe("Integration: session report (docs/233)", () => {
     expect(body.siblings.map((s) => s.id)).toEqual([childA]);
     expect(body.children).toEqual([]);
 
-    // …and the parent sees its whole brood.
     const parentRes = await app.inject({ method: "GET", url: `/api/sessions/${parentId}/cohort` });
     const parentBody = parentRes.json() as { parent?: unknown; children: { id: string }[] };
     expect(parentBody.parent).toBeUndefined();
@@ -181,7 +159,6 @@ describe("Integration: session report (docs/233)", () => {
       recipients: [{ sessionId: parentId, relation: "child", woken: true }],
     });
 
-    // The card is persisted in the PARENT's transcript (survives switch/reload).
     const cards = await reportCards(parentId);
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({
@@ -191,7 +168,6 @@ describe("Integration: session report (docs/233)", () => {
       relation: "child",
     });
 
-    // And the parent's real runner is woken with a self-describing system turn.
     await waitFor(
       () => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("report from child")),
       10_000,

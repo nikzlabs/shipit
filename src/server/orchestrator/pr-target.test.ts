@@ -1,16 +1,3 @@
-/**
- * Unit tests for repo-aware PR brokering target resolution (docs/211).
- *
- * The critical invariants:
- *  - A repo-bound session with no override is UNCHANGED (session root + session
- *    remote) — a `--local` clone's bare-cache origin must never be read.
- *  - A sandbox (no remoteUrl) resolves the cwd's clone and reads its own origin.
- *  - `--repo` targets an explicit GitHub repo while still operating on the cwd
- *    clone.
- *  - cwd → host clone mapping clamps any path-traversal back to the session root.
- *  - The git-credential gate denies only a sandbox with `git` off.
- */
-
 import { describe, it, expect } from "vitest";
 import path from "node:path";
 import {
@@ -83,12 +70,6 @@ describe("repoFlagToUrl", () => {
   });
 });
 
-/**
- * A supplied-but-unparseable `--repo` used to normalize to `undefined`, which
- * `resolvePrTarget` could not tell apart from "no `--repo` given" — so it fell
- * back to the session's own repository and `gh pr list --repo octocat` returned
- * the CURRENT repo's PRs with exit 0.
- */
 describe("resolvePrTarget — an explicit --repo that means nothing", () => {
   const session = { remoteUrl: "https://github.com/o/r.git" };
 
@@ -115,8 +96,6 @@ describe("resolvePrTarget — an explicit --repo that means nothing", () => {
   });
 
   it("still falls back to the session repo when --repo is absent", () => {
-    // Absent is the caller saying nothing, not the caller saying something
-    // wrong — the fallback this fix narrows must survive intact.
     expect(resolvePrTarget(session, SESSION_DIR, { repo: undefined })).toEqual({
       gitDir: SESSION_DIR,
       remoteUrl: "https://github.com/o/r.git",
@@ -127,9 +106,6 @@ describe("resolvePrTarget — an explicit --repo that means nothing", () => {
     ["an empty string", ""],
     ["whitespace", "   "],
   ])("refuses %s — supplied-and-empty is not absent", (_label, repo) => {
-    // `gh pr close 11 --repo "$REPO"` with an unset variable arrives here as an
-    // empty string. Reading that as "no --repo given" is how it would close PR
-    // 11 in whichever repository the session happens to be bound to.
     expect(() => resolvePrTarget(session, SESSION_DIR, { repo })).toThrow(/Invalid --repo/);
   });
 
@@ -138,8 +114,6 @@ describe("resolvePrTarget — an explicit --repo that means nothing", () => {
     ["an array", ["o", "r"]],
     ["an object", { owner: "o" }],
   ])("refuses %s from a JSON body", (_label, repo) => {
-    // The routes' Fastify generics are type annotations, not validation, so a
-    // non-string can reach this function at runtime.
     expect(() => resolvePrTarget(session, SESSION_DIR, { repo } as unknown as { repo?: string }))
       .toThrow(/Invalid --repo/);
   });
@@ -156,7 +130,6 @@ describe("resolvePrTarget", () => {
 
   it("repo-bound session ignores cwd (must not read the bare-cache origin)", () => {
     const session = { remoteUrl: "https://github.com/o/r.git" };
-    // Even with a cwd, a repo-bound session keeps its root + remote.
     expect(resolvePrTarget(session, SESSION_DIR, { cwd: "/workspace/sub" })).toEqual({
       gitDir: SESSION_DIR,
       remoteUrl: "https://github.com/o/r.git",
@@ -232,9 +205,6 @@ describe("gitCredentialAllowed", () => {
 
 describe("mergeDisposition", () => {
   it("treats an ops session as not-sandbox, whatever the repository grant says", () => {
-    // docs/287 req 13 — the one kind whose behaviour does not change. Asserted
-    // against a GRANTED repository, because that is the case a widened gate
-    // would have quietly started allowing.
     expect(mergeDisposition({ kind: "ops" } as SessionInfo, true)).toBe("not-sandbox");
     expect(mergeDisposition({ kind: "ops" } as SessionInfo, false)).toBe("not-sandbox");
   });
@@ -249,8 +219,6 @@ describe("mergeDisposition", () => {
   });
 
   it("reports not-granted for a sandbox with the grant off", () => {
-    // The repository grant must not rescue a sandbox: the two permissions are
-    // separate, and a sandbox's repository is whatever it cloned.
     expect(
       mergeDisposition({
         kind: "sandbox",
@@ -263,7 +231,6 @@ describe("mergeDisposition", () => {
     expect(mergeDisposition({ kind: "sandbox" } as SessionInfo, true)).toBe("not-granted");
   });
 
-  // docs/287 reqs 4 + 6 — the repo-bound branch, which used to be a flat refusal.
   it("lets a repo-bound session merge only where the user granted it", () => {
     expect(mergeDisposition({} as SessionInfo, true)).toBe("allowed");
     expect(mergeDisposition({} as SessionInfo, false)).toBe("not-granted-repo");
@@ -288,8 +255,6 @@ describe("agentMergeOwnership (docs/287 req 5)", () => {
   });
 
   it("allows the ordinary call, which always carries a cwd", () => {
-    // The shim sends `cwd` on every request, so a guard that refused it would
-    // reject the feature's own happy path. `cwd` is not even an input here.
     expect(agentMergeOwnership({ ...OK })).toBeNull();
   });
 
@@ -300,7 +265,6 @@ describe("agentMergeOwnership (docs/287 req 5)", () => {
   });
 
   it("refuses a pull request number this session did not open", () => {
-    // The number alone proves nothing — this is the check that says so.
     const refusal = agentMergeOwnership({ ...OK, requestedNumber: 8 });
     expect(refusal?.status).toBe(403);
     expect(refusal?.error).toContain("#7");
@@ -316,8 +280,6 @@ describe("agentMergeOwnership (docs/287 req 5)", () => {
   });
 
   it("refuses a recorded number whose repository is no longer the session's", () => {
-    // `remoteUrl` is rewritten in place when `origin` changes, so #7 in the old
-    // repository must not authorise #7 in the new one.
     const refusal = agentMergeOwnership({
       ...OK,
       session: { ...OK.session, remoteUrl: "https://github.com/acme/other.git" },
@@ -327,8 +289,6 @@ describe("agentMergeOwnership (docs/287 req 5)", () => {
   });
 
   it("accepts another spelling of the same repository", () => {
-    // The identity is what matters, not the string: an SSH origin naming the
-    // same repository is still this session's repository.
     expect(agentMergeOwnership({
       ...OK,
       session: { ...OK.session, remoteUrl: "git@GitHub.com:Acme/ShipIt.git" },
@@ -341,9 +301,6 @@ describe("agentMergeOwnership (docs/287 req 5)", () => {
   });
 
   it("refuses a detached HEAD instead of reading it as main", () => {
-    // `getCurrentBranch()` answers "main" on a detached HEAD, which would pass
-    // this comparison for any main-based session. `currentBranchOrNull` gives
-    // null, and null refuses.
     const refusal = agentMergeOwnership({
       ...OK,
       session: { ...OK.session, branch: "main" },

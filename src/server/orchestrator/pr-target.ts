@@ -1,31 +1,3 @@
-/**
- * Repo-aware PR brokering target resolution (docs/211 — Sandbox sessions).
- *
- * The `gh` shim brokers every pull-request operation through the orchestrator's
- * session-scoped routes. For a normal **repo-bound** session that is trivial:
- * the one repo lives at the workspace root and its GitHub URL is on
- * `session.remoteUrl`. A **sandbox** session has no `remoteUrl` and the agent
- * clones whatever repos it wants into `/workspace/<name>` subdirs — so the
- * broker must figure out *which clone* a PR op targets, from the request rather
- * than a fixed session repo.
- *
- * This module resolves two things from the request's optional `cwd`/`repo`
- * overrides (the working directory the shim ran in, and an explicit `--repo`):
- *
- *   - `gitDir`    — the local clone the GitManager operates on (branch, commit,
- *                   push). For repo-bound sessions with no override this stays
- *                   the session workspace root, so behavior is UNCHANGED. For a
- *                   sandbox it becomes the cwd's clone subdir.
- *   - `remoteUrl` — what `resolveGitHubRemote` keys off. Repo-bound: the session
- *                   remote (a `--local` clone's origin is a bare-cache filesystem
- *                   path, so we must NOT read it). Sandbox / cwd-scoped: undefined
- *                   so the service reads the clone's own GitHub origin. `--repo`:
- *                   the explicit owner/name, synthesized to a github.com URL.
- *
- * The no-raw-token property is untouched: the resolution only widens *which*
- * repo the (server-side) broker may act on; the agent still never sees a token.
- */
-
 import path from "node:path";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 import { isValidRepoFlag, repoFlagToUrl, REPO_FLAG_FORMS } from "../shared/github-repo-flag.js";
@@ -33,33 +5,19 @@ import { ServiceError } from "./services/types.js";
 import { repoId } from "./git-utils.js";
 import type { SessionInfo } from "../shared/types.js";
 
-// Re-exported so existing importers (and `pr-target.test.ts`) keep resolving
-// this from `./pr-target.js` after the move into shared.
 export { repoFlagToUrl };
 
-/** Optional per-request overrides forwarded by the `gh` shim. */
 export interface PrTargetOverride {
-  /** The container working directory `gh` ran in (e.g. `/workspace/myrepo`). */
   cwd?: string;
-  /** An explicit `--repo owner/name` (or a github.com URL) target. */
   repo?: string;
 }
 
 export interface PrTarget {
-  /** Local directory the GitManager operates on. */
   gitDir: string;
-  /** remoteUrl passed to the github service, or undefined to read git origin. */
+  /** Undefined tells the service to read the clone's origin. */
   remoteUrl: string | undefined;
 }
 
-/**
- * Map a container working directory to the host clone directory under the
- * session workspace, clamping any path-traversal attempt back to the session
- * root. The container's `/workspace` is bind-mounted from `sessionDir`, so
- * `/workspace/foo` → `<sessionDir>/foo`. Anything that resolves outside
- * `sessionDir` (`..` escapes, an unknown absolute path) degrades to the session
- * root rather than reaching arbitrary host paths.
- */
 export function resolveCloneDir(sessionDir: string, cwd: string | undefined): string {
   if (!cwd || typeof cwd !== "string") return sessionDir;
 
@@ -69,8 +27,6 @@ export function resolveCloneDir(sessionDir: string, cwd: string | undefined): st
   } else if (cwd.startsWith(`${CONTAINER_WORKSPACE_DIR}/`)) {
     rel = cwd.slice(CONTAINER_WORKSPACE_DIR.length + 1);
   } else if (path.isAbsolute(cwd)) {
-    // An absolute path we don't recognize as a workspace mount — ignore it
-    // rather than letting the agent point the broker at a host directory.
     return sessionDir;
   } else {
     rel = cwd;
@@ -78,32 +34,11 @@ export function resolveCloneDir(sessionDir: string, cwd: string | undefined): st
 
   const resolved = path.resolve(sessionDir, rel);
   if (resolved !== sessionDir && !resolved.startsWith(`${sessionDir}${path.sep}`)) {
-    // Path traversal (`../../etc`) — clamp to the session root.
     return sessionDir;
   }
   return resolved;
 }
 
-/**
- * Resolve the clone dir + remote a PR operation should act on.
- *
- * Precedence:
- *   1. `--repo owner/name` → target that GitHub repo; operate on the cwd's
- *      clone (where the branch/commits live), falling back to the session root.
- *   2. Repo-bound session (`session.remoteUrl` set) with no `--repo` → UNCHANGED:
- *      the session root + the session remote. The cwd is ignored here on
- *      purpose — a repo-bound session's repo is always at the root, and a
- *      `--local` clone's origin is a bare-cache path we must not read.
- *   3. Otherwise (sandbox / no session remote) → the cwd's clone, reading its
- *      own git origin (remoteUrl undefined).
- *
- * A `--repo` that was **supplied but unparseable** raises rather than falling
- * through to (2)/(3). It used to normalize to `undefined`, which is
- * indistinguishable from "no `--repo` given" — so `gh pr list --repo octocat`
- * (a typo: no owner) silently listed the *session's own* repository's PRs and
- * exited 0. Absent still means absent; only a supplied value that means nothing
- * is refused.
- */
 export function resolvePrTarget(
   session: Pick<SessionInfo, "remoteUrl">,
   sessionDir: string,
@@ -120,46 +55,19 @@ export function resolvePrTarget(
     return { gitDir: resolveCloneDir(sessionDir, override.cwd), remoteUrl: repoUrl };
   }
   if (session.remoteUrl) {
+    // A local-cache clone's origin is a filesystem path; use the recorded remote.
     return { gitDir: sessionDir, remoteUrl: session.remoteUrl };
   }
   return { gitDir: resolveCloneDir(sessionDir, override.cwd), remoteUrl: undefined };
 }
 
-/**
- * Whether the git-credential broker may issue a token for this session
- * (docs/211 — capability gating at the orchestrator, defense in depth).
- *
- * Only a sandbox session with `git` explicitly off is denied. Repo-bound and
- * ops sessions (`capabilities` undefined) are always allowed — unchanged.
- * Denying here, rather than relying solely on container env, means a missed
- * env/helper wiring path can't silently self-grant GitHub access.
- */
 export function gitCredentialAllowed(
   session: Pick<SessionInfo, "kind" | "capabilities">,
 ): boolean {
   return !(session.kind === "sandbox" && !session.capabilities?.git);
 }
 
-/**
- * Whether the agent (via `gh pr merge`) may merge a PR for this session
- * (docs/224 — gated "dangerous GitHub operations"; docs/287 — the per-repository
- * grant).
- *
- * Merge is an outward-facing, effectively-irreversible act and the verb most
- * exposed to prompt-injection, so it is opt-in everywhere. Which opt-in applies
- * depends on what the session is:
- *   - `"allowed"` — a sandbox with `dangerousGitHubOps`, or a repo-bound
- *     session in a granted repository (req 4, 12).
- *   - `"not-granted"` — a sandbox whose grant was left off at creation.
- *   - `"not-granted-repo"` — the repository's grant is off, as it is until the
- *     user turns it on (req 6).
- *   - `"not-sandbox"` — an **ops** session, unchanged by req 13. The wording is
- *     kept even though it now describes only one kind.
- *
- * `repoAllowsAgentMerge` is a required parameter, so a call site that has not
- * consulted the grant cannot compile. Both grants are server-authoritative and
- * never read from workspace files — an agent can write `shipit.yaml`.
- */
+// Grants must come from server state, never agent-writable workspace files.
 export function mergeDisposition(
   session: Pick<SessionInfo, "kind" | "capabilities">,
   repoAllowsAgentMerge: boolean,
@@ -171,24 +79,9 @@ export function mergeDisposition(
   return repoAllowsAgentMerge ? "allowed" : "not-granted-repo";
 }
 
-/** Why a repo-bound agent merge was refused, or `null` when it may proceed. */
 export type AgentMergeOwnershipRefusal = { status: number; error: string } | null;
 
-/**
- * docs/287 req 5 — is the pull request the agent asked to merge the one THIS
- * session opened?
- *
- * Every input is server-derived. The agent supplies only the number, which
- * proves nothing alone: `#7` names a different pull request in every fork.
- * **`--repo` is refused**, not ignored, since `resolvePrTarget` retargets on it;
- * **`cwd` is ignored**, since the shim sends it on every call. **The branch** is
- * read with `currentBranchOrNull`, never `getCurrentBranch`, which answers
- * `"main"` on a detached HEAD. **The recorded pull request** must match the
- * number AND the repository identity, re-derived at merge time.
- *
- * Absence refuses throughout — the opposite of `guardMergeSync`, whose fallback
- * is the status quo where this one's is a merge.
- */
+// currentBranch must preserve detached HEAD as null; a fallback branch would bypass the check.
 export function agentMergeOwnership(args: {
   session: Pick<SessionInfo, "remoteUrl" | "branch" | "prNumber" | "prRepoId">;
   requestedNumber: number;
